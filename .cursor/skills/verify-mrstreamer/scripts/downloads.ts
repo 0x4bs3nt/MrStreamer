@@ -735,7 +735,6 @@ export async function runDownloads(
     // on its page and named with the notice's words, its arrow alone where the other names need
     // the room. The window's least width is 960, so the narrower layout is emulated, as a zoomed
     // window or longer page names give it.
-    await layOut(online, 760);
     const folded = async (current: boolean) => {
       const bar = await barOf(online);
       return (
@@ -745,7 +744,19 @@ export async function runDownloads(
         percent(bar.downloads[0]!.label ?? "")
       );
     };
-    await online.wait(() => folded(true));
+    // Header copy changes how many CSS pixels the pages need. Find the actual fold while
+    // still requiring its current-page marker, percentage label and keyboard behavior below.
+    let foldedWidth: number | undefined;
+    for (let width = 760; width >= 520; width -= 20) {
+      await layOut(online, width);
+      if (await folded(true)) {
+        foldedWidth = width;
+        break;
+      }
+    }
+    if (foldedWidth === undefined)
+      throw new Error("Downloads did not fold within the emulated width bounds.");
+    notices["foldedWidth"] = foldedWidth;
     notices["foldedOnDownloads"] = fits("folded on Downloads", await settledBar(online), percent);
     await online.capture("notice-folded-on-downloads");
     await online.click("Open Movies, folded", button("header nav button", t("Movies")));
