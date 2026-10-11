@@ -31,13 +31,7 @@ function fixture(build = builds[2]!) {
     build.distribution === "store"
       ? [`${base}.msix`, `${base}.msix.json`, `${base}.wack.xml`]
       : build.platform === "mac-arm64"
-        ? [
-            `${base}.dmg`,
-            `${base}.dmg.blockmap`,
-            `${base}.zip`,
-            `${base}.zip.blockmap`,
-            "latest-mac.yml",
-          ]
+        ? [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"]
         : build.platform === "linux-x64"
           ? [`${base}.AppImage`, `${base}.deb`, "latest-linux.yml"]
           : [`${base}-setup.exe`, `${base}-setup.exe.blockmap`, "latest.yml"];
@@ -118,6 +112,29 @@ describe("successful package receipts", () => {
     },
   );
 
+  it("accepts exactly the four final Mac files after notarization and refuses a missing real file", async () => {
+    const world = fixture(builds[0]!);
+    const base = `Mr-Streamer-${VERSION}-mac-arm64`;
+    expect([...world.files.keys()].sort()).toEqual(
+      [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"].sort(),
+    );
+    expect((await world.resolve()).files).toEqual(world.files);
+    for (const name of world.files.keys()) {
+      const incomplete = new Map(world.files);
+      incomplete.delete(name);
+      expect(() => producePackageReceipt(world.identity, incomplete)).toThrow(/expected exactly/);
+    }
+    const receipt = world.receipt();
+    const files = new Map(world.files);
+    files.delete(`${base}.dmg`);
+    const archive = zipSync(Object.fromEntries(files));
+    world.archives.set(30, archive);
+    world.artifact.digest = `sha256:${sha256(archive)}`;
+    receipt.artifact.sha256 = sha256(archive);
+    world.updateReceipt(receipt);
+    await expect(world.resolve()).rejects.toThrow(/missing or additional files/);
+  });
+
   it("keeps stable rebuilds distinct from their nightly source and Store package version", async () => {
     const world = fixture(builds[3]!);
     const nightly = world.receipt();
@@ -133,6 +150,12 @@ describe("successful package receipts", () => {
       artifact: { ...world.identity.artifact, name: `msix-${appVersion}`, sha256: sha256(archive) },
     };
     const stable = producePackageReceipt(identity, files);
+    world.archives.set(30, archive);
+    world.artifact.name = identity.artifact.name;
+    world.artifact.digest = `sha256:${identity.artifact.sha256}`;
+    world.receiptArtifact.name = `package-receipt-win-x64-store-${appVersion}-attempt-2`;
+    world.updateReceipt(stable);
+    expect((await world.resolve(identity)).receipt).toEqual(stable);
     expect(stable.sourceCommit).toBe(nightly.sourceCommit);
     expect(stable.workflowCommit).toBe(nightly.workflowCommit);
     expect(stable.appVersion).toBe("0.0.11");
@@ -152,6 +175,7 @@ describe("successful package receipts", () => {
 
   it.each([
     ["sourceCommit", "d".repeat(40)],
+    ["workflowCommit", "d".repeat(40)],
     ["appVersion", "0.0.11"],
     ["packageVersion", "0.0.11"],
     ["platform", "linux-x64"],
@@ -164,6 +188,11 @@ describe("successful package receipts", () => {
   it.each([
     ["schema version", (r: PackageReceipt) => ({ ...r, schemaVersion: 2 }), /schemaVersion/],
     ["failure", (r: PackageReceipt) => ({ ...r, status: "failure" }), /status/],
+    [
+      "workflow commit",
+      (r: PackageReceipt) => ({ ...r, workflowCommit: "d".repeat(40) }),
+      /workflowCommit/,
+    ],
     ["repository", (r: PackageReceipt) => ({ ...r, repository: "fork/player" }), /repository/],
     ["run", (r: PackageReceipt) => ({ ...r, run: { ...r.run, id: 901 } }), /run.id/],
     ["attempt", (r: PackageReceipt) => ({ ...r, run: { ...r.run, attempt: 1 } }), /run.attempt/],

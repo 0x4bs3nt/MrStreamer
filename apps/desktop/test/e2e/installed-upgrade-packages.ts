@@ -293,10 +293,36 @@ export async function resolvePackages(
   let packaged: Awaited<ReturnType<typeof resolvePackageReceipt>> | undefined;
   let pullNumber: number;
   if (hasReceipts) {
+    // Referenced reusable workflows belong to this attempt, not whichever attempt was latest
+    // when the run was first queried. Source, run head and workflow code remain separate pins.
+    const attempt = Run.and({
+      referenced_workflows: type({ path: "string", sha: Sha }).array(),
+    }).assert(await github.json(`/actions/runs/${run.id}/attempts/${run.run_attempt}`));
+    check(
+      attempt.id === run.id &&
+        attempt.run_attempt === run.run_attempt &&
+        attempt.head_sha === run.head_sha &&
+        attempt.workflow_id === run.workflow_id &&
+        attempt.repository.full_name === github.repository &&
+        attempt.head_repository.full_name === github.repository &&
+        attempt.event === "pull_request" &&
+        attempt.status === "completed" &&
+        attempt.conclusion === "success",
+      "B's selected attempt does not match the successful pinned run.",
+    );
+    const workflows = attempt.referenced_workflows.filter(
+      (each) =>
+        each.path.split("@")[0] === `${github.repository}/.github/workflows/build-release.yml`,
+    );
+    check(
+      workflows.length === 1,
+      "B's selected attempt has no single build-release.yml workflow identity.",
+    );
     packaged = await resolvePackageReceipt(
       github,
       {
         sourceCommit: pins.bSha,
+        workflowCommit: workflows[0]!.sha,
         appVersion: bVersion,
         packageVersion: bVersion,
         platform: "win-x64",

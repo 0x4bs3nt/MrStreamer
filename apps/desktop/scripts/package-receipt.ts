@@ -36,7 +36,13 @@ export type PackageReceipt = typeof Schema.infer;
 export type PackageIdentity = typeof Identity.infer;
 export type PackageRequest = Pick<
   PackageIdentity,
-  "sourceCommit" | "appVersion" | "packageVersion" | "platform" | "distribution" | "run"
+  | "sourceCommit"
+  | "workflowCommit"
+  | "appVersion"
+  | "packageVersion"
+  | "platform"
+  | "distribution"
+  | "run"
 >;
 
 export const Artifact = type({
@@ -83,13 +89,7 @@ function requiredFiles(
     return [`${base}.msix`, `${base}.msix.json`, `${base}.wack.xml`];
   switch (identity.platform) {
     case "mac-arm64":
-      return [
-        `${base}.dmg`,
-        `${base}.dmg.blockmap`,
-        `${base}.zip`,
-        `${base}.zip.blockmap`,
-        "latest-mac.yml",
-      ];
+      return [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"];
     case "linux-x64":
       return [`${base}.AppImage`, `${base}.deb`, "latest-linux.yml"];
     case "win-x64":
@@ -207,6 +207,7 @@ export async function resolvePackageReceipt(
   check(receipt.repository === github.repository, "repository does not match the request.");
   for (const key of [
     "sourceCommit",
+    "workflowCommit",
     "appVersion",
     "packageVersion",
     "platform",
