@@ -225,6 +225,12 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "Open adult fixture series",
     "[...document.querySelectorAll('button[title]')].find(b => b.title.includes('After Dark'))",
   );
+  // The initial series toolbar moves when its episodes arrive. Wait for those controls and
+  // capture the painted details before choosing Save with pointer coordinates.
+  await d.wait(() =>
+    d.exists("document.querySelector('[role=dialog] [aria-label=\"More for S1 E1\"]')"),
+  );
+  await d.capture("adult-series-details-before-save");
   await d.click("Save adult series", byText('[role="dialog"] button', "Save"));
   await d.wait(() => d.exists(byText('[role="dialog"] button', "Saved")));
   const adultName = await d.evaluate<string>(`(async () => {
