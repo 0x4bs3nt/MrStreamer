@@ -26,7 +26,7 @@ import {
 } from "@mrstreamer/contracts/preferences";
 import { trustedGuideIds } from "./guide-ids.ts";
 import type { NormalizedStream } from "./normalize.ts";
-import { countryForCode } from "./regions.ts";
+import { countryForCode, isBroadRegion } from "./regions.ts";
 
 /** How many of a channel's streams Auto tries, one after another, before it gives up. */
 const AUTO_TRIES = 3;
@@ -63,7 +63,13 @@ export function liveChannels(streams: readonly NormalizedStream[]): LiveChannels
     // Contradictory category/prefix metadata must not join or bridge otherwise distinct feeds.
     const country = /\.([a-z]{2})(?:@[^.@]*)?$/i.exec(trusted.get(stream.id) ?? "")?.[1];
     const guideRegion = country ? countryForCode(country) : null;
-    if (stream.searchUncertain || (guideRegion && stream.region && guideRegion !== stream.region)) {
+    if (
+      stream.searchUncertain ||
+      (guideRegion &&
+        stream.region &&
+        !isBroadRegion(stream.region) &&
+        guideRegion !== stream.region)
+    ) {
       uncertain.add(stream);
       continue;
     }

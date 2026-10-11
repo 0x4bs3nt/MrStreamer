@@ -12,6 +12,11 @@ const CONVENTIONS: Readonly<Record<string, string>> = {
   LAT: "Latin America", LATAM: "Latin America", MULTI: "World", WO: "World", WW: "World",
 };
 
+/** Reseller language, continent and world labels do not assert a country. */
+export function isBroadRegion(region: string): boolean {
+  return Object.values(CONVENTIONS).includes(region);
+}
+
 /** Three-letter codes as ISO alpha-2: ISO alpha-3, plus the IOC codes sports catalogues use. */
 // prettier-ignore
 const THREE_LETTER: Readonly<Record<string, string>> = {

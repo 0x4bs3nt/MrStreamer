@@ -251,6 +251,60 @@ function joined(raw: LiveCatalogue) {
 }
 
 describe("channels with several streams", () => {
+  it.each([
+    ["AR", "Arabic", "guide.qa", "guideqa"],
+    ["AF", "Africa", "guide.za", "guideza"],
+    ["EU", "Europe", "guide.de", "guidede"],
+    ["INT", "World", "guide.us", "guideus"],
+  ])(
+    "keeps %s quality feeds joined and searchable with a country guide",
+    (prefix, region, guide, guideId) => {
+      const raw = guided(
+        [`${prefix} | News`],
+        [
+          [`${prefix} | Matrix HD`, 0, guide],
+          [`${prefix} | Matrix FHD`, 0, guide],
+        ],
+      );
+      const { channels, guideIds } = liveChannels(normalizeCatalogue(raw).streams);
+      expect(channels).toHaveLength(1);
+      expect(channels[0]).toMatchObject({
+        id: "100",
+        title: "Matrix",
+        categoryIds: ["0"],
+        searchIdentity: {
+          title: "matrix",
+          language: null,
+          region,
+          topics: [`${region}|news`],
+          guideId,
+        },
+      });
+      expect(channels[0]?.variants.map((variant) => variant.id)).toEqual(["100", "101"]);
+      expect(guideIds.get("100")).toEqual([guide]);
+    },
+  );
+
+  it("keeps a Belgian category with a Dutch guide isolated", () => {
+    const raw = guided(
+      ["BE | News"],
+      [
+        ["BE | Matrix HD", 0, "guide.nl"],
+        ["BE | Matrix FHD", 0, "guide.nl"],
+      ],
+    );
+    const { channels, guideIds } = liveChannels(normalizeCatalogue(raw).streams);
+    expect(channels.map((channel) => channel.variants.map((variant) => variant.id))).toEqual([
+      ["100"],
+      ["101"],
+    ]);
+    expect(channels.map((channel) => channel.searchIdentity)).toEqual([undefined, undefined]);
+    expect([...guideIds]).toEqual([
+      ["100", ["guide.nl"]],
+      ["101", ["guide.nl"]],
+    ]);
+  });
+
   it("reads guide countries as ISO codes rather than reseller language or continent prefixes", () => {
     const raw = guided(
       ["🇦🇷 News", "🇦🇫 News"],
