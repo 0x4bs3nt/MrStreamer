@@ -7,6 +7,168 @@ import { Settings } from "../src/main/services/preferences.ts";
 import { fakeProvider, promised, runtimeFor, tempDir, testConfig } from "./support.ts";
 
 describe("current movie and series filters", { timeout: 20000 }, () => {
+  it("keeps complete choices for colliding provider IDs and variants, and drops a replaced file's observations", async () => {
+    const provider = await fakeProvider({ titles: 1 });
+    const other = await fakeProvider({ titles: 1, second: true });
+    const seed = provider.titles.movies[0]!;
+    let movies = [
+      { ...seed, id: 70001, name: "Shared 4K (NL)", tmdb: "4567" },
+      { ...seed, id: 70002, name: "Shared FHD (EN)", tmdb: "4567" },
+      { ...seed, id: 70003, name: "No metadata", tmdb: "" },
+      { ...seed, id: 70011, name: "Adult SD (PL)", tmdb: "", adult: true },
+      { ...seed, id: 70005, name: "Category adult SD (FR)", tmdb: "", categoryId: "505" },
+    ];
+    provider.serveTitles((all) => ({ ...all, movies, series: [] }));
+    other.serveTitles((all) => ({
+      ...all,
+      movies: [{ ...seed, id: 70001, name: "Shared HD (DE)", tmdb: "4567" }],
+      series: [],
+    }));
+    const runtime = runtimeFor(mainLayer(testConfig(await tempDir())));
+    try {
+      const subscriptions = await promised(runtime, Subscriptions);
+      const titles = await promised(runtime, OnDemand);
+      const files = await promised(runtime, VerifiedFiles);
+      const settings = await promised(runtime, Settings);
+      const first = await subscriptions.add({
+        server: provider.url,
+        username: "demo",
+        password: "demo",
+      });
+      const second = await subscriptions.add({
+        server: other.url,
+        username: "demo",
+        password: "demo",
+      });
+      await titles.refresh(first.id);
+      await titles.refresh(second.id);
+      const choices = {
+        qualities: ["4k", "full-hd", "hd", "unknown"],
+        languages: ["de", "en", "nl", "unknown"],
+        verified: [],
+        files: 0,
+      };
+      expect(await titles.filterOptions("movie")).toEqual(choices);
+      expect(await titles.filterOptions("series")).toEqual({
+        qualities: [],
+        languages: [],
+        verified: [],
+        files: 0,
+      });
+      const [source] = await subscriptions.saved();
+      if (!source) throw new Error("Expected saved subscription");
+      const file = await titles.file({ kind: "movie", subscriptionId: first.id, id: "70001" });
+      await files.remember(source.key, source.fileRevision, {
+        kind: "movie",
+        id: "70001",
+        fileKey: "observed-file",
+        listingKey: file.listingKey,
+        audio: ["en", null],
+        subtitles: ["nl"],
+      });
+      const observed = {
+        ...choices,
+        verified: [
+          { kind: "audio", language: "en" },
+          { kind: "audio", language: "unknown" },
+          { kind: "subtitles", language: "nl" },
+        ],
+        files: 1,
+      };
+      expect(await titles.filterOptions("movie")).toEqual(observed);
+      await settings.update({ adultTitles: true });
+      expect(await titles.filterOptions("movie")).toEqual({
+        ...observed,
+        qualities: ["4k", "full-hd", "hd", "sd", "unknown"],
+        languages: ["de", "en", "fr", "nl", "pl", "unknown"],
+      });
+      await settings.update({ adultTitles: false });
+      expect(await titles.filterOptions("movie")).toEqual(observed);
+      expect(
+        await titles.searchKind("movie", "shared", { quality: "hd", language: "de" }),
+      ).toMatchObject({
+        total: 1,
+        titles: [
+          {
+            subscriptionId: second.id,
+            id: "70001",
+            versions: expect.arrayContaining([
+              expect.objectContaining({ subscriptionId: first.id, id: "70001" }),
+            ]),
+          },
+        ],
+      });
+      movies = movies.map((movie) => (movie.id === 70001 ? { ...movie, container: "mp4" } : movie));
+      await titles.refresh(first.id);
+      expect(await titles.filterOptions("movie")).toEqual(choices);
+      const before = [
+        provider.titleListRequests(),
+        other.titleListRequests(),
+        provider.detailRequests(),
+        other.detailRequests(),
+        provider.fileRequests(),
+        other.fileRequests(),
+      ];
+      expect(await titles.filterOptions("movie")).toEqual(choices);
+      expect(await titles.filterOptions("series")).toEqual({
+        qualities: [],
+        languages: [],
+        verified: [],
+        files: 0,
+      });
+      expect([
+        provider.titleListRequests(),
+        other.titleListRequests(),
+        provider.detailRequests(),
+        other.detailRequests(),
+        provider.fileRequests(),
+        other.fileRequests(),
+      ]).toEqual(before);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("offers empty choices while lists load or fail, then preserves the accepted lists after a failed refresh", async () => {
+    const provider = await fakeProvider({ titles: 1 });
+    const seed = provider.titles.movies[0]!;
+    provider.serveTitles((all) => ({
+      ...all,
+      movies: [{ ...seed, name: "Loading HD (EN)", tmdb: "" }],
+      series: [],
+    }));
+    const runtime = runtimeFor(mainLayer(testConfig(await tempDir())));
+    try {
+      const subscriptions = await promised(runtime, Subscriptions);
+      const titles = await promised(runtime, OnDemand);
+      const saved = await subscriptions.add({
+        server: provider.url,
+        username: "demo",
+        password: "demo",
+      });
+      const empty = { qualities: [], languages: [], verified: [], files: 0 };
+      expect(await titles.filterOptions("movie")).toEqual(empty);
+      const held = provider.hold("titles");
+      const refresh = titles.refresh(saved.id);
+      await held.arrived;
+      try {
+        expect(await titles.filterOptions("movie")).toEqual(empty);
+        expect(await titles.filterOptions("series")).toEqual(empty);
+      } finally {
+        held.release();
+      }
+      await refresh;
+      const loaded = { qualities: ["hd"], languages: ["en"], verified: [], files: 0 };
+      expect(await titles.filterOptions("movie")).toEqual(loaded);
+      provider.failTitles(503);
+      await expect(titles.refresh(saved.id)).rejects.toThrow();
+      expect(await titles.filterOptions("movie")).toEqual(loaded);
+      expect(await titles.filterOptions("series")).toEqual(empty);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("uses the refreshed series name for episode hints when its details reopen", async () => {
     const provider = await fakeProvider({ titles: 2 });
     const seed = provider.titles.series[0]!;
