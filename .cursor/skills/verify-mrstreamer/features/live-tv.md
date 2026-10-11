@@ -10,7 +10,7 @@ After connecting, **Search** or Ctrl-K/Cmd-K finds channels and programmes. Ente
 
 ## Driving it with Electron CDP
 
-Preconditions: `pnpm build`, a display and the fake provider's `h264-aac.mpegts` fixture. Run `pnpm verify:desktop live-tv`. Search `TEST | H.264 + AAC`, press Enter and observe Watch, an advancing video clock, nonzero picture width and decoded audio bytes. Press Escape and observe a playing, muted Home preview. Click Watch and observe unmuted playback, exactly one active provider connection and zero extra stream requests. Retain screenshots of the connected app, Watch, Home preview and final Watch.
+Preconditions: `pnpm build`, a display and the fake provider's `h264-aac.mpegts` fixture. Run `pnpm verify:desktop live-tv`. Search `TEST | H.264 + AAC`, press Enter and observe Watch, an advancing video clock, nonzero picture width and decoded audio bytes. Press Escape and observe a playing, muted compact Home preview. Click Watch and observe unmuted playback, exactly one active provider connection and zero extra stream requests. Retain screenshots of the connected app, Watch, Home preview and final Watch.
 
 For converted codecs, titles and subtitle rendering use `apps/desktop/test/e2e/packaged-app.ts`; recovery uses `live-recovery-app.ts`; favourites use `favourite-order.ts`; external guide settings use `guide-source.ts`. Follow their documented executable arguments and capture the affected entry point, not only global search.
 

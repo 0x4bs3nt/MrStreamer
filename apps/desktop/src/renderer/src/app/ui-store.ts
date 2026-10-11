@@ -9,10 +9,10 @@ export type View = "home" | "live" | "movies" | "series" | "watchlist" | "downlo
 
 /**
  * Whether a page stays when every subscription has live TV only, as playlists do: Home, Live TV,
- * and Downloads, whose copies need no subscription at all.
+ * Watchlist, and Downloads, whose copies need no subscription at all.
  */
 export function withoutTitles(view: View): boolean {
-  return view === "home" || view === "live" || view === "downloads";
+  return view === "home" || view === "live" || view === "watchlist" || view === "downloads";
 }
 
 /** The tabs of the Settings page, and the licences About opens. */

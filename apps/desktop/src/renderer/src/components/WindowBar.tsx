@@ -28,7 +28,6 @@ const VIEWS = [
   { view: "live", label: "Live TV" },
   { view: "movies", label: "Movies" },
   { view: "series", label: "Series" },
-  { view: "watchlist", label: "Watchlist" },
   { view: "downloads", label: "Downloads" },
 ] as const satisfies readonly { readonly view: View; readonly label: PlainKey }[];
 
@@ -38,7 +37,7 @@ const VIEWS = [
  * the right, except in full screen, where the bar takes their room. Over Settings, Watch or a
  * title's details, Back takes the pages' place and returns to the page underneath. `onBack`
  * overrides where it goes, as a playing title or an open collection does. Subscriptions with
- * live TV only have no Movies, Series or Watchlist. Where the window is too narrow for every
+ * live TV only have no Movies or Series. Home opens the full Watchlist. Where the window is too narrow for every
  * page's name, Downloads goes beside Search as a button of its own, under the same name. That
  * place also says how the downloads stand while one is under way, waits or stopped, except over
  * the Downloads page itself while its name is in the bar. Where even the other names, or Back,

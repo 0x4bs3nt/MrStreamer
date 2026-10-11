@@ -373,10 +373,10 @@ export const queries = {
    * A page of the watchlist: saved titles with what the lists have of each now. Kept current by
    * `syncWatchlist`.
    */
-  watchlist: (sort: WatchlistSort, offset: number, limit: number) =>
+  watchlist: (sort: WatchlistSort, offset: number, limit: number, home = false) =>
     queryOptions({
-      queryKey: ["watchlist", "list", sort, offset, limit],
-      queryFn: () => call("watchlist.list", { sort, offset, limit }),
+      queryKey: ["watchlist", "list", sort, offset, limit, home],
+      queryFn: () => call("watchlist.list", { sort, offset, limit, ...(home ? { home } : {}) }),
       staleTime: Infinity,
       placeholderData: (previous) => previous,
     }),

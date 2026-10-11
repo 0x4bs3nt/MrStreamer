@@ -3,6 +3,12 @@
 import type { Translation } from "../i18n.ts";
 
 export const fr: Translation = {
+  Customize: "Personnaliser",
+  "Customize Home": "Personnaliser l’accueil",
+  Recommendations: "Recommandations",
+  "Current category": "Catégorie actuelle",
+  "Reset to defaults": "Rétablir les valeurs par défaut",
+  "Because you watched {name}": "Parce que vous avez regardé {name}",
   Settings: "Réglages",
   General: "Général",
   Subscriptions: "Abonnements",

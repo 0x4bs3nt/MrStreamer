@@ -610,6 +610,7 @@ async function start(): Promise<void> {
       "ondemand.titles": ({ kind, versions }) => onDemand.titles(kind, versions),
       "ondemand.rows": ({ kind, tab, like }) => onDemand.rows(kind, tab, like),
       "ondemand.related": ({ kind, version }) => onDemand.related(kind, version),
+      "ondemand.recommendations": ({ seeds }) => onDemand.recommendations(seeds),
       "ondemand.tiles": ({ kind, of }) => onDemand.tiles(kind, of),
       "ondemand.collection": (query) => onDemand.collection(query),
       "playback.open": ({

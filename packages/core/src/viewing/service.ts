@@ -133,6 +133,7 @@ export interface StoredViewing {
     readonly account: string;
     readonly progress: RawProgress;
   }[];
+  readonly recentTitles?: StoredViewing["continueWatching"];
   /**
    * For each marked series, its latest mark and where it goes on as its record stands (`goesOn`
    * in ./marks.ts), unless the series left Continue watching since. Most recent first.
@@ -576,6 +577,12 @@ function make() {
             return [{ series, kept: mark.series, at: mark.at, next }];
           })
           .slice(0, CONTINUE_OFFERED),
+        recentTitles: (stored.recentTitles ?? [])
+          .flatMap(({ account, progress }) => {
+            const owner = found.ofAccount.get(account);
+            return owner ? [progressOf(owner, progress)] : [];
+          })
+          .slice(0, 32),
         sequence: stored.sequence,
       };
     };
