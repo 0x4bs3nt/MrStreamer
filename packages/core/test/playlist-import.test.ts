@@ -18,6 +18,37 @@ const mapping = mapPlaylistGroup(
 );
 
 describe("mixed playlist imports", () => {
+  it("uses inherited groups for explicit movie and series picks and keeps their version IDs on reorder", () => {
+    const films =
+      "#EXTGRP:Films\n#EXTINF:-1,First film\nhttps://example.test/first.mp4\n#EXTINF:-1,Second film\nhttps://example.test/second.mp4\n";
+    const shows = "#EXTGRP:Shows\n#EXTINF:-1,Series S01E01\nhttps://example.test/episode.mp4\n";
+    const news = '#EXTINF:-1 group-title="News",Live\nhttps://example.test/live.ts\n';
+    const picked = mapPlaylistGroup(mapping, [], playlistGroupId("Shows"), "series");
+    const imported = importPlaylist(entries(films + shows + news), picked);
+    const reordered = importPlaylist(entries(shows + films + news), picked);
+    expect(imported.status).toMatchObject({
+      live: 1,
+      movies: 2,
+      series: 1,
+      episodes: 1,
+      omitted: 0,
+    });
+    expect(reordered.catalogue.movies.map((movie) => movie.id)).toEqual(
+      imported.catalogue.movies.map((movie) => movie.id),
+    );
+    expect(reordered.catalogue.series).toEqual(imported.catalogue.series);
+    expect(
+      imported.catalogue.movies.every((movie) =>
+        movie.categoryIds.includes(playlistGroupId("Films")),
+      ),
+    ).toBe(true);
+    expect(importPlaylist(entries(films + shows + news)).status).toMatchObject({
+      live: 4,
+      movies: 0,
+      series: 0,
+    });
+  });
+
   it("keeps old lists Live-only, and the first mapping preserves other current Live groups", () => {
     expect(importPlaylist(source).status).toMatchObject({ live: 2, movies: 0, explicit: false });
     expect(importPlaylist(source, mapping).status).toMatchObject({

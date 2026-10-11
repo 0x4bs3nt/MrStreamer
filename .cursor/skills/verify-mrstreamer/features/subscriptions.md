@@ -20,4 +20,6 @@ Source: `docs/user/subscriptions.md`, `apps/desktop/src/renderer/src/features/se
 
 ## Gotchas
 
+M3U `#EXTGRP` applies to subsequent entries until an empty directive or explicit `group-title` resets inheritance. `packages/core/test/playlist.test.ts` checks chunked reads, multiple memberships and inherited adult categories. Explicit Live/Movie/Series mappings remain authoritative; no category name automatically chooses a title kind. See `docs/user/category-compatibility.md` for provenance and supported conventions.
+
 An existing user's profile hides Connect and can write real secrets. Always use a fresh profile; macOS requires mock keychain. A row proves initial connection only, not refresh, restart or removal. A fake provider proves the app's contract with it, not acceptance of a real provider or entitlement.

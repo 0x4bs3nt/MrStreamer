@@ -601,8 +601,9 @@ function categoryIdsOf(row: {
   readonly category_id?: string | number | null | undefined;
   readonly category_ids?: readonly (string | number)[] | null | undefined;
 }): string[] {
-  if (row.category_ids?.length) return row.category_ids.map(String);
-  return row.category_id != null && row.category_id !== "" ? [String(row.category_id)] : [];
+  const ids = row.category_ids?.length ? row.category_ids : [row.category_id];
+  // Array membership is authoritative. Keep raw IDs, including leading zeros, for saved picks.
+  return [...new Set(ids.flatMap((id) => (id != null && id !== "" ? [String(id)] : [])))];
 }
 
 /** An http(s) address, or null for empty strings and anything else panels send. */
@@ -671,18 +672,13 @@ function toChannel(raw: unknown): ProviderChannel[] {
   const row = StreamRow(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.stream_id);
-  const categoryIds = row.category_ids?.length
-    ? row.category_ids.map(String)
-    : row.category_id != null && row.category_id !== ""
-      ? [String(row.category_id)]
-      : [];
   return [
     {
       id,
       name: row.name?.trim() || `Channel ${id}`,
       number: toInteger(row.num),
       logoUrl: row.stream_icon && /^https?:\/\//i.test(row.stream_icon) ? row.stream_icon : null,
-      categoryIds,
+      categoryIds: categoryIdsOf(row),
       guideId: row.epg_channel_id?.trim() || null,
       adult: isTruthy(row.is_adult),
     },

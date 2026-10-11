@@ -17,12 +17,16 @@ import {
 } from "./support.ts";
 
 /** The library, settings and subscriptions on `dataDir`, as a start of the app reads them. */
-async function started(dataDir: string) {
+async function started(dataDir: string, fetchImpl?: typeof fetch) {
   const runtime = runtimeFor(
     Library.layer({ confirmDelay: 0 }).pipe(
       Layer.provideMerge(Settings.layer(dataDir)),
       Layer.provideMerge(
-        Subscriptions.layer({ dataDir, secrets: testSecrets, providerOptions: { userAgent } }),
+        Subscriptions.layer({
+          dataDir,
+          secrets: testSecrets,
+          providerOptions: { userAgent, ...(fetchImpl ? { fetch: fetchImpl } : {}) },
+        }),
       ),
     ),
   );
@@ -77,6 +81,72 @@ async function connectedLibrary(channels = 300, adultChannels = false) {
 }
 
 describe("live library", () => {
+  it("keeps duplicate category memberships, unknown references and raw selections through refresh and restart", async () => {
+    const provider = await fakeProvider({ channels: 60 });
+    let channels = [
+      { stream_id: 10, name: "First", category_id: "001", category_ids: ["001", 2, "2"] },
+      { stream_id: 11, name: "Second", category_id: 2 },
+      { stream_id: 12, name: "Unknown", category_id: 99 },
+      { stream_id: 13, name: "Unassigned" },
+      { stream_id: 14, name: "Adult", category_ids: [2, 3] },
+      { stream_id: 15, name: "Unnamed category", category_id: 9 },
+    ];
+    const dataDir = await tempDir();
+    const services = await started(dataDir, async (input, init) => {
+      const action = new URL(String(input)).searchParams.get("action");
+      if (action === "get_live_categories")
+        return Response.json([
+          { category_id: "001", category_name: "News" },
+          { category_id: 2, category_name: "News" },
+          { category_id: 3, category_name: "XXX" },
+          { category_id: 9, category_name: "" },
+        ]);
+      if (action === "get_live_streams") return Response.json(channels);
+      return fetch(input, init);
+    });
+    const { id: subscriptionId } = await services.subscriptions.add(login(provider));
+    const category = { subscriptionId, id: "001" };
+    const ids = async (library: typeof services.library) =>
+      (await library.channels({ category })).map((channel) => channel.id);
+    expect(await ids(services.library)).toEqual(["10", "11"]);
+    expect(await services.library.categories()).toMatchObject([
+      {
+        id: "001",
+        title: "News",
+        channelCount: 2,
+        members: [category, { subscriptionId, id: "2" }],
+      },
+      { id: "9", title: "Category 9", channelCount: 1 },
+    ]);
+    expect((await services.library.channels({})).map((channel) => channel.id)).toEqual([
+      "10",
+      "11",
+      "12",
+      "13",
+      "15",
+    ]);
+    await services.settings.update({ adultTitles: true });
+    expect(await ids(services.library)).toEqual(["10", "11", "14"]);
+    expect(await services.library.channels({ query: "Adult" })).toEqual([]);
+    channels = channels.toReversed();
+    await services.library.refresh(subscriptionId);
+    expect(await ids(services.library)).toEqual(["10", "14", "11"]);
+    expect((await services.library.channels({})).map((channel) => channel.id)).toEqual([
+      "15",
+      "14",
+      "13",
+      "12",
+      "11",
+      "10",
+    ]);
+    const restarted = (await started(dataDir)).library;
+    expect(await ids(restarted)).toEqual(["10", "14", "11"]);
+    expect(await restarted.channel({ subscriptionId, id: "12" })).toMatchObject({
+      title: "Unknown",
+      categoryIds: ["99"],
+    });
+  });
+
   it("loads categories and channels from the provider, without separator entries", async () => {
     const { provider, library, updates, own, subscriptionId } = await connectedLibrary();
 
