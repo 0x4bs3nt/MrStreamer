@@ -11,6 +11,8 @@
 //
 // The folder is rebuilt on every run and is not committed. index.html names these files and the
 // phone pictures' sizes: change both together.
+import { createHash } from "node:crypto";
+import manifest from "../../../docs/assets/marketing-capture.json" with { type: "json" };
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
@@ -29,10 +31,12 @@ const SCALE = 2;
  * section is about, at a size that stays readable on a narrow screen.
  */
 const SHOTS = {
-  home: { left: 0, top: 0, width: 720, height: 800 },
+  // Home keeps its actions, compact preview and personalized rows together.
+  home: { left: 0, top: 0, width: 1280, height: 800 },
   "live-tv": { left: 236, top: 56, width: 600, height: 650 },
   library: { left: 164, top: 53, width: 620, height: 700 },
-  watching: { left: 396, top: 450, width: 500, height: 350 },
+  // The subtitle panel moved to the right; retain it alongside the actual subtitle.
+  watching: { left: 396, top: 42, width: 884, height: 758 },
 };
 
 rmSync(out, { recursive: true, force: true });
@@ -40,7 +44,19 @@ mkdirSync(out, { recursive: true });
 
 const webp = { quality: 88, effort: 5 };
 for (const [name, phone] of Object.entries(SHOTS)) {
-  const capture = sharp(join(repository, `docs/assets/marketing-${name}.png`));
+  const file = `marketing-${name}.png`;
+  const bytes = readFileSync(join(repository, "docs/assets", file));
+  const recorded = manifest.captures.find((capture) => capture.file === file);
+  if (
+    !recorded ||
+    recorded.bytes !== bytes.length ||
+    recorded.sha256 !== createHash("sha256").update(bytes).digest("hex")
+  )
+    throw new Error(`${file} differs from its capture manifest; regenerate captures together.`);
+  const capture = sharp(bytes);
+  const size = await capture.metadata();
+  if (size.width !== 2560 || size.height !== 1600 || size.format !== "png")
+    throw new Error(`${name} must be the lossless 2560 × 1600 PNG master.`);
   for (const width of WIDTHS) {
     await capture
       .clone()
@@ -80,8 +96,8 @@ await sharp(Buffer.from(favicon.replace('rx="22"', 'rx="0"')), { density: 600 })
   .png()
   .toFile(join(out, "apple-touch-icon.png"));
 
-// The Home window, its top corners rounded, running off the bottom of a black card.
-const SOCIAL = { width: 1200, height: 630, window: 1040, top: 96, radius: 16 };
+// The complete Home window on black, keeping its recommendation and permanent actions visible.
+const SOCIAL = { width: 1200, height: 630, window: 848, top: 96, radius: 16 };
 const windowHeight = (SOCIAL.window * 800) / 1280;
 const rounded = Buffer.from(
   `<svg xmlns="http://www.w3.org/2000/svg" width="${SOCIAL.window}" height="${windowHeight}">` +
@@ -109,7 +125,7 @@ await sharp({
           left: 0,
           top: 0,
           width: SOCIAL.window,
-          height: SOCIAL.height - SOCIAL.top,
+          height: Math.min(windowHeight, SOCIAL.height - SOCIAL.top),
         })
         .toBuffer(),
       left: (SOCIAL.width - SOCIAL.window) / 2,

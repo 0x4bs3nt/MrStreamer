@@ -20,6 +20,10 @@ The existing `apps/marketing/test/` suites verify OS detection, link/feed fallba
 
 Source: `apps/marketing/README.md`, `apps/marketing/scripts/pages.ts`, `apps/marketing/src/downloads.ts`, `apps/marketing/src/system.ts`, `apps/marketing/vite.config.ts` and `apps/marketing/test/`.
 
+## Screenshot assets
+
+The four lossless masters and their checked capture manifest are under `docs/assets/marketing-*`. Follow `docs/contributing/marketing-artwork.md` for the licensed demo, Mac mini source capture and owned cleanup. `prepare-assets.ts` builds desktop/phone WebP sizes and the social PNG. Home keeps the complete window on phones and social links; watching keeps the subtitle beside its current right-hand panel. Inspect these actual assets and the rendered site at wide and 390px widths after a refresh, checking each `<picture>` source's intrinsic dimensions and descriptions. Build output stays ignored.
+
 ## Gotchas
 
 Build-time release history can fall back to truthful GitHub links when unavailable. The isolated baseline browser blocks external requests, so it proves the built fallback/links, not successful live refresh, production analytics or installer downloads. Record what was observed rather than calling all network behavior verified. A 390px desktop-browser viewport is responsive evidence, not a physical-phone or Safari check. Native OS download choices require the matching user agent. Prefer the current page registry to guessing route aliases.
