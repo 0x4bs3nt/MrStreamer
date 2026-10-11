@@ -158,6 +158,20 @@ Forks get no signing secrets, so their pull requests can't run it.
 
 A dry run of a pull request that only adds checks to a published nightly can be the later build the [installed upgrade check](../contributing/testing.md#installed-upgrade) installs over it.
 
+## Package receipts
+
+Successful Mac arm64, Linux x64, Windows x64 and Store package jobs upload a separate `package-receipt-<platform>-<distribution>-<app-version>-attempt-<attempt>` artifact. It contains only `package-receipt.json`. The authoritative schema, producer and read-only resolver are in `apps/desktop/scripts/package-receipt.ts`, using the existing ArkType validator.
+
+Schema version 1 records `status: "success"`, repository, `sourceCommit`, `workflowCommit`, app and package versions, platform, direct or Store distribution, run id/attempt/head commit, the package artifact's exact id/name/SHA-256, and every uploaded file's name/byte count/SHA-256. Direct package versions equal the app version. Store package versions use the existing four-part version rule. Source, workflow and run head can differ: stable rebuilds the tested nightly's source under the current workflow and a distinct stable version.
+
+The job loads receipt tooling from the pinned workflow commit after packaging, signing/notarization, installed smoke checks and package upload have succeeded. Store also retains its manifest, installed identity/data, WACK and uninstall checks. The producer checks the source checkout, package.json and complete uploaded file set; a partial or failed job cannot upload a successful receipt. An uploaded package without its receipt can remain after a failed receipt step and is refused by receipt consumers. Receipts stay separate from installer/source uploads, GitHub Releases, update feeds and Store submission. The existing MSIX verification record and Store checksum handoff remain intact.
+
+`resolvePackageReceipt` takes a pinned source, app/package version, platform/distribution and run/attempt/head commit. It validates downloaded JSON, requires one exact receipt and package artifact, checks GitHub run/head/expiry/digests and artifact id, recomputes both archive digests, and verifies every file's size and hash. Missing or ambiguous artifacts/files, duplicate ZIP names, extra files, wrong metadata and altered bytes stop resolution. Listing all artifact pages prevents a truncated response from masquerading as absence.
+
+The Windows installed-upgrade resolver uses receipts and GitHub commit/pull-request metadata for new dry runs. Only runs through number 296 and id `38104229048`, the last observed Release run before this contract, may use historical Plan logs when the complete artifact listing contains no package receipt. This boundary is fixed. A malformed receipt, a missing current-attempt receipt when other receipts exist, an API/download failure or a hash mismatch never triggers legacy fallback. Published stable and nightly installers retain their tag/checksum/update-metadata checks.
+
+Public contract tests use synthetic package bytes and mocked GitHub responses, including producer CLI execution. They do not prove a native CI package. Before release acceptance, retain actual same-source receipt/package pairs from an authorized dry run for every applicable target and run the affected installed-upgrade verification. Neither a receipt nor these tests authorize dispatch, publication or Store submission.
+
 ## Microsoft Store package
 
 The Microsoft Store gets an MSIX of the same app for Windows x64, which electron-builder's `appx` target builds from the same files as the installer. The [Store runbook](microsoft-store.md) covers Partner Center and the submission.

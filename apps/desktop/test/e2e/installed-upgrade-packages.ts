@@ -6,8 +6,9 @@
 // - A: a published nightly, by tag and commit. The tag must still name that commit, the commit be
 //   on the default branch, and the setup match the release's SHA256SUMS.txt and latest.yml.
 // - B: the Windows artifact of one successful release dry run of a same-repository pull request
-//   into the default branch, by run id and commit. The run's Plan must have built that commit, its
-//   publishing jobs must have been skipped, the commit must descend from A and change nothing but
+//   into the default branch, by run id and commit. Its successful package receipt must bind the
+//   source and version to its artifact and bytes. Publishing jobs must have been skipped, and the
+//   commit must descend from A and change nothing but
 //   verification files, and the artifact must match its digest, its own latest.yml and its version.
 //   A dry run attaches no SHA256SUMS.txt, so no release checksum covers B.
 //
@@ -16,6 +17,7 @@ import { createHash } from "node:crypto";
 import { type } from "arktype";
 import { unzipSync } from "fflate";
 import { parse } from "yaml";
+import { packageArtifacts, resolvePackageReceipt } from "../../scripts/package-receipt.ts";
 import { compareVersions, parseVersion } from "../../../../packages/contracts/src/version.ts";
 
 /** What the person running the check pins: nothing here is looked up as "latest". */
@@ -130,17 +132,6 @@ const Run = type({
 });
 const Jobs = type({
   jobs: type({ id: "number", name: "string", conclusion: "string | null" }).array(),
-});
-const Artifacts = type({
-  total_count: "number",
-  artifacts: type({
-    id: "number",
-    name: "string",
-    expired: "boolean",
-    expires_at: "string",
-    "digest?": "string | null",
-    workflow_run: { id: "number", head_sha: Sha },
-  }).array(),
 });
 const Pull = type({
   number: "number",
@@ -270,7 +261,7 @@ export async function resolvePackages(
   );
   check(run.head_sha === pins.bSha, `B's run is of ${run.head_sha}, not ${pins.bSha}.`);
 
-  // The commit and version the Plan job built, from its own log: the run's head isn't proof.
+  // Job conclusions still prove this was a successful dry run; receipt metadata replaces logs.
   const { jobs } = Jobs.assert(
     await github.json(`/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100`),
   );
@@ -289,14 +280,64 @@ export async function resolvePackages(
     publishing.every((job) => job.conclusion === "skipped"),
     "B's run published something: it is no dry run.",
   );
-  const plan = planOutputs(await github.text(`/actions/jobs/${plans[0]!.id}/logs`));
-  check(plan.skip === "false" && plan.channel === "nightly", "B's Plan built no nightly.");
-  check(plan.sha === pins.bSha, `B's Plan built ${plan.sha}, not ${pins.bSha}.`);
-  const bVersion = plan.version;
-  check(parseVersion(bVersion)?.nightly, `B's Plan named "${bVersion}", not a nightly version.`);
+  const artifacts = await packageArtifacts(github, run.id);
+  const windowsArtifacts = artifacts.filter((each) => each.name.startsWith("release-win-x64-"));
+  check(
+    windowsArtifacts.length === 1,
+    `B's run has ${windowsArtifacts.length} Windows artifacts, not one.`,
+  );
+  const artifact = windowsArtifacts[0]!;
+  let bVersion = artifact.name.slice("release-win-x64-".length);
+  const hasReceipts = artifacts.some((each) => each.name.startsWith("package-receipt-"));
+  let legacyPlan: ReturnType<typeof planOutputs> | undefined;
+  let packaged: Awaited<ReturnType<typeof resolvePackageReceipt>> | undefined;
+  let pullNumber: number;
+  if (hasReceipts) {
+    packaged = await resolvePackageReceipt(
+      github,
+      {
+        sourceCommit: pins.bSha,
+        appVersion: bVersion,
+        packageVersion: bVersion,
+        platform: "win-x64",
+        distribution: "direct",
+        run: { id: run.id, attempt: run.run_attempt, headCommit: run.head_sha },
+      },
+      artifacts,
+      now,
+    );
+    const pulls = Pull.array().assert(
+      await github.json(`/commits/${pins.bSha}/pulls?per_page=100`),
+    );
+    const matching = pulls.filter(
+      (each) =>
+        each.base.ref === defaultBranch &&
+        each.head.repo?.full_name === github.repository &&
+        each.head.ref === run.head_branch,
+    );
+    check(matching.length === 1, "B's commit has no single matching repository pull request.");
+    pullNumber = matching[0]!.number;
+  } else {
+    // The last Release run observed before receipts were introduced. This never advances with
+    // time or falls back from a missing current-attempt receipt, a broken JSON or a bad hash.
+    check(
+      run.id <= 38104229048 && run.run_number <= 296,
+      "B's new run has no package receipt; legacy Plan logs are limited to historical runs through 296.",
+    );
+    legacyPlan = planOutputs(await github.text(`/actions/jobs/${plans[0]!.id}/logs`));
+    check(
+      legacyPlan.skip === "false" && legacyPlan.channel === "nightly",
+      "B's Plan built no nightly.",
+    );
+    check(legacyPlan.sha === pins.bSha, `B's Plan built ${legacyPlan.sha}, not ${pins.bSha}.`);
+    bVersion = legacyPlan.version;
+    pullNumber = legacyPlan.pullRequest;
+  }
+  check(parseVersion(bVersion)?.nightly, `B's package named "${bVersion}", not a nightly version.`);
   check(newer(bVersion, aVersion), `B ${bVersion} is not newer than A ${aVersion}.`);
+  check(artifact.name === `release-win-x64-${bVersion}`, `${artifact.name} is not B ${bVersion}.`);
 
-  const pull = Pull.assert(await github.json(`/pulls/${plan.pullRequest}`));
+  const pull = Pull.assert(await github.json(`/pulls/${pullNumber}`));
   check(
     pull.base.ref === defaultBranch && pull.head.repo?.full_name === github.repository,
     `Pull request #${pull.number} is not from this repository into ${defaultBranch}.`,
@@ -327,16 +368,6 @@ export async function resolvePackages(
     `B changes ${outside.length} besides verification files, such as ${outside.slice(0, 5).join(", ")}.`,
   );
 
-  const { artifacts } = Artifacts.assert(
-    await github.json(`/actions/runs/${run.id}/artifacts?per_page=100`),
-  );
-  const windowsArtifacts = artifacts.filter((each) => each.name.startsWith("release-win-x64-"));
-  check(
-    windowsArtifacts.length === 1,
-    `B's run has ${windowsArtifacts.length} Windows artifacts, not one.`,
-  );
-  const artifact = windowsArtifacts[0]!;
-  check(artifact.name === `release-win-x64-${bVersion}`, `${artifact.name} is not B ${bVersion}.`);
   check(
     !artifact.expired && Date.parse(artifact.expires_at) > now,
     `${artifact.name} has expired.`,
@@ -345,14 +376,17 @@ export async function resolvePackages(
     artifact.workflow_run.id === run.id && artifact.workflow_run.head_sha === pins.bSha,
     `${artifact.name} belongs to another run.`,
   );
-  const archive = await github.bytes(`/actions/artifacts/${artifact.id}/zip`);
-  const archiveSha256 = sha256(archive);
+  // Legacy archives retain their historical optional digest policy. Receipts require a digest.
+  const archive = packaged
+    ? undefined
+    : await github.bytes(`/actions/artifacts/${artifact.id}/zip`);
+  const archiveSha256 = packaged?.archiveSha256 ?? sha256(archive!);
   if (artifact.digest)
     check(
       artifact.digest === `sha256:${archiveSha256}`,
       `${artifact.name} does not match its digest.`,
     );
-  const entries = unzipSync(archive);
+  const entries = packaged ? Object.fromEntries(packaged.files) : unzipSync(archive!);
   const bName = setupName(bVersion);
   const installers = Object.keys(entries).filter((name) => /\.exe$/i.test(name));
   check(
@@ -416,7 +450,10 @@ export async function resolvePackages(
           runAttempt: run.run_attempt,
           runUrl: run.html_url,
           pullRequest: { number: pull.number, state: pull.state, mergedAt: pull.merged_at },
-          plannedSha: plan.sha,
+          selection: packaged ? "package receipt v1" : "historical Plan log",
+          packageReceipt: packaged?.receipt ?? null,
+          receiptArtifactId: packaged?.receiptArtifact.id ?? null,
+          plannedSha: packaged?.receipt.sourceCommit ?? legacyPlan!.sha,
           plannedVersion: bVersion,
           aheadOfA: diff.ahead_by,
           changedFiles: diff.files.map((file) => file.filename),
@@ -429,7 +466,7 @@ export async function resolvePackages(
           },
           latestYml: bLatest,
           checked:
-            "Successful pull request dry run of the Release workflow; Plan built the pinned commit; publishing skipped; descends from A with verification files only; one Windows artifact matching its digest and latest.yml.",
+            "Successful pull request dry run of the Release workflow; package receipt or bounded historical Plan built the pinned commit; publishing skipped; descends from A with verification files only; one Windows artifact matching its digest and latest.yml.",
         },
       },
     ],
