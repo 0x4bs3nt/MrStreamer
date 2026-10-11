@@ -447,8 +447,8 @@ async function start(): Promise<void> {
       : new Response(null, { status: 404 });
   });
   const updateStatus = await runtime.runPromise(updates.status);
-  // Local verification explicitly names its isolated profile. No production capture configuration
-  // exists yet; packaging and update-check preferences cannot enable production statistics.
+  // Local verification explicitly names its isolated profile. Production capture requires release
+  // configuration; packaging and update-check preferences alone cannot enable it.
   const localEndpoint = app.commandLine.hasSwitch("user-data-dir")
     ? process.env["MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"]
     : undefined;

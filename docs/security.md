@@ -8,7 +8,7 @@ Your provider receives its login in every request the app makes to it. Mr. Strea
 
 ## Basic app-use statistics
 
-From 0.0.11, the app keeps a random per-profile analytics installation identifier and a durable collection preference. **Settings > General > Privacy** turns collection off and clears pending observations. The identifier is not a provider login and is excluded from diagnostics exports. Configured production capture uses HTTPS and contains only the coarse fields in the [privacy policy](privacy.md#basic-app-use-statistics-from-0011). PostHog still sees the connection’s source IP address even with GeoIP enrichment disabled. No production project or retention policy is configured yet.
+From 0.0.11, the app keeps a random per-profile analytics installation identifier and a durable collection preference. **Settings > General > Privacy** turns collection off and clears pending observations. The identifier is not a provider login and is excluded from diagnostics exports. Configured production capture uses HTTPS and contains only the coarse fields in the [privacy policy](privacy.md#basic-app-use-statistics-from-0011), which also records the collection destination and retention policy. PostHog still sees the connection’s source IP address even with GeoIP enrichment disabled.
 
 ## Reporting a problem
 
