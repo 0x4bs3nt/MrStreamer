@@ -47,6 +47,11 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   );
   await d.click("Move Continue watching down with pointer", move("Continue watching", "down"));
   await d.wait(async () => (await prefs())[0]?.id === "recommendations");
+  await d.wait(() =>
+    d.evaluate<boolean>(
+      `${move("Continue watching", "up")}.getAttribute('aria-disabled') === 'false'`,
+    ),
+  );
   await d.evaluate(`${move("Continue watching", "up")}.focus()`);
   await d.key("Enter", 13);
   await d.wait(async () => (await prefs())[0]?.id === "continue");
@@ -55,13 +60,20 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
       "Move Continue watching up",
     "Keyboard move lost focus",
   );
+  await d.wait(() => d.evaluate<boolean>(`!${check("Watchlist")}.disabled`));
   await d.click("Hide empty Watchlist row", check("Watchlist"));
   await d.wait(
     async () => (await prefs()).find((row) => row.id === "watchlist")?.visible === false,
   );
+  await d.wait(() =>
+    d.evaluate<boolean>(`${move("Watchlist", "up")}.getAttribute('aria-disabled') === 'false'`),
+  );
   await d.evaluate(`${move("Watchlist", "up")}.focus()`);
   await d.key("Enter", 13);
   await d.wait(async () => (await prefs())[1]?.id === "watchlist");
+  const afterHiddenMove = await prefs();
+  expect(afterHiddenMove[1]?.visible === false, "Moving Watchlist restored its hidden row");
+  await d.wait(() => d.evaluate<boolean>(`!${check("New movies")}.disabled`));
   await d.evaluate(`${check("New movies")}.focus()`);
   await d.key(" ", 32);
   await d.wait(
@@ -73,6 +85,11 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   await d.launch();
   await d.wait(() => d.exists(byText("button", "Customize")));
   expect(JSON.stringify(await prefs()) === JSON.stringify(kept), "Home changes lost after restart");
+  const afterRestart = await prefs();
+  expect(
+    afterRestart[1]?.id === "watchlist" && afterRestart[1].visible === false,
+    "Hidden reordered Watchlist returned after restart",
+  );
   expect(!(await titles()).includes("New movies"), "Hidden row returned after restart");
   await d.click("Open full Watchlist while its row is hidden", byText("button", "Watchlist"));
   await d.wait(() => d.exists(byText("h1", "Watchlist")));
@@ -240,6 +257,8 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     emptyRowsEditable: true,
     keyboardFocus: true,
     hiddenFullWatchlist: true,
+    hiddenAfterMove: afterHiddenMove,
+    hiddenAfterRestart: afterRestart,
     restartPreferences: kept,
     reset: true,
     recommendations: recs,
