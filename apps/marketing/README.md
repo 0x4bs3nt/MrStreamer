@@ -139,7 +139,7 @@ Keep the badge as Microsoft publishes it: no new colour, crop or redrawing, and 
 
 ## Website analytics
 
-The production build loads Vercel Web Analytics for page views. Local development does not load it. Enable Web Analytics in the Vercel project's Analytics tab before deploying; the project currently has it enabled. The desktop app has no analytics. The [privacy policy](../../docs/privacy.md#the-website) describes website data collection.
+The production build loads Vercel Web Analytics for page views. Local development does not load it. Enable Web Analytics in the Vercel project's Analytics tab before deploying; the project currently has it enabled. The desktop app’s separate 0.0.11 PostHog integration defaults on with a Settings opt-out, but unconfigured builds send no app statistics. Its production region and event-retention policy remain unset; do not publish a fixed retention claim. `docs/privacy.md` is the desktop and website privacy source. The [privacy policy](../../docs/privacy.md#the-website) describes website data collection.
 
 The pages load the script from `/_vercel/insights/script.js` and send page views to `/_vercel/insights/view`. Vercel adds both to a deployment in its build step. A prebuilt package of static files skips that step unless it arrives as an archive, so every deployment here uses `--archive=tgz`. Without the flag the site looks the same, the script answers 404 and nothing is counted.
 

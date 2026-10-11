@@ -1,11 +1,11 @@
 {
-  "describesVersion": "0.0.10",
+  "describesVersion": "0.0.11",
   "interfaceLanguages": ["en-US", "nl-NL", "fr-FR", "de-DE", "es-ES"],
   "listings": {
     "en-US": {
       "title": "Mr. Streamer: IPTV Player",
       "shortDescription": "A clean, fast, open-source IPTV player. Bring your own Xtream Codes or M3U subscription and watch live TV with a programme guide, movies and series. No ads, no account. Interface in English, Dutch, French, German and Spanish.",
-      "description": "Mr. Streamer plays the IPTV subscription you already have. It includes no channels and sells none.\n\nLive TV with what's on now and next, favourites, search and the channels you watched last. Movies and series with story, cast and artwork, resume, the next episode and a watchlist. Every sound and subtitle track your provider sends.\n\nWhat you need: Xtream Codes access (server address, username and password, or an M3U link that carries them), or an M3U playlist link. Map a mixed playlist's groups in Settings to import movies and episodes alongside Live TV. Movie and episode imports need supported video files; HLS and ambiguous entries stay out with a reason.\n\nYour login goes to your provider only. Favourites, history and settings stay on your PC. No account, no ads, no telemetry. Free and open source under GPL-3.0.\n\nThe interface is in English, Dutch, French, German and Spanish.",
+      "description": "Mr. Streamer plays the IPTV subscription you already have. It includes no channels and sells none.\n\nLive TV with what's on now and next, favourites, search and the channels you watched last. Movies and series with story, cast and artwork, resume, the next episode and a watchlist. Every sound and subtitle track your provider sends.\n\nWhat you need: Xtream Codes access (server address, username and password, or an M3U link that carries them), or an M3U playlist link. Map a mixed playlist's groups in Settings to import movies and episodes alongside Live TV. Movie and episode imports need supported video files; HLS and ambiguous entries stay out with a reason.\n\nYour login goes to your provider only. Favourites, history and settings stay on your PC. No account or ads. Basic first-seen profile and weekly app-use statistics default on; turn them off in Settings > General > Privacy. Viewing history and provider details are excluded. Builds without configured collection send no app statistics. See the privacy policy for the current destination and retention policy. Free and open source under GPL-3.0.\n\nThe interface is in English, Dutch, French, German and Spanish.",
       "features": [
         "Live TV with a programme guide, favourites and search",
         "Movies and series with resume, next episode and watchlist",

@@ -6,6 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 import { thirdPartyNotices } from "./scripts/licences.ts";
+import { analyticsReleaseConfiguration } from "./src/main/analytics/build.ts";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
@@ -16,24 +17,34 @@ const notices = thirdPartyNotices(root, ["main", "preload", "renderer"]);
 // Settings > About links to as the build's source.
 const commit = JSON.stringify(buildCommit());
 
-export default defineConfig({
-  main: {
-    plugins: [notices("main")],
-    define: {
-      // The app's TMDB key, from the release's secret; builds without it fetch no metadata.
-      __TMDB_KEY__: JSON.stringify(process.env["MR_STREAMER_TMDB_KEY"] ?? ""),
-      __BUILD_COMMIT__: commit,
+export default defineConfig(({ command }) => {
+  const analytics = analyticsReleaseConfiguration({
+    releaseBuild: command === "build" && process.env["MR_STREAMER_ANALYTICS_RELEASE_BUILD"] === "1",
+    host: process.env["MR_STREAMER_ANALYTICS_HOST"],
+    projectToken: process.env["MR_STREAMER_ANALYTICS_PROJECT_TOKEN"],
+  });
+  return {
+    main: {
+      plugins: [notices("main")],
+      define: {
+        // The app's TMDB key, from the release's secret; builds without it fetch no metadata.
+        __TMDB_KEY__: JSON.stringify(process.env["MR_STREAMER_TMDB_KEY"] ?? ""),
+        __BUILD_COMMIT__: commit,
+        // Only the explicitly named release configuration is read. No ambient PostHog keys.
+        __ANALYTICS_CAPTURE__: JSON.stringify(analytics.capture),
+        __ANALYTICS_RELEASE_BUILD__: JSON.stringify(analytics.releaseBuild),
+      },
     },
-  },
-  preload: {
-    plugins: [notices("preload")],
-    // Sandboxed preload scripts must be CommonJS.
-    build: { rollupOptions: { output: { format: "cjs", entryFileNames: "[name].cjs" } } },
-  },
-  renderer: {
-    plugins: [react(), tailwindcss(), notices("renderer")],
-    define: { __BUILD_COMMIT__: commit },
-  },
+    preload: {
+      plugins: [notices("preload")],
+      // Sandboxed preload scripts must be CommonJS.
+      build: { rollupOptions: { output: { format: "cjs", entryFileNames: "[name].cjs" } } },
+    },
+    renderer: {
+      plugins: [react(), tailwindcss(), notices("renderer")],
+      define: { __BUILD_COMMIT__: commit },
+    },
+  };
 });
 
 /**
