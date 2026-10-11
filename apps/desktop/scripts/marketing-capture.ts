@@ -159,13 +159,22 @@ try {
     stream?.on("data", (chunk: Buffer) => {
       log += chunk.toString();
     });
-  page = await connect(port);
-  const identity = await page.send("Browser.getBrowserCommandLine");
-  const actual = (identity.result as { arguments: string[] }).arguments;
-  if (!args.every((arg) => actual.includes(arg))) throw new Error("CDP is not our app.");
-  const url = await page.evaluate<string>("location.href");
-  if (!url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href))
-    throw new Error("Wrong renderer.");
+  // A rejected endpoint must never receive a failure capture or browser-wide shutdown.
+  const connected = await connect(port);
+  let actual: string[];
+  let url: string;
+  try {
+    const identity = await connected.send("Browser.getBrowserCommandLine");
+    actual = (identity.result as { arguments: string[] }).arguments;
+    if (!args.every((arg) => actual.includes(arg))) throw new Error("CDP is not our app.");
+    url = await connected.evaluate<string>("location.href");
+    if (!url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href))
+      throw new Error("Wrong renderer.");
+  } catch (error) {
+    connected.close();
+    throw error;
+  }
+  page = connected;
   proof["instance"] = { pid: app.pid, port, profile, url, arguments: actual };
   proof["electron"] = await page.evaluate<string>("navigator.userAgent");
   if (process.platform === "darwin") {
