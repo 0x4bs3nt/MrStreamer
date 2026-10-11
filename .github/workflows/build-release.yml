@@ -73,6 +73,11 @@ jobs:
         env:
           # The app's TMDB key, built into the main bundle; see docs/maintainers/releasing.md.
           MR_STREAMER_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
+          # Optional public write-only project token and approved region. Missing setup disables
+          # analytics. PR dry runs and normal CI/development builds never compile capture on.
+          MR_STREAMER_ANALYTICS_PROJECT_TOKEN: ${{ github.event_name != 'pull_request' && secrets.POSTHOG_PROJECT_TOKEN || '' }}
+          MR_STREAMER_ANALYTICS_HOST: ${{ vars.POSTHOG_HOST }}
+          MR_STREAMER_ANALYTICS_RELEASE_BUILD: ${{ github.event_name != 'pull_request' && '1' || '0' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: js-bundle-${{ inputs.version }}

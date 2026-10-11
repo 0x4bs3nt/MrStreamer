@@ -32,6 +32,10 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Stream from "effect/Stream";
 import { t } from "@mrstreamer/core/i18n";
 import { WINDOW_BAR } from "../shared/window-bar.ts";
+import { analyticsBuild } from "./analytics/build.ts";
+import { Analytics } from "./analytics/service.ts";
+import { profileOrigin } from "./analytics/storage.ts";
+import { analyticsTransport } from "./analytics/transport.ts";
 import { emit, registerIpc } from "./ipc.ts";
 import { applyLanguage, languageFor } from "./language.ts";
 import { miniPlayer, miniPlayerAvailable } from "./mini-player.ts";
@@ -87,6 +91,8 @@ const storeCopy = process.windowsStore === true;
 if (storeCopy && !app.commandLine.hasSwitch("user-data-dir")) {
   app.setPath("userData", join(app.getPath("appData"), "Mr. Streamer Store"));
 }
+// Capture the evidence before application services or their migrations create profile files.
+const initialProfileOrigin = profileOrigin(app.getPath("userData"));
 /** The app's page in the Microsoft Store, by the Store ID Partner Center gave it. */
 const STORE_PAGE = "ms-windows-store://pdp/?ProductId=9N45GG76ZP4T";
 const STORE_REVIEW = "ms-windows-store://review/?ProductId=9N45GG76ZP4T";
@@ -440,6 +446,50 @@ async function start(): Promise<void> {
       ? new Response(bytes, { headers: { "Content-Type": kept.type, "Cache-Control": "no-store" } })
       : new Response(null, { status: 404 });
   });
+  const updateStatus = await runtime.runPromise(updates.status);
+  // Local verification explicitly names its isolated profile. Production capture requires release
+  // configuration; packaging and update-check preferences alone cannot enable it.
+  const localEndpoint = app.commandLine.hasSwitch("user-data-dir")
+    ? process.env["MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"]
+    : undefined;
+  const buildProperties = analyticsBuild({
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    store: storeCopy,
+  });
+  const analytics = new Analytics({
+    dataDir,
+    origin: initialProfileOrigin,
+    properties: {
+      ...buildProperties,
+      update_channel: storeCopy ? "none" : updateStatus.channel,
+    },
+    transport: analyticsTransport({
+      production: __ANALYTICS_CAPTURE__,
+      releaseBuild: __ANALYTICS_RELEASE_BUILD__ && buildProperties.build_channel !== "unknown",
+      packaged: app.isPackaged,
+      isolated: app.commandLine.hasSwitch("user-data-dir"),
+      automated:
+        ["development", "test"].includes(process.env["NODE_ENV"] ?? "") ||
+        [
+          "enable-automation",
+          "remote-debugging-port",
+          "inspect",
+          "inspect-brk",
+          "use-mock-keychain",
+        ].some((flag) => app.commandLine.hasSwitch(flag)),
+      localEndpoint,
+    }),
+  });
+  // The ordinary preferences query/mutation owns the renderer cache. Analytics alone persists
+  // consent; viewing settings never receive a second copy that could race or reset that choice.
+  const generalPreferences = Effect.gen(function* () {
+    const preferences = yield* settings.get;
+    const collection = yield* Effect.promise(() => analytics.settings());
+    return { ...preferences, analyticsEnabled: collection.enabled };
+  });
   // The interface language, before the window asks for it.
   let language = languageFor(await runtime.runPromise(settings.interfaceLanguage));
   applyLanguage(language);
@@ -488,7 +538,10 @@ async function start(): Promise<void> {
   forward(guide.changes, "guide.updated", () => null);
   forward(viewing.changes, "viewing.changed", (sequence) => ({ sequence }));
   forward(watchlist.changes, "watchlist.changed", () => null);
-  forward(updates.changes, "updates.changed", (status) => status);
+  forward(updates.changes, "updates.changed", (status) => {
+    analytics.setUpdateChannel(status.distribution === "store" ? "none" : status.channel);
+    return status;
+  });
   forward(downloads.changes, "downloads.changed", (list) => list);
   forward(playback.fileReplaced, "playback.fileReplaced", (sessionId) => ({ sessionId }));
   forward(playback.readingAhead, "playback.readingAhead", (sessionId) => ({ sessionId }));
@@ -773,12 +826,22 @@ async function start(): Promise<void> {
           applyLanguage(language);
           return language;
         }),
-      "preferences.get": () => settings.get,
+      "preferences.get": () => generalPreferences,
       "preferences.update": (patch) =>
         Effect.gen(function* () {
-          const updated = yield* settings.update(patch);
+          const { analyticsEnabled, ...viewing } = patch;
+          if (analyticsEnabled !== undefined) {
+            yield* Effect.tryPromise({
+              try: () => analytics.configure(analyticsEnabled),
+              catch: () =>
+                new Failed({
+                  error: { kind: "unexpected", detail: "Analytics preference could not be saved." },
+                }),
+            });
+          }
+          if (Object.keys(viewing).length > 0) yield* settings.update(viewing);
           if ("tmdbKey" in patch) yield* onDemand.reconfigure;
-          return updated;
+          return yield* generalPreferences;
         }),
       "viewing.get": () => viewing.state,
       "viewing.setFavourite": ({ commandId, channel, favourite }) =>
@@ -915,8 +978,29 @@ async function start(): Promise<void> {
    * `before-quit`, and would wait forever for a window that only went out of sight.
    */
   let leaving = false;
+  /** Only the primary window on screen with keyboard focus counts as foreground app use. */
+  const trackForeground = (window: BrowserWindow) => {
+    const observe = () =>
+      analytics.setForeground(
+        !leaving &&
+          !window.isDestroyed() &&
+          window.isVisible() &&
+          !window.isMinimized() &&
+          window.isFocused(),
+      );
+    window
+      .on("focus", observe)
+      .on("blur", observe)
+      .on("show", observe)
+      .on("hide", observe)
+      .on("minimize", observe)
+      .on("restore", observe)
+      .on("closed", observe);
+    observe();
+  };
   const leave = () => {
     leaving = true;
+    analytics.setForeground(false);
     // No list opens from a window on its way out.
     closeList();
   };
@@ -927,6 +1011,7 @@ async function start(): Promise<void> {
   // their window, which ends the receiver's playback.
   const keeps = () => isMac && !leaving && runtime.runSync(output.remote);
   mainWindow = openWindow(closeStreams, keeps, followList);
+  trackForeground(mainWindow);
   // How long the app took to show its window, from the start of the process.
   mainWindow.once("ready-to-show", () =>
     diagnostics.record({ op: "start", ms: Math.round(performance.now()), outcome: "ok" }),
@@ -936,8 +1021,10 @@ async function start(): Promise<void> {
   app.on("activate", () => {
     // Nothing opens on a runtime that is closing.
     if (closing) return;
-    if (!mainWindow) mainWindow = openWindow(closeStreams, keeps, followList);
-    else if (away) bringBack(mainWindow);
+    if (!mainWindow) {
+      mainWindow = openWindow(closeStreams, keeps, followList);
+      trackForeground(mainWindow);
+    } else if (away) bringBack(mainWindow);
   });
   app.on("will-quit", (event) => {
     // The quit waits for the runtime to close, which stops background work, closes the database
@@ -953,7 +1040,7 @@ async function start(): Promise<void> {
     // handler returns to Electron, which ignores a quit asked for until then. Every window has
     // closed by now, so exiting skips nothing.
     const exit = () => app.exit();
-    void runtime.dispose().then(exit, exit);
+    void Promise.all([analytics.close(), runtime.dispose()]).then(exit, exit);
   });
 
   // Keeps account status, the channel lists and the guides current without making the UI wait.
