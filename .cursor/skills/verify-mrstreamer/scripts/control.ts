@@ -2,7 +2,7 @@
 // Drives the built Electron app through its window. Fixtures replace only provider and TMDB APIs.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,7 +10,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runDownloads } from "./downloads.ts";
 import { homeScenario } from "./home.ts";
 import { languageScenario } from "./language.ts";
-import { electronExecutable, freePort, record, stop } from "./session.ts";
+import {
+  electronExecutable,
+  evidenceDirectory,
+  freePort,
+  injectedFailure,
+  record,
+  stop,
+} from "./session.ts";
 import { connect, type Page } from "../../../../apps/desktop/test/e2e/app.ts";
 import { startFakeProvider } from "../../../../apps/desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../../../apps/desktop/test/fake-tmdb.ts";
@@ -90,8 +97,7 @@ async function run(scenario: Scenario) {
   if (!build.display)
     throw new Error("No display. Use xvfb-run -a pnpm verify:desktop <scenario>.");
   const evidenceRoot = join(root, ".local/verification");
-  await mkdir(evidenceRoot, { recursive: true });
-  const evidence = await mkdtemp(join(evidenceRoot, `${scenario}-`));
+  const evidence = await evidenceDirectory(evidenceRoot, `${scenario}-`);
   const abort = new AbortController();
   const interrupt = () => abort.abort(new Error("Verification interrupted."));
   process.once("SIGINT", interrupt);
@@ -277,6 +283,7 @@ async function run(scenario: Scenario) {
       ),
     );
     await capture("connected");
+    injectedFailure(scenario);
     if (scenario === "home") {
       await homeScenario(
         {
@@ -515,11 +522,13 @@ async function run(scenario: Scenario) {
       JSON.stringify(
         {
           scenario,
+          build,
           status: failed ? "failed" : "passed",
           actions,
           observed,
           error: failed ? String(failed) : null,
           cleanup: {
+            fixturesClosed: cleanupErrors.length === 0,
             appExited: !app || app.exitCode !== null || app.signalCode !== null,
             profileRemoved: profile
               ? await access(profile).then(
