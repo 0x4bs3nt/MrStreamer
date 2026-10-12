@@ -1,13 +1,30 @@
 // Shared ownership and process cleanup for the desktop and website verification helpers.
 import { execFileSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Page } from "../../../../apps/desktop/test/e2e/app.ts";
+
+/** Aggregate runs assign an empty evidence directory to each child; standalone runs stay unique. */
+export async function evidenceDirectory(root: string, prefix: string) {
+  const assigned = process.env["MR_STREAMER_VERIFICATION_OUTPUT"];
+  if (assigned) {
+    await mkdir(assigned, { recursive: true });
+    return assigned;
+  }
+  await mkdir(root, { recursive: true });
+  return mkdtemp(join(root, prefix));
+}
+
+/** Exercise the real scenario's failure/finally path, never turn a failed result into a pass. */
+export function injectedFailure(scenario: string) {
+  if (process.env["MR_STREAMER_VERIFICATION_FAIL"] === scenario)
+    throw new Error(`Intentionally failed required scenario: ${scenario}`);
+}
 
 export async function electronExecutable() {
   const desktop = fileURLToPath(new URL("../../../../apps/desktop/", import.meta.url));

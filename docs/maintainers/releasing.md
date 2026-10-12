@@ -31,6 +31,7 @@ Releases come from `.github/workflows/release.yml`, which plans them and runs `.
   - checks again that the tag is unused and the version sorts after every release it competes with
   - uploads into a draft, which the app can't see, then publishes it; publishing creates the tag on the planned commit
 - Then points the [update feed](#update-feed) at the release. Until then the app doesn't offer it.
+- Release dry runs also run [bounded real-app UI proof](../contributing/testing.md#bounded-release-ui-proof) on the exact shared JS bundle/version, with retained CLI exits, screenshots, side effects and cleanup. Missing or failed required proof fails the dry run. This Linux source-build proof leaves installed native acceptance separate. Sources without the aggregate are eligible only through 0.0.10, including nightlies; newer sources fail without the helpers.
 - Dry runs and stable releases also build the [Microsoft Store package](#microsoft-store-package) and test it installed. Publishing doesn't wait for it, and it's never attached to the release.
 - Once a stable release is published and its package passed, the run [sends the package to the Microsoft Store](#sending-it-to-the-store), when the owner has turned that on.
 - Nightlies are pre-releases and never marked latest. Stable releases are marked latest.

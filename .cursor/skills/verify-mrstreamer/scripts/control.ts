@@ -2,7 +2,7 @@
 // Drives the built Electron app through its window. Fixtures replace only provider and TMDB APIs.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,7 +10,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runDownloads } from "./downloads.ts";
 import { homeScenario } from "./home.ts";
 import { languageScenario } from "./language.ts";
-import { electronExecutable, freePort, record, stop } from "./session.ts";
+import {
+  electronExecutable,
+  evidenceDirectory,
+  freePort,
+  injectedFailure,
+  record,
+  stop,
+} from "./session.ts";
 import { connect, type Page } from "../../../../apps/desktop/test/e2e/app.ts";
 import { startFakeProvider } from "../../../../apps/desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../../../apps/desktop/test/fake-tmdb.ts";
@@ -90,8 +97,7 @@ async function run(scenario: Scenario) {
   if (!build.display)
     throw new Error("No display. Use xvfb-run -a pnpm verify:desktop <scenario>.");
   const evidenceRoot = join(root, ".local/verification");
-  await mkdir(evidenceRoot, { recursive: true });
-  const evidence = await mkdtemp(join(evidenceRoot, `${scenario}-`));
+  const evidence = await evidenceDirectory(evidenceRoot, `${scenario}-`);
   const abort = new AbortController();
   const interrupt = () => abort.abort(new Error("Verification interrupted."));
   process.once("SIGINT", interrupt);
@@ -232,8 +238,26 @@ async function run(scenario: Scenario) {
     };
     const click = async (label: string, element: string) => {
       await wait(() => exists(element));
-      action(label);
       await livePage.evaluate(`${element}.scrollIntoView({ block: "nearest" })`);
+      // Popup transitions and late details can move a button after it enters the DOM. Like a
+      // viewer, press its painted, enabled control, never coordinates from the initial layout.
+      await wait(() =>
+        livePage.evaluate<boolean>(`(async () => {
+        const target = ${element};
+        if (!target?.isConnected || !target.checkVisibility() ||
+            target.matches(':disabled, [aria-disabled=true]')) return false;
+        for (let parent = target; parent; parent = parent.parentElement)
+          if (parent.getAnimations().some(a => a.playState === 'running' || a.pending)) return false;
+        const before = target.getBoundingClientRect();
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const after = target.getBoundingClientRect();
+        const hit = document.elementFromPoint(after.x + after.width / 2, after.y + after.height / 2);
+        return target.isConnected && after.width > 0 && after.height > 0 &&
+          ['x', 'y', 'width', 'height'].every(key => Math.abs(before[key] - after[key]) < 0.5) &&
+          !!hit && target.contains(hit);
+      })()`),
+      );
+      action(label);
       const point = await livePage.evaluate<{ x: number; y: number }>(`(() => {
         const box = ${element}.getBoundingClientRect();
         return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -277,6 +301,7 @@ async function run(scenario: Scenario) {
       ),
     );
     await capture("connected");
+    injectedFailure(scenario);
     if (scenario === "home") {
       await homeScenario(
         {
@@ -515,11 +540,13 @@ async function run(scenario: Scenario) {
       JSON.stringify(
         {
           scenario,
+          build,
           status: failed ? "failed" : "passed",
           actions,
           observed,
           error: failed ? String(failed) : null,
           cleanup: {
+            fixturesClosed: cleanupErrors.length === 0,
             appExited: !app || app.exitCode !== null || app.signalCode !== null,
             profileRemoved: profile
               ? await access(profile).then(
