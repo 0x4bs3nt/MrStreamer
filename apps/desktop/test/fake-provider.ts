@@ -47,6 +47,10 @@ type StreamSource = (channel: FakeChannel, out: Writable, signal: AbortSignal) =
 
 export interface FakeProviderOptions {
   readonly channels?: number;
+  /** Custom channel metadata for layout and guide scenarios, without changing stream handling. */
+  readonly channelOf?: (channel: FakeChannel) => FakeChannel;
+  /** Serves synthetic channel marks of different natural dimensions instead of missing logos. */
+  readonly logoSvg?: (channel: FakeChannel) => string;
   readonly username?: string;
   readonly password?: string;
   readonly maxConnections?: number;
@@ -254,7 +258,10 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
   const maxConnections = options.maxConnections ?? 1;
   const slotReleaseMs = options.slotReleaseMs ?? 300;
   const streams = options.streams ?? (options.live ? liveStreams : defaultStreams);
-  const catalogue = buildCatalogue(options.channels ?? 300, options.adultChannels ?? false);
+  const built = buildCatalogue(options.channels ?? 300, options.adultChannels ?? false);
+  const catalogue = options.channelOf
+    ? { ...built, channels: built.channels.map(options.channelOf) }
+    : built;
   const listed = buildTitles(options.titles ?? 120, options.second ?? false);
   const titles = options.longSeries
     ? { ...listed, series: [longSeries(), ...listed.series] }
@@ -308,6 +315,15 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     if (url.pathname === "/player_api.php") {
       const what = HELD_ACTIONS[url.searchParams.get("action") ?? ""];
       return what ? answering(what, () => api(url, response)) : api(url, response);
+    }
+    const logo = /^\/logos\/(\d+)\.svg$/.exec(url.pathname);
+    const logoChannel = logo
+      ? catalogue.channels.find((channel) => String(channel.streamId) === logo[1])
+      : undefined;
+    if (logoChannel && options.logoSvg) {
+      return void response
+        .writeHead(200, { "Content-Type": "image/svg+xml" })
+        .end(options.logoSvg(logoChannel));
     }
     if (url.pathname === "/xmltv.php") return answering("guide", () => guide(url, response));
     const live = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.ts$/.exec(url.pathname);

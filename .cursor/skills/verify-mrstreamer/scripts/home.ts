@@ -129,7 +129,7 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   await d.click("Return Home for local recommendations", byText("header button", "Home"));
   await d.wait(() => d.exists(byText("h2", "Recommendations")));
   const recs = await d.evaluate<string[]>(
-    "[...document.querySelectorAll('[data-home-row=recommendations] button')].map(b => b.innerText)",
+    "[...document.querySelectorAll('[data-home-row=recommendations] [data-home-title], [data-home-row=recommendations] button:not([data-slot])')].filter(b => !b.closest('[data-home-title]') || b.matches('[data-home-title]')).map(b => b.innerText)",
   );
   expect(
     recs.length > 0 && recs.every((line) => line.includes("Because you watched")),
