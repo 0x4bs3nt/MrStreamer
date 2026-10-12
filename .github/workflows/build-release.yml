@@ -3,9 +3,9 @@
 # docs/maintainers/releasing.md describes the process.
 #
 # Every job checks out the planned commit, except the Store job, which runs main's scripts on the
-# package the run built. Pull requests are dry runs: they build, sign and test, prepare the source
-# archives a release attaches, keep the files as workflow artifacts and publish nothing, whatever
-# the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
+# package the run built. Windows also reads its toolchain action from the workflow commit.
+# Pull requests are dry runs: they build, sign and test, prepare the source archives a release
+# attaches, keep the files as workflow artifacts and publish nothing, whatever the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
 # It has no concurrency group of its own: release.yml's queue already holds the whole run, and a
 # group here that a release run's own jobs shared could leave them waiting on that run.
 #
@@ -365,22 +365,30 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Include the setup action, environment and package list in the Windows cache identity.
+      # Keep setup with this workflow even when stable promotes source predating the action.
+      # All callers use local reusable workflows, from the caller's workflow commit.
+      - name: Read the Windows FFmpeg toolchain
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ffmpeg-toolchain
+          sparse-checkout: apps/desktop/scripts/windows-ffmpeg-toolchain
+          persist-credentials: false
+
+      # Hash the actual setup definition and the release source's pinned sources/build flags.
       # No restore prefix: a UCRT64 build must never restore an old MINGW64 binary.
       - id: ffmpeg-key
-        run: echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('apps/desktop/scripts/build-ffmpeg.sh', '.github/workflows/build-release.yml') }}" >> "$GITHUB_OUTPUT"
+        run: |
+          test -f ../../.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml
+          test -f scripts/build-ffmpeg.sh
+          echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml', 'apps/desktop/scripts/build-ffmpeg.sh') }}" >> "$GITHUB_OUTPUT"
       - id: ffmpeg
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/ffmpeg/win-x64
           key: ${{ steps.ffmpeg-key.outputs.key }}
       - if: steps.ffmpeg.outputs.cache-hit != 'true'
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
-        with:
-          msystem: UCRT64
-          update: false
-          install: >-
-            make git curl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-pkgconf
+        uses: ./.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain
       - name: Build ffmpeg on Windows
         if: steps.ffmpeg.outputs.cache-hit != 'true'
         shell: msys2 {0}
