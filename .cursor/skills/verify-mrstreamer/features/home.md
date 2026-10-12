@@ -22,7 +22,7 @@ Deeper existing paths: `apps/desktop/test/e2e/watchlist-app.ts` covers sorting/r
 
 ## Marketing capture
 
-`apps/desktop/scripts/marketing-capture.ts` uses the licensed demo manifest and a real Mac mini source build. It plays Canyon Hours through the UI, then requires Continue watching, Recommendations and the actual seed reason on Home. The master keeps the compact muted preview and permanent Watchlist/Customize actions. Additional ignored proof opens the row controls. These selected native captures strengthen screenshot evidence only; they do not establish every locale, mapped-M3U, installed-package, audio/GPU or receiver acceptance path. Follow `docs/contributing/marketing-artwork.md` for masters and provenance.
+`apps/desktop/scripts/marketing-capture.ts` uses the licensed demo manifest and a real Mac mini source build. It plays Canyon Hours through the UI, then requires Continue watching, Recommendations and the actual seed reason on Home. The Stage master keeps the left-hand muted preview, compact promoted channel list, rounded actions, sparse Continue watching/recommendation entries and permanent Watchlist/Customize actions. Home's per-entry provenance names merged Stage source `5db40b13`; the unchanged website captures keep their original `7b54b526` provenance. Additional ignored proof opens the row controls. These selected native captures strengthen screenshot evidence only; they do not establish every locale, mapped-M3U, installed-package, audio/GPU or receiver acceptance path. Follow `docs/contributing/marketing-artwork.md` for masters and provenance.
 
 ## Gotchas
 
