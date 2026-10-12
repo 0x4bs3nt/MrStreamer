@@ -134,6 +134,13 @@ jobs:
           include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
+      # Dependency-free notifier from the same checked build, never executed beside owner secrets.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: marketing-indexnow
+          path: apps/marketing/scripts/indexnow.ts
+          retention-days: 1
+          if-no-files-found: error
       - name: Say that publishing is off
         if: vars.MARKETING_DEPLOY_ENABLED != 'true'
         run: |
@@ -149,6 +156,8 @@ jobs:
     if: vars.MARKETING_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      deployed: ${{ steps.deployment.outputs.deployed }}
     environment:
       name: marketing-production
       url: https://mrstreamer.app
@@ -205,6 +214,7 @@ jobs:
       # step, and the pages' analytics script answers 404. Only this step and the check hold the
       # token.
       - name: Publish
+        id: deployment
         if: steps.newest.outputs.superseded != 'true'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -218,3 +228,35 @@ jobs:
             echo "$BUILT is a production deployment at $url."
             echo "Vercel points the project's domains at it, unless the project is rolled back: then they stay on the earlier deployment until Undo Rollback."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+  indexnow:
+    name: Notify IndexNow after publication
+    needs: [build, publish]
+    if: >-
+      success() && github.ref == 'refs/heads/main' &&
+      vars.MARKETING_DEPLOY_ENABLED == 'true' &&
+      needs.publish.result == 'success' && needs.publish.outputs.deployed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: marketing-output
+          path: marketing-output
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: marketing-indexnow
+          path: marketing-indexnow
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify the public build and notify
+        env:
+          BUILT: ${{ needs.build.outputs.commit }}
+        run: node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"
+      - name: Report notification job failure
+        if: failure()
+        run: |
+          echo "::error::The website is already deployed. IndexNow notification failed; inspect this job before rerunning."
+          echo "The website is already deployed. IndexNow notification failed; no rollback was performed." >> "$GITHUB_STEP_SUMMARY"

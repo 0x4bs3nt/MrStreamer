@@ -2,12 +2,12 @@
 
 The website shows four captures of the real app. They live in `docs/assets`:
 
-| File                     | Shows                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------- |
-| `marketing-home.png`     | Home, with a channel playing, a series to continue and two favourites           |
-| `marketing-live-tv.png`  | Live TV, with eight channels and what's on now and next                         |
-| `marketing-library.png`  | A series' details, with its story, cast, seasons and Play                       |
-| `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle menu open over them |
+| File                     | Shows                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `marketing-home.png`     | Home actions, a compact muted live preview, Continue watching and a local recommendation |
+| `marketing-live-tv.png`  | Live TV, with eight channels and what's on now and next                                  |
+| `marketing-library.png`  | A series' details, with its story, cast, Play, Save and a related title                  |
+| `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle panel beside it              |
 
 Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these four files, and the social picture too. The page changes when you commit new captures and at no other time.
 
@@ -15,24 +15,32 @@ Nothing in them comes from a real provider, film or person. The channels, progra
 
 ## What you need
 
-- Linux with `xvfb-run` (`apt install xvfb`).
-- `ffmpeg` and `ffprobe` on PATH. `MR_STREAMER_FFMPEG` points both the app and these scripts at another ffmpeg, with its ffprobe beside it.
-- [Inter](https://rsms.me/inter/) installed. Linux draws the app in the system's sans-serif font, and the capture script makes that Inter for its own run. It stops if Inter is missing.
-- 2.2 GB free in a folder outside the repository for the downloads and the clips cut from them.
+Native marketing captures use the workbench Mac mini. Follow the installed `mac-mini` skill, run `onmac check` first, and stop if the Mac or its GUI grants are unavailable. Never switch to a personal Mac. Name the native target before launch. The checkout's own unsigned source build uses a temporary profile, mock keychain, fake provider and fake TMDB. No signing or account is needed.
+
+The Mac needs ffmpeg/ffprobe and the installed CuaDriver daemon with Accessibility and Screen Recording granted to `com.trycua.driver`. Start it with `workbench-cua-driver start`; do not restart a healthy shared daemon. The capture script uses a dedicated session and the owned PID's window titled `Mr. Streamer`. It records full native window captures alongside the page masters and closes only its own instance and session.
+
+For a fresh media cache, allow 2.2 GB for the two source downloads and clips. `MR_STREAMER_FFMPEG` can name another ffmpeg, with ffprobe beside it. Existing cache clips and stills can be copied into this checkout's ignored cache. Check the original download sizes/hashes against the demo manifest and retain that evidence, then compare the copied clip/still hashes. Install dependencies on the Mac, never copy Linux `node_modules`.
 
 ## Run it
 
+From this checkout on the workbench:
+
 ```sh
-pnpm install
-pnpm build
-node apps/desktop/scripts/marketing-demo.ts --cache-dir ~/.cache/mrstreamer-marketing
-xvfb-run -a node apps/desktop/scripts/marketing-capture.ts --cache-dir ~/.cache/mrstreamer-marketing
-pnpm build:marketing
+onmac check
+onmac run -- pnpm install --frozen-lockfile
+onmac run -- pnpm build
+onmac run -- pnpm verify:desktop doctor
+onmac run -- node apps/desktop/scripts/marketing-demo.ts --cache-dir .local/marketing-media
+onmac run -- node apps/desktop/scripts/marketing-capture.ts --cache-dir .local/marketing-media
+onmac pull docs/assets .local/marketing-masters
+onmac pull .local/marketing-captures .local/marketing-proof
 ```
 
-The first script downloads and cuts the footage, about a minute and a half after the downloads. The second takes half a minute and writes the four files. `pnpm build:marketing` then builds the page from them.
+If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying the four masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
 
-The cache folder stays out of git. Pick one outside the repository, or under the gitignored `.local/`.
+Finally run `pnpm build:marketing` locally and inspect the real site at wide and 390px widths. This builds local output; deployment is separate.
+
+Linux captures remain available with `xvfb-run -a node apps/desktop/scripts/marketing-capture.ts --cache-dir <ignored cache>`. Linux needs Inter and fontconfig. A Linux capture does not establish native macOS rendering. Do not replace masters with partial or blank captures.
 
 ## Sources
 
@@ -63,10 +71,10 @@ It also starts the made-up subscription, on loopback ports of its own:
 
 1. Logs in through the form.
 2. Opens Canyon Hours and captures its details.
-3. Plays the first episode, turns on English subtitles, raises them with CC > Position > Higher so the menu doesn't cover them, opens the subtitle menu and captures.
-4. Leaves the episode, which puts the series under Continue watching.
+3. Plays the first episode, turns on English subtitles, selects Higher under Position, opens the subtitle panel and captures the actual active cue.
+4. Leaves the actually played episode, which seeds Continue watching and recommendations through normal viewing history.
 5. Stars two channels in Live TV, watches one and captures Live TV.
-6. Watches another channel, goes Home and captures.
+6. Watches another channel, goes Home and requires the permanent actions, Continue watching and the recommendation naming the actual seed before capturing. Opens Customize for additional ignored native proof.
 
 Each capture is the page of the window, taken with `Emulation.setDeviceMetricsOverride` at 1280 × 800 and a scale of 2, then `Page.captureScreenshot`. `Emulation.setScrollbarsHidden` keeps scroll bars out of it, as on a Mac, where they show only while scrolling. A page capture doesn't include the window's buttons. Home, Live TV and the details are captured in full screen, where the top bar keeps no room for those buttons. The episode is captured in a window, because in full screen the player hides the top bar.
 
@@ -74,7 +82,7 @@ The app's pictures never come from the network. The script answers the image add
 
 A capture is written only once it holds what it should: the right size, the names and tracks on screen, a decoded picture where the video is, and for the episode the subtitle "By evening, the colours change again." still showing after the capture was taken. The clock times in the captures are the moment you ran it.
 
-The script ends the app and the servers it started and deletes its profile. It touches no other process.
+The script verifies the owned CDP arguments and renderer URL, then retains raw page PNGs, accessibility trees, native window PNGs, actions, version/platform/source, main bundle and media hashes in `.local/marketing-captures/capture-*/`. `marketing-capture.json` records the committed masters' dimensions, bytes and hashes with their source provenance. The script requests a graceful app exit, closes its fixture servers and CuaDriver session, and removes the temporary profile. It touches no other process.
 
 ## Before you commit new captures
 
@@ -82,4 +90,6 @@ The script ends the app and the servers it started and deletes its profile. It t
 - Run `pnpm build:marketing` and look at the page on a wide screen and a phone. The phone shows a part of each window, set in `prepare-assets.ts`. If the app's layout moved, move those parts with it and keep `index.html`'s sizes in step.
 - Put the four files' sizes in the pull request, each and in total. They are lossless and run to a few megabytes.
 
-The current captures show version 0.0.6 at commit `1072c0a`, as a development build on Electron 44.4.5, taken on Ubuntu 24.04 with ffmpeg 6.1.1 on 4 October 2026.
+The 0.0.11 Home refresh was captured on the Mac mini on 11 October 2026 from Personal Home source `7b54b5265a9a62c1b20ed890c012f2041baa443a`. The source package still reports 0.0.10. It is an unsigned source build on macOS 27.0.1, arm64 and Electron 44.4.5, not an installed 0.0.11 release. Exact capture, bundle and master hashes are in `marketing-capture.json`.
+
+Home's phone asset keeps the full 1280 × 800 window so Watchlist, Customize, the right-hand preview and the left-hand personalized rows all survive. The watching crop is 884 × 758 points at 396,42, keeping the real subtitle beside the right-hand panel. Live TV and details keep their existing crops. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.

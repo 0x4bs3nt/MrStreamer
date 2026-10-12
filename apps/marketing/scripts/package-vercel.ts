@@ -21,6 +21,8 @@
 // - a Markdown page lacks source headings, or a public link or fragment is missing
 // - search engines could list 404.html
 // - robots.txt doesn't name the sitemap, or a route answers with a missing page
+import { execFileSync } from "node:child_process";
+import { INDEXNOW_KEY, INDEXNOW_MARKER, readIndexNowBuild } from "./indexnow.ts";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PAGES, SITE } from "./pages.ts";
@@ -38,6 +40,16 @@ cpSync(join(root, "dist"), files, { recursive: true });
 // before the package's files, the one below it after them.
 const missing = { status: 404, dest: "/404.html" };
 const routes = [
+  {
+    src: `^/${INDEXNOW_KEY}\\.txt$`,
+    dest: `/${INDEXNOW_KEY}.txt`,
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+  },
+  {
+    src: "^/indexnow-build\\.json$",
+    dest: `/${INDEXNOW_MARKER}`,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  },
   ...PAGES.map(({ address, file }) => ({
     src: address === "/" ? "^/$" : `^${address}/?$`,
     dest: `/${file}`,
@@ -78,6 +90,20 @@ function check(name: string, expected: Record<string, string>) {
 }
 
 const sitemap = read("sitemap.xml");
+try {
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  const build = readIndexNowBuild(read(INDEXNOW_MARKER), revision, sitemap);
+  const canonical = new Set(PAGES.map(({ address }) => SITE + address));
+  if (build.urlList.length !== canonical.size || build.urlList.some((url) => !canonical.has(url)))
+    problems.push("IndexNow URLs differ from the canonical page registry.");
+  if (read(`${build.key}.txt`) !== build.key)
+    problems.push("IndexNow ownership file is missing or incorrect.");
+} catch {
+  problems.push("IndexNow build marker or sitemap is missing or invalid.");
+}
 for (const [address, name] of Object.entries(LISTED)) {
   check(name, {
     "its address": `<link rel="canonical" href="${SITE}${address}"`,

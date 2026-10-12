@@ -18,6 +18,10 @@ Build and run `pnpm verify:desktop home`, prefixed with `xvfb-run -a` on headles
 
 Deeper existing paths: `apps/desktop/test/e2e/watchlist-app.ts` covers sorting/removal/unavailable entries/restart/multiple subscriptions; `episode-marks.ts` covers next useful episodes on Home and owner-specific marks. Renderer `home`, `resume`, `next-episode`, `episode-marks` and `watchlist` test the public controls and transitions. Service `related`, `watchlist`, `viewing` and `preferences` tests cover bounded recommendation work, ownership, mapped playlists, adult safety and persistence.
 
+## Marketing capture
+
+`apps/desktop/scripts/marketing-capture.ts` uses the licensed demo manifest and a real Mac mini source build. It plays Canyon Hours through the UI, then requires Continue watching, Recommendations and the actual seed reason on Home. The master keeps the compact muted preview and permanent Watchlist/Customize actions. Additional ignored proof opens the row controls. These selected native captures strengthen screenshot evidence only; they do not establish every locale, mapped-M3U, installed-package, audio/GPU or receiver acceptance path. Follow `docs/contributing/marketing-artwork.md` for masters and provenance.
+
 ## Gotchas
 
 Recommendations rank up to three distinct available nonadult seeds from at most 32 recent started plays, including finished films, against loaded catalogues only. They return at most twelve deduplicated titles, up to four per seed. Their reasons name the actual local seed and existing related-title match. Missing/removed seeds and candidates stay out. Provider category/name fallback matches only within its owner; known genres can match across saved owners. Home triggers no recommendation list/details/file request. No history means no personalized row, and incomplete metadata uses existing fallback rules. No content/history leaves the device.

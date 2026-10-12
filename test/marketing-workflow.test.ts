@@ -29,10 +29,13 @@ interface Workflow {
 
 interface Job {
   readonly if?: string;
-  readonly needs?: string;
+  readonly needs?: string | readonly string[];
+  readonly outputs?: Record<string, string>;
   readonly environment?: { readonly name: string };
   readonly steps: readonly {
     readonly id?: string;
+    readonly if?: string;
+    readonly with?: Record<string, unknown>;
     readonly uses?: string;
     readonly run?: string;
   }[];
@@ -81,6 +84,33 @@ describe("publishing the website", () => {
     expect(publish?.environment?.name).toBe("marketing-production");
     const uses = publish?.steps.flatMap((step) => step.uses ?? []) ?? [];
     expect(uses.some((action) => action.startsWith("actions/checkout@"))).toBe(false);
+  });
+
+  it("notifies only an actual successful production publication, without owner secrets or a checkout", () => {
+    const notify = others["indexnow"];
+    const failure = notify?.steps.find((step) => step.if === "failure()");
+    expect(failure?.run).toContain("website is already deployed");
+    expect(notify?.needs).toEqual(["build", "publish"]);
+    expect(notify?.if).toBe(
+      "success() && github.ref == 'refs/heads/main' && vars.MARKETING_DEPLOY_ENABLED == 'true' && needs.publish.result == 'success' && needs.publish.outputs.deployed == 'true'",
+    );
+    expect(publish?.outputs?.["deployed"]).toBe("${{ steps.deployment.outputs.deployed }}");
+    const deployment = publish?.steps.find((step) => step.id === "deployment");
+    expect(deployment?.run?.indexOf('echo "deployed=true"')).toBeGreaterThan(
+      deployment?.run?.indexOf("vercel@") ?? 0,
+    );
+    expect(deployment?.if).toBe("steps.newest.outputs.superseded != 'true'");
+    expect(notify?.steps.some((step) => step.uses?.startsWith("actions/checkout@"))).toBe(false);
+    expect(JSON.stringify(notify)).not.toContain("secrets.");
+    expect(JSON.stringify(notify)).not.toContain("VERCEL_TOKEN");
+    expect(
+      notify?.steps
+        .filter((step) => step.uses?.startsWith("actions/download-artifact@"))
+        .map((step) => step.with?.["name"]),
+    ).toEqual(["marketing-output", "marketing-indexnow"]);
+    expect(
+      notify?.steps.find((step) => step.run?.startsWith("node marketing-indexnow/"))?.run,
+    ).toBe('node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"');
   });
 
   it("starts on a push that changes what it checks main for before publishing", () => {
@@ -255,5 +285,52 @@ describe.skipIf(process.platform === "win32")("a finished release run", () => {
   it("builds nothing after a nightly, a dry run or a stable release that wasn't recorded", () => {
     expect(admits([job("release", "skipped")])).toBe(false);
     expect(admits([job("nightly-first", "skipped"), job("release", "failure")])).toBe(false);
+  });
+});
+
+// An actual shell step can only authorize notification after the deployment command returned.
+describe.skipIf(process.platform === "win32")("notification after the Publish shell step", () => {
+  it.each([0, 1])("sets deployed only when the publishing CLI exits %s", (exit) => {
+    const folder = mkdtempSync(join(tmpdir(), "mr-marketing-publish-"));
+    try {
+      writeFileSync(
+        join(folder, "npx"),
+        `#!/bin/bash\n[ "$FAKE_EXIT" = 0 ] && echo https://fixture.vercel.app\nexit "$FAKE_EXIT"\n`,
+      );
+      chmodSync(join(folder, "npx"), 0o755);
+      const output = join(folder, "output");
+      const summary = join(folder, "summary");
+      writeFileSync(output, "");
+      writeFileSync(summary, "");
+      const run = () =>
+        execFileSync(
+          "bash",
+          [
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            publish?.steps.find((step) => step.id === "deployment")?.run ?? "exit 1",
+          ],
+          {
+            env: {
+              PATH: `${folder}:${process.env["PATH"]}`,
+              FAKE_EXIT: String(exit),
+              VERCEL_TOKEN: "fake-fixture-token",
+              BUILT: "fixture-source",
+              GITHUB_OUTPUT: output,
+              GITHUB_STEP_SUMMARY: summary,
+            },
+            stdio: "pipe",
+          },
+        );
+      if (exit === 0) run();
+      else expect(run).toThrow();
+      expect(readFileSync(output, "utf8").includes("deployed=true")).toBe(exit === 0);
+      expect(readFileSync(summary, "utf8").includes("### Deployed")).toBe(exit === 0);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
 });
