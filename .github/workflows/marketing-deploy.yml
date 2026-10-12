@@ -255,3 +255,8 @@ jobs:
         env:
           BUILT: ${{ needs.build.outputs.commit }}
         run: node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"
+      - name: Report notification job failure
+        if: failure()
+        run: |
+          echo "::error::The website is already deployed. IndexNow notification failed; inspect this job before rerunning."
+          echo "The website is already deployed. IndexNow notification failed; no rollback was performed." >> "$GITHUB_STEP_SUMMARY"

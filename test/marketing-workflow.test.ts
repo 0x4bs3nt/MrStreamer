@@ -88,6 +88,8 @@ describe("publishing the website", () => {
 
   it("notifies only an actual successful production publication, without owner secrets or a checkout", () => {
     const notify = others["indexnow"];
+    const failure = notify?.steps.find((step) => step.if === "failure()");
+    expect(failure?.run).toContain("website is already deployed");
     expect(notify?.needs).toEqual(["build", "publish"]);
     expect(notify?.if).toBe(
       "success() && github.ref == 'refs/heads/main' && vars.MARKETING_DEPLOY_ENABLED == 'true' && needs.publish.result == 'success' && needs.publish.outputs.deployed == 'true'",
@@ -106,9 +108,9 @@ describe("publishing the website", () => {
         .filter((step) => step.uses?.startsWith("actions/download-artifact@"))
         .map((step) => step.with?.["name"]),
     ).toEqual(["marketing-output", "marketing-indexnow"]);
-    expect(notify?.steps.at(-1)?.run).toBe(
-      'node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"',
-    );
+    expect(
+      notify?.steps.find((step) => step.run?.startsWith("node marketing-indexnow/"))?.run,
+    ).toBe('node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"');
   });
 
   it("starts on a push that changes what it checks main for before publishing", () => {
