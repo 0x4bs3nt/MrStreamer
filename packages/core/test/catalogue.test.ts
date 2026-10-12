@@ -251,6 +251,108 @@ function joined(raw: LiveCatalogue) {
 }
 
 describe("channels with several streams", () => {
+  it.each([
+    ["AR", "Arabic", "guide.qa", "guideqa"],
+    ["AF", "Africa", "guide.za", "guideza"],
+    ["EU", "Europe", "guide.de", "guidede"],
+    ["INT", "World", "guide.us", "guideus"],
+  ])(
+    "keeps %s quality feeds joined and searchable with a country guide",
+    (prefix, region, guide, guideId) => {
+      const raw = guided(
+        [`${prefix} | News`],
+        [
+          [`${prefix} | Matrix HD`, 0, guide],
+          [`${prefix} | Matrix FHD`, 0, guide],
+        ],
+      );
+      const { channels, guideIds } = liveChannels(normalizeCatalogue(raw).streams);
+      expect(channels).toHaveLength(1);
+      expect(channels[0]).toMatchObject({
+        id: "100",
+        title: "Matrix",
+        categoryIds: ["0"],
+        searchIdentity: {
+          title: "matrix",
+          language: null,
+          region,
+          topics: [`${region}|news`],
+          guideId,
+        },
+      });
+      expect(channels[0]?.variants.map((variant) => variant.id)).toEqual(["100", "101"]);
+      expect(guideIds.get("100")).toEqual([guide]);
+    },
+  );
+
+  it("keeps a Belgian category with a Dutch guide isolated", () => {
+    const raw = guided(
+      ["BE | News"],
+      [
+        ["BE | Matrix HD", 0, "guide.nl"],
+        ["BE | Matrix FHD", 0, "guide.nl"],
+      ],
+    );
+    const { channels, guideIds } = liveChannels(normalizeCatalogue(raw).streams);
+    expect(channels.map((channel) => channel.variants.map((variant) => variant.id))).toEqual([
+      ["100"],
+      ["101"],
+    ]);
+    expect(channels.map((channel) => channel.searchIdentity)).toEqual([undefined, undefined]);
+    expect([...guideIds]).toEqual([
+      ["100", ["guide.nl"]],
+      ["101", ["guide.nl"]],
+    ]);
+  });
+
+  it("reads guide countries as ISO codes rather than reseller language or continent prefixes", () => {
+    const raw = guided(
+      ["🇦🇷 News", "🇦🇫 News"],
+      [
+        ["🇦🇷 Matrix HD", 0, "matrix.ar@HD"],
+        ["🇦🇷 Matrix FHD", 0, "matrix.ar@FHD"],
+        ["🇦🇫 Matrix HD", 1, "matrix.af@HD"],
+        ["🇦🇫 Matrix FHD", 1, "matrix.af@FHD"],
+      ],
+    );
+    const channels = liveChannels(normalizeCatalogue(raw).streams).channels;
+    expect(channels.map((channel) => channel.variants.length)).toEqual([2, 2]);
+    expect(channels.map((channel) => channel.searchIdentity?.region)).toEqual([
+      "Argentina",
+      "Afghanistan",
+    ]);
+  });
+
+  it("keeps conflicting and unknown memberships from joining or bridging channels", () => {
+    const raw = guided(
+      ["BE | News", "NL | News", "BE - FR | News", "BE - NL | News"],
+      [
+        ["Shared HD", 0, "shared.be"],
+        ["Shared FHD", 1, "shared.nl"],
+        ["Shared SD", 0],
+        ["Language HD", 2],
+        ["Language FHD", 3],
+        ["Language SD", 2],
+        ["BE | Conflict HD", 1],
+        ["BE | Conflict FHD", 0],
+        ["Guide HD", 0, "guide.nl"],
+        ["Guide FHD", 0, "guide.nl"],
+        ["Unknown HD", 99],
+        ["Unknown FHD", 99],
+      ],
+    );
+    const channels = raw.channels.map((channel, index) => ({
+      ...channel,
+      categoryIds: index === 2 ? ["0", "1"] : index === 5 ? ["2", "3"] : channel.categoryIds,
+    }));
+    const result = liveChannels(normalizeCatalogue({ ...raw, channels }).streams).channels;
+    expect(result).toHaveLength(channels.length);
+    expect(result.every((channel) => channel.variants.length === 1)).toBe(true);
+    expect(result.filter((channel) => channel.searchIdentity).map((channel) => channel.id)).toEqual(
+      ["100", "101", "103", "104", "107"],
+    );
+  });
+
   it("joins one channel's qualities and backups, also from a category for a quality alone", () => {
     const raw = guided(
       ["BE | VLAANDEREN", "BE | VLAANDEREN HD", "BE | 4K", "BE | SPORT"],

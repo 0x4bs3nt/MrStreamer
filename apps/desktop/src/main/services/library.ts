@@ -683,7 +683,7 @@ function combine(members: readonly IndexedCatalogue[]): Combined {
   const shownAll = (channels: readonly LiveChannel[]) =>
     marked.size === 0 ? channels : channels.map(shown);
 
-  const joined = new Map<string, { category: Category; channels: LiveChannel[] }>();
+  const joined = new Map<string, { category: Category; channels: Set<LiveChannel> }>();
   for (const member of members) {
     for (const { adult, ...category } of member.categories) {
       const listed = shownAll(member.byCategory.get(category.id) ?? []);
@@ -692,21 +692,23 @@ function combine(members: readonly IndexedCatalogue[]): Combined {
       if (!known) {
         joined.set(key, {
           category: { ...category, members: [ownedId(category)] },
-          channels: [...listed],
+          channels: new Set(listed),
         });
         continue;
       }
-      known.channels.push(...listed);
+      // A channel may belong to several raw categories that show under the same name.
+      for (const channel of listed) known.channels.add(channel);
       known.category = {
         ...known.category,
-        channelCount: known.channels.length,
+        channelCount: known.channels.size,
         members: [...known.category.members, ownedId(category)],
       };
     }
   }
   const byCategory = new Map<string, readonly LiveChannel[]>();
   for (const { category, channels } of joined.values()) {
-    for (const member of category.members) byCategory.set(ownedKey(member), channels);
+    const listed = [...channels];
+    for (const member of category.members) byCategory.set(ownedKey(member), listed);
   }
   const [only] = members;
   return {

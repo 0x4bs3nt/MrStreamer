@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { playlistCatalogue } from "../src/playlist/catalogue.ts";
+import { adultIn } from "../src/adult.ts";
 import { m3uReader, type PlaylistEntry } from "../src/playlist/m3u.ts";
 
 // Made-up channels, written the ways playlists in the wild write them.
@@ -36,6 +37,56 @@ function read(text: string, size: number) {
 }
 
 describe("playlists", () => {
+  it("inherits documented EXTGRP blocks across entries and resets them explicitly", () => {
+    // Kodi's begin/reset semantics, with fictional channels and reserved addresses.
+    // Provenance: docs/user/category-compatibility.md.
+    const text = [
+      "#EXTM3U",
+      "#EXTGRP:News;General",
+      "#EXTINF:-1,First",
+      "https://fixture.test/first.ts",
+      "#EXTINF:-1,Second",
+      "https://fixture.test/second.ts",
+      "#EXTGRP:",
+      "#EXTINF:-1,Ungrouped",
+      "https://fixture.test/ungrouped.ts",
+      "#EXTINF:-1,Adult",
+      "#EXTGRP:XXX;General",
+      "https://fixture.test/adult.ts",
+      "#EXTINF:-1,Inherited adult",
+      "https://fixture.test/inherited.ts",
+      '#EXTINF:-1 group-title="Kids",Explicit',
+      "https://fixture.test/explicit.ts",
+      "#EXTINF:-1,After explicit",
+      "https://fixture.test/after.ts",
+      "#EXTGRP:News",
+      '#EXTINF:-1 group-title="",Explicit empty',
+      "https://fixture.test/empty.ts",
+      "#EXTINF:-1,After empty",
+      "https://fixture.test/after-empty.ts",
+    ].join("\n");
+    const whole = read(text, text.length);
+    for (const size of [1, 7, 64]) expect(read(text, size)).toEqual(whole);
+    const catalogue = playlistCatalogue(whole.entries);
+    expect(catalogue.channels.map((channel) => channel.categoryIds)).toEqual([
+      ["News", "General"],
+      ["News", "General"],
+      [],
+      ["XXX", "General"],
+      ["XXX", "General"],
+      ["Kids"],
+      [],
+      [],
+      [],
+    ]);
+    expect(catalogue.channels.map((channel) => channel.id)).toEqual(
+      whole.entries.map((entry) => entry.name),
+    );
+    expect(
+      catalogue.channels.filter(adultIn(catalogue.categories)).map((channel) => channel.id),
+    ).toEqual(["Adult", "Inherited adult"]);
+  });
+
   it("reads the same entries whatever pieces the text arrives in", () => {
     const whole = read(PLAYLIST, PLAYLIST.length);
     for (const size of [1, 7, 64]) expect(read(PLAYLIST, size)).toEqual(whole);

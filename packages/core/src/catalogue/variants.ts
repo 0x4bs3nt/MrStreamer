@@ -26,7 +26,7 @@ import {
 } from "@mrstreamer/contracts/preferences";
 import { trustedGuideIds } from "./guide-ids.ts";
 import type { NormalizedStream } from "./normalize.ts";
-import { regionForCode } from "./regions.ts";
+import { countryForCode, isBroadRegion } from "./regions.ts";
 
 /** How many of a channel's streams Auto tries, one after another, before it gives up. */
 const AUTO_TRIES = 3;
@@ -58,7 +58,21 @@ export function liveChannels(streams: readonly NormalizedStream[]): LiveChannels
     ),
   );
   const alike = new Map<string, NormalizedStream[]>();
+  const uncertain = new Set<NormalizedStream>();
   for (const stream of streams) {
+    // Contradictory category/prefix metadata must not join or bridge otherwise distinct feeds.
+    const country = /\.([a-z]{2})(?:@[^.@]*)?$/i.exec(trusted.get(stream.id) ?? "")?.[1];
+    const guideRegion = country ? countryForCode(country) : null;
+    if (
+      stream.searchUncertain ||
+      (guideRegion &&
+        stream.region &&
+        !isBroadRegion(stream.region) &&
+        guideRegion !== stream.region)
+    ) {
+      uncertain.add(stream);
+      continue;
+    }
     const key = `${identity(stream.title)}\n${stream.language ?? ""}`;
     const list = alike.get(key);
     if (list) list.push(stream);
@@ -67,7 +81,7 @@ export function liveChannels(streams: readonly NormalizedStream[]): LiveChannels
   // A stream's region is its name's or category's, else the country of its guide id: VRT1.be.
   const regionOf = (stream: NormalizedStream): string[] => {
     const country = /\.([a-z]{2})(?:@[^.@]*)?$/i.exec(trusted.get(stream.id) ?? "")?.[1];
-    const region = stream.region ?? (country ? regionForCode(country) : null);
+    const region = stream.region ?? (country ? countryForCode(country) : null);
     return region ? [region] : [];
   };
   const together = new Map<NormalizedStream, readonly NormalizedStream[]>();
@@ -89,7 +103,7 @@ export function liveChannels(streams: readonly NormalizedStream[]): LiveChannels
   for (const stream of streams) {
     const group = together.get(stream) ?? [stream];
     if (group[0] !== stream) continue;
-    const searchIdentity = searchIdentityOf(group, trusted);
+    const searchIdentity = uncertain.has(stream) ? undefined : searchIdentityOf(group, trusted);
     const channel = { ...joined(stream, group), ...(searchIdentity ? { searchIdentity } : {}) };
     channels.push(channel);
     const spellings = new Set(group.flatMap((each) => trusted.get(each.id) ?? []));
