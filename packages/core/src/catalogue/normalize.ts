@@ -24,7 +24,7 @@ export interface NormalizedCatalogue {
 
 /** One stream of the provider's list, named as the app shows it. */
 export interface NormalizedStream extends Omit<LiveChannel, "variants" | "subscriptionId"> {
-  /** Conflicting or unknown category metadata cannot establish a search identity. */
+  /** Conflicting or unknown category metadata cannot establish a channel identity. */
   readonly searchUncertain?: true;
   /** The provider's guide id. */
   readonly guideId: string | null;
@@ -147,6 +147,7 @@ export function normalizeCatalogue(catalogue: LiveCatalogue): NormalizedCatalogu
     const regions = new Set(own.flatMap((category) => category.region ?? []));
     const languages = new Set(own.flatMap((category) => category.language ?? []));
     const uncertain =
+      channel.categoryIds.some((id) => !categoryById.has(id)) ||
       regions.size > 1 ||
       languages.size > 1 ||
       (name.region !== null && !name.known) ||

@@ -679,8 +679,9 @@ const handlers: {
   },
   filterOptions: async ({ owners, language, kind, files, adults }) => {
     const found = await catalogueOf(owners, language);
-    const made = collectionsOf(found, kind);
-    const titles = [...made.list("all"), ...(adults ? made.list("adult") : [])];
+    // Choices need version hints and observed tracks, not metadata decoration or collection order.
+    const indexed = kindOf(found.index, kind).titles;
+    const titles = adults ? indexed : indexed.filter((title) => !title.adult);
     return filterOptions(titles, filterFiles(found, kind, files));
   },
   rows: async ({ language, kind, tab, like, owners }) => {

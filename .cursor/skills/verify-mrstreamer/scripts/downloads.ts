@@ -16,7 +16,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -33,7 +33,7 @@ import {
   type FakeProvider,
 } from "../../../../apps/desktop/test/fake-provider.ts";
 import { startFakeTmdb, type FakeTmdb } from "../../../../apps/desktop/test/fake-tmdb.ts";
-import { freePort, record, stop } from "./session.ts";
+import { evidenceDirectory, injectedFailure, freePort, record, stop } from "./session.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const desktop = join(root, "apps/desktop");
@@ -61,9 +61,9 @@ export async function runDownloads(
   // The text expected below, in the language the app shows.
   setLanguage({ locale, formats: locale });
   const evidenceRoot = join(root, ".local/verification");
-  await mkdir(evidenceRoot, { recursive: true });
-  const evidence = await mkdtemp(
-    join(evidenceRoot, locale === SOURCE_LOCALE ? "downloads-" : `downloads-${locale}-`),
+  const evidence = await evidenceDirectory(
+    evidenceRoot,
+    locale === SOURCE_LOCALE ? "downloads-" : `downloads-${locale}-`,
   );
   const abort = new AbortController();
   const interrupt = () => abort.abort(new Error("Verification interrupted."));
@@ -452,6 +452,7 @@ export async function runDownloads(
       60_000,
     );
     await online.capture("movie-downloaded");
+    injectedFailure("downloads");
     await online.key("Escape", 27);
 
     await online.click("Open Series", button("header button", t("Series")));
@@ -734,7 +735,6 @@ export async function runDownloads(
     // on its page and named with the notice's words, its arrow alone where the other names need
     // the room. The window's least width is 960, so the narrower layout is emulated, as a zoomed
     // window or longer page names give it.
-    await layOut(online, 760);
     const folded = async (current: boolean) => {
       const bar = await barOf(online);
       return (
@@ -744,7 +744,19 @@ export async function runDownloads(
         percent(bar.downloads[0]!.label ?? "")
       );
     };
-    await online.wait(() => folded(true));
+    // Header copy changes how many CSS pixels the pages need. Find the actual fold while
+    // still requiring its current-page marker, percentage label and keyboard behavior below.
+    let foldedWidth: number | undefined;
+    for (let width = 760; width >= 520; width -= 20) {
+      await layOut(online, width);
+      if (await folded(true)) {
+        foldedWidth = width;
+        break;
+      }
+    }
+    if (foldedWidth === undefined)
+      throw new Error("Downloads did not fold within the emulated width bounds.");
+    notices["foldedWidth"] = foldedWidth;
     notices["foldedOnDownloads"] = fits("folded on Downloads", await settledBar(online), percent);
     await online.capture("notice-folded-on-downloads");
     await online.click("Open Movies, folded", button("header nav button", t("Movies")));
@@ -1161,8 +1173,8 @@ export async function runDownloads(
       await clean(() => stop(owned.app, owned.page));
       owned.page?.close();
     }
-    if (provider) await clean(() => provider!.close().catch(() => {}));
-    if (tmdb) await clean(() => tmdb!.close().catch(() => {}));
+    if (provider) await clean(() => provider!.close());
+    if (tmdb) await clean(() => tmdb!.close());
     if (pictures?.listening)
       await clean(() => new Promise<void>((resolve) => pictures!.close(() => resolve())));
     observed["mainNetwork"] = summarise(readLines(networkLog), observed["fixturePorts"]);
@@ -1177,12 +1189,15 @@ export async function runDownloads(
       JSON.stringify(
         {
           scenario: "downloads",
+          build,
           locale,
           status: failed ? "failed" : "passed",
           actions,
           observed,
           error: failed ? String(failed) : null,
           cleanup: {
+            fixturesClosed: cleanupErrors.length === 0,
+            appExited: !running || running.app.exitCode !== null || running.app.signalCode !== null,
             profileRemoved: profile
               ? await access(profile).then(
                   () => false,

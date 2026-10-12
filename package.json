@@ -9,6 +9,7 @@
     "build": "pnpm --filter mrstreamer build",
     "start": "pnpm --filter mrstreamer start",
     "verify:desktop": "node .cursor/skills/verify-mrstreamer/scripts/control.ts",
+    "verify:release-ui": "node scripts/release-ui.ts",
     "verify:website": "node .cursor/skills/verify-mrstreamer/scripts/website.ts",
     "dev:marketing": "pnpm --filter mrstreamer-marketing dev",
     "build:marketing": "pnpm --filter mrstreamer-marketing build",

@@ -18,7 +18,7 @@ export interface PlaylistEntry {
   readonly url: string;
   /** The #EXTINF's attributes by lowercase name: "tvg-id", "tvg-logo", "group-title". */
   readonly attributes: Readonly<Record<string, string>>;
-  /** The #EXTGRP line's group, which some playlists use instead of group-title. */
+  /** The active #EXTGRP groups, which some playlists use instead of group-title. */
   readonly group: string | null;
   /** The User-Agent and Referer the stream wants, from its attributes or #EXTVLCOPT lines. */
   readonly userAgent: string | null;
@@ -44,6 +44,7 @@ export function m3uReader(): M3uReader {
   let rest = "";
   let playlist: boolean | null = null;
   let guideUrl: string | null = null;
+  let group: string | null = null;
   /** The #EXTINF waiting for its address, with what the lines after it added. */
   let pending: {
     name: string;
@@ -77,17 +78,20 @@ export function m3uReader(): M3uReader {
         case "EXTINF": {
           const comma = nameComma(value);
           const attributes = attributesOf(comma === -1 ? value : value.slice(0, comma));
+          // An explicit group, including an empty one, ends an inherited #EXTGRP block.
+          if (Object.hasOwn(attributes, "group-title")) group = null;
           pending = {
             name: comma === -1 ? "" : value.slice(comma + 1).trim(),
             attributes,
-            group: null,
+            group,
             userAgent: headerValue(attributes["http-user-agent"]),
             referrer: headerValue(attributes["http-referrer"] ?? attributes["http-referer"]),
           };
           return;
         }
         case "EXTGRP":
-          if (pending) pending.group = value.trim() || null;
+          group = value.trim() || null;
+          if (pending) pending.group = group;
           return;
         case "EXTVLCOPT": {
           if (!pending) return;

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated 9 October 2026. The current version is at <https://mrstreamer.app/privacy>.
+Last updated 11 October 2026. The current version is at <https://mrstreamer.app/privacy>.
 
 Mr. Streamer is a free, open-source desktop player for the IPTV subscription you already have. This policy explains what it stores on your computer, what it sends and to whom, and what we receive.
 
@@ -8,13 +8,13 @@ Data controller: Wout Stiens, Belgium, publishing as Mr Streamer OSS. Contact: p
 
 ## Summary
 
-- Mr. Streamer sends us nothing. It has no account, no analytics, no telemetry and no crash reporting.
+- From 0.0.11, basic first-seen profile and app-use statistics default on, with **Share basic usage statistics** in **Settings > General > Privacy** to turn them off. Builds without a configured PostHog project send no app statistics. The app has no account or automatic crash reporting.
 - Your login, settings, favourites, watchlist and viewing history are stored only on your computer.
 - To play anything, the app connects to the provider or playlist you add, and the servers it points to. They can see what you watch, and a provider receives your login. Images and film information come from other services, and update checks go to GitHub.
 - If your provider has no encrypted address, your login is sent unencrypted. The app tells you before it does this.
 - A programme guide you add from another address is downloaded from that address's server. It receives the address and your IP address, and never your login.
 - When you play on a TV, the TV fetches the stream from your computer over your local network. It never receives your login or your provider's address.
-- Movies and episodes you download, with their details and pictures, are stored only on your computer. Watching them sends nothing.
+- Movies and episodes you download, with their details and pictures, are stored only on your computer. Playing a downloaded copy makes no provider request; basic foreground app-use collection follows the Privacy setting independently of playback.
 
 ## Data stored on your computer
 
@@ -40,15 +40,36 @@ The folder contains:
 - the channels you mapped to a guide channel by hand: for each, the number your provider lists the channel under, its name, and the guide channel's id
 - information from TMDB about your providers' movies and series
 - your update channel
+- from 0.0.11, your statistics preference and a separate analytics record: a random per-profile installation identifier, the profile’s initial classification, whether it has already been observed, its latest foreground-use date and at most eight pending observations with their event identifiers and retry counts. The identifier is retained when you turn statistics off.
 - a diagnostics log of what the app did and how long it took. It contains no server addresses, logins or channel names, and it leaves your computer only if you attach it to an issue or an email.
 - from 0.0.10, the movies and episodes you downloaded, in a `downloads` folder: each file, or the part of it downloaded so far, with the name, year, length, episode name and number, original language, poster and picture kept for it, the provider's numbers for that exact file, how far you watched the copy, and the subtitle text and timing you had saved for that exact version. Each download also keeps the account it came from, as the viewing record does: the server address and username, or a playlist's fingerprint, with the id of the subscription it was added from and a fingerprint of the encrypted password or link. Your password, the playlist link and the file's download address are not stored with it.
 - a cache of images, at most 64 MB, and other files the app's browser engine keeps for itself
 
 Two items are stored outside this folder: the key that encrypts your password or playlist link, in your system's keychain, and a downloaded update, in a `mrstreamer-updater` folder in your system's cache folder.
 
-Settings > About offers a diagnostics export when you ask for it. You can inspect the exact text before saving it to a file of your choice. It includes the app build, platform, installation kind, subscription counts, a decoder flag, the last update check and at most 500 recent diagnostic entries. Addresses, credentials, channel and title names, and filesystem paths are omitted. Nothing is uploaded. A file you save outside the app's data folder remains there until you delete it.
+Settings > About offers a diagnostics export when you ask for it. You can inspect the exact text before saving it to a file of your choice. It includes the app build, platform, installation kind, subscription counts, a decoder flag, the last update check and at most 500 recent diagnostic entries. Addresses, credentials, channel and title names, filesystem paths and the analytics installation identifier are omitted. Nothing is uploaded. A file you save outside the app's data folder remains there until you delete it.
 
 ## Data sent from your computer
+
+### Basic app-use statistics, from 0.0.11
+
+**Share basic usage statistics** in **Settings > General > Privacy** defaults on for new and existing profiles. There is no first-use or upgrade notice. Privacy information is available there and in Settings > About, and the release notes announce the change. A build without a configured project sends no app statistics.
+
+We use these statistics to understand adoption and regular app use, including use of Stable and Nightly builds, to guide development and maintenance. Our legal basis is legitimate interest under Article 6(1)(f) GDPR: understanding how the app is adopted and used so we can prioritize that work. You can object to this collection by turning it off in Settings or contacting privacy@mrstreamer.app.
+
+When collection is configured and enabled, the app sends two kinds of observation to PostHog: the first analytics observation of this profile, and at most one foreground app-use observation per UTC day. Foreground means the primary window is visible, focused and not minimized. A session that remains in the foreground over midnight can count on the next day. Playback is not required. Background update checks and a hidden window kept for a TV receiver do not count.
+
+Each observation includes a random installation identifier stored in this profile, an event identifier, the observation time, app version, running build channel, selected update channel, operating system, processor architecture and direct or Microsoft Store distribution. Build and update channels are separate: choosing Nightly updates does not turn a running Stable build into Nightly. Development or unrecognized builds retain an unknown build classification. The first observation’s profile classification is fresh, upgrading or unknown, based on evidence present before the app writes its files. A missing analytics file alone never means a fresh installation.
+
+The installation identifier is a persistent pseudonymous identifier, not a name, account or device fingerprint. The payload excludes viewing history, titles, channels, searches, provider details, addresses, credentials, filesystem paths and diagnostics. There is no autocapture, session replay, feature-flag collection or automatic crash reporting. Person-profile creation and GeoIP enrichment are explicitly disabled. PostHog and its network infrastructure still receive the source IP address as part of the network connection; disabling GeoIP does not hide that address from them. Your network operator and DNS provider can see the destination. Configured production collection uses HTTPS.
+
+First-seen statistics count profiles first observed by analytics, not installer downloads or unique people. Known fresh, upgrading and unknown profiles are reported separately. Weekly active use means unique installation identifiers with a foreground-use observation in the trailing seven days. Multiple profiles or devices, deletion of a profile, disabled collection, offline loss and clock changes limit these counts. A profile that switches channels may appear in both channel breakdowns, so those totals are not additive.
+
+Turning the setting off stops new capture, cancels owned pending requests where possible and clears queued observations. It survives restart. A request already received by the server cannot be recalled. Turning collection on again keeps the same identifier and first-seen record, so it does not count another installation or backfill disabled days. Offline retries keep the same event identifier and timestamp, use a bounded queue and attempt budget, and may lose observations. Analytics failures do not prevent startup, playback or quitting.
+
+Configured releases send these observations to our desktop project on **PostHog EU Cloud**. The project uses the free plan. PostHog's [published pricing](https://posthog.com/pricing) currently lists one year of retention for analytics events and metadata on that plan. We review usage and retention monthly; no additional automatic deletion is configured. This describes the provider's published retention terms rather than a separately verified deletion deadline. [PostHog's privacy information](https://posthog.com/privacy) describes the service.
+
+Builds without the project configuration send no app statistics. Local development, tests and isolated verification sessions cannot enter production statistics; verification uses a loopback endpoint only.
 
 ### Your provider
 
@@ -80,7 +101,7 @@ If you give a subscription a programme guide from an address of your own, Mr. St
 
 ### Downloads, from 0.0.10
 
-A download asks your provider for the file, with your login, as playing it does: your provider sees that you downloaded it, and when. When you download, Mr. Streamer also fetches the title's poster and picture once, from the servers below under Images, to keep with the copy. Watching a downloaded copy connects to nothing: no provider, no TMDB, no image server and no TV.
+A download asks your provider for the file, with your login, as playing it does: your provider sees that you downloaded it, and when. When you download, Mr. Streamer also fetches the title's poster and picture once, from the servers below under Images, to keep with the copy. Playing a downloaded copy needs no provider, TMDB, image-server or TV connection. Basic foreground app-use statistics, when configured and enabled, are independent of playback.
 
 ### Images
 
@@ -113,7 +134,7 @@ Links in Settings, for example to the website, GitHub or TMDB, open in your web 
 
 As with any app, your network operator and DNS provider can see which servers Mr. Streamer contacts.
 
-Mr. Streamer shows no advertising, does not track you, and does not sell data.
+Mr. Streamer shows no advertising and does not sell data. Basic app-use statistics are described above and can be turned off in Settings.
 
 ## The website
 
@@ -121,11 +142,11 @@ The website at mrstreamer.app is hosted by Vercel and uses Vercel Web Analytics 
 
 To link the newest installers, the home, download and about pages ask GitHub for the public list of releases, the one the app reads for its update checks. GitHub receives your IP address, your browser's identification and that the request came from mrstreamer.app. The request carries no cookie and nothing that identifies you to us. The download buttons and the Microsoft Store badge are links. Nothing goes to GitHub or Microsoft for them until you follow one. [GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) applies.
 
-Website analytics do not receive your IPTV login or viewing history from the desktop app. The desktop app has no analytics or telemetry.
+Website analytics do not receive your IPTV login or viewing history from the desktop app. Desktop app-use statistics use the separate PostHog integration described above.
 
 ## Data we receive
 
-Apart from the website statistics above, we receive what you choose to send us:
+When desktop collection is configured and enabled, PostHog processes the app-use observations above on our behalf. Website statistics are separate. We also receive what you choose to send us:
 
 - email to privacy@mrstreamer.app, hello@mrstreamer.app or security@mrstreamer.app
 - issues and comments on [GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/issues). These are public, so please leave out your server address, username and password.
@@ -133,6 +154,8 @@ Apart from the website statistics above, we receive what you choose to send us:
 Our email and hosting providers process these messages and visits to our website on our behalf. We use your messages only to reply to you and to fix the problems you report, based on our legitimate interest in supporting and improving Mr. Streamer (GDPR Article 6(1)(f)). We keep them only as long as that requires, and we do not share them. Anything you post on GitHub is public.
 
 ## Deleting your data
+
+Turning **Share basic usage statistics** off clears pending local observations and prevents further capture; it does not delete observations already received by PostHog. Deleting the profile folder also deletes its installation identifier and opt-out, so a new profile defaults on and can be counted as a new installation when collection is configured. Contact privacy@mrstreamer.app about data already received. Our PostHog project uses the retention terms described above, with no additional automatic deletion configured.
 
 - **Remove**, on a subscription in Settings > Subscriptions, deletes that subscription's login or playlist link, the id and the name the app kept for it, the copies of its provider's lists and guide, and a guide address you gave it with the copy of that guide and the channels you mapped. Your other subscriptions keep theirs. Tick **Also delete favourites, watchlist, history and progress** to delete that account's favourites, watchlist, watched channels, progress in movies and episodes, the episodes you marked, and saved subtitle cues and timing as well. Otherwise they remain on this computer. Your favourites, watchlist and viewing record reappear if you add the same account again.
 - **Remove** also cancels that subscription's unfinished downloads and deletes what they had downloaded. Downloaded copies stay, with their details and progress, until you delete them.

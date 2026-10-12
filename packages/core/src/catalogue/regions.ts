@@ -12,6 +12,11 @@ const CONVENTIONS: Readonly<Record<string, string>> = {
   LAT: "Latin America", LATAM: "Latin America", MULTI: "World", WO: "World", WW: "World",
 };
 
+/** Reseller language, continent and world labels do not assert a country. */
+export function isBroadRegion(region: string): boolean {
+  return Object.values(CONVENTIONS).includes(region);
+}
+
 /** Three-letter codes as ISO alpha-2: ISO alpha-3, plus the IOC codes sports catalogues use. */
 // prettier-ignore
 const THREE_LETTER: Readonly<Record<string, string>> = {
@@ -47,7 +52,7 @@ export function regionForCode(code: string): string | null {
   const upper = code.toUpperCase();
   let region = byCode.get(upper);
   if (region === undefined) {
-    region = CONVENTIONS[upper] ?? isoRegion(THREE_LETTER[upper] ?? upper);
+    region = CONVENTIONS[upper] ?? countryForCode(THREE_LETTER[upper] ?? upper);
     byCode.set(upper, region);
   }
   return region;
@@ -67,10 +72,12 @@ export function leadingFlag(text: string): { region: string; rest: string } | nu
     String.fromCharCode((symbol.codePointAt(0) ?? 0) - 0x1f1e6 + 65);
   const code = letter(match[1]) + letter(match[2]);
   // Flags are always ISO, so they skip the reseller conventions (the AR flag is Argentina).
-  return { region: isoRegion(code) ?? code, rest: text.slice(match[0].length) };
+  return { region: countryForCode(code) ?? code, rest: text.slice(match[0].length) };
 }
 
-function isoRegion(code: string): string | null {
+/** ISO country metadata, including guide suffixes and flags, never uses reseller aliases. */
+export function countryForCode(code: string): string | null {
+  code = code.toUpperCase();
   if (!/^[A-Z]{2}$/.test(code)) return null;
   const name = english.of(code);
   return name && name !== code ? name : null;
@@ -85,19 +92,19 @@ function regionNames(): Map<string, string> {
   for (let first = 65; first <= 90; first++) {
     for (let second = 65; second <= 90; second++) {
       const code = String.fromCharCode(first, second);
-      if (isoRegion(code)) codes.push(code);
+      if (countryForCode(code)) codes.push(code);
     }
   }
   for (const language of NAME_LANGUAGES) {
     const local = new Intl.DisplayNames([language], { type: "region" });
     for (const code of codes) {
-      const display = isoRegion(code);
+      const display = countryForCode(code);
       const name = local.of(code);
       if (display && name) names.set(normalize(name), display);
     }
   }
   for (const [alias, code] of Object.entries(ALIASES)) {
-    const display = isoRegion(code);
+    const display = countryForCode(code);
     if (display) names.set(normalize(alias), display);
   }
   for (const display of Object.values(CONVENTIONS)) names.set(normalize(display), display);
