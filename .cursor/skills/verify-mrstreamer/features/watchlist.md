@@ -6,11 +6,11 @@ Save/remove movies or whole series from details, browse Watchlist and Home, sort
 
 ## How to get to it (user POV)
 
-A movie or series poster opens details. **Save** becomes **Saved** after saving; pressing it again removes the title. **Watchlist** at the top of Home permanently opens saved titles, including when its row is hidden or empty. Home also offers its Watchlist row and **All** entry. There is no Watchlist tab in the window bar. Tiles open details and have a removal control.
+A movie or series poster opens details. **Save** becomes **Saved** after saving; pressing it again removes the title. **Watchlist** in the window bar after Series permanently opens saved titles, including when its row is hidden or empty. Home also offers its Watchlist row and **All** entry. It remains available for live-only subscriptions. Tiles open details and have a removal control.
 
 ## Driving it with Electron CDP
 
-Preconditions: fresh built desktop session with fake provider/TMDB. Run `pnpm verify:desktop watchlist`. Open the fixture movie through Movies > All movies, click Save, observe Saved, close details, and return Home and open its permanent Watchlist entry. Require the same title's saved tile, a persisted app database and before/after screenshots. The baseline proves the details-to-Home entry path, not restart persistence.
+Preconditions: fresh built desktop session with fake provider/TMDB. Run `pnpm verify:desktop watchlist`. Open the fixture movie through Movies > All movies, click Save, observe Saved, close details, and open Watchlist from the top navigation. Require the same title's saved tile, a persisted app database and before/after screenshots. The baseline proves the details-to-navigation entry path, not restart persistence.
 
 For removal, Home entry, keyboard actions, ordering, unavailable titles, database write failure, restart and multiple-subscription behavior use `apps/desktop/test/e2e/watchlist-app.ts`. Its real-click and keyboard recipes are reusable; IPC/database observations may confirm a save but cannot perform it for the proof.
 

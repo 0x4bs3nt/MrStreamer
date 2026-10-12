@@ -110,7 +110,9 @@ async function show(element: ReactElement, ready: string): Promise<HTMLElement> 
 }
 
 const button = (within: HTMLElement, text: string) =>
-  [...within.querySelectorAll("button")].find((each) => each.textContent?.trim() === text);
+  [...within.querySelectorAll("button")].find(
+    (each) => each.textContent?.trim() === text || each.getAttribute("aria-label") === text,
+  );
 const labelled = (within: HTMLElement, label: string) =>
   within.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
 /** Main says the list changed; waits until the window shows what `ready` looks for. */
@@ -526,11 +528,12 @@ describe("the top bar's word on the downloads", () => {
     const room = (pages: HTMLElement) => {
       const header = pages.closest("header")!;
       const notice = header.querySelector("[data-downloads-notice]")?.textContent ?? null;
-      const update = [...header.querySelectorAll("button")].some((each) =>
-        each.textContent?.startsWith("Update"),
-      );
+      const update = header.querySelector("[data-update-notice]");
       return (
-        width - 363 - (notice === null ? 0 : notice ? wide(notice, 51) : 32) - (update ? 88 : 0)
+        width -
+        363 -
+        (notice === null ? 0 : notice ? wide(notice, 51) : 32) -
+        (update ? (update.textContent ? 88 : 32) : 0)
       );
     };
     const names = (pages: HTMLElement) =>
@@ -585,14 +588,25 @@ describe("the top bar's word on the downloads", () => {
       ipc.always("updates.status", update);
       ipc.always("updates.dismiss", { ...update, dismissed: "0.0.10" });
       ipc.always("downloads.list", list([failed]));
-      const layout = layOut(809);
+      const layout = layOut(900);
       const bar = await show(createElement(WindowBar), "header [data-downloads-notice]");
       await until(() => button(bar, "Update") !== undefined);
       await layout.resize();
-      // Beside Update, the four names leave the notice its arrow alone; it says the rest aloud.
+      const updateTrigger = labelled(bar, "Update")!;
+      expect(updateTrigger.textContent).toBe("");
+      updateTrigger.focus();
+      await layout.resize(1300);
+      expect(labelled(bar, "Update")).toBe(updateTrigger);
+      expect(updateTrigger.textContent).toBe("Update");
+      expect(document.activeElement).toBe(updateTrigger);
+      await layout.resize(900);
+      expect(labelled(bar, "Update")).toBe(updateTrigger);
+      expect(updateTrigger.textContent).toBe("");
+      expect(document.activeElement).toBe(updateTrigger);
+      // Beside Update, the five names leave the notice its arrow alone; it says the rest aloud.
       expect(notice(bar)?.textContent).toBe("");
       expect(notice(bar)?.getAttribute("aria-label")).toBe("Downloads, Download stopped");
-      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series"]);
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Watchlist"]);
 
       // Not now takes Update away, and with it room enough for the words.
       await click(button(bar, "Update"));
@@ -600,13 +614,13 @@ describe("the top bar's word on the downloads", () => {
       await until(() => button(bar, "Update") === undefined);
       await layout.resize();
       expect(notice(bar)?.textContent).toBe("Download stopped");
-      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series"]);
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Watchlist"]);
 
       // Shorter words fit where the longer didn't, though nothing resized: Retry's transfer.
-      await layout.resize(729);
+      await layout.resize(820);
       expect(notice(bar)?.textContent).toBe("");
       await changed(list([transfer(40, 100)]), () => notice(bar)?.textContent === "40%");
-      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series"]);
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Watchlist"]);
     });
 
     it("gives the arrow its words back when Settings' language pick shortens Back", async () => {
@@ -653,7 +667,7 @@ describe("the top bar's word on the downloads", () => {
 
     it("keeps the notice in focus as its words go and come back", async () => {
       ipc.always("downloads.list", list([download({ id: "next", status: { kind: "queued" } })]));
-      const layout = layOut(729);
+      const layout = layOut(820);
       const bar = await show(createElement(WindowBar), "header [data-downloads-notice]");
       await layout.resize();
       expect(notice(bar)?.textContent).toBe("Queued");
@@ -668,9 +682,9 @@ describe("the top bar's word on the downloads", () => {
         list([download({ id: "next", status: { kind: "queued" } })]),
         () => notice(bar)?.textContent === "Queued",
       );
-      await layout.resize(609);
+      await layout.resize(700);
       expect(notice(bar)?.textContent).toBe("");
-      await layout.resize(729);
+      await layout.resize(820);
       expect(notice(bar)?.textContent).toBe("Queued");
       // The same button all along, still in focus and pressed as itself.
       expect(notice(bar)).toBe(focused);

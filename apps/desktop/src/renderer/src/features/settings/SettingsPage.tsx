@@ -9,6 +9,7 @@ import { cn } from "../../lib/utils.ts";
 import { call } from "../../lib/ipc.ts";
 import { Message } from "../../lib/message.tsx";
 import tmdbLogo from "../../assets/tmdb.svg";
+import { CustomizeHome } from "../home/CustomizeHome.tsx";
 import { GeneralSection } from "./GeneralSection.tsx";
 import { DiagnosticsExport } from "./DiagnosticsExport.tsx";
 import { Licences } from "./Licences.tsx";
@@ -17,6 +18,7 @@ import { useUpdates } from "../updates/use-updates.ts";
 
 const TABS = [
   { value: "general", label: "General" },
+  { value: "home", label: "Home" },
   { value: "subscriptions", label: "Subscriptions" },
   { value: "about", label: "About" },
 ] as const satisfies readonly { value: SettingsTab; label: PlainKey }[];
@@ -38,8 +40,11 @@ export function SettingsPage() {
       // A dialog or popup over the page closes itself first.
       if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
       const current = useUi.getState().settings;
-      // Fields keep Escape, except the licences' search, which has nothing to undo.
-      if (!current || (isTyping(event) && current !== "licences")) return;
+      // Text fields keep Escape; a row checkbox has no edit to undo.
+      const editing =
+        isTyping(event) &&
+        !(event.target instanceof HTMLInputElement && event.target.type === "checkbox");
+      if (!current || (editing && current !== "licences")) return;
       // The licences go back to About, the rest to the view underneath.
       useUi.setState({ settings: current === "licences" ? "about" : null });
       // Handled: the view underneath must not take the same Escape.
@@ -81,6 +86,7 @@ export function SettingsPage() {
           <main className="min-w-0 flex-1 overflow-y-auto px-10 pt-6 pb-10">
             <div className="max-w-[40rem]">
               {tab === "general" && <GeneralSection />}
+              {tab === "home" && <CustomizeHome />}
               {tab === "subscriptions" && <SubscriptionSection />}
               {tab === "about" && <About />}
             </div>

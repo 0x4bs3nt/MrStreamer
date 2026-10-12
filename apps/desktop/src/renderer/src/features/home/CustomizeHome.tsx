@@ -1,11 +1,12 @@
 import { useRef } from "react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, Check } from "lucide-react";
 import { t, type PlainKey } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
+import { cn } from "../../lib/utils.ts";
 import { queries } from "../../lib/queries.ts";
 import { homeRows, type HomeRowId, type HomeRow } from "./rows.ts";
 
@@ -22,8 +23,8 @@ const LABELS = {
 
 const HOME_ROW_WRITE = ["preferences", "home-rows"] as const;
 
-/** Inline native controls retain focus as a row moves, and include rows with no current content. */
-export function CustomizeHome({ onDone }: { onDone: () => void }) {
+/** Settings row controls retain focus as a row moves, including rows with no current content. */
+export function CustomizeHome() {
   const preferences = useQuery(queries.preferences());
   const client = useQueryClient();
   const rows = homeRows(preferences.data?.homeRows);
@@ -37,7 +38,7 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
       writing.current = false;
     },
   });
-  // Closing Customize or leaving Home does not release an outstanding preference write.
+  // Switching Settings tabs or closing Settings does not release an outstanding preference write.
   const latest = useMutationState({
     filters: { mutationKey: HOME_ROW_WRITE, exact: true },
     select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error }),
@@ -52,15 +53,10 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
     const settledRows = homeRows(saved.homeRows);
     const changed = change === null ? homeRows(undefined) : change(settledRows);
     if (changed === settledRows) return;
-    const next =
-      change === null
-        ? changed
-        : [
-            ...changed,
-            ...(saved.homeRows ?? []).filter(
-              (row) => !settledRows.some((known) => known.id === row.id),
-            ),
-          ];
+    const next = [
+      ...changed,
+      ...(saved.homeRows ?? []).filter((row) => !settledRows.some((known) => known.id === row.id)),
+    ];
     writing.current = true;
     save.mutate(next);
   };
@@ -73,27 +69,49 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
       return next;
     });
   return (
-    <section aria-label={t("Customize Home")} className="mb-7 max-w-2xl">
-      <h2 className="mb-2 text-xl font-semibold">{t("Customize Home")}</h2>
-      <ul>
+    <section aria-label={t("Customize Home")} aria-busy={busy} className="mb-10">
+      <h2 className="mb-1 text-[0.9375rem] font-semibold">{t("Rows")}</h2>
+      <ol>
         {rows.map((row, index) => {
           const label = t(LABELS[row.id]);
           return (
-            <li key={row.id} className="flex items-center gap-3 border-b border-white/15 py-2">
-              <label className="flex flex-1 items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={row.visible}
-                  disabled={!preferences.data || busy}
-                  onChange={(event) =>
-                    persist((rows) =>
-                      rows.map((each) =>
-                        each.id === row.id ? { ...each, visible: event.target.checked } : each,
-                      ),
-                    )
-                  }
-                />
-                {label}
+            <li
+              key={row.id}
+              className={cn(
+                "flex min-h-13 items-center gap-3 border-b border-white/8 py-2 text-[0.9375rem]",
+                busy && "opacity-60",
+              )}
+            >
+              <span
+                aria-hidden
+                className="w-4 flex-none text-right text-[0.8125rem] tabular-nums text-muted-foreground"
+              >
+                {index + 1}
+              </span>
+              <label className="flex min-w-0 flex-1 items-center gap-3">
+                <span className="relative flex size-4 flex-none">
+                  <input
+                    type="checkbox"
+                    className="peer size-4 appearance-none rounded-[0.25rem] shadow-[inset_0_0_0_1.5px_rgb(255_255_255/45%)] outline-none checked:bg-white checked:shadow-none focus-visible:ring-2 focus-visible:ring-ring"
+                    checked={row.visible}
+                    disabled={!preferences.data || busy}
+                    onChange={(event) =>
+                      persist((rows) =>
+                        rows.map((each) =>
+                          each.id === row.id ? { ...each, visible: event.target.checked } : each,
+                        ),
+                      )
+                    }
+                  />
+                  <Check
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 m-auto hidden size-3 text-black peer-checked:block"
+                    strokeWidth={3}
+                  />
+                </span>
+                <span className={cn("truncate", !row.visible && "text-muted-foreground")}>
+                  {label}
+                </span>
               </label>
               <Button
                 className="aria-disabled:opacity-40"
@@ -118,24 +136,26 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
             </li>
           );
         })}
-      </ul>
+      </ol>
       {latest?.error && (
         <p role="alert" className="mt-2 text-sm text-destructive">
           {describeError(appError(latest.error))}
         </p>
       )}
-      <div className="mt-3 flex gap-3">
+      <div className="mt-3 flex items-center gap-3">
         <Button
-          className="aria-disabled:opacity-40"
+          className="pl-0 aria-disabled:opacity-40"
           variant="ghost"
           disabled={!preferences.data || busy}
           onClick={() => persist(null)}
         >
           {t("Reset to defaults")}
         </Button>
-        <Button className="aria-disabled:opacity-40" variant="secondary" onClick={onDone}>
-          {t("Done")}
-        </Button>
+        {busy && (
+          <span role="status" className="text-sm text-muted-foreground">
+            {t("Saving…")}
+          </span>
+        )}
       </div>
     </section>
   );

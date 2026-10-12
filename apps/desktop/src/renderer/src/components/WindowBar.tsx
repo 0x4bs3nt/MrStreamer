@@ -13,7 +13,7 @@ import { useLocale } from "../app/language.ts";
 import { isMac, useWindowFullScreen } from "../app/platform.ts";
 import { closeWatch, withoutTitles, openView, useUi, type View } from "../app/ui-store.ts";
 import { DownloadsNotice, useDownloadsStatus } from "../features/downloads/DownloadsNotice.tsx";
-import { UpdateNotice } from "../features/updates/UpdateNotice.tsx";
+import { UpdateNotice, updateNoticeLabel } from "../features/updates/UpdateNotice.tsx";
 import { useQuery } from "@tanstack/react-query";
 import { type PlainKey, t } from "@mrstreamer/core/i18n";
 import { queries, useSubscriptions } from "../lib/queries.ts";
@@ -28,6 +28,7 @@ const VIEWS = [
   { view: "live", label: "Live TV" },
   { view: "movies", label: "Movies" },
   { view: "series", label: "Series" },
+  { view: "watchlist", label: "Watchlist" },
   { view: "downloads", label: "Downloads" },
 ] as const satisfies readonly { readonly view: View; readonly label: PlainKey }[];
 
@@ -37,11 +38,12 @@ const VIEWS = [
  * the right, except in full screen, where the bar takes their room. Over Settings, Watch or a
  * title's details, Back takes the pages' place and returns to the page underneath. `onBack`
  * overrides where it goes, as a playing title or an open collection does. Subscriptions with
- * live TV only have no Movies or Series. Home opens the full Watchlist. Where the window is too narrow for every
- * page's name, Downloads goes beside Search as a button of its own, under the same name. That
+ * live TV only have no Movies or Series; Watchlist stays reachable. Where the window is too
+ * narrow for every page's name, Downloads goes beside Search as a button of its own, under the same name. That
  * place also says how the downloads stand while one is under way, waits or stopped, except over
  * the Downloads page itself while its name is in the bar. Where even the other names, or Back,
- * don't fit beside those words, it keeps its arrow alone and says them on hover and focus.
+ * don't fit beside those words, Downloads and Update keep their icons alone, with their words
+ * on hover and focus.
  */
 export function WindowBar({ className, onBack }: { className?: string; onBack?: () => void }) {
   const view = useUi((state) => state.view);
@@ -55,8 +57,11 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
   const detailsOpen = useUi((state) => state.details !== null || state.savedEntry !== null);
   const status = useDownloadsStatus();
   const locale = useLocale();
-  const [pages, fold] = useFolds(status?.text, locale);
-  const [backRoom, backFold] = useFolds(status?.text, locale);
+  const update = useQuery(queries.updates()).data;
+  const updateOpen = useUi((state) => state.updateDialog === "panel");
+  const updateWords = updateNoticeLabel(update, updateOpen);
+  const [pages, fold] = useFolds(status?.text, updateWords, locale);
+  const [backRoom, backFold] = useFolds(status?.text, updateWords, locale);
   const folded = fold !== "none";
   const back =
     onBack ??
@@ -94,7 +99,7 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
         </nav>
       )}
       <div className="ml-auto flex items-center gap-1.5">
-        <UpdateNotice />
+        <UpdateNotice compact={(back ? backFold : fold) === "arrow"} />
         <TmdbProgress />
         {back ? (
           <DownloadsNotice status={status} compact={backFold === "arrow"} />
@@ -213,7 +218,11 @@ type Fold = "none" | "downloads" | "arrow";
  * Back's name can while the words read the same, and keeps them only if the names still fit beside
  * them; the try is measured before the bar is drawn, so it shows nothing when it fails.
  */
-function useFolds(words: string | undefined, locale: Locale): [RefCallback<HTMLElement>, Fold] {
+function useFolds(
+  words: string | undefined,
+  updateWords: string | undefined,
+  locale: Locale,
+): [RefCallback<HTMLElement>, Fold] {
   const [fold, setFold] = useState<Fold>("none");
   // The room all the pages' names took when they stopped fitting, and the room the pages had
   // beside the arrow when last measured.
@@ -256,6 +265,6 @@ function useFolds(words: string | undefined, locale: Locale): [RefCallback<HTMLE
   // before and after its name goes, so nothing resizes: measured again before it is drawn. Words
   // or a language that changes resize nothing either while the arrow stands alone.
   useLayoutEffect(() => measured.current?.(false), [fold]);
-  useLayoutEffect(() => measured.current?.(true), [words, locale]);
+  useLayoutEffect(() => measured.current?.(true), [words, updateWords, locale]);
   return [ref, fold];
 }

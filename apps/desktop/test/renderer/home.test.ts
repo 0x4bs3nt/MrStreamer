@@ -1,14 +1,27 @@
 // @vitest-environment happy-dom
 import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, createElement, useState } from "react";
+import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { SettingsPage } from "../../src/renderer/src/features/settings/SettingsPage.tsx";
+import { WindowBar } from "../../src/renderer/src/components/WindowBar.tsx";
+import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { CustomizeHome } from "../../src/renderer/src/features/home/CustomizeHome.tsx";
 import { TooltipProvider } from "../../src/renderer/src/components/ui/tooltip.tsx";
 
 let unmount = () => {};
-afterEach(() => unmount());
+afterEach(() => {
+  unmount();
+  useUi.setState({
+    settings: null,
+    view: "home",
+    watching: false,
+    details: null,
+    savedEntry: null,
+    updateDialog: null,
+  });
+});
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
 const labels = () =>
   [...document.querySelectorAll("li label")].map((label) => label.textContent?.trim());
@@ -34,7 +47,7 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
       createElement(
         QueryClientProvider,
         { client },
-        createElement(TooltipProvider, null, createElement(CustomizeHome, { onDone: () => {} })),
+        createElement(TooltipProvider, null, createElement(CustomizeHome)),
       ),
     ),
   );
@@ -63,6 +76,8 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
     move.click();
   });
   expect(ipc.argsOf("preferences.update")).toHaveLength(1);
+  expect(document.querySelector("section[aria-busy=true]")).not.toBeNull();
+  expect(document.querySelector('[role="status"]')?.textContent).toBe("Saving…");
   expect(labels()[0]).toBe("Watchlist");
   const patch = ipc.argsOf("preferences.update")[0]!;
   expect(patch.homeRows?.at(-1)).toEqual({ id: "future", visible: false });
@@ -79,6 +94,10 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
   expect(document.querySelectorAll<HTMLInputElement>("li input")[1]!.checked).toBe(true);
   const reset = ipc.hold("preferences.update");
   await act(async () => button("Reset to defaults").click());
+  expect(ipc.argsOf("preferences.update").at(-1)?.homeRows?.at(-1)).toEqual({
+    id: "future",
+    visible: false,
+  });
   await act(async () =>
     reset.resolve({ volume: 1, muted: false, ...ipc.argsOf("preferences.update").at(-1)! }),
   );
@@ -94,25 +113,24 @@ const checkbox = (name: string) =>
     .find((label) => label.textContent?.trim() === name)!
     .querySelector<HTMLInputElement>("input")!;
 
-/** Done and reopening mount new controls around the same query client, as Home does. */
+/** Real Settings tab switches and closing/reopening share the same preference write. */
 async function showReopenable() {
   ipc.reset();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  function HomeControls() {
-    const [open, setOpen] = useState(true);
-    return open
-      ? createElement(CustomizeHome, { onDone: () => setOpen(false) })
-      : createElement("button", { onClick: () => setOpen(true) }, "Customize");
-  }
+  useUi.setState({ settings: "home" });
   await act(async () =>
     root.render(
       createElement(
         QueryClientProvider,
         { client },
-        createElement(TooltipProvider, null, createElement(HomeControls)),
+        createElement(
+          TooltipProvider,
+          null,
+          createElement(Fragment, null, createElement(WindowBar), createElement(SettingsPage)),
+        ),
       ),
     ),
   );
@@ -123,6 +141,18 @@ async function showReopenable() {
   };
   await settle();
 }
+
+it("returns from Home settings with Escape on a row checkbox", async () => {
+  await showReopenable();
+  const control = checkbox("Watchlist");
+  control.focus();
+  await act(async () =>
+    control.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(useUi.getState().settings).toBeNull();
+});
 
 it("blocks a move during save notification and preserves the settled visibility on retry", async () => {
   await showReopenable();
@@ -151,8 +181,8 @@ it("blocks reopened controls until a held save settles, then retains both edits"
   const first = ipc.hold("preferences.update");
   await act(async () => button("Move Continue watching down").click());
   const reordered = ipc.argsOf("preferences.update")[0]!;
-  await act(async () => button("Done").click());
-  await act(async () => button("Customize").click());
+  await act(async () => button("General").click());
+  await act(async () => button("Home").click());
   expect(checkbox("Watchlist").disabled).toBe(true);
   expect(button("Move Watchlist down").getAttribute("aria-disabled")).toBe("true");
   await act(async () => {
@@ -182,8 +212,9 @@ it("shows a failed save after reopening, retains saved rows and allows retry the
   await showReopenable();
   const first = ipc.hold("preferences.update");
   await act(async () => checkbox("Watchlist").click());
-  await act(async () => button("Done").click());
-  await act(async () => button("Customize").click());
+  await act(async () => button("Back").click());
+  await act(async () => button("Settings").click());
+  await act(async () => button("Home").click());
   await act(async () => button("Move Watchlist up").click());
   expect(ipc.argsOf("preferences.update")).toHaveLength(1);
   await act(async () => first.reject({ kind: "unexpected", detail: "Disk write refused" }));
@@ -298,7 +329,20 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   };
   await act(async () =>
     root.render(
-      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          TooltipProvider,
+          null,
+          createElement(
+            Fragment,
+            null,
+            createElement(HomeScreen, { active: false }),
+            createElement(SettingsPage),
+          ),
+        ),
+      ),
     ),
   );
   await settle();
@@ -312,7 +356,12 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   expect(
     [...container.querySelectorAll("[data-home-row]")].map((r) => r.getAttribute("data-home-row")),
   ).toEqual(["category", "recent", "favourites", "continue"]);
-  await act(async () => button("Customize").click());
+  await act(async () => button("Settings").click());
+  await act(async () => button("Home").click());
+  expect(button("Reset to defaults")).toBeDefined();
+  expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Done")).toBe(
+    false,
+  );
   const save = async (action: () => void) => {
     const held = ipc.hold("preferences.update");
     await act(async () => action());
@@ -329,7 +378,7 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   assertOnce("recent");
   await save(() => button("Reset to defaults").click());
   assertOnce("favourites");
-  await act(async () => button("Done").click());
+  await act(async () => button("Back").click());
   await act(async () => button("Watchlist").click());
   const { useUi } = await import("../../src/renderer/src/app/ui-store.ts");
   expect(useUi.getState().view).toBe("watchlist");

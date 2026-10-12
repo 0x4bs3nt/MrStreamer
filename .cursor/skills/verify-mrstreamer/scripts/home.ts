@@ -10,6 +10,21 @@ const move = (name: string, direction: string) =>
 
 /** Personal Home through real pointer/key input; IPC is read-only evidence. */
 export async function homeScenario(d: Driver, counts: () => Record<string, number>): Promise<void> {
+  const customize = async () => {
+    await d.click(
+      "Open Settings",
+      "document.querySelector('header button[aria-label=\"Settings\"]')",
+    );
+    await d.click("Open Home settings", byText("nav button", "Home"));
+    await d.wait(() => d.exists(controls));
+  };
+  const closeSettings = async () => {
+    await d.click(
+      "Return from Home settings",
+      "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')",
+    );
+    await d.wait(async () => !(await d.exists(controls)));
+  };
   const prefs = () =>
     d.evaluate<{ id: string; visible: boolean }[]>(`(async () => {
     const read = await window.mrStreamer.invoke('preferences.get');
@@ -30,16 +45,16 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "No history showed personalized recommendations",
   );
   expect(
-    !(await d.exists(byText("header button", "Watchlist"))),
-    "Watchlist still in top navigation",
+    await d.exists(byText("header button", "Watchlist")),
+    "Watchlist missing from top navigation",
   );
   await d.capture("home-no-history");
-  await d.click("Open empty Watchlist from Home", byText("button", "Watchlist"));
+  await d.click("Open empty Watchlist from Home", byText("header button", "Watchlist"));
   await d.wait(() => d.exists(byText("h1", "Watchlist")));
   await d.wait(() => d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"));
   await d.capture("watchlist-empty");
   await d.click("Return Home", byText("header button", "Home"));
-  await d.click("Customize empty rows", byText("button", "Customize"));
+  await customize();
   await d.wait(() => d.exists(controls));
   expect(
     (await d.evaluate<number>(`${controls}.querySelectorAll('li').length`)) === 8,
@@ -83,7 +98,7 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   await d.capture("customize-hidden-reordered");
   await d.quit();
   await d.launch();
-  await d.wait(() => d.exists(byText("button", "Customize")));
+  await d.wait(() => d.exists(byText("header button", "Home")));
   expect(JSON.stringify(await prefs()) === JSON.stringify(kept), "Home changes lost after restart");
   const afterRestart = await prefs();
   expect(
@@ -91,11 +106,14 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "Hidden reordered Watchlist returned after restart",
   );
   expect(!(await titles()).includes("New movies"), "Hidden row returned after restart");
-  await d.click("Open full Watchlist while its row is hidden", byText("button", "Watchlist"));
+  await d.click(
+    "Open full Watchlist while its row is hidden",
+    byText("header button", "Watchlist"),
+  );
   await d.wait(() => d.exists(byText("h1", "Watchlist")));
   await d.capture("watchlist-hidden-row-restart");
   await d.click("Return Home", byText("header button", "Home"));
-  await d.click("Customize after restart", byText("button", "Customize"));
+  await customize();
   await d.click("Reset all rows", byText("button", "Reset to defaults"));
   await d.wait(
     async () =>
@@ -104,7 +122,7 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
       (await prefs()).every((row) => row.visible),
   );
   await d.capture("customize-reset");
-  await d.click("Done customizing", byText("button", "Done"));
+  await closeSettings();
   await d.click("Open Movies", byText("header button", "Movies"));
   await d.click("Open All movies", byText("nav button", "All movies"));
   const movie =
@@ -136,11 +154,11 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "Actual seed reasons missing",
   );
   await d.capture("home-local-recommendations-watchlist");
-  await d.click("Customize saved row", byText("button", "Customize"));
+  await customize();
   await d.click("Hide populated Watchlist row", check("Watchlist"));
   await d.wait(() => d.evaluate<boolean>("!document.querySelector('[data-home-row=watchlist]')"));
-  await d.click("Done hiding", byText("button", "Done"));
-  await d.click("Open full saved Watchlist while hidden", byText("button", "Watchlist"));
+  await closeSettings();
+  await d.click("Open full saved Watchlist while hidden", byText("header button", "Watchlist"));
   await d.wait(() =>
     d.evaluate<boolean>(
       "!![...document.querySelectorAll('button[title]')].find(b => b.title.includes('Index at the end'))",
@@ -241,16 +259,16 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   })()`);
   await d.key("Escape", 27);
   await d.click("Return Home with adult titles enabled", byText("header button", "Home"));
-  await d.click("Customize to show Watchlist", byText("button", "Customize"));
+  await customize();
   await d.click("Show Watchlist row", check("Watchlist"));
   await d.wait(() => d.exists("document.querySelector('[data-home-row=watchlist]')"));
-  await d.click("Done showing Watchlist", byText("button", "Done"));
+  await closeSettings();
   expect(
     !(await d.evaluate<boolean>(`document.body.innerText.includes(${JSON.stringify(adultName)})`)),
     "Adult save exposed on Home",
   );
   await d.capture("home-adult-setting-safe");
-  await d.click("Full Watchlist retains adult setting", byText("button", "Watchlist"));
+  await d.click("Full Watchlist retains adult setting", byText("header button", "Watchlist"));
   await d.wait(() =>
     d.evaluate<boolean>(`document.body.innerText.includes(${JSON.stringify(adultName)})`),
   );

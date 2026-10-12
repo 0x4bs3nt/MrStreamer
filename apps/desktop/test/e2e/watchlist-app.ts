@@ -2,7 +2,7 @@
 // suite can't, because happy-dom lays nothing out, moves no real focus and plays nothing. The
 // first provider's subscription is saved alone at first. In order:
 //
-// - Home permanently opens Watchlist, whose page says how to save while empty.
+// - The top bar permanently opens Watchlist, whose page says how to save while empty.
 // - A real click on Save in a movie's details saves it once the record has it, and the button
 //   reads Saved.
 // - In a series' details, Tab reaches Save from Play; Space saves, Enter takes it off again and
@@ -282,7 +282,7 @@ const tiles = (page: Page) =>
 
 async function openWatchlist(page: Page): Promise<void> {
   await click(page, pageButton("Home"));
-  await click(page, withText("button", "Watchlist"));
+  await click(page, pageButton("Watchlist"));
   await waitFor(() => exists(page, withText("h1", "Watchlist")), 10_000);
   await delay(400);
 }

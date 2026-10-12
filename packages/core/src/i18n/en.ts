@@ -6,6 +6,7 @@ import type { Plural } from "../i18n.ts";
 export const en = {
   Customize: "Customize",
   "Customize Home": "Customize Home",
+  Rows: "Rows",
   Recommendations: "Recommendations",
   "Current category": "Current category",
   "Reset to defaults": "Reset to defaults",

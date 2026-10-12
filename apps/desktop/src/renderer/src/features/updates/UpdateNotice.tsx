@@ -1,6 +1,8 @@
 // The quiet notice in the top bar: an update waiting, downloading or ready. It fades with the
 // other controls while watching. Clicking it opens a panel with the next step: Download, then
 // Restart once it's ready. "Not now" hides the notice for that version; Settings still offers it.
+import { RotateCw } from "lucide-react";
+import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { Popover } from "@base-ui/react/popover";
 import type { UpdateStatus } from "@mrstreamer/contracts/updates";
 import { formatPercent, t } from "@mrstreamer/core/i18n";
@@ -28,34 +30,60 @@ function noticed(status: UpdateStatus): boolean {
   }
 }
 
-export function UpdateNotice() {
+/** The visible notice's words, also used by the window bar when retrying its full labels. */
+export function updateNoticeLabel(
+  status: UpdateStatus | undefined,
+  open: boolean,
+): string | undefined {
+  if (!status || (!noticed(status) && !open)) return undefined;
+  const { update } = status;
+  return update.kind === "downloading"
+    ? `${t("Updating")} · ${formatPercent(update.percent / 100)}`
+    : update.kind === "ready"
+      ? t("Restart to update")
+      : update.kind === "failed"
+        ? t("Update stopped")
+        : t("Update");
+}
+
+/** The same popover trigger retains focus when the bar folds its words into a tooltip. */
+export function UpdateNotice({ compact = false }: { compact?: boolean }) {
   const { status } = useUpdates();
   const open = useUi((state) => state.updateDialog === "panel");
-  if (!status || (!noticed(status) && !open)) return null;
+  const label = updateNoticeLabel(status, open);
+  if (!status || !label) return null;
   const { update } = status;
-  const label =
-    update.kind === "downloading"
-      ? `${t("Updating")} · ${formatPercent(update.percent / 100)}`
-      : update.kind === "ready"
-        ? t("Restart to update")
-        : update.kind === "failed"
-          ? t("Update stopped")
-          : t("Update");
   return (
     <Popover.Root
       open={open}
       onOpenChange={(next) => useUi.setState({ updateDialog: next ? "panel" : null })}
     >
-      <Popover.Trigger
-        render={
-          <Button variant="ghost" size="sm" className="text-white">
-            {update.kind === "available" && (
-              <span aria-hidden className="size-1.5 rounded-full bg-white" />
-            )}
-            {label}
-          </Button>
-        }
-      />
+      <Tooltip label={label} side="bottom" disabled={!compact}>
+        <Popover.Trigger
+          render={
+            <Button
+              variant="ghost"
+              size={compact ? "icon-sm" : "sm"}
+              className="text-white"
+              aria-label={label}
+              data-update-notice
+            >
+              {compact && <RotateCw />}
+              {update.kind === "available" && (
+                <span
+                  aria-hidden
+                  className={
+                    compact
+                      ? "absolute top-1 right-1 size-1.5 rounded-full bg-white"
+                      : "size-1.5 rounded-full bg-white"
+                  }
+                />
+              )}
+              {!compact && label}
+            </Button>
+          }
+        />
+      </Tooltip>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={8} className="z-[60]">
           <Popover.Popup className="no-drag w-[22rem] rounded-2xl bg-popover p-5 text-[0.9375rem] shadow-2xl ring-1 ring-white/12 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0">

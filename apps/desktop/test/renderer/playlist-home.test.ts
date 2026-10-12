@@ -174,7 +174,7 @@ it("shows mapped titles without live channels or invented added dates, and opens
   const navigation = container.querySelector("header");
   expect(navigation?.textContent).toContain("Movies");
   expect(navigation?.textContent).toContain("Series");
-  expect(navigation?.textContent).not.toContain("Watchlist");
+  expect(navigation?.textContent).toContain("Watchlist");
   const watchlist = [...container.querySelectorAll("button")].find(
     (button) => button.textContent === "Watchlist",
   );

@@ -5,6 +5,7 @@ import type { Translation } from "../i18n.ts";
 export const nl: Translation = {
   Customize: "Aanpassen",
   "Customize Home": "Home aanpassen",
+  Rows: "Rijen",
   Recommendations: "Aanbevelingen",
   "Current category": "Huidige categorie",
   "Reset to defaults": "Standaard herstellen",

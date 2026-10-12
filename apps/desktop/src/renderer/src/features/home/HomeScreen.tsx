@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Play, Volume2, VolumeX } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { Listing } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { seriesOf, type Title, type TitleKind } from "@mrstreamer/contracts/ondemand";
@@ -43,7 +43,6 @@ import { usePreviewWaits } from "../../player/output.ts";
 import { Picture } from "../../player/Picture.tsx";
 import { player, usePlayer } from "../../player/player.ts";
 import { call } from "../../lib/ipc.ts";
-import { CustomizeHome } from "./CustomizeHome.tsx";
 import { homeRows, type HomeRowId } from "./rows.ts";
 import { watchChannel } from "../live/GuidePage.tsx";
 import { useShowList } from "../live/lists.ts";
@@ -116,7 +115,6 @@ export function HomeScreen({ active }: { active: boolean }) {
   const columns = fit(TILE_REM);
   const posters = fit(POSTER_REM);
   const preferences = useQuery(queries.preferences());
-  const [customizing, setCustomizing] = useState(false);
   const rows = homeRows(preferences.data?.homeRows);
   const channelRows = { favourites, recent, category: inCategory };
   const isChannelRow = (id: HomeRowId): id is keyof typeof channelRows => id in channelRows;
@@ -413,22 +411,7 @@ export function HomeScreen({ active }: { active: boolean }) {
       <WindowBar className="sticky top-0 z-20 bg-black" />
       <div className="flex items-center gap-3 px-10 pt-5 pb-3">
         <h1 className="mr-auto text-2xl font-semibold">{t("Home")}</h1>
-        <Button variant="secondary" onClick={() => openView("watchlist")}>
-          {t("Watchlist")}
-        </Button>
-        <Button
-          variant="ghost"
-          aria-expanded={customizing}
-          onClick={() => setCustomizing((shown) => !shown)}
-        >
-          {t("Customize")}
-        </Button>
       </div>
-      {customizing && (
-        <div className="px-10">
-          <CustomizeHome onDone={() => setCustomizing(false)} />
-        </div>
-      )}
       {notice && !(mappedOnly && notice.kind === "empty") ? (
         <div className="flex min-h-64 items-center justify-center">
           <CatalogueNotice state={notice} />

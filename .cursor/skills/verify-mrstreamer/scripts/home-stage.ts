@@ -60,19 +60,27 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
       "(async () => { const read = await window.mrStreamer.invoke('preferences.get'); return read.ok ? read.value.homeRows ?? [] : []; })()",
     );
   const customize = async () => {
-    await d.click("Open Customize", text("button", "Customize"));
+    await d.click(
+      "Open Settings",
+      "document.querySelector('header button[aria-label=\"Settings\"]')",
+    );
+    await d.click("Open Home settings", text("nav button", "Home"));
     await d.wait(() =>
       d.exists("document.querySelector('section[aria-label=\"Customize Home\"]')"),
     );
     const controls = await d.evaluate<{ label: string; radius: number; height: number }[]>(
       "[...document.querySelectorAll('section[aria-label=\"Customize Home\"] [data-slot=button]')].map(b => ({ label:b.getAttribute('aria-label') ?? b.innerText, radius:parseFloat(getComputedStyle(b).borderRadius), height:b.getBoundingClientRect().height }))",
     );
-    require(controls.length === 18 &&
+    require(controls.length === 17 &&
       controls.every((c) => c.radius >= c.height / 2), "Customize controls are not rounded");
     d.observed["customizeControls"] = controls;
     await d.capture("home-customize-controls");
   };
-  const done = () => d.click("Done customizing", text("button", "Done"));
+  const done = () =>
+    d.click(
+      "Return from Home settings",
+      "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')",
+    );
   const reset = async () => {
     await d.click("Reset Home rows", text("button", "Reset to defaults"));
     await d.wait(
@@ -226,7 +234,7 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
   require(!(await d.exists(row("continue"))) &&
     !(await d.exists(row("recommendations"))), "No-history personalized rows");
   await measure(fixture.liveOnly ? "live-only" : "no-history");
-  await d.click("Open permanent empty Watchlist", text("button", "Watchlist"));
+  await d.click("Open permanent empty Watchlist", text("header button", "Watchlist"));
   await d.wait(() => d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"));
   await d.capture("empty-watchlist");
   await home();
@@ -239,7 +247,7 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
     await d.wait(async () => (await promoted()) === null);
     await done();
     await d.capture("live-only-hidden-category");
-    await d.click("Empty Watchlist while all rows hidden", text("button", "Watchlist"));
+    await d.click("Empty Watchlist while all rows hidden", text("header button", "Watchlist"));
     await d.wait(() =>
       d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"),
     );
@@ -411,7 +419,7 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
   await d.wait(async () => (await promoted()) === "category");
   await d.click("Hide populated Watchlist", check("Watchlist"));
   await done();
-  await d.click("Permanent populated Watchlist while hidden", text("button", "Watchlist"));
+  await d.click("Permanent populated Watchlist while hidden", text("header button", "Watchlist"));
   await d.wait(() =>
     d.exists("document.querySelector('button[title*=" + JSON.stringify("Index at the end") + "]')"),
   );

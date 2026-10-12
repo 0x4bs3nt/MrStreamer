@@ -5,6 +5,7 @@ import type { Translation } from "../i18n.ts";
 export const fr: Translation = {
   Customize: "Personnaliser",
   "Customize Home": "Personnaliser l’accueil",
+  Rows: "Rangées",
   Recommendations: "Recommandations",
   "Current category": "Catégorie actuelle",
   "Reset to defaults": "Rétablir les valeurs par défaut",

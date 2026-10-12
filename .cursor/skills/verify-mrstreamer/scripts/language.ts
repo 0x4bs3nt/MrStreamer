@@ -128,6 +128,7 @@ export async function languageScenario(d: Driver): Promise<void> {
         settings.tabs.join() ===
           [
             translate(locale, "General"),
+            translate(locale, "Home"),
             translate(locale, "Subscriptions"),
             translate(locale, "About"),
           ].join(),
@@ -329,6 +330,9 @@ async function liveTv(d: Driver, locale: Locale) {
     `More menu in ${locale}`,
     more,
   );
+  // Popup rows can exist before its initial-focus effect runs. Send navigation only once
+  // keyboard focus has actually entered the open menu.
+  await d.wait(() => d.evaluate("!!document.activeElement?.closest('[data-item]')"));
   await d.key("ArrowDown", 40);
   await d.key("ArrowDown", 40);
   d.observed[`moreFocus-${locale}`] = await d.evaluate<string | null>(
@@ -632,7 +636,8 @@ function expect(condition: boolean, what: string, seen?: unknown): asserts condi
 }
 
 async function homeControls(d: Driver, locale: Locale) {
-  await d.click("Open Home customization", byText("button", translate(locale, "Customize")));
+  await d.click("Open Settings for Home rows", SETTINGS);
+  await d.click("Open Home settings", byText("nav button", translate(locale, "Home")));
   const section = `document.querySelector('section[aria-label="${translate(locale, "Customize Home")}"]')`;
   await d.wait(() => d.exists(section));
   const rows = await d.evaluate<string[]>(
@@ -646,5 +651,5 @@ async function homeControls(d: Driver, locale: Locale) {
     rows,
   );
   await d.capture(`home-controls-${locale}`);
-  await d.click("Done customizing", byText("button", translate(locale, "Done")));
+  await d.key("Escape", 27);
 }

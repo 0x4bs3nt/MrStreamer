@@ -307,16 +307,20 @@ try {
     "Recommendations",
     `Because you watched ${featured.name}`,
     "Watchlist",
-    "Customize",
     featured.name,
     manifest.home,
   ]);
   await waitFor(() => playing(page!));
   await capture(page, "home", { fullScreen: true, video: true, pictures: "img" });
-  await click(page, "button", "Customize");
-  await shows(page, ["Reset to defaults", "Done", "Recommendations"]);
+  await click(page, 'header button[aria-label="Settings"]', "");
+  await click(page, "nav button", "Home");
+  await shows(page, ["Reset to defaults", "Recommendations"]);
   await retain(page, "home-customize");
-  await click(page, "button", "Done");
+  await clickExpression(
+    page,
+    "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')",
+    "Return from Home settings",
+  );
   writeFileSync(
     join(assets, "marketing-capture.json"),
     JSON.stringify(

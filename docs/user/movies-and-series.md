@@ -85,7 +85,7 @@ Marks are for one episode at a time. There is none for a whole season or series.
 
 **Save** in a title's details keeps a movie or a whole series for later. It works as soon as the details open, before the story and the cast arrive. Episodes can't be saved on their own.
 
-**Watchlist** at the top of Home shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The permanent Home entry stays available when that row is hidden or empty. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters, Enter opens one, and Tab reaches the × on each poster.
+**Watchlist** in the top navigation bar shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The navigation entry stays available when that row is hidden or empty. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters, Enter opens one, and Tab reaches the × on each poster.
 
 Only you take a title off: with the × on its poster, or with **Saved** in its details. Starting a title, finishing it or removing it from Continue watching leaves it saved, and saving changes nothing about how far you got. The same title can be in both rows.
 

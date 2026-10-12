@@ -600,7 +600,7 @@ async function run(scenario: Scenario) {
         await capture("saved");
         await key("Escape", 27);
         await click("Return Home", button("header button", "Home"));
-        await click("Open Watchlist from Home", button("button", "Watchlist"));
+        await click("Open Watchlist from top navigation", button("header button", "Watchlist"));
         await wait(() =>
           livePage.evaluate<boolean>(
             "document.querySelector('h1')?.textContent === 'Watchlist' && [...document.querySelectorAll('button[title]')].some(b => b.title.includes('Two sound tracks'))",
