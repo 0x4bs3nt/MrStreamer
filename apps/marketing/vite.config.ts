@@ -1,10 +1,13 @@
 // The same page registry drives local routing, static build inputs and Vercel packaging.
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineConfig, type Connect } from "vite";
 import { installers, verifiedDownloads, writeDownloads, type Downloads } from "./src/downloads.ts";
 import { systemOf } from "./src/system.ts";
-import { PAGES, renderPage } from "./scripts/pages.ts";
+import { INDEXNOW_KEY, INDEXNOW_MARKER } from "./scripts/indexnow.ts";
+import { PAGES, SITE, renderPage } from "./scripts/pages.ts";
 import { newestStable, stableReleases, type Release } from "./scripts/releases.ts";
 
 const root = import.meta.dirname;
@@ -89,6 +92,34 @@ export default defineConfig({
           const withSystem = rendered.replace("<!-- system -->", () => systemScript);
           return writeDownloads(withSystem, found, resolved?.verifiedAt);
         },
+      },
+      generateBundle() {
+        const urlList = [...new Set(PAGES.map(({ address }) => SITE + address))];
+        const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim();
+        this.emitFile({ type: "asset", fileName: `${INDEXNOW_KEY}.txt`, source: INDEXNOW_KEY });
+        this.emitFile({
+          type: "asset",
+          fileName: INDEXNOW_MARKER,
+          source:
+            JSON.stringify({
+              site: SITE,
+              revision,
+              buildId: randomUUID(),
+              key: INDEXNOW_KEY,
+              urlList,
+            }) + "\n",
+        });
+        this.emitFile({
+          type: "asset",
+          fileName: "sitemap.xml",
+          source:
+            '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+            urlList.map((url) => `  <url><loc>${url}</loc></url>`).join("\n") +
+            "\n</urlset>\n",
+        });
       },
       configureServer(server) {
         for (const page of PAGES)

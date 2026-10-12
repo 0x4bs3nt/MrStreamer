@@ -18,7 +18,7 @@ Static pages for `https://mrstreamer.app`, built with Vite from HTML, CSS, TypeS
 | `vite.config.ts`                                                     | Build inputs, HTML expansion and local routing                                 |
 | `scripts/prepare-assets.ts`                                          | Pictures, icons and the social picture in `public/generated/`                  |
 | `scripts/package-vercel.ts`                                          | Vercel's static package, routes and public page/link checks                    |
-| `public/`                                                            | `robots.txt`, `sitemap.xml` and the Store, Apple and Linux marks               |
+| `public/`                                                            | `robots.txt` and the Store, Apple and Linux marks                              |
 | `test/`                                                              | Download, system detection, static document and release-history contracts      |
 
 `public/generated/`, `dist/` and `.vercel/` are built and stay out of git.
@@ -159,9 +159,23 @@ curl -sI https://mrstreamer.app/_vercel/insights/script.js | grep -i content-typ
 2. The build job has no owner secrets. It uses the workflow's read-only GitHub token for release history, builds `main`, checks the package and hands over `.vercel/output` alone.
 3. The publish job holds the Vercel token. It checks out nothing and runs the pinned Vercel CLI on that package: `vercel deploy --prebuilt --archive=tgz --prod`.
 
+4. After the Publish step succeeds, IndexNow verifies the matching build on the public domain and notifies canonical pages in a separate job without owner secrets.
+
 Runs queue without replacing pending publications and none is cancelled halfway, using the same `queue: max` policy as the release workflow. This also prevents a nightly completion that the trigger gate rejects from displacing a pending site publication. A run that waited builds the newest `main`. Before it publishes, a run asks git whether `main` has changed the website since its build. If it has, the run leaves publishing to the run that change started. If git can't tell, the run fails and publishes nothing.
 
 Publishing is off until you turn it on. Until then a run builds, says publishing is off, and stops. Every pull request also builds the page in `.github/workflows/marketing.yml`, without secrets.
+
+## IndexNow notifications
+
+After an actual successful, non-superseded production publication, a separate job consumes that run's checked static package and dependency-free notification CLI. It has no Vercel token, owner secrets, environment or checkout. Disabled publishing, previews, failed publications and superseded builds send nothing. Ordinary PR CI only builds and tests.
+
+Vite generates `sitemap.xml`, the root ownership file and `indexnow-build.json` from the canonical `PAGES` registry. The marker names the source commit and a unique build ID. Packaging checks the exact registry/sitemap set and ownership contents before uploading artifacts. The notifier checks both the literal `https://mrstreamer.app` ownership file and the complete matching public build marker before sending one POST to `https://api.indexnow.org/indexnow`. Redirects fail. A rollback-pinned domain or delayed propagation gets six bounded readiness attempts, five seconds per request and ten seconds between attempts, within a two-minute total deadline. Each attempt makes at most two GETs. The POST is never retried, including on throttling or ambiguous network failure; `Retry-After` cannot extend the bounds. The job has a three-minute runner limit.
+
+HTTP 200 records receipt. HTTP 202 records receipt with ownership validation pending. Neither guarantees crawling or indexing. API rejection, timeout, cancellation or an unmatched public build fails the notification job and tells the maintainer the website is already deployed. It never undoes publication. Check the Publish summary separately, especially while Instant Rollback pins the domain. A manual local publication does not run this Actions notification job.
+
+The IndexNow value in `scripts/indexnow.ts` is intentionally public proof of domain ownership, hosted verbatim in UTF-8 at `/{key}.txt`. It is not a private account token and needs no repository secret or new account setup. Never substitute GitHub, Vercel or analytics credentials. The value stays stable across builds. To rotate it, generate a new 8-128-character value using only letters, digits or hyphens, replace `INDEXNOW_KEY`, and review/build/deploy normally. The generated filename, contents and `keyLocation` follow the new value together; the next notification waits for that new file and marker on the domain. The new deployment removes the old file, so do not delete an ownership file separately before the replacement deploy. A rollback to an old build keeps its old ownership value and prevents notification of the new candidate.
+
+Protocol reference: [IndexNow documentation](https://www.indexnow.org/documentation) and [FAQ](https://www.indexnow.org/faq). `apps/marketing/test/indexnow.test.ts` exercises public HTTP behavior only against loopback fixtures, including non-acceptance and time bounds. No real API submission is part of verification. A passing local build does not establish production propagation or indexing.
 
 ## Set it up, once
 
