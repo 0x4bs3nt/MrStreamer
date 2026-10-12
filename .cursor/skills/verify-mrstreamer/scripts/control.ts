@@ -8,6 +8,8 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runDownloads } from "./downloads.ts";
+import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
+import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
 import { homeScenario } from "./home.ts";
 import { languageScenario } from "./language.ts";
 import {
@@ -27,6 +29,8 @@ const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const desktop = join(root, "apps/desktop");
 const scenarios = [
   "home",
+  "home-stage",
+  "home-stage-live-only",
   "subscriptions",
   "background-refresh",
   "live-tv",
@@ -106,6 +110,8 @@ async function run(scenario: Scenario) {
   const observed: Record<string, unknown> = {};
   let profile: string | undefined;
   let provider: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
+  let playlist: Awaited<ReturnType<typeof startFakePlaylist>> | undefined;
+  let other: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
   let releaseGuide: (() => void) | undefined;
   let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
   let app: ChildProcess | undefined;
@@ -114,7 +120,23 @@ async function run(scenario: Scenario) {
   const log: string[] = [];
   try {
     profile = await mkdtemp(join(tmpdir(), "mrstreamer-verify-"));
-    provider = await startFakeProvider({ channels: 60, titles: 30, live: true });
+    const stage = scenario === "home-stage" || scenario === "home-stage-live-only";
+    provider = await startFakeProvider({
+      channels: 60,
+      titles: 30,
+      live: true,
+      ...(stage ? { channelOf: stageChannel, logoSvg: stageLogo, adultChannels: true } : {}),
+    });
+    if (scenario === "home-stage-live-only") playlist = await startFakePlaylist();
+    if (scenario === "home-stage")
+      other = await startFakeProvider({
+        channels: 60,
+        titles: 30,
+        live: true,
+        second: true,
+        channelOf: stageChannel,
+        logoSvg: stageLogo,
+      });
     if (scenario === "background-refresh") releaseGuide = provider.hold("guide").release;
     tmdb = await startFakeTmdb();
     const ownedProfile = profile;
@@ -154,8 +176,7 @@ async function run(scenario: Scenario) {
           ...(process.env["MR_STREAMER_FFMPEG"]
             ? { MR_STREAMER_FFMPEG: process.env["MR_STREAMER_FFMPEG"] }
             : {}),
-          LANGUAGE: system,
-          LANG: `${system}.UTF-8`,
+          ...(process.platform === "linux" ? { LANGUAGE: system, LANG: `${system}.UTF-8` } : {}),
           MR_STREAMER_UPDATE_CHECKS: "off",
           MR_STREAMER_TMDB_API: ownedTmdb.url,
           MR_STREAMER_TMDB_KEY: "test-key",
@@ -170,6 +191,14 @@ async function run(scenario: Scenario) {
         stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
       page = await connect(port);
       if (spawnError) throw spawnError;
+      // The CDP target can answer before the renderer's initial navigation finishes.
+      await until(
+        () =>
+          live().evaluate<boolean>(
+            `location.href.startsWith(${JSON.stringify(pathToFileURL(join(desktop, "out/renderer/")).href)})`,
+          ),
+        abort.signal,
+      );
       await doctor();
       await send("Emulation.setFocusEmulationEnabled", { enabled: true });
       await send("Network.enable");
@@ -211,7 +240,12 @@ async function run(scenario: Scenario) {
         pid: app?.pid,
         port,
         profile,
-        fixturePorts: [Number(new URL(provider!.url).port), Number(new URL(tmdb!.url).port)],
+        fixturePorts: [
+          Number(new URL(provider!.url).port),
+          Number(new URL(tmdb!.url).port),
+          ...(playlist ? [Number(new URL(playlist.origin).port)] : []),
+          ...(other ? [Number(new URL(other.url).port)] : []),
+        ],
         url,
         ...build,
       };
@@ -238,7 +272,7 @@ async function run(scenario: Scenario) {
     };
     const click = async (label: string, element: string) => {
       await wait(() => exists(element));
-      await livePage.evaluate(`${element}.scrollIntoView({ block: "nearest" })`);
+      await livePage.evaluate(`(${element})?.scrollIntoView({ block: "nearest" })`);
       // Popup transitions and late details can move a button after it enters the DOM. Like a
       // viewer, press its painted, enabled control, never coordinates from the initial layout.
       await wait(() =>
@@ -249,8 +283,22 @@ async function run(scenario: Scenario) {
         for (let parent = target; parent; parent = parent.parentElement)
           if (parent.getAnimations().some(a => a.playState === 'running' || a.pending)) return false;
         const before = target.getBoundingClientRect();
+        const inViewport = box => {
+          const x = box.x + box.width / 2, y = box.y + box.height / 2;
+          return box.width > 0 && box.height > 0 && x >= 0 && x < innerWidth && y >= 0 && y < innerHeight;
+        };
+        // Late details can push an already scrolled control below the window. Reposition it,
+        // then let the next probe require stable geometry and a hit on the control itself.
+        if (!inViewport(before)) {
+          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return false;
+        }
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const after = target.getBoundingClientRect();
+        if (!inViewport(after)) {
+          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return false;
+        }
         const hit = document.elementFromPoint(after.x + after.width / 2, after.y + after.height / 2);
         return target.isConnected && after.width > 0 && after.height > 0 &&
           ['x', 'y', 'width', 'height'].every(key => Math.abs(before[key] - after[key]) < 0.5) &&
@@ -287,7 +335,16 @@ async function run(scenario: Scenario) {
       livePage.evaluate<boolean>("document.querySelectorAll('form input').length >= 3"),
     );
     await capture("before-connect");
-    for (const [index, value] of [provider.url, "demo", "demo"].entries()) {
+    if (playlist) {
+      await click("Use a Live-only M3U link", button("form button", "Use an M3U link"));
+      await wait(() =>
+        livePage.evaluate<boolean>("document.querySelectorAll('form input').length === 1"),
+      );
+    }
+    for (const [index, value] of (playlist
+      ? [playlist.link]
+      : [provider.url, "demo", "demo"]
+    ).entries()) {
       await click(
         `Fill Connect field ${index + 1} with fixture data`,
         `document.querySelectorAll('form input')[${index}]`,
@@ -302,7 +359,39 @@ async function run(scenario: Scenario) {
     );
     await capture("connected");
     injectedFailure(scenario);
-    if (scenario === "home") {
+    if (stage) {
+      await homeStageScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          liveOnly: !!playlist,
+          otherUrl: other?.url,
+          counts: () => ({
+            titleLists: provider!.titleListRequests(),
+            details: provider!.detailRequests(),
+            files: provider!.fileRequests(),
+            tmdbDetails: tmdb!.detailRequests(),
+            tmdbAbout: tmdb!.aboutRequests(),
+          }),
+          streams: () => ({
+            requests: provider!.streamRequests(),
+            active: provider!.activeStreams(),
+          }),
+        },
+      );
+    } else if (scenario === "home") {
       await homeScenario(
         {
           profile,
@@ -522,6 +611,14 @@ async function run(scenario: Scenario) {
       observed["streamsAfterAppExit"] = ownedProvider.activeStreams();
       if (ownedProvider.activeStreams() !== 0)
         cleanupErrors.push("Provider still has active streams after app exit.");
+    }
+    if (playlist) {
+      const ownedPlaylist = playlist;
+      await clean(() => ownedPlaylist.close());
+    }
+    if (other) {
+      const ownedOther = other;
+      await clean(() => ownedOther.close());
     }
     if (tmdb) {
       const ownedTmdb = tmdb;

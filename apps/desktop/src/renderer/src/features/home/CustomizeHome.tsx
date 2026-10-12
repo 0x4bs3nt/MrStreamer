@@ -96,7 +96,7 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
                 {label}
               </label>
               <Button
-                className="rounded-none text-white hover:bg-transparent aria-disabled:opacity-40"
+                className="aria-disabled:opacity-40"
                 variant="ghost"
                 size="icon-sm"
                 aria-label={t("Move {name} up", { name: label })}
@@ -106,7 +106,7 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
                 <ArrowUp />
               </Button>
               <Button
-                className="rounded-none text-white hover:bg-transparent aria-disabled:opacity-40"
+                className="aria-disabled:opacity-40"
                 variant="ghost"
                 size="icon-sm"
                 aria-label={t("Move {name} down", { name: label })}
@@ -126,18 +126,14 @@ export function CustomizeHome({ onDone }: { onDone: () => void }) {
       )}
       <div className="mt-3 flex gap-3">
         <Button
-          className="rounded-none text-white hover:bg-transparent aria-disabled:opacity-40"
+          className="aria-disabled:opacity-40"
           variant="ghost"
           disabled={!preferences.data || busy}
           onClick={() => persist(null)}
         >
           {t("Reset to defaults")}
         </Button>
-        <Button
-          className="rounded-none text-white hover:bg-transparent aria-disabled:opacity-40"
-          variant="ghost"
-          onClick={onDone}
-        >
+        <Button className="aria-disabled:opacity-40" variant="secondary" onClick={onDone}>
           {t("Done")}
         </Button>
       </div>

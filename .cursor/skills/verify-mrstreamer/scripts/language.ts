@@ -5,7 +5,11 @@
 // catalogue the app ships, so a translation fix doesn't break the check.
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { LANGUAGE_NAMES, type Locale } from "../../../../packages/contracts/src/language.ts";
+import {
+  LANGUAGE_NAMES,
+  type Locale,
+  type InterfaceLanguage,
+} from "../../../../packages/contracts/src/language.ts";
 import { translate } from "../../../../packages/core/src/i18n.ts";
 
 /** What the scenario drives the owned app with; `control.ts` provides it. */
@@ -25,8 +29,8 @@ export interface Driver {
 }
 
 const SETTINGS = "document.querySelector('header button[aria-pressed]')";
-/** The first select in Settings > General: Interface language, in any language. */
-const LANGUAGE = "document.querySelector('main section select')";
+/** Interface language has locale-valued options; other selects can appear before it loads. */
+const LANGUAGE = `document.querySelector('main section select:has(option[value="en-US"])')`;
 const NAV = "[...document.querySelectorAll('header button')]";
 
 export async function languageScenario(d: Driver): Promise<void> {
@@ -69,20 +73,33 @@ export async function languageScenario(d: Driver): Promise<void> {
       labels: [...document.querySelectorAll('header [aria-label]')].map(b => b.getAttribute('aria-label')),
     }))()`);
 
-  await homeControls(d, "en-US");
+  const language = () =>
+    d.evaluate<InterfaceLanguage>(`(async () => {
+    const read = await window.mrStreamer.invoke('language.get');
+    if (!read.ok) throw new Error('Cannot read interface language');
+    return read.value;
+  })()`);
+  const initial = await language();
+  if (process.platform === "linux") expect(initial.system === "en-US", "English fixture system");
+  await homeControls(d, initial.system);
   await d.capture("home-en-US");
 
-  // English first, as the system speaks it.
+  // The fresh profile follows the actual system, English on the Linux fixture run.
   await openSettings();
   const english = await shown();
   const before = await contentLanguages();
   d.observed["english"] = { ...english, content: before };
-  expect(english.lang === "en-US", "English at first start on an English system");
+  expect(
+    english.lang === initial.system && initial.choice === "system",
+    "First start follows the system",
+  );
   expect(
     english.select.value === "system" &&
       english.select.options[0] ===
-        translate("en-US", "System default ({language})", { language: "English" }),
-    "System default names English",
+        translate(initial.system, "System default ({language})", {
+          language: LANGUAGE_NAMES[initial.system],
+        }),
+    "System default names the actual system language",
   );
   await d.capture("settings-en");
 
@@ -166,25 +183,51 @@ export async function languageScenario(d: Driver): Promise<void> {
   await titleError(d, "fr-FR");
   await downloads(d, "fr-FR");
 
-  // System default follows the system: back to English here, Dutch on a Dutch system.
+  // Linux can simulate a Dutch system with per-process environment variables. Native runs
+  // retain the host's system language and verify that choice without changing host settings.
   await openSettings();
   await pick("system");
-  await d.wait(async () => (await shown()).lang === "en-US");
+  await d.wait(async () => {
+    const active = await language();
+    return (
+      active.choice === "system" &&
+      active.locale === active.system &&
+      (await shown()).lang === active.system
+    );
+  });
   await d.capture("system-en");
   await d.quit();
   await d.launch("nl_NL");
   await smallestWindow(d);
-  await d.wait(() => d.evaluate<boolean>("document.documentElement.lang === 'nl-NL'"));
-  await openSettings();
-  const dutchSystem = await shown();
-  d.observed["systemDutch"] = dutchSystem;
-  expect(
-    dutchSystem.select.value === "system" &&
-      dutchSystem.select.options[0] ===
-        translate("nl-NL", "System default ({language})", { language: "Nederlands" }),
-    "System default is Dutch on a Dutch system",
+  await d.wait(() => d.exists("document.querySelector('header')"));
+  const restartedSystem = await language();
+  const expectedSystem = process.platform === "linux" ? "nl-NL" : initial.system;
+  await d.wait(() =>
+    d.evaluate<boolean>(`document.documentElement.lang === ${JSON.stringify(expectedSystem)}`),
   );
-  await d.capture("system-nl-NL");
+  await openSettings();
+  const systemSettings = await shown();
+  d.observed[process.platform === "linux" ? "systemDutch" : "systemNative"] = {
+    ...systemSettings,
+    language: restartedSystem,
+  };
+  expect(
+    restartedSystem.system === expectedSystem &&
+      restartedSystem.locale === expectedSystem &&
+      restartedSystem.choice === "system" &&
+      systemSettings.select.value === "system" &&
+      systemSettings.select.options[0] ===
+        translate(expectedSystem, "System default ({language})", {
+          language: LANGUAGE_NAMES[expectedSystem],
+        }),
+    "System default follows and names the system after restart",
+  );
+  if (process.platform !== "linux")
+    d.observed["systemSimulationLimit"] =
+      "Native system language retained; LANGUAGE/LANG do not simulate a Dutch host. No host settings changed.";
+  await d.capture(
+    process.platform === "linux" ? "system-nl-NL" : `system-native-${expectedSystem}`,
+  );
 
   // A language a later release saved: English, and nothing else in the file changes.
   await d.quit();

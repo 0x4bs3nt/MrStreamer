@@ -30,7 +30,14 @@ import {
   useSubscriptionPreferences,
   useSubscriptions,
 } from "../../lib/queries.ts";
-import { useContinueWatching, useRemoveFromContinue, useResume } from "../../lib/titles.ts";
+import {
+  useContinueWatching,
+  useRemoveFromContinue,
+  useResume,
+  movieNow,
+  playTitle,
+  pickedVersion,
+} from "../../lib/titles.ts";
 import { useFit } from "../../lib/use-fit.ts";
 import { usePreviewWaits } from "../../player/output.ts";
 import { Picture } from "../../player/Picture.tsx";
@@ -42,7 +49,9 @@ import { watchChannel } from "../live/GuidePage.tsx";
 import { useShowList } from "../live/lists.ts";
 import { PAGE } from "../titles/CollectionGrid.tsx";
 import { openCollection } from "../titles/TitlesPage.tsx";
-import { SavedTile } from "../watchlist/SavedTile.tsx";
+import { HomeTitle } from "./HomeTitle.tsx";
+import { kindLabel } from "../../lib/watchlist.ts";
+import { SavedTile, openSaved } from "../watchlist/SavedTile.tsx";
 
 const NO_IDS: readonly OwnedId[] = [];
 const NO_CHANNELS: readonly LiveChannel[] = [];
@@ -106,10 +115,19 @@ export function HomeScreen({ active }: { active: boolean }) {
   const [grid, fit] = useFit();
   const columns = fit(TILE_REM);
   const posters = fit(POSTER_REM);
+  const preferences = useQuery(queries.preferences());
+  const [customizing, setCustomizing] = useState(false);
+  const rows = homeRows(preferences.data?.homeRows);
+  const channelRows = { favourites, recent, category: inCategory };
+  const isChannelRow = (id: HomeRowId): id is keyof typeof channelRows => id in channelRows;
+  const promoted = rows
+    .filter((row) => row.visible)
+    .map((row) => row.id)
+    .find((id): id is keyof typeof channelRows => isChannelRow(id) && channelRows[id].length > 0);
   const shown = {
-    favourites: favourites.slice(0, columns),
-    recent: recent.slice(0, columns),
-    category: inCategory.slice(0, columns),
+    favourites: favourites.slice(0, promoted === "favourites" ? 6 : columns),
+    recent: recent.slice(0, promoted === "recent" ? 6 : columns),
+    category: inCategory.slice(0, promoted === "category" ? 6 : columns),
   };
   const newMovies = useHomeTitles("movie", posters, titleCollection);
   const newSeries = useHomeTitles("series", posters, titleCollection);
@@ -145,9 +163,6 @@ export function HomeScreen({ active }: { active: boolean }) {
     shown.category[0] ??
     null;
 
-  const preferences = useQuery(queries.preferences());
-  const [customizing, setCustomizing] = useState(false);
-  const rows = homeRows(preferences.data?.homeRows);
   const seeds = (viewing.data?.recentTitles ?? []).slice(0, 32).map(({ title }) => ({
     kind: title.kind === "movie" ? ("movie" as const) : ("series" as const),
     version: title.kind === "movie" ? ownedId(title) : seriesOf(title),
@@ -160,6 +175,8 @@ export function HomeScreen({ active }: { active: boolean }) {
       staleTime: Infinity,
     }).data ?? [];
   const notice = catalogueState(categories);
+  const stageShown =
+    !(notice && !(mappedOnly && notice.kind === "empty")) && (!mappedOnly || !!hero);
   const tiles = (channels: readonly LiveChannel[]) =>
     channels.map((channel) => (
       <Tile
@@ -169,30 +186,86 @@ export function HomeScreen({ active }: { active: boolean }) {
         categories={categoryMap}
       />
     ));
+  const sourceOf = useSourceOf();
+  const playMovie = (title: Title) => {
+    playTitle(movieNow({ ...title, ...pickedVersion(title, left) }, title.backdropUrl), 0);
+  };
   const titles = (list: readonly Title[]) =>
-    list.map((title) => (
-      <PosterTile
-        key={title.key}
-        title={title}
-        onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
-      />
-    ));
+    list.map((title) =>
+      list.length <= 3 ? (
+        <HomeTitle
+          key={title.key}
+          name={title.title}
+          artworkUrl={title.posterUrl}
+          line={[kindLabel(title.kind), title.year, sourceOf(title)].filter(Boolean).join(" · ")}
+          onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
+          onPlay={title.kind === "movie" ? () => playMovie(title) : undefined}
+        />
+      ) : (
+        <PosterTile
+          key={title.key}
+          title={title}
+          onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
+        />
+      ),
+    );
   const entries = continuing.entries.slice(0, columns);
+  const compact = (count: number) => (count <= 3 ? Math.min(3, posters) : undefined);
+  const channelSections = {
+    favourites: {
+      title: t("Favourites"),
+      count: favourites.length,
+      list: { kind: "favourites" } as const,
+    },
+    recent: {
+      title: t("Recently watched"),
+      count: recent.length,
+      list: { kind: "recent" } as const,
+    },
+    category: {
+      title: category?.title ?? t("All channels"),
+      count:
+        category?.channelCount ??
+        status.data?.reduce((sum, each) => sum + each.channelCount, 0) ??
+        inCategory.length,
+      list: categoryList,
+    },
+  };
   const content: Record<HomeRowId, ReactNode> = {
     continue: entries.length > 0 && (
       <div>
-        <Section title={t("Continue watching")} tileRem={TILE_REM}>
-          {entries.map((entry) => (
-            <StillTile
-              key={entry.key}
-              artworkUrl={entry.artworkUrl}
-              name={entry.title.title}
-              line={entry.line}
-              done={entry.done}
-              onPlay={() => resume(entry)}
-              onRemove={() => removal.mutate(entry.title)}
-            />
-          ))}
+        <Section
+          title={t("Continue watching")}
+          tileRem={TILE_REM}
+          compact={compact(continuing.entries.length)}
+        >
+          {entries.map((entry) =>
+            continuing.entries.length <= 3 ? (
+              <HomeTitle
+                key={entry.key}
+                name={entry.title.title}
+                artworkUrl={entry.artworkUrl}
+                line={[entry.line, sourceOf({ ...entry.title, ...entry.version })]
+                  .filter(Boolean)
+                  .join(" · ")}
+                still
+                done={entry.done}
+                onPlay={() => resume(entry)}
+                onOpen={() => openDetails({ kind: entry.title.kind, ...entry.version })}
+                onRemove={() => removal.mutate(entry.title)}
+              />
+            ) : (
+              <StillTile
+                key={entry.key}
+                artworkUrl={entry.artworkUrl}
+                name={entry.title.title}
+                line={entry.line}
+                done={entry.done}
+                onPlay={() => resume(entry)}
+                onRemove={() => removal.mutate(entry.title)}
+              />
+            ),
+          )}
         </Section>
         {removal.error && (
           <p className="mt-3 text-sm text-destructive">{describeError(appError(removal.error))}</p>
@@ -205,17 +278,46 @@ export function HomeScreen({ active }: { active: boolean }) {
         count={saved.total}
         onAll={() => openView("watchlist")}
         tileRem={POSTER_REM}
+        compact={compact(saved.total)}
       >
-        {saved.entries.slice(0, posters).map((entry) => (
-          <SavedTile key={ownedKey(entry)} entry={entry} brief />
-        ))}
+        {saved.entries.slice(0, posters).map((entry) =>
+          saved.total <= 3 ? (
+            <HomeTitle
+              key={ownedKey(entry)}
+              name={entry.title?.title ?? entry.name}
+              artworkUrl={entry.title?.posterUrl ?? entry.artworkUrl}
+              unavailable={entry.listed && !entry.title}
+              line={
+                entry.listed && !entry.title
+                  ? t("Unavailable")
+                  : [
+                      kindLabel(entry.kind),
+                      entry.title?.year ?? entry.year,
+                      entry.title && sourceOf(entry.title),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+              }
+              onOpen={() => openSaved(entry)}
+              onPlay={
+                entry.title?.kind === "movie"
+                  ? () => {
+                      if (entry.title) playMovie(entry.title);
+                    }
+                  : undefined
+              }
+            />
+          ) : (
+            <SavedTile key={ownedKey(entry)} entry={entry} brief />
+          ),
+        )}
       </Section>
     ),
     favourites: shown.favourites.length > 0 && (
       <Section
-        title={t("Favourites")}
-        count={favourites.length}
-        onAll={() => browse({ kind: "favourites" })}
+        title={channelSections.favourites.title}
+        count={channelSections.favourites.count}
+        onAll={() => browse(channelSections.favourites.list)}
         tileRem={TILE_REM}
       >
         {tiles(shown.favourites)}
@@ -223,9 +325,9 @@ export function HomeScreen({ active }: { active: boolean }) {
     ),
     recent: shown.recent.length > 0 && (
       <Section
-        title={t("Recently watched")}
-        count={recent.length}
-        onAll={() => browse({ kind: "recent" })}
+        title={channelSections.recent.title}
+        count={channelSections.recent.count}
+        onAll={() => browse(channelSections.recent.list)}
         tileRem={TILE_REM}
       >
         {tiles(shown.recent)}
@@ -234,6 +336,7 @@ export function HomeScreen({ active }: { active: boolean }) {
     "new-movies": newMovies.length > 0 && (
       <Section
         title={mappedOnly ? t("Movies") : t("New movies")}
+        compact={compact(newMovies.length)}
         onAll={() => openCollection("movie", titleCollection)}
         tileRem={POSTER_REM}
       >
@@ -243,6 +346,7 @@ export function HomeScreen({ active }: { active: boolean }) {
     "new-series": newSeries.length > 0 && (
       <Section
         title={mappedOnly ? t("Series") : t("New series")}
+        compact={compact(newSeries.length)}
         onAll={() => openCollection("series", titleCollection)}
         tileRem={POSTER_REM}
       >
@@ -251,46 +355,68 @@ export function HomeScreen({ active }: { active: boolean }) {
     ),
     category: shown.category.length > 0 && (
       <Section
-        title={category?.title ?? t("All channels")}
-        count={
-          category?.channelCount ??
-          status.data?.reduce((sum, each) => sum + each.channelCount, 0) ??
-          inCategory.length
-        }
-        onAll={() => browse(categoryList)}
+        title={channelSections.category.title}
+        count={channelSections.category.count}
+        onAll={() => browse(channelSections.category.list)}
         tileRem={TILE_REM}
       >
         {tiles(shown.category)}
       </Section>
     ),
     recommendations: recommendations.length > 0 && (
-      <Section title={t("Recommendations")} tileRem={POSTER_REM}>
-        {recommendations.slice(0, posters).map(({ title, seed, reason }) => (
-          <PosterTile
-            key={title.key}
-            title={title}
-            wrapLine
-            line={t("Because you watched {name}", { name: seed }) + " · " + reason}
-            onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
-          />
-        ))}
+      <Section
+        title={t("Recommendations")}
+        tileRem={POSTER_REM}
+        compact={compact(recommendations.length)}
+      >
+        {recommendations
+          .slice(0, posters)
+          .map(({ title, seed, reason }) =>
+            recommendations.length <= 3 ? (
+              <HomeTitle
+                key={title.key}
+                name={title.title}
+                artworkUrl={title.posterUrl}
+                line={[t("Because you watched {name}", { name: seed }), reason, sourceOf(title)]
+                  .filter(Boolean)
+                  .join(" · ")}
+                onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
+                onPlay={title.kind === "movie" ? () => playMovie(title) : undefined}
+              />
+            ) : (
+              <PosterTile
+                key={title.key}
+                title={title}
+                wrapLine
+                line={t("Because you watched {name}", { name: seed }) + " · " + reason}
+                onOpen={() => openDetails({ kind: title.kind, ...ownedId(title) })}
+              />
+            ),
+          )}
       </Section>
     ),
   };
+  const remaining = rows.filter(
+    (row) => row.visible && (!stageShown || row.id !== promoted) && content[row.id],
+  );
+  const titleRows = remaining.filter((row) => !isChannelRow(row.id));
+  const titlesInOrder = [
+    ...titleRows.filter((row) => row.id === "continue"),
+    ...titleRows.filter((row) => row.id !== "continue"),
+  ];
+  // Continue leads the title rows; channel rows keep their saved positions between them.
+  const displayed = remaining.map((row) =>
+    isChannelRow(row.id) ? row : (titlesInOrder[titleRows.indexOf(row)] ?? row),
+  );
   return (
     <div className="h-full overflow-y-auto">
       <WindowBar className="sticky top-0 z-20 bg-black" />
       <div className="flex items-center gap-3 px-10 pt-5 pb-3">
         <h1 className="mr-auto text-2xl font-semibold">{t("Home")}</h1>
-        <Button
-          className="rounded-none text-white hover:bg-transparent"
-          variant="ghost"
-          onClick={() => openView("watchlist")}
-        >
+        <Button variant="secondary" onClick={() => openView("watchlist")}>
           {t("Watchlist")}
         </Button>
         <Button
-          className="rounded-none text-white hover:bg-transparent"
           variant="ghost"
           aria-expanded={customizing}
           onClick={() => setCustomizing((shown) => !shown)}
@@ -309,24 +435,49 @@ export function HomeScreen({ active }: { active: boolean }) {
         </div>
       ) : (
         (!mappedOnly || hero) && (
-          <Hero
-            channel={hero}
-            live={active && sameOwned(hero, playing)}
-            streaming={streaming}
-            listing={hero ? listings[ownedKey(hero)] : undefined}
-            categories={categoryMap}
-            onBrowse={browse}
-          />
+          <div
+            className="mx-10 mt-1 mb-7 grid items-start gap-6"
+            data-home-stage
+            style={{
+              gridTemplateColumns: promoted
+                ? "minmax(0, min(38.67rem, 52%)) minmax(0, 1fr)"
+                : "minmax(0, 38.67rem)",
+            }}
+          >
+            <Hero
+              channel={hero}
+              live={active && sameOwned(hero, playing)}
+              streaming={streaming}
+              listing={hero ? listings[ownedKey(hero)] : undefined}
+              categories={categoryMap}
+              onBrowse={browse}
+            />
+            {promoted && (
+              <section className="@container min-w-0" data-home-row={promoted} data-home-promoted>
+                <SectionHeading
+                  title={channelSections[promoted].title}
+                  count={channelSections[promoted].count}
+                  onAll={() => browse(channelSections[promoted].list)}
+                />
+                {shown[promoted].map((channel) => (
+                  <ChannelLine
+                    key={ownedKey(channel)}
+                    channel={channel}
+                    listing={listings[ownedKey(channel)]}
+                    categories={categoryMap}
+                  />
+                ))}
+              </section>
+            )}
+          </div>
         )
       )}
       <div ref={grid} className="space-y-7 px-10 pt-2 pb-16">
-        {rows
-          .filter((row) => row.visible && content[row.id])
-          .map((row) => (
-            <div key={row.id} data-home-row={row.id}>
-              {content[row.id]}
-            </div>
-          ))}
+        {displayed.map((row) => (
+          <div key={row.id} data-home-row={row.id}>
+            {content[row.id]}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -368,7 +519,8 @@ function Hero({
   const current = listing?.now ?? null;
   return (
     <section
-      className="relative mx-10 mb-4 flex h-48 items-end overflow-hidden pb-5"
+      className="relative aspect-video min-w-0 overflow-hidden rounded-2xl"
+      data-home-preview
       style={{
         background: `radial-gradient(ellipse 70% 90% at 78% 35%, hsl(${hue} 45% 20%), transparent 70%), #000`,
       }}
@@ -377,59 +529,47 @@ function Hero({
         <ChannelLogo
           channel={channel}
           plain
-          className="pointer-events-none absolute top-[24%] right-[12%] h-[28%] w-[22%] text-8xl opacity-90"
+          className="pointer-events-none absolute top-[15%] left-[31%] h-[34%] w-[38%] text-5xl"
         />
       )}
-      <Picture
-        active={live && !waits}
-        fit="cover"
-        className="absolute inset-y-0 right-0 aspect-video h-full max-w-full"
-      />
-      <div className="absolute inset-0 bg-gradient-to-r from-black via-black/60 to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black to-transparent" />
+      <Picture active={live && !waits} fit="contain" className="absolute inset-0" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/45 to-transparent" />
       {channel && waits && (
-        <p className="absolute top-[56%] right-[12%] w-[22%] text-center text-sm text-muted-foreground">
+        <p className="absolute inset-x-6 top-4 text-center text-sm text-muted-foreground">
           {waits}
         </p>
       )}
       {channel && (
-        <div className="relative max-w-[46rem]">
-          <h1 className="text-3xl font-semibold tracking-tight text-balance">
+        <div className="absolute inset-x-6 bottom-5">
+          <h2 className="line-clamp-2 text-[1.375rem] leading-tight font-semibold tracking-tight text-balance">
             {current?.title ?? channel.title}
-          </h1>
-          <div className="mt-3 flex items-center gap-2 text-[0.9375rem] text-foreground/85">
+          </h2>
+          <div className="mt-2 flex min-w-0 items-center gap-2 text-sm text-foreground/85">
             <ChannelLogo channel={channel} className="h-6 w-9" />
-            {current
-              ? [
-                  channel.title,
-                  t("Until {time}", { time: clockTime(current.stop, now) }),
-                  timeLeft(current, now),
-                ].join(" · ")
-              : [channelLine(channel, categories), ...channel.tags].filter(Boolean).join(" · ")}
+            <span className="truncate" title={channel.title}>
+              {current
+                ? [
+                    channel.title,
+                    t("Until {time}", { time: clockTime(current.stop, now) }),
+                    timeLeft(current, now),
+                  ].join(" · ")
+                : [channelLine(channel, categories), ...channel.tags].filter(Boolean).join(" · ")}
+            </span>
           </div>
-          {current && <Progress value={progressOf(current, now)} className="mt-3 w-72" />}
-          <div className="mt-4 flex items-center gap-3">
-            <Button
-              className="rounded-none"
-              variant="primary"
-              size="default"
-              onClick={() => watchChannel(channel)}
-            >
+          {current && (
+            <Progress value={progressOf(current, now)} className="mt-3 w-72 max-w-full" />
+          )}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button variant="primary" size="default" onClick={() => watchChannel(channel)}>
               <Play className="fill-current" />
               {t("Watch")}
             </Button>
-            <Button
-              className="rounded-none text-white hover:bg-transparent"
-              variant="ghost"
-              size="default"
-              onClick={() => browse({ kind: "all" })}
-            >
+            <Button variant="media" size="default" onClick={() => browse({ kind: "all" })}>
               {t("All channels")}
             </Button>
             {live && streaming && !waits && (
               <Button
-                className="rounded-none text-white hover:bg-transparent"
-                variant="secondary"
+                variant="media"
                 size="icon"
                 aria-label={audible ? t("Mute") : t("Unmute")}
                 onClick={() => player.toggleMute()}
@@ -441,13 +581,8 @@ function Hero({
         </div>
       )}
       {!channel && (
-        <div className="relative">
-          <Button
-            className="rounded-none"
-            variant="primary"
-            size="default"
-            onClick={() => browse({ kind: "all" })}
-          >
+        <div className="absolute bottom-5 left-6">
+          <Button variant="primary" size="default" onClick={() => browse({ kind: "all" })}>
             {t("All channels")}
           </Button>
         </div>
@@ -456,43 +591,110 @@ function Hero({
   );
 }
 
+function SectionHeading({
+  title,
+  count,
+  onAll,
+}: {
+  title: string;
+  count?: number | undefined;
+  onAll?: (() => void) | undefined;
+}) {
+  return (
+    <div className="mb-3.5 flex min-w-0 items-baseline gap-3">
+      <h2 className="min-w-0 text-xl font-semibold tracking-tight break-words">{title}</h2>
+      {onAll && (
+        <Button variant="ghost" size="sm" onClick={onAll}>
+          {t("All")}
+          {count === undefined ? "" : ` ${formatNumber(count)}`}
+          <ChevronRight className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function Section({
   title,
   count,
   onAll,
   tileRem,
+  compact,
   children,
 }: {
   title: string;
-  count?: number;
-  onAll?: () => void;
-  /** The narrowest a tile gets; as many fit across as the window allows, in one row. */
+  count?: number | undefined;
+  onAll?: (() => void) | undefined;
   tileRem: number;
+  /** Sparse titles span three poster columns, wrapping when the window is narrower. */
+  compact?: number | undefined;
   children: ReactNode;
 }) {
   return (
     <section>
-      <div className="mb-3.5 flex items-baseline gap-3">
-        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-        {onAll && (
-          <button
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={onAll}
-            className="flex items-center gap-0.5 text-sm text-muted-foreground hover:text-white"
-          >
-            {t("All")}
-            {count === undefined ? "" : ` ${formatNumber(count)}`}
-            <ChevronRight className="size-3.5" />
-          </button>
-        )}
-      </div>
+      <SectionHeading title={title} count={count} onAll={onAll} />
       <div
-        className="grid gap-x-4"
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${tileRem}rem, 1fr))` }}
+        className="grid items-start gap-4"
+        style={{
+          gridTemplateColumns: compact
+            ? `repeat(auto-fill, minmax(min(100%, ${compact * POSTER_REM + compact - 1}rem), 1fr))`
+            : `repeat(auto-fill, minmax(${tileRem}rem, 1fr))`,
+        }}
       >
         {children}
       </div>
     </section>
+  );
+}
+
+/** Six compact rows reuse the guide's channel, programme, progress and remaining-time pattern. */
+function ChannelLine({
+  channel,
+  listing,
+  categories,
+}: {
+  channel: LiveChannel;
+  listing: Listing | undefined;
+  categories: ReadonlyMap<string, Category>;
+}) {
+  const now = useNow();
+  const current = listing?.now;
+  const source = useSourceOf()(channel);
+  return (
+    <button
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => watchChannel(channel)}
+      className="grid min-h-[2.8rem] w-full grid-cols-[3.5rem_minmax(0,1fr)_auto] items-center gap-3.5 border-t border-white/8 text-left hover:bg-white/5 @[32rem]:min-h-[3.25rem] @[32rem]:grid-cols-[3.5rem_9rem_minmax(0,1fr)_auto]"
+      title={channel.title}
+    >
+      <span
+        className="relative block aspect-video overflow-hidden rounded-md bg-white/5"
+        data-home-channel-art
+      >
+        <ChannelLogo
+          channel={channel}
+          plain
+          className="absolute top-[18%] left-[15%] h-[64%] w-[70%]"
+        />
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[0.9375rem]">{channel.title}</span>
+        {source && <span className="block truncate text-xs text-muted-foreground">{source}</span>}
+        <span className="block truncate text-xs text-muted-foreground @[32rem]:hidden">
+          {current?.title ?? categoryOf(channel, categories)}
+        </span>
+        {current && <Progress value={progressOf(current, now)} className="mt-1 @[32rem]:hidden" />}
+      </span>
+      <span className="hidden min-w-0 @[32rem]:block">
+        <span className="block truncate text-[0.9375rem] text-foreground/85">
+          {current?.title ?? categoryOf(channel, categories)}
+        </span>
+        {current && <Progress value={progressOf(current, now)} className="mt-1.5" />}
+      </span>
+      <span className="text-xs text-muted-foreground tabular-nums">
+        {current ? timeLeft(current, now) : ""}
+      </span>
+    </button>
   );
 }
 
@@ -518,10 +720,15 @@ function Tile({
       className="group min-w-0 text-left"
     >
       <div
-        className="relative grid aspect-video place-items-center rounded-2xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]"
+        data-home-channel-art
+        className="relative aspect-video overflow-hidden rounded-2xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]"
         style={{ background: `linear-gradient(160deg, hsl(${hue} 30% 16%), hsl(${hue} 25% 8%))` }}
       >
-        <ChannelLogo channel={channel} plain className="h-[42%] w-[62%] text-2xl" />
+        <ChannelLogo
+          channel={channel}
+          plain
+          className="absolute top-[27%] left-[20%] h-[46%] w-[60%] text-2xl"
+        />
         {current && (
           <Progress value={progressOf(current, now)} className="absolute inset-x-3 bottom-2.5" />
         )}

@@ -3,7 +3,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { CustomizeHome } from "../../src/renderer/src/features/home/CustomizeHome.tsx";
 import { TooltipProvider } from "../../src/renderer/src/components/ui/tooltip.tsx";
 
@@ -204,4 +204,231 @@ it("shows a failed save after reopening, retains saved rows and allows retry the
   await settle();
   expect(labels()[1]).toBe("Watchlist");
   expect(checkbox("Watchlist").checked).toBe(false);
+});
+
+// The complete Home view uses the same row preferences and public title actions as its controls.
+it("promotes the first visible nonempty channel row once, across title rows, moves, hides and reset", async () => {
+  const { HomeScreen } = await import("../../src/renderer/src/features/home/HomeScreen.tsx");
+  const { SAVED, SUBSCRIPTION } = await import("./support.ts");
+  const { defaultPreferences } = await import("@mrstreamer/contracts/preferences");
+  const { queries } = await import("../../src/renderer/src/lib/queries.ts");
+  const channel = {
+    subscriptionId: SUBSCRIPTION,
+    id: "one",
+    name: "Channel one",
+    title: "Channel one",
+    tags: [],
+    number: 1,
+    logoUrl: null,
+    categoryIds: ["all"],
+    variants: [{ id: "one", name: "Channel one", tags: [], quality: null }],
+  };
+  const film = {
+    kind: "movie" as const,
+    key: "movie:continuing",
+    subscriptionId: SUBSCRIPTION,
+    id: "film",
+    name: "Continuing film",
+    title: "Continuing film",
+    originalTitle: null,
+    originalLanguage: null,
+    tags: [],
+    year: null,
+    posterUrl: null,
+    backdropUrl: null,
+    rating: null,
+    addedAt: null,
+    adult: false,
+    tmdbId: null,
+    genres: [],
+    versions: [{ subscriptionId: SUBSCRIPTION, id: "film", tags: [] }],
+  };
+  ipc.reset();
+  ipc.always("subscription.list", [SAVED]);
+  ipc.always("library.categories", [
+    {
+      subscriptionId: SUBSCRIPTION,
+      id: "all",
+      name: "Channels",
+      title: "Channels",
+      group: null,
+      channelCount: 1,
+      members: [{ subscriptionId: SUBSCRIPTION, id: "all" }],
+    },
+  ]);
+  ipc.always("library.channels", [channel]);
+  ipc.always("library.status", []);
+  ipc.always("guide.listings", {});
+  ipc.always("viewing.get", {
+    favourites: [channel],
+    recent: [channel],
+    continueWatching: [
+      {
+        title: { kind: "movie", subscriptionId: SUBSCRIPTION, id: "film" },
+        position: 500,
+        duration: 1000,
+        finished: false,
+        at: 1,
+        since: 1,
+      },
+    ],
+    marked: [],
+    sequence: 0,
+  });
+  ipc.always("ondemand.titles", [film]);
+  ipc.always("ondemand.collection", { name: "All", total: 0, titles: [] });
+  ipc.always("watchlist.list", { total: 0, entries: [] });
+  ipc.prefer({
+    homeRows: [
+      { id: "watchlist", visible: true },
+      { id: "category", visible: true },
+      { id: "recent", visible: true },
+      { id: "favourites", visible: true },
+    ],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  unmount = () => {
+    act(() => root.unmount());
+    container.remove();
+    client.clear();
+  };
+  await act(async () =>
+    root.render(
+      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
+    ),
+  );
+  await settle();
+  const promoted = () =>
+    container.querySelector("[data-home-promoted]")?.getAttribute("data-home-row");
+  const assertOnce = (id: string) => {
+    expect(promoted()).toBe(id);
+    expect(container.querySelectorAll(`[data-home-row=${id}]`)).toHaveLength(1);
+  };
+  assertOnce("category");
+  expect(
+    [...container.querySelectorAll("[data-home-row]")].map((r) => r.getAttribute("data-home-row")),
+  ).toEqual(["category", "recent", "favourites", "continue"]);
+  await act(async () => button("Customize").click());
+  const save = async (action: () => void) => {
+    const held = ipc.hold("preferences.update");
+    await act(async () => action());
+    await act(async () =>
+      held.resolve({ ...defaultPreferences, ...ipc.argsOf("preferences.update").at(-1)! }),
+    );
+    await settle();
+  };
+  await save(() => checkbox("Current category").click());
+  assertOnce("recent");
+  await save(() => button("Move Favourites up").click());
+  assertOnce("favourites");
+  await save(() => checkbox("Favourites").click());
+  assertOnce("recent");
+  await save(() => button("Reset to defaults").click());
+  assertOnce("favourites");
+  await act(async () => button("Done").click());
+  await act(async () => button("Watchlist").click());
+  const { useUi } = await import("../../src/renderer/src/app/ui-store.ts");
+  expect(useUi.getState().view).toBe("watchlist");
+});
+
+it("sparse saved titles keep their resolved owner and unavailable-entry action without eager details", async () => {
+  const measuredWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
+  const { HomeScreen } = await import("../../src/renderer/src/features/home/HomeScreen.tsx");
+  const { useUi } = await import("../../src/renderer/src/app/ui-store.ts");
+  const { SAVED, SUBSCRIPTION } = await import("./support.ts");
+  const { queries } = await import("../../src/renderer/src/lib/queries.ts");
+  const title = {
+    kind: "movie" as const,
+    key: "movie:original",
+    subscriptionId: SUBSCRIPTION,
+    id: "original",
+    name: "Owned movie",
+    title: "Owned movie",
+    originalTitle: null,
+    originalLanguage: null,
+    tags: [],
+    year: 2024,
+    posterUrl: null,
+    backdropUrl: null,
+    rating: null,
+    addedAt: null,
+    adult: false,
+    tmdbId: null,
+    genres: [],
+    versions: [{ subscriptionId: SUBSCRIPTION, id: "original", tags: [] }],
+  };
+  const resolved = {
+    subscriptionId: SUBSCRIPTION,
+    id: "saved",
+    kind: "movie" as const,
+    name: title.name,
+    year: title.year,
+    savedAt: 1,
+    title,
+    artworkUrl: null,
+    sources: [SUBSCRIPTION],
+    listed: true,
+  };
+  const unavailable = { ...resolved, id: "missing", name: "Missing movie", title: null };
+  ipc.reset();
+  useUi.setState(useUi.getInitialState(), true);
+  ipc.always("subscription.list", [SAVED]);
+  ipc.always("library.categories", []);
+  ipc.always("library.channels", []);
+  ipc.always("library.status", []);
+  ipc.always("viewing.get", {
+    favourites: [],
+    recent: [],
+    continueWatching: [],
+    marked: [],
+    sequence: 0,
+  });
+  ipc.always("ondemand.collection", { name: "All", total: 0, titles: [] });
+  ipc.always("watchlist.list", { total: 2, entries: [resolved, unavailable] });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  unmount = () => {
+    act(() => root.unmount());
+    container.remove();
+    client.clear();
+    useUi.setState(useUi.getInitialState(), true);
+    measuredWidth.mockRestore();
+  };
+  await act(async () =>
+    root.render(
+      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
+    ),
+  );
+  await settle();
+  const cards = container.querySelectorAll("[data-home-row=watchlist] article");
+  expect(cards).toHaveLength(2);
+  expect(cards[0]?.textContent).toContain("Play");
+  expect(cards[1]?.textContent).toContain("Unavailable");
+  expect(cards[1]?.textContent).not.toContain("Play");
+  expect(ipc.argsOf("ondemand.details")).toHaveLength(0);
+  await act(async () => cards[0]!.querySelector<HTMLButtonElement>("button[title]")!.click());
+  expect(useUi.getState().details).toEqual({
+    kind: "movie",
+    subscriptionId: SUBSCRIPTION,
+    id: "original",
+  });
+  await act(async () =>
+    [...cards[0]!.querySelectorAll("button")].find((b) => b.textContent === "Details")!.click(),
+  );
+  expect(useUi.getState().details).toEqual({
+    kind: "movie",
+    subscriptionId: SUBSCRIPTION,
+    id: "original",
+  });
+  await act(async () =>
+    [...cards[1]!.querySelectorAll("button")].find((b) => b.textContent === "Details")!.click(),
+  );
+  expect(useUi.getState().savedEntry).toEqual(unavailable);
 });
