@@ -223,6 +223,26 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
     categoryIds: ["all"],
     variants: [{ id: "one", name: "Channel one", tags: [], quality: null }],
   };
+  const film = {
+    kind: "movie" as const,
+    key: "movie:continuing",
+    subscriptionId: SUBSCRIPTION,
+    id: "film",
+    name: "Continuing film",
+    title: "Continuing film",
+    originalTitle: null,
+    originalLanguage: null,
+    tags: [],
+    year: null,
+    posterUrl: null,
+    backdropUrl: null,
+    rating: null,
+    addedAt: null,
+    adult: false,
+    tmdbId: null,
+    genres: [],
+    versions: [{ subscriptionId: SUBSCRIPTION, id: "film", tags: [] }],
+  };
   ipc.reset();
   ipc.always("subscription.list", [SAVED]);
   ipc.always("library.categories", [
@@ -242,10 +262,20 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   ipc.always("viewing.get", {
     favourites: [channel],
     recent: [channel],
-    continueWatching: [],
+    continueWatching: [
+      {
+        title: { kind: "movie", subscriptionId: SUBSCRIPTION, id: "film" },
+        position: 500,
+        duration: 1000,
+        finished: false,
+        at: 1,
+        since: 1,
+      },
+    ],
     marked: [],
     sequence: 0,
   });
+  ipc.always("ondemand.titles", [film]);
   ipc.always("ondemand.collection", { name: "All", total: 0, titles: [] });
   ipc.always("watchlist.list", { total: 0, entries: [] });
   ipc.prefer({
@@ -279,6 +309,9 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
     expect(container.querySelectorAll(`[data-home-row=${id}]`)).toHaveLength(1);
   };
   assertOnce("category");
+  expect(
+    [...container.querySelectorAll("[data-home-row]")].map((r) => r.getAttribute("data-home-row")),
+  ).toEqual(["category", "recent", "favourites", "continue"]);
   await act(async () => button("Customize").click());
   const save = async (action: () => void) => {
     const held = ipc.hold("preferences.update");

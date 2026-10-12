@@ -433,6 +433,31 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
     promoted: await promoted(),
     reorderRequestCounts: requestCounts,
   };
+  await customize();
+  while ((await preferences())[0]?.id !== "favourites") {
+    const before = (await preferences()).findIndex((r) => r.id === "favourites");
+    await d.click("Move Favourites before title rows", move("Favourites", "up"));
+    await d.wait(
+      async () => (await preferences()).findIndex((r) => r.id === "favourites") < before,
+    );
+  }
+  while ((await preferences())[1]?.id !== "recent") {
+    const before = (await preferences()).findIndex((r) => r.id === "recent");
+    await d.click("Keep another channel row before title rows", move("Recently watched", "up"));
+    await d.wait(async () => (await preferences()).findIndex((r) => r.id === "recent") < before);
+  }
+  await done();
+  const mixedOrder = await d.evaluate<string[]>(
+    "[...document.querySelectorAll('[data-home-row]')].map(r=>r.dataset.homeRow)",
+  );
+  require(mixedOrder[0] === "favourites" &&
+    mixedOrder[1] === "recent" &&
+    mixedOrder[2] === "continue", "Continue displaced a saved channel-row position");
+  d.observed["mixedRowOrder"] = mixedOrder;
+  await d.capture("channel-row-before-title-rows");
+  await customize();
+  await reset();
+  await done();
   if (fixture.otherUrl) {
     await d.click(
       "Open subscriptions for owner labels",
@@ -479,7 +504,13 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
       "(async () => { const p=await window.mrStreamer.invoke('preferences.get'); return p.ok && p.value.adultTitles; })()",
     ),
   );
+  await d.capture("adult-setting-settled");
   await d.key("Escape", 27);
+  await d.wait(() =>
+    d.evaluate<boolean>(
+      "!!document.querySelector('[data-home-preview]') && !document.body.innerText.includes('Loading channels')",
+    ),
+  );
   await d.click(
     "Browse adult channels in Live TV",
     text("[data-home-preview] button", "All channels"),
@@ -525,9 +556,18 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
   await d.capture("home-no-guide");
   await search("TEST | Offline");
   await d.key("Enter", 13);
-  await d.wait(() => d.exists("document.querySelector('[data-playback-state]')"));
+  await d.wait(() =>
+    d.evaluate<boolean>(
+      "document.querySelector('[data-view=watch]')?.innerText.includes('No stream right now') ?? false",
+    ),
+  );
+  await d.capture("offline-watch-failed");
   await d.key("Escape", 27);
-  await d.wait(() => d.exists("document.querySelector('[data-home-preview]')"));
+  await d.wait(() =>
+    d.evaluate<boolean>(
+      "!document.querySelector('[data-view=watch]') && document.querySelector('[data-home-preview]')?.checkVisibility()",
+    ),
+  );
   require(!(await d.exists(
     "document.querySelector('[data-home-preview] button[aria-label=Unmute]')",
   )), "Failed stream offered mute");

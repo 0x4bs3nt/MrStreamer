@@ -119,13 +119,11 @@ export function HomeScreen({ active }: { active: boolean }) {
   const [customizing, setCustomizing] = useState(false);
   const rows = homeRows(preferences.data?.homeRows);
   const channelRows = { favourites, recent, category: inCategory };
+  const isChannelRow = (id: HomeRowId): id is keyof typeof channelRows => id in channelRows;
   const promoted = rows
     .filter((row) => row.visible)
     .map((row) => row.id)
-    .find(
-      (id): id is keyof typeof channelRows =>
-        (id === "favourites" || id === "recent" || id === "category") && channelRows[id].length > 0,
-    );
+    .find((id): id is keyof typeof channelRows => isChannelRow(id) && channelRows[id].length > 0);
   const shown = {
     favourites: favourites.slice(0, promoted === "favourites" ? 6 : columns),
     recent: recent.slice(0, promoted === "recent" ? 6 : columns),
@@ -398,6 +396,18 @@ export function HomeScreen({ active }: { active: boolean }) {
       </Section>
     ),
   };
+  const remaining = rows.filter(
+    (row) => row.visible && (!stageShown || row.id !== promoted) && content[row.id],
+  );
+  const titleRows = remaining.filter((row) => !isChannelRow(row.id));
+  const titlesInOrder = [
+    ...titleRows.filter((row) => row.id === "continue"),
+    ...titleRows.filter((row) => row.id !== "continue"),
+  ];
+  // Continue leads the title rows; channel rows keep their saved positions between them.
+  const displayed = remaining.map((row) =>
+    isChannelRow(row.id) ? row : (titlesInOrder[titleRows.indexOf(row)] ?? row),
+  );
   return (
     <div className="h-full overflow-y-auto">
       <WindowBar className="sticky top-0 z-20 bg-black" />
@@ -463,14 +473,11 @@ export function HomeScreen({ active }: { active: boolean }) {
         )
       )}
       <div ref={grid} className="space-y-7 px-10 pt-2 pb-16">
-        {rows
-          .filter((row) => row.visible && (!stageShown || row.id !== promoted) && content[row.id])
-          .sort((a, b) => (a.id === "continue" ? -1 : b.id === "continue" ? 1 : 0))
-          .map((row) => (
-            <div key={row.id} data-home-row={row.id}>
-              {content[row.id]}
-            </div>
-          ))}
+        {displayed.map((row) => (
+          <div key={row.id} data-home-row={row.id}>
+            {content[row.id]}
+          </div>
+        ))}
       </div>
     </div>
   );
