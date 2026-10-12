@@ -32,6 +32,8 @@ export const Preferences = type({
   "adultTitles?": "boolean",
   /** A series' next episode plays after a ten-second countdown at the end of one. On when absent. */
   "autoplayNext?": "boolean",
+  /** Basic first-seen profile/app-use statistics. On when absent; saved by the analytics owner. */
+  "analyticsEnabled?": "boolean",
   /**
    * How subtitles look: their size, a box or a shadow behind text, and how high they sit. A new
    * choice needs a new key: a release that meets a value it doesn't know drops the whole file.

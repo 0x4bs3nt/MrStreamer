@@ -121,6 +121,37 @@ export function GeneralSection() {
           </p>
         )}
       </Section>
+      <Section title={t("Privacy")}>
+        <Row label={t("Share basic usage statistics")}>
+          <Checkbox.Root
+            aria-label={t("Share basic usage statistics")}
+            checked={preferences.data?.analyticsEnabled ?? true}
+            disabled={!preferences.isSuccess || update.isPending}
+            onCheckedChange={(checked) => update.mutate({ analyticsEnabled: checked })}
+            className="grid size-4 flex-none place-items-center rounded-[0.25rem] shadow-[inset_0_0_0_1.5px_rgb(255_255_255/45%)] outline-none focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-white data-checked:shadow-none"
+          >
+            <Checkbox.Indicator>
+              <Check className="size-3 text-black" strokeWidth={3} />
+            </Checkbox.Indicator>
+          </Checkbox.Root>
+        </Row>
+        <p className="mt-3 text-sm">
+          {t(
+            "Counts first-seen profiles and weekly app use. No viewing history or provider details.",
+          )}
+        </p>
+        <a
+          href="https://mrstreamer.app/privacy"
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 inline-block text-sm underline underline-offset-4"
+        >
+          {t("Privacy policy")}
+        </a>
+        {update.error && update.variables?.analyticsEnabled !== undefined && (
+          <p className="mt-3 text-sm text-destructive">{describeError(appError(update.error))}</p>
+        )}
+      </Section>
       <Section title={t("Live TV")}>
         <Row label={t("Quality")} note={t("Automatic tries the nearest if one fails")}>
           <Select
@@ -213,7 +244,7 @@ export function GeneralSection() {
           ownKey={Boolean(preferences.data?.tmdbKey)}
           onKey={(tmdbKey, done) => update.mutate({ tmdbKey }, { onSuccess: done })}
         />
-        {update.error && (
+        {update.error && update.variables?.analyticsEnabled === undefined && (
           <p className="mt-3 text-sm text-destructive">{describeError(appError(update.error))}</p>
         )}
       </Section>

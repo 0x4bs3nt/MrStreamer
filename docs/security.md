@@ -6,6 +6,10 @@ Your subscriptions are stored on your computer. Passwords, playlist links and gu
 
 Your provider receives its login in every request the app makes to it. Mr. Streamer never falls back from HTTPS to unencrypted HTTP. An address entered with `http://` sends the login unencrypted; an address without a scheme asks before using HTTP when HTTPS fails. The [privacy policy](privacy.md) lists what is stored and every connection the app makes.
 
+## Basic app-use statistics
+
+From 0.0.11, the app keeps a random per-profile analytics installation identifier and a durable collection preference. **Settings > General > Privacy** turns collection off and clears pending observations. The identifier is not a provider login and is excluded from diagnostics exports. Configured production capture uses HTTPS and contains only the coarse fields in the [privacy policy](privacy.md#basic-app-use-statistics-from-0011), which also records the collection destination and retention policy. PostHog still sees the connection’s source IP address even with GeoIP enrichment disabled.
+
 ## Reporting a problem
 
 Report a security problem privately to [security@mrstreamer.app](mailto:security@mrstreamer.app), rather than in a public issue. Include what you found, how to reproduce it and the Mr. Streamer version from Settings > About. Leave out your provider's server address, username, password, playlist link and guide address.

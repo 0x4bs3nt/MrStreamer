@@ -21,6 +21,10 @@ export const nl: Translation = {
   Licences: "Licenties",
   "Open-source licences": "Opensourcelicenties",
   Privacy: "Privacy",
+  "Share basic usage statistics": "Basisgebruiksstatistieken delen",
+  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
+    "Telt voor het eerst waargenomen profielen en wekelijks appgebruik. Geen kijkgeschiedenis of providergegevens.",
+  "Privacy policy": "Privacybeleid",
   "Report a bug": "Een fout melden",
   "Rate in the Microsoft Store": "Beoordelen in de Microsoft Store",
   "The Microsoft Store could not be opened.": "De Microsoft Store kon niet worden geopend.",

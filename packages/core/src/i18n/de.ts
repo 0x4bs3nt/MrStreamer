@@ -21,6 +21,10 @@ export const de: Translation = {
   Licences: "Lizenzen",
   "Open-source licences": "Open-Source-Lizenzen",
   Privacy: "Datenschutz",
+  "Share basic usage statistics": "Grundlegende Nutzungsstatistiken teilen",
+  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
+    "Zählt erstmals erfasste Profile und die wöchentliche App-Nutzung. Kein Wiedergabeverlauf oder Anbieterinformationen.",
+  "Privacy policy": "Datenschutzerklärung",
   "Report a bug": "Fehler melden",
   "Rate in the Microsoft Store": "Im Microsoft Store bewerten",
   "The Microsoft Store could not be opened.": "Der Microsoft Store konnte nicht geöffnet werden.",
