@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type } from "arktype";
-import type { AnalyticsSettings } from "@mrstreamer/contracts/analytics";
+import type { AnalyticsFeature, AnalyticsSettings } from "@mrstreamer/contracts/analytics";
 import {
   AnalyticsRecord,
   BuildProperties,
@@ -9,11 +9,25 @@ import {
 } from "./model.ts";
 import { analyticsStore } from "./storage.ts";
 import type { CaptureTransport } from "./transport.ts";
+import {
+  incrementSummary,
+  summaryOnDay,
+  type SummaryCounts,
+  type SummaryFailure,
+  type SummaryOperation,
+  type SummaryOutcome,
+  type SummaryRecord,
+} from "./summary.ts";
 
 const IO_MS = 1500;
 const QUIT_MS = 500;
 const QUEUE_LIMIT = 8;
 const ATTEMPTS = 3;
+
+interface OperationGeneration {
+  readonly consent: number;
+  readonly dimensions: number;
+}
 
 interface AnalyticsOptions {
   readonly dataDir: string;
@@ -35,10 +49,15 @@ export class Analytics {
   private available = true;
   private paused = false;
   private revision = 0;
+  private dimensions = 0;
   private foreground = false;
   private closing = false;
   private stopped = false;
   private observationPending = false;
+  private summary: SummaryRecord | undefined;
+  private notesDirty = false;
+  private checkpointPending = false;
+  private checkpointTimer: ReturnType<typeof setTimeout> | undefined;
   private dayTimer: ReturnType<typeof setInterval> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private request: AbortController | undefined;
@@ -62,6 +81,7 @@ export class Analytics {
           lastDay: null,
           pending: [],
         };
+        this.summary = this.record.enabled && !this.paused ? this.record.summary : undefined;
       }),
       IO_MS,
     ).catch(() => this.unavailable());
@@ -85,12 +105,20 @@ export class Analytics {
   configure(enabled: boolean): Promise<AnalyticsSettings> {
     this.paused = true;
     const revision = ++this.revision;
+    if (!enabled) this.summary = undefined;
+    this.notesDirty = false;
+    this.clearCheckpoint();
     this.request?.abort();
     this.clearRetry();
     return this.exclusive(async () => {
       if (!this.available || !this.record || this.closing)
         throw new Error("Analytics preference could not be saved.");
-      await this.save({ ...this.record, enabled, pending: enabled ? this.record.pending : [] });
+      const { summary: _summary, ...kept } = this.record;
+      await this.save({
+        ...kept,
+        enabled,
+        pending: enabled ? kept.pending : [],
+      });
       if (this.revision === revision) this.paused = !enabled;
     }).then(async () => {
       this.observe();
@@ -113,7 +141,108 @@ export class Analytics {
   }
 
   setUpdateChannel(channel: BuildProperties["update_channel"]): void {
+    if (channel === this.properties.update_channel) return;
     this.properties = { ...this.properties, update_channel: channel };
+    this.dimensions++;
+    if (this.transport && this.summary && this.canCapture()) {
+      this.summary = summaryOnDay(
+        this.summary,
+        new Date().toISOString().slice(0, 10),
+        this.properties,
+      );
+      this.notesDirty = true;
+      this.checkpoint();
+    }
+  }
+
+  noteFeature(feature: AnalyticsFeature): void {
+    this.note((counts) => {
+      counts.features[feature] = incrementSummary(counts, counts.features[feature]);
+    });
+  }
+
+  /** A terminal result can count only in the enabled generation that observed its start. */
+  noteOperationStarted(operation: SummaryOperation): OperationGeneration | null {
+    if (!this.transport || !this.canCapture() || this.closing) return null;
+    const observed = this.note((counts) => {
+      const measured = counts[operation];
+      measured.started = incrementSummary(counts, measured.started);
+    });
+    return observed ? { consent: this.revision, dimensions: this.dimensions } : null;
+  }
+
+  /** Outcomes describe the observed operation, never content, provider identity or raw failure. */
+  noteOperationFinished(
+    operation: SummaryOperation,
+    generation: OperationGeneration | null,
+    outcome: SummaryOutcome,
+    failure: SummaryFailure = "app",
+  ): void {
+    if (
+      !generation ||
+      generation.consent !== this.revision ||
+      generation.dimensions !== this.dimensions
+    )
+      return;
+    this.note((counts) => {
+      const measured = counts[operation];
+      measured[outcome] = incrementSummary(counts, measured[outcome]);
+      if (outcome === "failed")
+        measured.failures[failure] = incrementSummary(counts, measured.failures[failure]);
+    });
+  }
+
+  noteRenderer(event: keyof SummaryCounts["renderer"]): void {
+    this.note((counts) => {
+      counts.renderer[event] = incrementSummary(counts, counts.renderer[event]);
+    });
+  }
+
+  /** Notes mutate fixed-size memory. At most one checkpoint is queued, regardless of UI rate. */
+  private note(change: (counts: SummaryCounts) => void): boolean {
+    if (!this.transport || !this.canCapture() || this.closing) return false;
+    const day = new Date().toISOString().slice(0, 10);
+    if (
+      (this.summary && day < this.summary.day) ||
+      (this.record?.lastDay && day < this.record.lastDay)
+    )
+      return false;
+    this.summary = summaryOnDay(this.summary, day, this.properties);
+    change(this.summary.counts);
+    this.notesDirty = true;
+    this.checkpoint();
+    return true;
+  }
+
+  private checkpoint(): void {
+    if (
+      this.checkpointTimer ||
+      this.checkpointPending ||
+      !this.notesDirty ||
+      this.closing ||
+      !this.canCapture()
+    )
+      return;
+    this.checkpointTimer = setTimeout(() => {
+      this.checkpointTimer = undefined;
+      this.checkpointPending = true;
+      const revision = this.revision;
+      void this.exclusive(async () => {
+        if (!this.canCapture() || revision !== this.revision || !this.record) return;
+        if (this.notesDirty) await this.save(this.record);
+      })
+        .catch(() => {})
+        .finally(() => {
+          this.checkpointPending = false;
+          this.checkpoint();
+        });
+    }, 1000);
+    this.checkpointTimer.unref();
+  }
+
+  private clearCheckpoint(): void {
+    if (this.checkpointTimer) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
   }
 
   /** Bounds the total wait, including a hung disk/transport. No new observations during quit. */
@@ -123,10 +252,13 @@ export class Analytics {
     this.foreground = false;
     if (this.dayTimer) clearInterval(this.dayTimer);
     this.clearRetry();
+    this.clearCheckpoint();
     try {
       await deadline(
         (async () => {
-          await this.serial;
+          await this.exclusive(async () => {
+            if (this.canCapture() && this.record && this.notesDirty) await this.save(this.record);
+          });
           // A retry backoff is skipped once at quit, within the same per-event attempt budget.
           this.pump();
           while (this.sending) await this.sending;
@@ -185,9 +317,29 @@ export class Analytics {
         },
         attempts: 0,
       });
+      let summary = this.summary && summaryOnDay(this.summary, day, this.properties);
+      if (summary?.ready && (!summary.reportedDay || summary.ready.day > summary.reportedDay)) {
+        pending.push({
+          event: {
+            uuid: randomUUID(),
+            distinct_id: installationId,
+            timestamp,
+            event: "app_summary_day",
+            properties: {
+              ...properties,
+              ...summary.ready.properties,
+              summary_date: summary.ready.day,
+              counts: summary.ready.counts,
+            },
+          },
+          attempts: 0,
+        });
+        summary = { ...summary, reportedDay: summary.ready.day, ready: null };
+      }
+      this.summary = summary;
       // Preserve a pending first observation; discard the oldest day when offline too long.
       while (pending.length > QUEUE_LIMIT) {
-        const oldestDay = pending.findIndex((item) => item.event.event === "app_active_day");
+        const oldestDay = pending.findIndex((item) => item.event.event !== "installation_observed");
         pending.splice(oldestDay, 1);
       }
       await this.save({
@@ -196,6 +348,7 @@ export class Analytics {
         firstSeen: true,
         lastDay: day,
         pending,
+        ...(summary ? { summary } : {}),
       });
     })
       .catch(() => {})
@@ -279,9 +432,15 @@ export class Analytics {
   }
 
   private async save(record: AnalyticsRecord): Promise<void> {
+    const { summary: _summary, ...kept } = record;
+    const snapshot: AnalyticsRecord = {
+      ...kept,
+      ...(record.enabled && this.summary ? { summary: structuredClone(this.summary) } : {}),
+    };
+    this.notesDirty = false;
     try {
-      await deadline(this.store.save(record), IO_MS);
-      this.record = record;
+      await deadline(this.store.save(snapshot), IO_MS);
+      this.record = snapshot;
     } catch {
       this.unavailable();
       throw new Error("Analytics preference could not be saved.");
@@ -290,6 +449,7 @@ export class Analytics {
 
   private unavailable(): void {
     this.available = false;
+    this.clearCheckpoint();
     this.paused = true;
     this.request?.abort();
     this.clearRetry();

@@ -89,6 +89,9 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
         ...(allowed.event === "app_active_day"
           ? { activity_date: allowed.properties.activity_date }
           : {}),
+        ...(allowed.event === "app_summary_day"
+          ? { summary_date: allowed.properties.summary_date, counts: allowed.properties.counts }
+          : {}),
       };
       const body = JSON.stringify({
         api_key: projectToken,

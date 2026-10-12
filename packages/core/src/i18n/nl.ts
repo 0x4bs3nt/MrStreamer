@@ -23,8 +23,8 @@ export const nl: Translation = {
   "Open-source licences": "Opensourcelicenties",
   Privacy: "Privacy",
   "Share basic usage statistics": "Basisgebruiksstatistieken delen",
-  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
-    "Telt voor het eerst waargenomen profielen en wekelijks appgebruik. Geen kijkgeschiedenis of providergegevens.",
+  "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
+    "Telt appgebruik, welke functies je opent, of afspelen, downloads en updatecontroles werken en hoe vaak het venster onverwacht stopt. Geen kijkgeschiedenis of providergegevens.",
   "Privacy policy": "Privacybeleid",
   "Report a bug": "Een fout melden",
   "Rate in the Microsoft Store": "Beoordelen in de Microsoft Store",

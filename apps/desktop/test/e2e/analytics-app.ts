@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import { type } from "arktype";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import type { Result } from "@mrstreamer/contracts/errors";
-import { CaptureEvent } from "../../src/main/analytics/model.ts";
+import { AnalyticsRecord, CaptureEvent } from "../../src/main/analytics/model.ts";
 import { startFakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, delay, type Page } from "./app.ts";
@@ -56,13 +56,33 @@ const capture = createServer(async (req, res) => {
   res.end("ok");
 });
 let endpoint = "";
+let rejectUpdate = false;
+let updateEndpoint = "";
+const updateFeed = createServer((_req, res) => {
+  res.statusCode = rejectUpdate ? 503 : 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(
+    JSON.stringify({ schema: 1, generated: new Date().toISOString(), stable: null, nightly: null }),
+  );
+});
 const actions: { action: string; at: string }[] = [];
 const observations: Record<string, unknown> = {};
 const log: string[] = [];
 let app: ChildProcess | undefined;
 let page: Page | undefined;
+let mainPage: Page | undefined;
+let debuggingPort = 0;
 let failure: unknown;
 const cleanupErrors: string[] = [];
+
+/** Validate a clone, then compare the complete raw wire body before any unknown-key deletion. */
+function captured(payload: unknown): CaptureEvent {
+  const event = CaptureEvent(structuredClone(payload));
+  if (event instanceof type.errors) throw new Error("Invalid capture event.");
+  if (!isDeepStrictEqual(payload, { api_key: "mrstreamer-local-verification", ...event }))
+    throw new Error("Unexpected raw capture fields.");
+  return event;
+}
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -88,6 +108,8 @@ async function send(method: string, params: Record<string, unknown> = {}) {
 
 async function launch() {
   const port = await freePort();
+  debuggingPort = port;
+  const inspectorPort = await freePort();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([name]) => !name.startsWith("MR_STREAMER_") && name !== "ELECTRON_RUN_AS_NODE",
@@ -97,6 +119,7 @@ async function launch() {
     packagedExecutable ?? (await electronExecutable()),
     [
       `--remote-debugging-port=${port}`,
+      `--inspect=${inspectorPort}`,
       "--remote-debugging-address=127.0.0.1",
       `--user-data-dir=${profile}`,
       "--enable-automation",
@@ -113,6 +136,8 @@ async function launch() {
         LANGUAGE: "en_US",
         LANG: "en_US.UTF-8",
         MR_STREAMER_UPDATE_CHECKS: "off",
+        MR_STREAMER_UPDATE_FEED: `${updateEndpoint}/updates.json`,
+        MR_STREAMER_UPDATE_API: updateEndpoint,
         MR_STREAMER_TMDB_API: tmdb!.url,
         MR_STREAMER_TMDB_KEY: "test-key",
         MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT: endpoint,
@@ -122,6 +147,9 @@ async function launch() {
   for (const stream of [app.stdout, app.stderr])
     stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
   page = await connect(port);
+  mainPage = await connect(inspectorPort, "node");
+  if ((await mainPage.evaluate<number>("process.pid")) !== app.pid)
+    throw new Error("Wrong main inspector process.");
   const identity = await send("Browser.getBrowserCommandLine");
   const arguments_ = record(identity) ? identity["arguments"] : null;
   if (
@@ -141,7 +169,7 @@ async function launch() {
       : !url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href)
   )
     throw new Error("Wrong renderer build.");
-  observations["instance"] = { pid: app.pid, port, profile, url, endpoint };
+  observations["instance"] = { pid: app.pid, port, inspectorPort, profile, url, endpoint };
   const instances = observations["instances"];
   observations["instances"] = [
     ...(Array.isArray(instances) ? instances : []),
@@ -154,6 +182,8 @@ async function quit() {
   if (app) await stop(app, page);
   page?.close();
   page = undefined;
+  mainPage?.close();
+  mainPage = undefined;
 }
 
 /** Pointer input, with the element located from the current DOM rather than guessed coordinates. */
@@ -219,6 +249,212 @@ async function connectFixture() {
   await settings();
 }
 
+async function keyEscape() {
+  await send("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+  });
+  await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  await delay(250);
+}
+
+async function namedButton(selector: string, name: string, title = false) {
+  const expression = `[...document.querySelectorAll(${JSON.stringify(selector)})].findIndex(b => ${title ? `b.title.includes(${JSON.stringify(name)})` : `b.textContent.trim() === ${JSON.stringify(name)}`})`;
+  await waitFor(async () => (await live().evaluate<number>(expression)) >= 0);
+  await click(selector, await live().evaluate<number>(expression));
+  actions.push({ action: `Pressed ${name}`, at: new Date().toISOString() });
+}
+
+async function analyticsState() {
+  const state = AnalyticsRecord(
+    JSON.parse(await readFile(join(profile, "analytics.json"), "utf8")),
+  );
+  if (state instanceof type.errors) throw new Error("Invalid analytics checkpoint.");
+  return state;
+}
+
+async function productPaths() {
+  await keyEscape();
+  await namedButton("header button", "Live TV");
+  await namedButton("header button", "Movies");
+  await namedButton("nav button", "All movies");
+  await namedButton("button[title]", "Index at the end", true);
+  await namedButton('[role="dialog"] button', "Save");
+  await namedButton('[role="dialog"] button', "Download");
+  await waitFor(
+    async () => (await analyticsState()).summary?.counts.download_transfer.success === 1,
+  );
+  await snapshot("download-complete");
+  await namedButton('[role="dialog"] button', "Play");
+  await waitFor(
+    async () => ((await analyticsState()).summary?.counts.playback_open.success ?? 0) >= 1,
+  );
+  await snapshot("provider-title-open");
+  await keyEscape();
+  await keyEscape();
+  await namedButton("header button", "Downloads");
+  await namedButton("button", "Watch offline");
+  await waitFor(() =>
+    live().evaluate<boolean>("!!document.querySelector('[data-view=title] video')"),
+  );
+  await snapshot("copy-playing");
+  await keyEscape();
+  await namedButton("header button", "Movies");
+  const held = provider!.titles.movies.find((movie) => movie.name.includes("Long recording"));
+  if (!held) throw new Error("No cancellable transfer fixture.");
+  provider!.stallMovieFile(held.id, 40_000, 60_000);
+  await namedButton("button[title]", "Long recording", true);
+  await namedButton('[role="dialog"] button', "Download");
+  await waitFor(() =>
+    live().evaluate<boolean>(
+      "!!document.querySelector('[role=dialog] button[aria-label$=\"cancel download\"]')",
+    ),
+  );
+  await snapshot("transfer-running");
+  await click('[role="dialog"] button[aria-label$="cancel download"]');
+  await waitFor(
+    async () => (await analyticsState()).summary?.counts.download_transfer.interrupted === 1,
+  );
+  await keyEscape();
+  await namedButton("button[title]", "Missing file", true);
+  await namedButton('[role="dialog"] button', "Download");
+  await waitFor(
+    async () => (await analyticsState()).summary?.counts.download_transfer.failed === 1,
+  );
+  await namedButton('[role="dialog"] button', "Play");
+  await waitFor(
+    async () => ((await analyticsState()).summary?.counts.playback_open.failed ?? 0) >= 1,
+  );
+  await snapshot("failed-open");
+  await keyEscape();
+  await keyEscape();
+  await namedButton("header button", "Series");
+  await namedButton("header button", "Home");
+  await namedButton("button", "Watchlist");
+  await click('button[aria-label="Search"]');
+  await snapshot("search-entry");
+  await keyEscape();
+  await settings();
+  await namedButton("button", "Check now");
+  await waitFor(async () => (await analyticsState()).summary?.counts.update_check.success === 1);
+  rejectUpdate = true;
+  await namedButton("button", "Check now");
+  await waitFor(async () => (await analyticsState()).summary?.counts.update_check.failed === 1);
+  await snapshot("update-check-failed");
+  if (!mainPage) throw new Error("No owned main inspector.");
+  await waitFor(async () => (await analyticsState()).summary?.counts.renderer.starts === 1);
+  // A real renderer crash in our disposable process, with main left alive to receive the exit.
+  const electronModule = `process.getBuiltinModule('module').createRequire(${JSON.stringify(join(desktop, "package.json"))})('electron')`;
+  await mainPage.evaluate(`(() => {
+    const window = ${electronModule}.BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error('No owned primary window.');
+    window.webContents.forcefullyCrashRenderer();
+    return true;
+  })()`);
+  await waitFor(async () => {
+    const counts = (await analyticsState()).summary?.counts.renderer;
+    return !!counts && counts.crashed + counts.killed + counts.other === 1;
+  });
+  await mainPage.evaluate(
+    `(() => { ${electronModule}.BrowserWindow.getAllWindows()[0].webContents.reload(); return true; })()`,
+  );
+  page?.close();
+  page = await connect(debuggingPort);
+  await send("Page.bringToFront");
+  await settings();
+  await snapshot("renderer-recovered");
+  actions.push({
+    action:
+      "Crashed only the owned renderer, main observed one unexpected exit; reloaded its primary window",
+    at: new Date().toISOString(),
+  });
+  // The recovered Home and Settings entries must reach the coalesced checkpoint before
+  // comparing that persisted snapshot with the next day's capture.
+  await waitFor(async () => {
+    const observed = await analyticsState();
+    return (
+      (observed.summary?.counts.features.home ?? 0) >= 3 &&
+      (observed.summary?.counts.features.settings ?? 0) >= 3
+    );
+  });
+  const before = await analyticsState();
+  if (!before.summary) throw new Error("No observed daily counts.");
+  const all = before.summary.counts;
+  for (const feature of [
+    "home",
+    "live_tv",
+    "movies",
+    "series",
+    "watchlist",
+    "downloads",
+    "search",
+    "settings",
+    "player",
+    "details",
+  ] as const)
+    if (all.features[feature] < 1) throw new Error(`No real entry for ${feature}.`);
+  if (all.renderer.starts !== 2)
+    throw new Error("Main did not observe the initial and reloaded renderer starts.");
+  observations["beforeRollover"] = all;
+  await writeFile(join(evidence, "checkpoint.json"), JSON.stringify(before, null, 2));
+  if (!mainPage) throw new Error("No owned main inspector.");
+  // Advance the clock only in our verified process. All product mutations above used UI input.
+  await mainPage.evaluate(`(() => { const RealDate = Date; const offset = 86400000;
+    globalThis.Date = class extends RealDate { constructor(...args) { if(args.length === 0) super(RealDate.now() + offset); else super(...args); } static now() { return RealDate.now() + offset; } };
+    return new Date().toISOString(); })()`);
+  actions.push({
+    action:
+      "Advanced owned main-process UTC clock one day, waiting for native foreground observation",
+    at: new Date().toISOString(),
+  });
+  await waitFor(
+    async () =>
+      payloads.some((payload) => {
+        return record(payload) && payload["event"] === "app_summary_day";
+      }),
+    75_000,
+  );
+  const enabled = payloads.map(captured);
+  if (
+    !isDeepStrictEqual(
+      enabled.map((event) => event.event),
+      ["installation_observed", "app_active_day", "app_active_day", "app_summary_day"],
+    )
+  )
+    throw new Error("Wrong enabled capture set.");
+  const rawSummary = payloads.find(
+    (payload) => record(payload) && payload["event"] === "app_summary_day",
+  );
+  if (!record(rawSummary) || !record(rawSummary["properties"]))
+    throw new Error("No raw summary capture.");
+  observations["summaryAllowlist"] = Object.keys(rawSummary["properties"]).sort();
+  observations["enabledCaptureSet"] = enabled.map((event) => event.event);
+  const summary = enabled.find((event) => event.event === "app_summary_day");
+  if (!summary || summary.event !== "app_summary_day")
+    throw new Error("No actual summary capture.");
+  if (!isDeepStrictEqual(summary.properties.counts, before.summary.counts))
+    throw new Error("Capture lost observed counts.");
+  const operations = summary.properties.counts;
+  observations["rates"] = Object.fromEntries(
+    (["playback_open", "download_transfer", "update_check"] as const).map((name) => [
+      name,
+      {
+        started: operations[name].started,
+        success: operations[name].success,
+        failed: operations[name].failed,
+        interrupted: operations[name].interrupted,
+        denominator: operations[name].success + operations[name].failed,
+        successRate:
+          operations[name].success / (operations[name].success + operations[name].failed),
+      },
+    ]),
+  );
+  observations["summaryRecordedBuild"] = before.summary.properties;
+  rejectUpdate = false;
+}
+
 try {
   profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-"));
   profiles.push(profile);
@@ -228,6 +464,11 @@ try {
   const address = capture.address();
   if (!address || typeof address === "string") throw new Error("No owned capture port.");
   endpoint = `http://127.0.0.1:${address.port}/i/v0/e/`;
+  await new Promise<void>((resolve) => updateFeed.listen(0, "127.0.0.1", resolve));
+  const updateAddress = updateFeed.address();
+  if (!updateAddress || typeof updateAddress === "string")
+    throw new Error("No local update endpoint.");
+  updateEndpoint = `http://127.0.0.1:${updateAddress.port}`;
   if (packagedExecutable)
     observations["packagedExecutable"] = {
       path: packagedExecutable,
@@ -252,8 +493,8 @@ try {
     action: "Opened real General Privacy control, default checked",
     at: new Date().toISOString(),
   });
-  const first = CaptureEvent(payloads[0]);
-  const day = CaptureEvent(payloads[1]);
+  const first = captured(payloads[0]);
+  const day = captured(payloads[1]);
   if (
     first instanceof type.errors ||
     day instanceof type.errors ||
@@ -296,6 +537,8 @@ try {
   observations["firstSeenOrigin"] = first.properties.profile_origin;
   observations["payloadAllowlist"] = Object.keys(first.properties).sort();
   observations["activityAllowlist"] = Object.keys(day.properties).sort();
+  await productPaths();
+  const enabledCaptures = payloads.length;
   await click(checkbox);
   await waitFor(async () => (await preference()).analyticsEnabled === false);
   await snapshot("off");
@@ -307,7 +550,8 @@ try {
     throw new Error("Opt-out did not survive restart.");
   await snapshot("restart-off");
   await delay(1200);
-  if (payloads.length !== 2) throw new Error("Disabled profile captured after restart.");
+  if (payloads.length !== enabledCaptures)
+    throw new Error("Disabled profile captured after restart.");
   actions.push({
     action: "Restarted same profile, checkbox remains off and capture count unchanged",
     at: new Date().toISOString(),
@@ -316,7 +560,7 @@ try {
   await waitFor(async () => (await preference()).analyticsEnabled === true);
   await snapshot("reenabled");
   await delay(1200);
-  if (payloads.length !== 2) throw new Error("Re-enable duplicated first-seen/day.");
+  if (payloads.length !== enabledCaptures) throw new Error("Re-enable duplicated first-seen/day.");
   const diagnostics = await live().evaluate<unknown>(
     "window.mrStreamer.invoke('diagnostics.preview')",
   );
@@ -393,6 +637,11 @@ try {
   await clean(quit);
   if (provider) await clean(() => provider!.close());
   if (tmdb) await clean(() => tmdb!.close());
+  if (updateFeed.listening)
+    await clean(async () => {
+      updateFeed.closeAllConnections();
+      await new Promise<void>((resolve) => updateFeed.close(() => resolve()));
+    });
   if (capture.listening)
     await clean(async () => {
       capture.closeAllConnections();
@@ -442,6 +691,7 @@ try {
           .digest("hex"),
         limitations: [
           "Local capture, no live PostHog project/dashboard/retention acceptance",
+          "Rollover uses a controlled main-process UTC clock offset in our isolated instance",
           packagedExecutable
             ? "Packaged executable against local capture; installed upgrade/native acceptance remains separate"
             : "Source build; native installed acceptance pending",

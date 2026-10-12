@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { SummaryFailure, SummaryOutcome } from "../src/main/analytics/summary.ts";
 import type { UpdateFeed } from "@mrstreamer/contracts/update-feed";
 import { parseVersion } from "@mrstreamer/contracts/version";
 import { discovery, DiscoveryFailed, type Offer } from "@mrstreamer/core/updates/feed";
@@ -863,4 +864,50 @@ describe("finding releases", () => {
       failure: { kind: "http", status: 403 },
     });
   });
+});
+
+it("observes one actual shared update check and bounded failures, excluding installer actions", async () => {
+  const outcomes: { outcome: SummaryOutcome; failure?: SummaryFailure }[] = [];
+  let starts = 0;
+  const channels: string[] = [];
+  let release: (() => void) | undefined;
+  let fail = false;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { installer } = fakeInstaller();
+  const service = await startUpdates({
+    dataDir: await tempDir(),
+    installed: "0.2.0",
+    installer,
+    async discover() {
+      await pending;
+      if (fail) throw new Error("PRIVATE network details");
+      return [offer("v0.2.1")];
+    },
+    observeCheck(channel) {
+      channels.push(channel);
+      starts++;
+      return (outcome, failure) => outcomes.push({ outcome, ...(failure ? { failure } : {}) });
+    },
+  });
+  const first = service.check();
+  const second = service.check();
+  await vi.waitFor(() => expect(starts).toBe(1));
+  release?.();
+  await Promise.all([first, second]);
+  expect(outcomes).toEqual([{ outcome: "success" }]);
+  fail = true;
+  await service.check();
+  expect(starts).toBe(2);
+  expect(outcomes).toEqual([{ outcome: "success" }, { outcome: "failed", failure: "network" }]);
+  fail = false;
+  await service.check();
+  await service.download();
+  await service.restart();
+  expect(starts).toBe(3);
+  expect(outcomes).toHaveLength(3);
+  expect(channels).toEqual(["stable", "stable", "stable"]);
+  await service.setChannel("nightly");
+  expect(channels).toEqual(["stable", "stable", "stable", "nightly"]);
 });

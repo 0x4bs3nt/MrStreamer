@@ -11,6 +11,7 @@
 - [What plays](./user/playback.md)
 - [Troubleshooting](./user/troubleshooting.md)
 - [Privacy policy](./privacy.md)
+- [Product and reliability measurements](./telemetry.md)
 
 ## Contributing
 

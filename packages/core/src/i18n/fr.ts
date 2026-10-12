@@ -23,8 +23,8 @@ export const fr: Translation = {
   "Open-source licences": "Licences open source",
   Privacy: "Confidentialité",
   "Share basic usage statistics": "Partager les statistiques d’utilisation de base",
-  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
-    "Compte les profils observés pour la première fois et l’utilisation hebdomadaire de l’application. Aucun historique de visionnage ni détail du fournisseur.",
+  "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
+    "Compte l’utilisation de l’application, les fonctionnalités que vous ouvrez, si la lecture, les téléchargements et les vérifications de mises à jour fonctionnent, et combien de fois la fenêtre s’arrête de façon inattendue. Aucun historique de visionnage ni détail du fournisseur.",
   "Privacy policy": "Politique de confidentialité",
   "Report a bug": "Signaler un bug",
   "Rate in the Microsoft Store": "Noter dans le Microsoft Store",

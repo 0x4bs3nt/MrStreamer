@@ -1,17 +1,11 @@
 import { type } from "arktype";
+import { BuildProperties } from "./properties.ts";
+import { SummaryCounts, SummaryRecord } from "./summary.ts";
 
 export const ProfileOrigin = type("'fresh' | 'upgrading' | 'unknown'");
 export type ProfileOrigin = typeof ProfileOrigin.infer;
 
-export const BuildProperties = type({
-  app_version: /^(?:\d+\.\d+\.\d+(?:-nightly\.\d{8}\.\d+)?|unknown)$/,
-  build_channel: "'stable' | 'nightly' | 'unknown'",
-  update_channel: "'stable' | 'nightly' | 'none'",
-  os: "'macos' | 'windows' | 'linux' | 'unknown'",
-  arch: "'x64' | 'arm64' | 'ia32' | 'unknown'",
-  distribution: "'direct' | 'store'",
-}).onUndeclaredKey("delete");
-export type BuildProperties = typeof BuildProperties.infer;
+export { BuildProperties } from "./properties.ts";
 
 const Properties = BuildProperties.merge({
   profile_origin: ProfileOrigin,
@@ -37,6 +31,15 @@ export const CaptureEvent = Envelope.merge({
         "delete",
       ),
     }).onUndeclaredKey("delete"),
+  )
+  .or(
+    Envelope.merge({
+      event: "'app_summary_day'",
+      properties: Properties.merge({
+        summary_date: /^\d{4}-\d{2}-\d{2}$/,
+        counts: SummaryCounts,
+      }).onUndeclaredKey("delete"),
+    }).onUndeclaredKey("delete"),
   );
 export type CaptureEvent = typeof CaptureEvent.infer;
 
@@ -47,6 +50,7 @@ export const AnalyticsRecord = type({
   profileOrigin: ProfileOrigin,
   firstSeen: "boolean",
   lastDay: type(/^\d{4}-\d{2}-\d{2}$/).or("null"),
+  "summary?": SummaryRecord,
   pending: type({ event: CaptureEvent, attempts: "0 <= number.integer <= 3" })
     .onUndeclaredKey("delete")
     .array()

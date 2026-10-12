@@ -23,6 +23,7 @@ import { player, usePlayer } from "../player/player.ts";
 import { titlePlayer } from "../player/title-player.ts";
 import { hasModifier } from "./platform.ts";
 import { showReceiverPlayback } from "./receiver-playback.ts";
+import { useFeatureEntries } from "./analytics.ts";
 import { withoutTitles, useUi, type View } from "./ui-store.ts";
 
 export function App() {
@@ -61,6 +62,11 @@ export function App() {
   // Connect shows only with no subscription saved. One whose password or link can't be read
   // stays in the lists with what it loaded, and Settings is where it is entered again.
   const connect = subscriptions.isSuccess && subscriptions.data.length === 0;
+  useFeatureEntries(
+    subscriptions.isSuccess && !preferences.isPending,
+    connect,
+    subscriptions.isSuccess && !subscriptions.data.some(hasTitles),
+  );
   // Downloads stand alone without one: Connect opens them, and Add subscription goes back.
   const offline = useUi((state) => state.view === "downloads");
   // The login form replaces everything, and a receiver's controls with it: what it plays ends.

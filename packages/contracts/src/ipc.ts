@@ -3,6 +3,7 @@
 // Add a method by giving it an input schema in `ipcInputs` and a result type in `IpcOutputs`.
 // The main process refuses to start unless every method has a handler (see src/main/ipc.ts).
 import { type } from "arktype";
+import { analyticsFeatures } from "./analytics.ts";
 import {
   OnlineSubtitlePreferences,
   SubtitleCredentialInput,
@@ -326,6 +327,7 @@ export const ipcInputs = {
       .or({ generation: "number.integer", command: "'subtitles'", on: "boolean" }),
   "output.volume": () => type({ "level?": "0 <= number <= 1", "muted?": "boolean" }),
   "output.playingTitle": none,
+  "analytics.feature": () => type.enumerated(...analyticsFeatures),
   "preferences.get": none,
   // Only the preferences' own keys: the interface language changes through `language.set` alone.
   "preferences.update": () => Preferences.partial().onUndeclaredKey("delete"),
@@ -584,6 +586,7 @@ export interface IpcOutputs {
    * opened while it plays. Null for a channel, or when it plays nothing.
    */
   "output.playingTitle": RemotePlayingTitle | null;
+  "analytics.feature": null;
   "preferences.get": Preferences;
   "preferences.update": Preferences;
   /** The interface language in effect, and how it was chosen. */

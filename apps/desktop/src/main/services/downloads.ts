@@ -21,6 +21,7 @@
 // read as it was queued, how far it was watched here, and the subtitles saved for the exact file
 // it was made from (see `subtitlesOfCopy`). Removing a subscription cancels its unfinished
 // downloads; its copies stay, and play, until the viewer deletes them.
+import { downloadFailure, type OperationObserver } from "../analytics/operations.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -30,6 +31,7 @@ import {
   type Download,
   type DownloadArtwork,
   type DownloadList,
+  type DownloadFailure,
 } from "@mrstreamer/contracts/downloads";
 import type { EpisodeDetails, RawTitleRef, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
@@ -64,6 +66,7 @@ const ID = /^[0-9a-f-]{36}$/;
 export interface DownloadsDeps {
   readonly dataDir: string;
   readonly userAgent: string;
+  readonly observeTransfer?: OperationObserver;
   /** The disk transfers write to; the file system except in tests. */
   readonly disk?: Disk;
   /** What artwork is fetched with; `fetch` except in tests. */
@@ -363,6 +366,7 @@ function make(deps: DownloadsDeps) {
 
     /** Transfers `record` on the connection playback lent it. */
     const start = (record: StoredDownload, lent: Lent) => {
+      const finished = deps.observeTransfer?.();
       const controller = new AbortController();
       let outcome: TransferOutcome = { kind: "stopped" };
       const transferring: Active = {
@@ -394,8 +398,14 @@ function make(deps: DownloadsDeps) {
         // Only once its request is over does the subscription's stream go on.
         .finally(() => lent.release());
       transferring.settled = transferring.over
-        .then(() => settle(record.id, transferring, outcome))
+        .then(async () => {
+          const failure = await settle(record.id, transferring, outcome);
+          if (failure === "stopped") finished?.("interrupted");
+          else if (failure) finished?.("failed", downloadFailure(failure));
+          else finished?.(outcome.kind === "stopped" ? "interrupted" : "success");
+        })
         .catch((cause) => {
+          finished?.("failed", "app");
           console.warn("[downloads] couldn't keep how a transfer ended", cause);
           // Failed as far as this run knows, so the queue doesn't take it again and again.
           const latest = records.get(record.id);
@@ -491,24 +501,30 @@ function make(deps: DownloadsDeps) {
     };
 
     /** Writes down how a transfer ended: a copy, a failure, or where it stopped. */
-    const settle = async (id: string, transferring: Active, outcome: TransferOutcome) => {
+    const settle = async (
+      id: string,
+      transferring: Active,
+      outcome: TransferOutcome,
+    ): Promise<DownloadFailure | "stopped" | undefined> => {
       const record = records.get(id);
       // Removed meanwhile: its files are the removal's.
-      if (!record) return;
+      if (!record) return "stopped";
       const { received, size, identity, restarted } = transferring;
       const where = { ...record, received, size, identity, restarted };
-      if (outcome.kind === "stopped") return update(id, () => where);
+      if (outcome.kind === "stopped") {
+        update(id, () => where);
+        return;
+      }
       if (outcome.kind === "failed") {
-        return update(id, () => ({ ...where, state: "failed", failure: outcome.failure }));
+        update(id, () => ({ ...where, state: "failed", failure: outcome.failure }));
+        return outcome.failure;
       }
       try {
         await rename(partOf(record), mediaOf(record));
       } catch (cause) {
-        return update(id, () => ({
-          ...where,
-          state: "failed",
-          failure: { kind: "folder", detail: messageOf(cause) },
-        }));
+        const failure: DownloadFailure = { kind: "folder", detail: messageOf(cause) };
+        update(id, () => ({ ...where, state: "failed", failure }));
+        return failure;
       }
       // What was saved for the exact bytes it was made from comes with the copy. Saved for other
       // bytes, or without proof of which, it stays the provider file's.
@@ -532,6 +548,7 @@ function make(deps: DownloadsDeps) {
             .pipe(Effect.ignore),
         );
       }
+      if (!records.has(id)) return "stopped";
       missing.delete(id);
       update(id, (latest) => {
         const { failure: _failure, ...rest } = latest;

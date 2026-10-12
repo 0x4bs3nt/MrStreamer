@@ -34,6 +34,8 @@ import { t } from "@mrstreamer/core/i18n";
 import { WINDOW_BAR } from "../shared/window-bar.ts";
 import { analyticsBuild } from "./analytics/build.ts";
 import { Analytics } from "./analytics/service.ts";
+import type { SummaryFailure, SummaryOperation, SummaryOutcome } from "./analytics/summary.ts";
+import { observeOpen } from "./analytics/playback.ts";
 import { profileOrigin } from "./analytics/storage.ts";
 import { analyticsTransport } from "./analytics/transport.ts";
 import { emit, registerIpc } from "./ipc.ts";
@@ -262,6 +264,7 @@ function openWindow(
   closeStreams: () => void,
   keeps: () => boolean,
   changed: (window: BrowserWindow) => void,
+  observe: (window: BrowserWindow) => void,
 ): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
@@ -332,6 +335,8 @@ function openWindow(
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   miniPlayers.set(window, miniPlayer(window, MIN_SIZE));
 
+  // Attach lifecycle observation before loadFile/loadURL can emit the initial renderer start.
+  observe(window);
   const devServer = process.env["ELECTRON_RENDERER_URL"];
   if (devServer) void window.loadURL(devServer);
   else void window.loadFile(join(import.meta.dirname, "../renderer/index.html"));
@@ -362,9 +367,53 @@ async function start(): Promise<void> {
     callback(permission === "fullscreen");
   });
 
+  // Local verification explicitly names its isolated profile. Production capture requires release
+  // configuration; packaging and update-check preferences alone cannot enable it.
+  const localEndpoint = app.commandLine.hasSwitch("user-data-dir")
+    ? process.env["MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"]
+    : undefined;
+  const buildProperties = analyticsBuild({
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    store: storeCopy,
+  });
+  const analytics = new Analytics({
+    dataDir,
+    origin: initialProfileOrigin,
+    properties: {
+      ...buildProperties,
+      update_channel: storeCopy ? "none" : "stable",
+    },
+    transport: analyticsTransport({
+      production: __ANALYTICS_CAPTURE__,
+      releaseBuild: __ANALYTICS_RELEASE_BUILD__ && buildProperties.build_channel !== "unknown",
+      packaged: app.isPackaged,
+      isolated: app.commandLine.hasSwitch("user-data-dir"),
+      automated:
+        ["development", "test"].includes(process.env["NODE_ENV"] ?? "") ||
+        [
+          "enable-automation",
+          "remote-debugging-port",
+          "inspect",
+          "inspect-brk",
+          "use-mock-keychain",
+        ].some((flag) => app.commandLine.hasSwitch(flag)),
+      localEndpoint,
+    }),
+  });
+  let dimensionsReady = storeCopy;
+  const observeOperation = (operation: SummaryOperation) => () => {
+    const generation = dimensionsReady ? analytics.noteOperationStarted(operation) : null;
+    return (outcome: SummaryOutcome, failure?: SummaryFailure) =>
+      analytics.noteOperationFinished(operation, generation, outcome, failure);
+  };
+
   const runtime = ManagedRuntime.make(
     mainLayer({
       dataDir,
+      downloads: { observeTransfer: observeOperation("download_transfer") },
       secrets: keychainSecrets,
       userAgent,
       ffmpeg: toolPath("ffmpeg"),
@@ -382,6 +431,11 @@ async function start(): Promise<void> {
         ? { installed: app.getVersion(), openStore: () => shell.openExternal(STORE_PAGE) }
         : {
             installed: app.getVersion(),
+            observeCheck: (channel) => {
+              analytics.setUpdateChannel(channel);
+              dimensionsReady = true;
+              return observeOperation("update_check")();
+            },
             discover: discovery({
               feedUrl: UPDATE_FEED,
               api: UPDATE_API,
@@ -450,42 +504,8 @@ async function start(): Promise<void> {
       : new Response(null, { status: 404 });
   });
   const updateStatus = await runtime.runPromise(updates.status);
-  // Local verification explicitly names its isolated profile. Production capture requires release
-  // configuration; packaging and update-check preferences alone cannot enable it.
-  const localEndpoint = app.commandLine.hasSwitch("user-data-dir")
-    ? process.env["MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"]
-    : undefined;
-  const buildProperties = analyticsBuild({
-    version: app.getVersion(),
-    packaged: app.isPackaged,
-    platform: process.platform,
-    arch: process.arch,
-    store: storeCopy,
-  });
-  const analytics = new Analytics({
-    dataDir,
-    origin: initialProfileOrigin,
-    properties: {
-      ...buildProperties,
-      update_channel: storeCopy ? "none" : updateStatus.channel,
-    },
-    transport: analyticsTransport({
-      production: __ANALYTICS_CAPTURE__,
-      releaseBuild: __ANALYTICS_RELEASE_BUILD__ && buildProperties.build_channel !== "unknown",
-      packaged: app.isPackaged,
-      isolated: app.commandLine.hasSwitch("user-data-dir"),
-      automated:
-        ["development", "test"].includes(process.env["NODE_ENV"] ?? "") ||
-        [
-          "enable-automation",
-          "remote-debugging-port",
-          "inspect",
-          "inspect-brk",
-          "use-mock-keychain",
-        ].some((flag) => app.commandLine.hasSwitch(flag)),
-      localEndpoint,
-    }),
-  });
+  analytics.setUpdateChannel(storeCopy ? "none" : updateStatus.channel);
+  dimensionsReady = true;
   // The ordinary preferences query/mutation owns the renderer cache. Analytics alone persists
   // consent; viewing settings never receive a second copy that could race or reset that choice.
   const generalPreferences = Effect.gen(function* () {
@@ -678,27 +698,33 @@ async function start(): Promise<void> {
         audioLanguage,
         preview,
       }) =>
-        Effect.gen(function* () {
-          // A page's preview never takes the provider's connection from a receiver. Refused
-          // here while one is the output, also one that is gone with nothing open; the playback
-          // service looks again when the open takes its turn, for one that began meanwhile.
-          if (preview && (yield* output.remote)) {
-            return yield* new Failed({
-              error: { kind: "unexpected", detail: t("A receiver has playback.") },
-            });
-          }
-          const turn = yield* coordination.begin;
-          const channel = yield* library.channel(named);
-          const variants = yield* streamsOf(channel, variant);
-          return yield* playback.open(ownedId(channel), decoders, {
-            variants,
-            repair: repair ?? false,
-            audio: audio ?? null,
-            audioLanguage: audioLanguage ?? null,
-            preview: preview ?? false,
-            turn,
-          });
-        }),
+        observeOpen(
+          coordination,
+          observeOperation("playback_open"),
+          (turn) =>
+            Effect.gen(function* () {
+              const channel = yield* library.channel(named);
+              const variants = yield* streamsOf(channel, variant);
+              return yield* playback.open(ownedId(channel), decoders, {
+                variants,
+                repair: repair ?? false,
+                audio: audio ?? null,
+                audioLanguage: audioLanguage ?? null,
+                preview: preview ?? false,
+                turn,
+              });
+            }),
+          Effect.gen(function* () {
+            // A page's preview never takes the provider's connection from a receiver. Refused
+            // here while one is the output, also one that is gone with nothing open; the playback
+            // service looks again when the open takes its turn, for one that began meanwhile.
+            if (preview && (yield* output.remote)) {
+              return yield* new Failed({
+                error: { kind: "unexpected", detail: t("A receiver has playback.") },
+              });
+            }
+          }),
+        ),
       "subtitles.settings": () => onlineSubtitles.settings,
       "subtitles.configure": ({ preferences, credentials }) =>
         onlineSubtitles.configure(preferences, credentials),
@@ -714,24 +740,26 @@ async function start(): Promise<void> {
       "subtitles.forget": ({ sessionId }) => Effect.as(onlineSubtitles.forget(sessionId), null),
       "subtitles.cancel": ({ sessionId }) => Effect.as(onlineSubtitles.cancel(sessionId), null),
       "playback.openTitle": ({ title, decoders }) =>
-        Effect.gen(function* () {
-          const turn = yield* coordination.begin;
-          // What plays goes first, whichever subscription it is of, so no provider sees a
-          // connection beside the one about to open.
-          yield* playback.closeAll;
-          const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-          return yield* playback.openTitle(title, url, decoders, {
-            turn,
-            revision,
-            headers,
-            listingKey,
-          });
-        }),
+        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
+          Effect.gen(function* () {
+            // What plays goes first, whichever subscription it is of, so no provider sees a
+            // connection beside the one about to open.
+            yield* playback.closeAll;
+            const { url, revision, headers, listingKey } = yield* onDemand.file(title);
+            return yield* playback.openTitle(title, url, decoders, {
+              turn,
+              revision,
+              headers,
+              listingKey,
+            });
+          }),
+        ),
       "playback.openCopy": ({ copy, decoders }) =>
-        Effect.gen(function* () {
-          const turn = yield* coordination.begin;
-          return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
-        }),
+        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
+          Effect.gen(function* () {
+            return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
+          }),
+        ),
       "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
       "playback.closeAll": () =>
         Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
@@ -778,29 +806,31 @@ async function start(): Promise<void> {
       "output.closePicker": ({ request }) => Effect.as(output.closePicker(request), null),
       "output.disconnect": () => Effect.as(output.disconnect, null),
       "output.playChannel": ({ channel: named, variant, audio, audioLanguage, name }) =>
-        Effect.gen(function* () {
-          const turn = yield* coordination.begin;
-          const channel = yield* library.channel(named);
-          const variants = yield* streamsOf(channel, variant);
-          return yield* output.playChannel(ownedId(channel), {
-            variants,
-            audio: audio ?? null,
-            audioLanguage: audioLanguage ?? null,
-            shown: { name },
-            turn,
-          });
-        }),
+        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
+          Effect.gen(function* () {
+            const channel = yield* library.channel(named);
+            const variants = yield* streamsOf(channel, variant);
+            return yield* output.playChannel(ownedId(channel), {
+              variants,
+              audio: audio ?? null,
+              audioLanguage: audioLanguage ?? null,
+              shown: { name },
+              turn,
+            });
+          }),
+        ),
       "output.openTitle": ({ title, since }) =>
-        Effect.gen(function* () {
-          const turn = yield* coordination.begin;
-          const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-          return yield* output.openTitle(title, url, since, {
-            turn,
-            revision,
-            headers,
-            listingKey,
-          });
-        }),
+        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
+          Effect.gen(function* () {
+            const { url, revision, headers, listingKey } = yield* onDemand.file(title);
+            return yield* output.openTitle(title, url, since, {
+              turn,
+              revision,
+              headers,
+              listingKey,
+            });
+          }),
+        ),
       "output.playTitle": ({
         sessionId,
         position,
@@ -829,6 +859,11 @@ async function start(): Promise<void> {
           language = languageFor(choice);
           applyLanguage(language);
           return language;
+        }),
+      "analytics.feature": (feature) =>
+        Effect.sync(() => {
+          analytics.noteFeature(feature);
+          return null;
         }),
       "preferences.get": () => generalPreferences,
       "preferences.update": (patch) =>
@@ -984,6 +1019,20 @@ async function start(): Promise<void> {
   let leaving = false;
   /** Only the primary window on screen with keyboard focus counts as foreground app use. */
   const trackForeground = (window: BrowserWindow) => {
+    let requestedClose = false;
+    window.on("close", (event) => {
+      requestedClose = !event.defaultPrevented;
+    });
+    window.webContents.on("did-start-loading", () => {
+      requestedClose = false;
+      analytics.noteRenderer("starts");
+    });
+    window.webContents.on("render-process-gone", (_event, details) => {
+      if (leaving || requestedClose || details.reason === "clean-exit") return;
+      analytics.noteRenderer(
+        details.reason === "crashed" ? "crashed" : details.reason === "killed" ? "killed" : "other",
+      );
+    });
     const observe = () =>
       analytics.setForeground(
         !leaving &&
@@ -1014,8 +1063,7 @@ async function start(): Promise<void> {
   // played still to pick up, closing the window keeps it out of sight. Other systems quit with
   // their window, which ends the receiver's playback.
   const keeps = () => isMac && !leaving && runtime.runSync(output.remote);
-  mainWindow = openWindow(closeStreams, keeps, followList);
-  trackForeground(mainWindow);
+  mainWindow = openWindow(closeStreams, keeps, followList, trackForeground);
   // How long the app took to show its window, from the start of the process.
   mainWindow.once("ready-to-show", () =>
     diagnostics.record({ op: "start", ms: Math.round(performance.now()), outcome: "ok" }),
@@ -1026,8 +1074,7 @@ async function start(): Promise<void> {
     // Nothing opens on a runtime that is closing.
     if (closing) return;
     if (!mainWindow) {
-      mainWindow = openWindow(closeStreams, keeps, followList);
-      trackForeground(mainWindow);
+      mainWindow = openWindow(closeStreams, keeps, followList, trackForeground);
     } else if (away) bringBack(mainWindow);
   });
   app.on("will-quit", (event) => {

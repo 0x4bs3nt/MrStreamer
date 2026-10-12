@@ -24,8 +24,8 @@ export const en = {
   "Open-source licences": "Open-source licences",
   Privacy: "Privacy",
   "Share basic usage statistics": "Share basic usage statistics",
-  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
-    "Counts first-seen profiles and weekly app use. No viewing history or provider details.",
+  "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
+    "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.",
   "Privacy policy": "Privacy policy",
   "Report a bug": "Report a bug",
   "Rate in the Microsoft Store": "Rate in the Microsoft Store",

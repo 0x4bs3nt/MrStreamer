@@ -13,6 +13,8 @@ import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import { setLanguage } from "@mrstreamer/core/i18n";
 import { playlistGroupId } from "@mrstreamer/core/playlist/import";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import type { OperationObserver } from "../src/main/analytics/operations.ts";
+import type { SummaryFailure, SummaryOutcome } from "../src/main/analytics/summary.ts";
 import { fileDisk, type Disk } from "../src/main/downloads/transfer.ts";
 import { mainLayer } from "../src/main/runtime.ts";
 import { Downloads } from "../src/main/services/downloads.ts";
@@ -37,14 +39,23 @@ const pictures: typeof fetch = async () =>
   });
 
 /** The app's services on `dataDir`, as one start of the app has them, with TMDB at `tmdb`. */
-async function app(dataDir: string, disk?: Disk, tmdb?: FakeTmdb) {
+async function app(
+  dataDir: string,
+  disk?: Disk,
+  tmdb?: FakeTmdb,
+  observeTransfer?: OperationObserver,
+) {
   const runtime = runtimeFor(
     mainLayer({
       ...testConfig(dataDir),
       ...(tmdb ? { tmdbKey: "test-key", tmdbApi: tmdb.url } : {}),
       ffmpeg: "ffmpeg",
       ffprobe: "ffprobe",
-      downloads: { fetch: pictures, ...(disk ? { disk } : {}) },
+      downloads: {
+        fetch: pictures,
+        ...(disk ? { disk } : {}),
+        ...(observeTransfer ? { observeTransfer } : {}),
+      },
     }),
   );
   const downloads = await promised(runtime, Downloads);
@@ -64,10 +75,14 @@ async function app(dataDir: string, disk?: Disk, tmdb?: FakeTmdb) {
 }
 
 /** A connected subscription of a fake provider allowing one connection, its lists loaded. */
-async function connected(options: FakeProviderOptions = {}, disk?: Disk) {
+async function connected(
+  options: FakeProviderOptions = {},
+  disk?: Disk,
+  observeTransfer?: OperationObserver,
+) {
   const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 50, ...options });
   const dataDir = await tempDir();
-  const started = await app(dataDir, disk);
+  const started = await app(dataDir, disk, undefined, observeTransfer);
   const saved = await started.subscriptions.add({
     server: provider.url,
     username: "demo",
@@ -1253,3 +1268,78 @@ it("says Downloads can't be opened in the interface language picked since the st
   await quit();
   expect(await readdir(join(dataDir, "downloads"))).toEqual([kept]);
 });
+
+it("observes actual download runs, successful completion, disk failure and cancelled transfers with bounded codes", async () => {
+  const outcomes: { outcome: SummaryOutcome; failure?: SummaryFailure }[] = [];
+  let starts = 0;
+  const observeTransfer: OperationObserver = () => {
+    starts++;
+    return (outcome, failure) => outcomes.push({ outcome, ...(failure ? { failure } : {}) });
+  };
+  const started = await connected({}, undefined, observeTransfer);
+  const film = movie(started.provider, started.subscriptionId, "TEST | Index at the end");
+  const done = await started.downloads.add(film.ref);
+  await vi.waitFor(
+    async () => expect((await started.find(done.id))?.status.kind).toBe("complete"),
+    { timeout: LONG },
+  );
+  expect(outcomes).toEqual([{ outcome: "success" }]);
+  await started.downloads.add(film.ref);
+  expect(starts).toBe(1);
+  const stoppedFilm = movie(
+    started.provider,
+    started.subscriptionId,
+    "TEST | Two sound tracks and subtitles (MULTI)",
+  );
+  started.provider.stallMovieFile(stoppedFilm.id, 200_000, 60_000);
+  const stopped = await started.downloads.add(stoppedFilm.ref);
+  await vi.waitFor(
+    async () =>
+      expect((await started.find(stopped.id))?.status).toMatchObject({
+        kind: "transferring",
+        received: 200_000,
+      }),
+    { timeout: LONG },
+  );
+  await started.downloads.remove(stopped.id);
+  expect(outcomes).toEqual([{ outcome: "success" }, { outcome: "interrupted" }]);
+  const preempted = await started.downloads.add(stoppedFilm.ref);
+  await vi.waitFor(
+    async () =>
+      expect((await started.find(preempted.id))?.status).toMatchObject({
+        kind: "transferring",
+        received: 200_000,
+      }),
+    { timeout: LONG },
+  );
+  const opened = await started.playback.openTitle(
+    film.ref,
+    (await started.onDemand.file(film.ref)).url,
+    DECODERS,
+  );
+  await vi.waitFor(() =>
+    expect(outcomes).toEqual([
+      { outcome: "success" },
+      { outcome: "interrupted" },
+      { outcome: "interrupted" },
+    ]),
+  );
+  expect((await started.find(preempted.id))?.status.kind).toBe("waiting");
+  await started.downloads.remove(preempted.id);
+  await started.playback.close(opened.sessionId);
+  await started.quit();
+  const full = await connected({}, { ...fileDisk, free: async () => 0 }, observeTransfer);
+  const failed = await full.downloads.add(
+    movie(full.provider, full.subscriptionId, "TEST | Index at the end").ref,
+  );
+  await vi.waitFor(async () => expect((await full.find(failed.id))?.status.kind).toBe("failed"), {
+    timeout: LONG,
+  });
+  expect(outcomes).toEqual([
+    { outcome: "success" },
+    { outcome: "interrupted" },
+    { outcome: "interrupted" },
+    { outcome: "failed", failure: "disk" },
+  ]);
+  expect(starts).toBe(4);
+}, 60_000);

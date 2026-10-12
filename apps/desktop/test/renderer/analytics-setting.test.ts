@@ -44,7 +44,9 @@ describe("Settings statistics preference", () => {
       const { container, checkbox, client } = await render(locale);
       expect(checkbox.getAttribute("aria-checked")).toBe("true");
       expect(container.textContent).toContain(
-        t("Counts first-seen profiles and weekly app use. No viewing history or provider details."),
+        t(
+          "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.",
+        ),
       );
       const link = container.querySelector<HTMLAnchorElement>(
         'a[href="https://mrstreamer.app/privacy"]',

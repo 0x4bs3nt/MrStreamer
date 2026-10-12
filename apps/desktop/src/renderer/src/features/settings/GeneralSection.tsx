@@ -137,7 +137,7 @@ export function GeneralSection() {
         </Row>
         <p className="mt-3 text-sm">
           {t(
-            "Counts first-seen profiles and weekly app use. No viewing history or provider details.",
+            "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.",
           )}
         </p>
         <a

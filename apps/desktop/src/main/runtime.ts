@@ -60,7 +60,7 @@ export interface MainConfig {
   /** How this build reaches receivers on the network; none when absent. */
   readonly output?: OutputDeps;
   /** Where downloads write and fetch artwork with, when not the file system and `fetch`. */
-  readonly downloads?: Pick<DownloadsDeps, "disk" | "fetch">;
+  readonly downloads?: Pick<DownloadsDeps, "disk" | "fetch" | "observeTransfer">;
 }
 
 export type MainServices =

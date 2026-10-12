@@ -11,6 +11,8 @@ import {
   CaptureEvent,
   type BuildProperties,
 } from "../src/main/analytics/model.ts";
+import { emptySummaryCounts } from "../src/main/analytics/summary.ts";
+import { appFailure, downloadFailure, checkFailure } from "../src/main/analytics/operations.ts";
 import { Analytics } from "../src/main/analytics/service.ts";
 import { analyticsStore, profileOrigin } from "../src/main/analytics/storage.ts";
 import {
@@ -58,6 +60,7 @@ function memoryStore(): ReturnType<typeof analyticsStore> {
 async function start(
   options: {
     dataDir?: string;
+    properties?: BuildProperties;
     transport?: Omit<CaptureTransport, "kind"> | null;
     store?: ReturnType<typeof analyticsStore>;
   } = {},
@@ -76,7 +79,7 @@ async function start(
   const owner = new Analytics({
     dataDir,
     origin: profileOrigin(dataDir),
-    properties,
+    properties: options.properties ?? properties,
     transport: transport ? { ...transport, kind: "local" } : null,
     ...(options.store ? { store: options.store } : {}),
   });
@@ -405,9 +408,13 @@ describe("analytics consent and persistence", () => {
     const { owner, dataDir } = await start({ transport: null });
     expect(await owner.settings()).toEqual({ enabled: true, transport: "unconfigured" });
     owner.setForeground(true);
+    owner.noteFeature("home");
+    owner.noteRenderer("starts");
+    expect(owner.noteOperationStarted("update_check")).toBeNull();
     await owner.configure(false);
     await owner.configure(true);
     expect((await saved(dataDir)).installationId).toBeNull();
+    expect((await saved(dataDir)).summary).toBeUndefined();
     expect((await saved(dataDir)).pending).toEqual([]);
   });
 });
@@ -694,5 +701,513 @@ describe("analytics delivery and deadlines", () => {
     await vi.advanceTimersByTimeAsync(1500);
     await changed;
     expect(await stalledWrite.owner.settings()).toMatchObject({ transport: "unavailable" });
+  });
+});
+
+describe("completed daily product and reliability capture", () => {
+  function clock(day = "2026-10-11") {
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    vi.setSystemTime(new Date(`${day}T12:00:00Z`));
+  }
+
+  async function nextDay(owner: Analytics, day = "2026-10-12") {
+    owner.setForeground(false);
+    vi.setSystemTime(new Date(`${day}T12:00:00Z`));
+    owner.setForeground(true);
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  it("captures fixed counts and bounded failures with terminal denominators independent of start day", async () => {
+    clock();
+    const capture = await captureServer();
+    const { owner } = await start({ transport: localCapture(capture.endpoint) });
+    owner.setForeground(true);
+    await until(() => capture.payloads.length === 2);
+    for (const feature of [
+      "home",
+      "live_tv",
+      "movies",
+      "series",
+      "watchlist",
+      "downloads",
+      "search",
+      "settings",
+      "player",
+      "details",
+    ] as const)
+      owner.noteFeature(feature);
+    const midnight = owner.noteOperationStarted("playback_open");
+    for (const outcome of ["success", "success", "failed", "interrupted"] as const) {
+      const generation = owner.noteOperationStarted("download_transfer");
+      owner.noteOperationFinished(
+        "download_transfer",
+        generation,
+        outcome,
+        downloadFailure({ kind: "folder", detail: "/PRIVATE/PATH" }),
+      );
+    }
+    for (const outcome of ["success", "failed"] as const) {
+      const generation = owner.noteOperationStarted("update_check");
+      owner.noteOperationFinished(
+        "update_check",
+        generation,
+        outcome,
+        checkFailure({ kind: "offline" }),
+      );
+    }
+    owner.noteRenderer("starts");
+    owner.noteRenderer("starts");
+    owner.noteRenderer("crashed");
+    await nextDay(owner);
+    await until(() => capture.payloads.length === 4);
+    owner.noteOperationFinished(
+      "playback_open",
+      midnight,
+      "failed",
+      appFailure({ kind: "unreachable", server: "PRIVATE", detail: "SECRET" }),
+    );
+    const summary = CaptureEvent(capture.payloads[3]);
+    if (summary instanceof type.errors || summary.event !== "app_summary_day")
+      throw new Error("No completed summary.");
+    expect(summary.properties.summary_date).toBe("2026-10-11");
+    expect(Object.values(summary.properties.counts.features)).toEqual(Array(10).fill(1));
+    expect(summary.properties.counts.download_transfer).toMatchObject({
+      started: 4,
+      success: 2,
+      failed: 1,
+      interrupted: 1,
+      failures: { disk: 1 },
+    });
+    expect(summary.properties.counts.update_check).toMatchObject({
+      started: 2,
+      success: 1,
+      failed: 1,
+      failures: { network: 1 },
+    });
+    expect(summary.properties.counts.playback_open).toMatchObject({ started: 1, failed: 0 });
+    const transfer = summary.properties.counts.download_transfer;
+    expect(transfer.success / (transfer.success + transfer.failed)).toBe(2 / 3);
+    expect(summary.properties.counts.renderer).toEqual({
+      starts: 2,
+      crashed: 1,
+      killed: 0,
+      other: 0,
+    });
+    expect(JSON.stringify(capture.payloads)).not.toMatch(/PRIVATE|SECRET/);
+    await nextDay(owner, "2026-10-13");
+    await until(() => capture.payloads.length === 6);
+    expect(capture.payloads[5]).toMatchObject({
+      properties: {
+        counts: { playback_open: { started: 0, failed: 1, failures: { network: 1 } } },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(capture.payloads).toHaveLength(6);
+  });
+
+  it("preserves the previous build's recorded dimensions when an upgrade precedes rollover", async () => {
+    clock();
+    const store = memoryStore();
+    const before = await start({ store });
+    before.owner.setForeground(true);
+    await until(() => before.events.length === 2);
+    const generation = before.owner.noteOperationStarted("playback_open");
+    before.owner.noteOperationFinished("playback_open", generation, "failed", "unsupported");
+    await before.owner.close();
+    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
+    const upgraded = {
+      ...properties,
+      app_version: "0.0.12",
+      build_channel: "stable" as const,
+      update_channel: "nightly" as const,
+    };
+    const after = await start({ store, properties: upgraded });
+    after.owner.setForeground(true);
+    await until(() => after.events.length === 2);
+    expect(after.events[0]).toMatchObject({ event: "app_active_day", properties: upgraded });
+    expect(after.events[1]).toMatchObject({
+      event: "app_summary_day",
+      properties: {
+        ...properties,
+        summary_date: "2026-10-11",
+        counts: { playback_open: { failed: 1 } },
+      },
+    });
+    expect(after.events[1]?.distinct_id).toBe(before.events[0]?.distinct_id);
+  });
+
+  it("resets partial-day counts on build or update-channel changes and excludes stale check results", async () => {
+    clock();
+    const store = memoryStore();
+    const before = await start({ store });
+    before.owner.setForeground(true);
+    await until(() => before.events.length === 2);
+    before.owner.noteFeature("home");
+    await before.owner.close();
+    const upgraded = { ...properties, app_version: "0.0.12", build_channel: "stable" as const };
+    const after = await start({ store, properties: upgraded });
+    after.owner.noteFeature("movies");
+    const oldCheck = after.owner.noteOperationStarted("update_check");
+    after.owner.setUpdateChannel("nightly");
+    after.owner.noteOperationFinished("update_check", oldCheck, "failed", "network");
+    after.owner.noteFeature("series");
+    const newCheck = after.owner.noteOperationStarted("update_check");
+    after.owner.noteOperationFinished("update_check", newCheck, "success");
+    await nextDay(after.owner);
+    await until(() => after.events.length === 2);
+    expect(after.events[1]).toMatchObject({
+      event: "app_summary_day",
+      properties: {
+        ...upgraded,
+        update_channel: "nightly",
+        counts: {
+          features: { home: 0, movies: 0, series: 1 },
+          update_check: { started: 1, success: 1, failed: 0 },
+        },
+      },
+    });
+  });
+
+  it("excludes obsolete outcomes after a channel round trip, keeps same-channel midnight results and pending dimensions", async () => {
+    clock();
+    const capture = await captureServer();
+    let accepting = false;
+    const transport = localCapture(capture.endpoint);
+    if (!transport) throw new Error("No local transport.");
+    const store = memoryStore();
+    const { owner } = await start({
+      store,
+      transport: {
+        async send(event, signal) {
+          if (!accepting) return "retry";
+          return transport.send(event, signal);
+        },
+      },
+    });
+    owner.setForeground(true);
+    await until(async () => (await store.load())?.pending[0]?.attempts === 1);
+    const pending = (await store.load())?.pending.map((item) => item.event);
+    const obsolete = owner.noteOperationStarted("update_check");
+    owner.setUpdateChannel("nightly");
+    owner.setUpdateChannel("stable");
+    const current = owner.noteOperationStarted("update_check");
+    owner.setUpdateChannel("stable");
+    owner.noteOperationFinished("update_check", current, "success");
+    owner.noteOperationFinished("update_check", obsolete, "failed", "network");
+    await vi.advanceTimersByTimeAsync(1000);
+    // Channel changes do not relabel events already waiting in the durable outbox.
+    expect((await store.load())?.pending.map((item) => item.event)).toEqual(pending);
+    accepting = true;
+    await nextDay(owner);
+    await vi.advanceTimersByTimeAsync(1000);
+    await until(() => capture.payloads.length === 4);
+    expect(capture.payloads[3]).toMatchObject({
+      event: "app_summary_day",
+      properties: {
+        update_channel: "stable",
+        counts: { update_check: { started: 1, success: 1, failed: 0, failures: { network: 0 } } },
+      },
+    });
+    // Same-owner, same-channel results remain valid when only the UTC day changes.
+    const crossing = owner.noteOperationStarted("playback_open");
+    await nextDay(owner, "2026-10-13");
+    await until(() => capture.payloads.length === 6);
+    owner.setUpdateChannel("stable");
+    owner.noteOperationFinished("playback_open", crossing, "success");
+    await nextDay(owner, "2026-10-14");
+    await until(() => capture.payloads.length === 8);
+    expect(capture.payloads[7]).toMatchObject({
+      properties: { counts: { playback_open: { started: 0, success: 1 } } },
+    });
+  });
+
+  it("does not accept an outcome whose start was dropped during clock rollback", async () => {
+    clock();
+    const { owner, events } = await start({ store: memoryStore() });
+    owner.setForeground(true);
+    await until(() => events.length === 2);
+    owner.noteFeature("home");
+    vi.setSystemTime(new Date("2026-10-10T12:00:00Z"));
+    const dropped = owner.noteOperationStarted("playback_open");
+    expect(dropped).toBeNull();
+    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
+    owner.noteOperationFinished("playback_open", dropped, "failed", "app");
+    const observed = owner.noteOperationStarted("playback_open");
+    owner.noteOperationFinished("playback_open", observed, "success");
+    await nextDay(owner);
+    await until(() => events.length === 4);
+    expect(events[3]).toMatchObject({
+      properties: { counts: { playback_open: { started: 1, success: 1, failed: 0 } } },
+    });
+  });
+
+  it("pauses notes synchronously, clears daily counts, and never backfills across off/on or restart", async () => {
+    clock();
+    const store = memoryStore();
+    const { owner } = await start({ store });
+    owner.setForeground(true);
+    await until(async () => (await store.load())?.pending.length === 0);
+    const old = owner.noteOperationStarted("playback_open");
+    owner.noteFeature("home");
+    const off = owner.configure(false);
+    owner.noteFeature("movies");
+    owner.noteOperationFinished("playback_open", old, "failed", "app");
+    await off;
+    expect((await store.load())?.summary).toBeUndefined();
+    await owner.close();
+    const restarted = await start({ store });
+    restarted.owner.noteFeature("series");
+    await restarted.owner.configure(true);
+    restarted.owner.noteOperationFinished("playback_open", old, "success");
+    restarted.owner.noteFeature("settings");
+    await nextDay(restarted.owner);
+    await until(() => restarted.events.length === 2);
+    expect(restarted.events[1]).toMatchObject({
+      properties: {
+        counts: {
+          features: { home: 0, movies: 0, series: 0, settings: 1 },
+          playback_open: { success: 0, failed: 0 },
+        },
+      },
+    });
+  });
+
+  it("coalesces a burst through slow storage so opt-out needs only bounded persistence work", async () => {
+    clock();
+    const disk = memoryStore();
+    let pendingSave: (() => void) | undefined;
+    let gated = false;
+    const store = {
+      load: disk.load,
+      async save(record: AnalyticsRecord) {
+        if (gated)
+          await new Promise<void>((resolve) => {
+            pendingSave = resolve;
+          });
+        await disk.save(record);
+      },
+    };
+    const { owner } = await start({ store });
+    owner.setForeground(true);
+    await until(async () => (await disk.load())?.pending.length === 0);
+    gated = true;
+    for (let n = 0; n < 10_000; n++) owner.noteFeature("home");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pendingSave).toBeDefined();
+    for (let n = 0; n < 10_000; n++) owner.noteFeature("home");
+    const off = owner.configure(false);
+    owner.noteFeature("home");
+    gated = false;
+    pendingSave?.();
+    await off;
+    expect((await disk.load())?.summary).toBeUndefined();
+    expect(await owner.settings()).toMatchObject({ enabled: false, transport: "local" });
+  });
+
+  it("keeps only the newest completed bucket and never reopens days on clock rollback", async () => {
+    clock();
+    const { owner, events } = await start({ store: memoryStore() });
+    owner.noteFeature("home");
+    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
+    owner.noteFeature("movies");
+    vi.setSystemTime(new Date("2026-10-13T12:00:00Z"));
+    owner.noteFeature("series");
+    owner.setForeground(true);
+    await until(() => events.length === 3);
+    expect(events[2]).toMatchObject({
+      event: "app_summary_day",
+      properties: { summary_date: "2026-10-12", counts: { features: { home: 0, movies: 1 } } },
+    });
+    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
+    owner.noteFeature("home");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(events).toHaveLength(3);
+    await nextDay(owner, "2026-10-14");
+    await until(() => events.length === 5);
+    expect(events[4]).toMatchObject({
+      properties: { summary_date: "2026-10-13", counts: { features: { home: 0, series: 1 } } },
+    });
+  });
+
+  it("migrates format-one state without a summary and preserves disabled consent and identity", async () => {
+    const first = await start();
+    first.owner.setForeground(true);
+    await until(() => first.events.length === 2);
+    await first.owner.configure(false);
+    await first.owner.close();
+    const old = await saved(first.dataDir);
+    expect(old.summary).toBeUndefined();
+    const restarted = await start({ dataDir: first.dataDir });
+    restarted.owner.noteFeature("home");
+    await restarted.owner.configure(true);
+    restarted.owner.noteFeature("movies");
+    await restarted.owner.close();
+    const kept = await saved(first.dataDir);
+    expect(kept.installationId).toBe(old.installationId);
+    expect(kept.summary?.counts.features).toMatchObject({ home: 0, movies: 1 });
+    expect(restarted.events).toEqual([]);
+  });
+
+  it("caps counts and flags clipping, validates renderer literals, and strips nested payload extras", async () => {
+    clock();
+    expect(ipcInputs["analytics.feature"]()("details")).toBe("details");
+    for (const value of ["PRIVATE", { feature: "home", query: "PRIVATE" }, { feature: "home" }])
+      expect(ipcInputs["analytics.feature"]()(value)).toBeInstanceOf(type.errors);
+    const { owner, events, dataDir } = await start();
+    owner.setForeground(true);
+    await until(() => events.length === 2);
+    owner.noteFeature("home");
+    await owner.close();
+    const stored = await saved(dataDir);
+    if (!stored.summary) throw new Error("No counts.");
+    stored.summary.counts.features.home = 1_000_000;
+    await analyticsStore(dataDir).save(stored);
+    const restarted = await start({ dataDir });
+    restarted.owner.noteFeature("home");
+    await nextDay(restarted.owner);
+    await until(() => restarted.events.length === 2);
+    const event = restarted.events[1];
+    expect(event).toMatchObject({
+      properties: { counts: { saturated: true, features: { home: 1_000_000 } } },
+    });
+    const capture = await captureServer();
+    const transport = localCapture(capture.endpoint);
+    if (!event || event.event !== "app_summary_day" || !transport)
+      throw new Error("No transport/summary.");
+    const raw = {
+      ...event,
+      properties: {
+        ...event.properties,
+        query: "PRIVATE",
+        counts: {
+          ...event.properties.counts,
+          stack: "PRIVATE",
+          features: { ...event.properties.counts.features, provider: "PRIVATE" },
+          playback_open: {
+            ...event.properties.counts.playback_open,
+            failures: {
+              ...event.properties.counts.playback_open.failures,
+              private_error: "PRIVATE",
+            },
+          },
+        },
+      },
+    };
+    expect(await transport.send(raw, new AbortController().signal)).toBe("accepted");
+    expect(capture.payloads[0]).toEqual({ api_key: "mrstreamer-local-verification", ...event });
+    expect(JSON.stringify(capture.payloads)).not.toContain("PRIVATE");
+    const invalid = {
+      ...event,
+      properties: {
+        ...event.properties,
+        counts: {
+          ...emptySummaryCounts(),
+          features: { ...event.properties.counts.features, home: -1 },
+        },
+      },
+    };
+    expect(await transport.send(invalid, new AbortController().signal)).toBe("discard");
+    expect(capture.payloads).toHaveLength(1);
+  });
+});
+
+it("retains a summary's exact payload and three-attempt budget across a hung request and restart", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  });
+  vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
+  const store = memoryStore();
+  const summaries: CaptureEvent[] = [];
+  const before = await start({
+    store,
+    transport: {
+      send(event, signal) {
+        if (event.event !== "app_summary_day") return Promise.resolve("accepted");
+        summaries.push(structuredClone(event));
+        return new Promise((resolve) =>
+          signal.addEventListener("abort", () => resolve("retry"), { once: true }),
+        );
+      },
+    },
+  });
+  before.owner.setForeground(true);
+  await until(async () => (await store.load())?.pending.length === 0);
+  before.owner.noteFeature("player");
+  before.owner.setForeground(false);
+  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
+  before.owner.setForeground(true);
+  await until(() => summaries.length === 1);
+  const closing = before.owner.close();
+  await vi.advanceTimersByTimeAsync(500);
+  await closing;
+  const after = await start({
+    store,
+    transport: {
+      async send(event) {
+        if (event.event === "app_summary_day") summaries.push(structuredClone(event));
+        return "retry";
+      },
+    },
+  });
+  after.owner.setForeground(true);
+  await vi.advanceTimersByTimeAsync(0);
+  for (let attempt = 0; attempt < 4; attempt++) await vi.advanceTimersByTimeAsync(2000);
+  expect(summaries).toHaveLength(3);
+  for (const event of summaries) expect(event).toEqual(summaries[0]);
+  expect((await store.load())?.pending).toEqual([]);
+  expect((await store.load())?.summary?.reportedDay).toBe("2026-10-11");
+});
+
+it("cannot restore a loaded aggregate after opt-out was requested during startup", async () => {
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  });
+  vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
+  const store = memoryStore();
+  const before = await start({ store });
+  before.owner.setForeground(true);
+  await until(async () => (await store.load())?.pending.length === 0);
+  before.owner.noteFeature("home");
+  await before.owner.close();
+  let loaded: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    loaded = resolve;
+  });
+  const events: CaptureEvent[] = [];
+  const owner = new Analytics({
+    dataDir: before.dataDir,
+    origin: Promise.resolve("unknown"),
+    properties,
+    store: {
+      async load() {
+        await gate;
+        return store.load();
+      },
+      save: store.save,
+    },
+    transport: {
+      kind: "local",
+      async send(event) {
+        events.push(structuredClone(event));
+        return "accepted";
+      },
+    },
+  });
+  owners.push(owner);
+  const disabled = owner.configure(false);
+  loaded?.();
+  await disabled;
+  expect((await store.load())?.summary).toBeUndefined();
+  await owner.configure(true);
+  owner.noteFeature("settings");
+  owner.setForeground(false);
+  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
+  owner.setForeground(true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(events[1]).toMatchObject({
+    event: "app_summary_day",
+    properties: { counts: { features: { home: 0, settings: 1 } } },
   });
 });

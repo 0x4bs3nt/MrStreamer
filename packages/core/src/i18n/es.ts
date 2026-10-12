@@ -23,8 +23,8 @@ export const es: Translation = {
   "Open-source licences": "Licencias de código abierto",
   Privacy: "Privacidad",
   "Share basic usage statistics": "Compartir estadísticas básicas de uso",
-  "Counts first-seen profiles and weekly app use. No viewing history or provider details.":
-    "Cuenta los perfiles observados por primera vez y el uso semanal de la aplicación. Sin historial de reproducción ni datos del proveedor.",
+  "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
+    "Cuenta el uso de la aplicación, qué funciones abres, si la reproducción, las descargas y las comprobaciones de actualizaciones funcionan y cuántas veces la ventana se detiene inesperadamente. Sin historial de reproducción ni datos del proveedor.",
   "Privacy policy": "Política de privacidad",
   "Report a bug": "Informar de un error",
   "Rate in the Microsoft Store": "Valorar en Microsoft Store",
