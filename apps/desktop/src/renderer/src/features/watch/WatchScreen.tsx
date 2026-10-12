@@ -34,12 +34,10 @@ import { useLiveSession } from "../../player/media-session.ts";
 import { outputs, useOutput } from "../../player/output.ts";
 import { Picture } from "../../player/Picture.tsx";
 import { player, usePlayer } from "../../player/player.ts";
-import { useOpenGroups } from "../live/ListPicker.tsx";
 import {
   adjacentChannel,
-  groupOf,
   useListChannels,
-  useListEntries,
+  useListPicker,
   useShowList,
   type ListEntry,
 } from "../live/lists.ts";
@@ -76,15 +74,14 @@ export function WatchScreen() {
   const channels = useListChannels(list).channels ?? NO_CHANNELS;
   const channel = usePlayer((state) => state.channel);
   const phase = usePlayer((state) => state.phase);
-  const categories = useCategoryMap();
   const toggleFavourite = useToggleFavourite();
   const showList = useShowList();
   const keyboard = useKeyboardMode();
-  const { open, toggle } = useOpenGroups(groupOf(list, categories));
-  const entries = useListEntries(open);
+  const categories = useCategoryMap();
+  const picker = useListPicker(list);
+  const { entries, entry, setEntry, openGroup: toggle } = picker;
   const [picking, setPicking] = useState(false);
   const [selected, setSelected] = useState(0);
-  const [entry, setEntry] = useState(0);
   const [menu, setMenu] = useState<LiveMenu>(null);
   const keyboardMenu = useRef(false);
   // A receiver on the network has playback, or had it until its connection broke.
@@ -198,6 +195,7 @@ export function WatchScreen() {
   // The key handler reads the latest render through a ref. Registering it again on every render
   // would drop keys: a state change from another keydown listener renders between listeners.
   const latest = useRef({
+    picker,
     picking,
     selected,
     entry,
@@ -216,6 +214,7 @@ export function WatchScreen() {
     menu,
   });
   latest.current = {
+    picker,
     picking,
     selected,
     entry,
@@ -315,6 +314,7 @@ export function WatchScreen() {
         case "ArrowLeft":
           if (!now.channelsOpen) openChannels();
           else if (!now.picking) setPicking(true);
+          else now.picker.back();
           break;
         case "ArrowRight":
           if (now.channelsOpen && now.picking) setPicking(false);
@@ -324,8 +324,9 @@ export function WatchScreen() {
         case "Backspace":
           if (event.repeat) break;
           if (numberEntry.active()) numberEntry.cancel();
-          else if (now.channelsOpen && now.picking) setPicking(false);
-          else player.back();
+          else if (now.channelsOpen && now.picking) {
+            if (!now.picker.back()) setPicking(false);
+          } else player.back();
           break;
         case "f":
           if (miniPlayer.on()) void miniPlayer.leave(true);
@@ -502,11 +503,10 @@ export function WatchScreen() {
           playing={channel}
           picking={picking}
           selected={keyboard && !picking ? selected : null}
-          entries={entries}
+          picker={picker}
           entry={keyboard && picking ? entry : null}
           onPlay={(target) => player.play(target)}
           onPick={choose}
-          onToggleGroup={toggle}
           onTogglePicking={() => setPicking((current) => !current)}
           onClose={closeChannels}
         />

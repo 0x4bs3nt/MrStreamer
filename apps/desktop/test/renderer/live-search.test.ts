@@ -8,7 +8,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ListingMatch, Programme } from "@mrstreamer/contracts/guide";
-import type { LiveChannel } from "@mrstreamer/contracts/library";
+import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { useUi, type ChannelList } from "../../src/renderer/src/app/ui-store.ts";
 import { GuidePage } from "../../src/renderer/src/features/live/GuidePage.tsx";
@@ -134,11 +134,15 @@ async function guidePage(list: ChannelList = { kind: "all" }) {
   );
 
   const field = () => {
-    const input = container.querySelector("input");
+    const input = container.querySelector<HTMLInputElement>("main input");
     if (!input) throw new Error("The list has no search field.");
     return input;
   };
   return {
+    categories: (categories: readonly Category[]) =>
+      act(async () => {
+        client.setQueryData(queries.categories().queryKey, categories);
+      }),
     field,
     /** The channels shown, top to bottom. */
     rows: () =>
@@ -151,6 +155,7 @@ async function guidePage(list: ChannelList = { kind: "all" }) {
         (row) => row.querySelector("[title]")?.firstElementChild?.textContent === title,
       ),
     text: () => container.querySelector("main")?.textContent ?? "",
+    notice: () => container.querySelector('[role="status"]')?.textContent ?? "",
     /** Types `text` into the field, as the whole of what it holds. */
     type: (text: string) =>
       act(async () => {
@@ -202,6 +207,25 @@ const later = (title: string): ListingMatch => ({
 });
 
 describe("searching the list Live TV shows", () => {
+  it("shows All channels and names a removed category after refresh, then clears the message on another list", async () => {
+    const page = await guidePage({ kind: "category", category: own("uk") });
+    expect(page.text()).toContain("News");
+    await page.categories([
+      {
+        ...own("other"),
+        members: [own("other")],
+        name: "Other",
+        title: "Other",
+        group: null,
+        channelCount: 1,
+      },
+    ]);
+    await ready(() => expect(useUi.getState().list).toEqual({ kind: "all" }));
+    expect(page.notice()).toContain("News is no longer listed. Showing all channels.");
+    await page.click("Favourites");
+    await ready(() => expect(page.notice()).not.toContain("is no longer listed"));
+  });
+
   it("shows the channels found by a name or a programme together, one row each in the list's order", async () => {
     const page = await guidePage();
     const answer = ipc.hold("guide.searchList");

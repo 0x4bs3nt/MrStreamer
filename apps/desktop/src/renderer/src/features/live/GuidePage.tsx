@@ -48,15 +48,8 @@ import { player, usePlayer } from "../../player/player.ts";
 import { numberEntry, NumberEntry } from "../watch/NumberEntry.tsx";
 import { rowPlays, searchChannelRows } from "./search-rows.ts";
 import { ChannelTable } from "./ChannelTable.tsx";
-import { ListPicker, listKey, useOpenGroups } from "./ListPicker.tsx";
-import {
-  groupOf,
-  listTitle,
-  useListChannels,
-  useListEntries,
-  useListSearch,
-  useShowList,
-} from "./lists.ts";
+import { ListPicker, listKey } from "./ListPicker.tsx";
+import { listTitle, useListChannels, useListPicker, useListSearch, useShowList } from "./lists.ts";
 import { orderKey, useFavouriteOrder, waits } from "./reorder.ts";
 
 const PAGE_ROWS = 10;
@@ -81,22 +74,32 @@ export function GuidePage({ active }: { active: boolean }) {
   const showList = useShowList();
   const keyboard = useKeyboardMode();
 
-  const { open, toggle } = useOpenGroups(groupOf(list, categoryMap));
-  const entries = useListEntries(open);
+  const picker = useListPicker(list);
+  const { entries, entry, setEntry, openGroup: toggle } = picker;
   const [focus, setFocus] = useState<"lists" | "channels">("channels");
-  const [entry, setEntry] = useState(0);
   /** The channel whose schedule is open, by its `ownedKey`. */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  const lastCategoryTitle = useRef<string>("");
+  if (list.kind === "category" && categoryMap.has(ownedKey(list.category)))
+    lastCategoryTitle.current = listTitle(list, categoryMap);
+  const [removedCategory, setRemovedCategory] = useState<string | null>(null);
 
   // A remembered category can disappear after a refresh or with its subscription. One that
   // shows with another subscription's under one name is the list that holds them both.
   useEffect(() => {
-    if (list.kind !== "category" || !categories.data) return;
+    if (list.kind !== "category" || !categories.data) {
+      if (list.kind !== "all") setRemovedCategory(null);
+      return;
+    }
     const shown = categoryMap.get(ownedKey(list.category));
-    if (!shown) showList({ kind: "all" });
-    else if (!sameOwned(shown, list.category)) {
+    if (!shown) {
+      setRemovedCategory(lastCategoryTitle.current || t("Current category"));
+      showList({ kind: "all" });
+    } else if (!sameOwned(shown, list.category)) {
       useUi.setState({ list: { kind: "category", category: ownedId(shown) } });
     }
+    if (shown) setRemovedCategory(null);
   }, [list, categories.data, categoryMap, showList]);
 
   // What the field holds belongs to the list it was typed in: another list starts without a
@@ -238,6 +241,7 @@ export function GuidePage({ active }: { active: boolean }) {
   // The key handler reads the latest render through a ref. Registering it again on every render
   // would drop keys: a state change from another keydown listener renders between listeners.
   const state = useRef({
+    picker,
     focus,
     selected,
     entry,
@@ -257,6 +261,7 @@ export function GuidePage({ active }: { active: boolean }) {
     playRow,
   });
   state.current = {
+    picker,
     focus,
     selected,
     entry,
@@ -374,11 +379,12 @@ export function GuidePage({ active }: { active: boolean }) {
             setFocus("lists");
             const focused = document.activeElement;
             if (focused instanceof HTMLElement && page.current?.contains(focused)) focused.blur();
-          }
+          } else now.picker.back();
           break;
         }
         case "Backspace":
           if (numberEntry.active()) numberEntry.cancel();
+          else if (now.focus === "lists") now.picker.back();
           break;
         case "Escape":
           if (numberEntry.active()) numberEntry.cancel();
@@ -427,14 +433,20 @@ export function GuidePage({ active }: { active: boolean }) {
       ) : (
         <div className="flex min-h-0 flex-1">
           <ListPicker
-            entries={entries}
+            picker={picker}
+            notice={
+              removedCategory
+                ? t("{name} is no longer listed. Showing all channels.", { name: removedCategory })
+                : null
+            }
             selected={list}
+            onChannels={() => setFocus("channels")}
             highlight={keyboard && focus === "lists" ? entry : null}
             onPick={(picked) => {
+              setRemovedCategory(null);
               showList(picked);
               setFocus("channels");
             }}
-            onToggle={toggle}
             className="w-[16rem] flex-none border-r border-border px-3 pt-3 pb-6"
           />
           <main className="flex min-w-0 flex-1 flex-col">

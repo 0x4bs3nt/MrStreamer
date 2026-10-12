@@ -35,6 +35,14 @@ export const nl: Translation = {
   App: "App",
   "Interface language": "Taal van de interface",
   "System default ({language})": "Systeem ({language})",
+  "Channel categories": "Zendercategorieën",
+  Find: "Zoeken",
+  "Find a category": "Een categorie zoeken",
+  "Clear category search": "Categoriezoekopdracht wissen",
+  "Back to countries": "Terug naar landen",
+  "No categories match.": "Geen categorieën gevonden.",
+  "{name} is no longer listed. Showing all channels.":
+    "{name} is niet meer vermeld. Alle zenders worden getoond.",
   "Live TV": "Live-tv",
   Quality: "Kwaliteit",
   "Automatic tries the nearest if one fails":

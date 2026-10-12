@@ -12,7 +12,12 @@ import { useLocale } from "../../app/language.ts";
 import { useUi, type ChannelList } from "../../app/ui-store.ts";
 import { useNow } from "../../lib/clock.ts";
 import { endOfDay } from "../../lib/format.ts";
-import { queries, rememberCategory, useSubscriptions } from "../../lib/queries.ts";
+import {
+  queries,
+  rememberCategory,
+  subscriptionName,
+  useSubscriptions,
+} from "../../lib/queries.ts";
 
 const NO_IDS: readonly OwnedId[] = [];
 /** Channels whose listings are asked for together. */
@@ -205,91 +210,164 @@ export type ListEntry =
       readonly list: ChannelList;
       readonly title: string;
       readonly count: number;
-      /** Listed under an open country. */
-      readonly nested: boolean;
+      /** Country and source context in Find results. */
+      readonly context?: string;
     }
   | {
       readonly kind: "group";
       readonly group: string;
       readonly count: number;
-      readonly open: boolean;
     };
 
-/**
- * What the list picker shows: favourites, recently watched and all channels, then categories in
- * provider order. Grouped ones sit under their country, which lists them all when open.
- */
-export function useListEntries(open: ReadonlySet<string>): readonly ListEntry[] {
-  const categories = useQuery(queries.categories());
-  const viewing = useQuery(queries.viewing());
-  const status = useQuery(queries.libraryStatus());
+/** One country at a time, or Find across the whole catalogue. Only the chosen list is saved. */
+export function useListPicker(selected: ChannelList) {
+  const categories = useQuery(queries.categories()).data;
+  const viewing = useQuery(queries.viewing()).data;
+  const status = useQuery(queries.libraryStatus()).data;
+  const subscriptions = useSubscriptions();
   const locale = useLocale();
-  return useMemo(() => {
-    const entries: ListEntry[] = [
+  const selectedKey = selected.kind === "category" ? ownedKey(selected.category) : selected.kind;
+  const selectedGroup =
+    selected.kind === "category"
+      ? (categories?.find((category) =>
+          category.members.some((member) => sameOwned(member, selected.category)),
+        )?.group ?? null)
+      : null;
+  const [group, setGroup] = useState<string | null>(selectedGroup);
+  const [query, search] = useState("");
+  const [entry, setEntry] = useState(0);
+  // Remembered lists arrive asynchronously; refresh can also move a category to another country.
+  useEffect(() => {
+    setGroup(selectedGroup);
+    search("");
+    setEntry(0);
+  }, [selectedKey, selectedGroup]);
+  const entries = useMemo(() => {
+    const all = categories ?? [];
+    const names = new Map(subscriptions.map((each) => [each.id, subscriptionName(each)]));
+    const duplicates = new Map<string, number>();
+    for (const category of all)
+      duplicates.set(
+        JSON.stringify([category.group, category.title]),
+        (duplicates.get(JSON.stringify([category.group, category.title])) ?? 0) + 1,
+      );
+    const categoryEntry = (category: Category, finding: boolean): ListEntry => {
+      const sources =
+        (duplicates.get(JSON.stringify([category.group, category.title])) ?? 0) > 1
+          ? [
+              ...new Set(
+                category.members.map((member) => names.get(member.subscriptionId)).filter(Boolean),
+              ),
+            ].join(", ")
+          : "";
+      return {
+        kind: "list",
+        list: { kind: "category", category: ownedId(category) },
+        title: category.title,
+        count: category.channelCount,
+        context: [finding ? category.group : null, sources].filter(Boolean).join(" · "),
+      };
+    };
+    const words = searchWords(query);
+    if (words.length > 0)
+      return all
+        .filter((category) => {
+          const text = normalize(
+            [category.name, category.title, category.group].filter(Boolean).join(" "),
+          );
+          return words.every((word) => text.includes(word));
+        })
+        .map((category) => categoryEntry(category, true));
+    if (group !== null)
+      return all
+        .filter((category) => category.group === group)
+        .map((category) => categoryEntry(category, false));
+    const result: ListEntry[] = [
       {
         kind: "list",
         list: { kind: "favourites" },
         title: t("Favourites"),
-        count: viewing.data?.favourites.length ?? 0,
-        nested: false,
+        count: viewing?.favourites.length ?? 0,
       },
       {
         kind: "list",
         list: { kind: "recent" },
         title: t("Recently watched"),
-        count: viewing.data?.recent.length ?? 0,
-        nested: false,
+        count: viewing?.recent.length ?? 0,
       },
       {
         kind: "list",
         list: { kind: "all" },
         title: t("All channels"),
-        // Every subscription's channels, as the list shows them.
-        count: (status.data ?? []).reduce((sum, each) => sum + each.channelCount, 0),
-        nested: false,
+        count: (status ?? []).reduce((sum, each) => sum + each.channelCount, 0),
       },
     ];
-    const all = categories.data ?? [];
-    const groups = new Map<string, Category[]>();
-    for (const category of all) {
-      if (category.group === null) continue;
-      const members = groups.get(category.group);
-      if (members) members.push(category);
-      else groups.set(category.group, [category]);
-    }
-    const categoryEntry = (category: Category, nested: boolean): ListEntry => ({
-      kind: "list",
-      list: { kind: "category", category: ownedId(category) },
-      title: category.title,
-      count: category.channelCount,
-      nested,
-    });
+    const groups = new Map<string, number>();
+    for (const category of all)
+      if (category.group !== null)
+        groups.set(category.group, (groups.get(category.group) ?? 0) + category.channelCount);
     const placed = new Set<string>();
     for (const category of all) {
-      const { group } = category;
-      if (group === null) {
-        entries.push(categoryEntry(category, false));
-        continue;
+      if (category.group === null) result.push(categoryEntry(category, false));
+      else if (!placed.has(category.group)) {
+        placed.add(category.group);
+        result.push({
+          kind: "group",
+          group: category.group,
+          count: groups.get(category.group) ?? 0,
+        });
       }
-      if (placed.has(group)) continue;
-      placed.add(group);
-      const members = groups.get(group) ?? [];
-      const expanded = open.has(group);
-      const count = members.reduce((sum, member) => sum + member.channelCount, 0);
-      entries.push({ kind: "group", group, count, open: expanded });
-      if (expanded) entries.push(...members.map((member) => categoryEntry(member, true)));
     }
-    return entries;
-  }, [categories.data, viewing.data, status.data, open, locale]);
+    return result;
+  }, [categories, viewing, status, subscriptions, locale, group, query]);
+  const openGroup = (group: string) => {
+    setGroup(group);
+    search("");
+    setEntry(0);
+  };
+  const setQuery = (query: string) => {
+    search(query);
+    setEntry(0);
+  };
+  const back = () => {
+    if (query.trim() !== "") {
+      setQuery("");
+      return true;
+    }
+    if (group === null) return false;
+    // Restore the country's position in the provider-ordered root, including ungrouped rows.
+    const root: string[] = ["favourites", "recent", "all"];
+    for (const category of categories ?? []) {
+      if (category.group === null) root.push(ownedKey(category));
+      else if (!root.includes(category.group)) root.push(category.group);
+    }
+    setEntry(Math.max(0, root.indexOf(group)));
+    setGroup(null);
+    return true;
+  };
+  const count = (categories ?? []).reduce(
+    (sum, category) => sum + (category.group === group ? category.channelCount : 0),
+    0,
+  );
+  // A country removed by refresh never leaves an empty, unreachable branch.
+  useEffect(() => {
+    if (categories && group !== null && !categories.some((category) => category.group === group))
+      setGroup(null);
+  }, [categories, group]);
+  return {
+    entries,
+    group,
+    count,
+    query,
+    setQuery,
+    openGroup,
+    back,
+    entry: Math.min(entry, Math.max(entries.length - 1, 0)),
+    setEntry,
+  };
 }
 
-/** The country a list's category sits under, so the picker can open it. */
-export function groupOf(
-  list: ChannelList,
-  categories: ReadonlyMap<string, Category>,
-): string | null {
-  return list.kind === "category" ? (categories.get(ownedKey(list.category))?.group ?? null) : null;
-}
+export type ListPickerState = ReturnType<typeof useListPicker>;
 
 /**
  * Now and next for the channels at `visible` positions in a long list, by each channel's

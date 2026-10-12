@@ -35,6 +35,14 @@ export const fr: Translation = {
   App: "Application",
   "Interface language": "Langue de l'interface",
   "System default ({language})": "Système ({language})",
+  "Channel categories": "Catégories de chaînes",
+  Find: "Rechercher",
+  "Find a category": "Rechercher une catégorie",
+  "Clear category search": "Effacer la recherche de catégories",
+  "Back to countries": "Retour aux pays",
+  "No categories match.": "Aucune catégorie trouvée.",
+  "{name} is no longer listed. Showing all channels.":
+    "{name} n’est plus proposée. Toutes les chaînes sont affichées.",
   "Live TV": "TV en direct",
   Quality: "Qualité",
   "Automatic tries the nearest if one fails":

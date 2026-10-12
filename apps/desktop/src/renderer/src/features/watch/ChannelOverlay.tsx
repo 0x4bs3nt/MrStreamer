@@ -22,7 +22,7 @@ import {
 import { useRem } from "../../lib/use-rem.ts";
 import { cn } from "../../lib/utils.ts";
 import { ListPicker } from "../live/ListPicker.tsx";
-import { listTitle, useVisibleListings, type ListEntry } from "../live/lists.ts";
+import { listTitle, useVisibleListings, type ListPickerState } from "../live/lists.ts";
 
 const ROW_REM = 3.75;
 
@@ -32,11 +32,10 @@ export function ChannelOverlay({
   playing,
   picking,
   selected,
-  entries,
+  picker,
   entry,
   onPlay,
   onPick,
-  onToggleGroup,
   onTogglePicking,
   onClose,
 }: {
@@ -48,12 +47,11 @@ export function ChannelOverlay({
   picking: boolean;
   /** The keyboard selection among the channels, or null. */
   selected: number | null;
-  entries: readonly ListEntry[];
+  picker: ListPickerState;
   /** The keyboard selection in the picker, or null. */
   entry: number | null;
   onPlay: (channel: LiveChannel) => void;
   onPick: (list: ChannelList) => void;
-  onToggleGroup: (group: string) => void;
   onTogglePicking: () => void;
   onClose: () => void;
 }) {
@@ -77,11 +75,11 @@ export function ChannelOverlay({
         </header>
         {picking ? (
           <ListPicker
-            entries={entries}
+            picker={picker}
             selected={list}
             highlight={entry}
             onPick={onPick}
-            onToggle={onToggleGroup}
+            onChannels={onTogglePicking}
             className="min-h-0 flex-1 px-3 pb-6"
           />
         ) : (

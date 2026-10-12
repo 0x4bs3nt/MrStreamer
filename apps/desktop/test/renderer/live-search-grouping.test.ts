@@ -196,7 +196,8 @@ async function page(
   };
   await settled();
   const scope = () => (kind === "guide" ? container : document.body);
-  const field = () => scope().querySelector("input")!;
+  const field = () =>
+    scope().querySelector<HTMLInputElement>(kind === "guide" ? "main input" : "input")!;
   const press = (key: string, target: EventTarget = document.activeElement ?? field()) =>
     act(async () => {
       target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));

@@ -203,6 +203,8 @@ export interface FakeProvider {
   activeStreams(): number;
   /** Picks the channel list each later request returns, as panel updates would. */
   serveChannels(select: (all: readonly FakeChannel[]) => readonly FakeChannel[]): void;
+  /** Picks category metadata each later request returns, for browsing and refresh checks. */
+  serveCategories(select: (all: FakeCatalogue["categories"]) => FakeCatalogue["categories"]): void;
   /** Makes catalogue requests answer with this HTTP status, or restores them with null. */
   failCatalogue(status: number | null): void;
   /**
@@ -290,6 +292,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
   let detailCount = 0;
   let titleListCount = 0;
   let select = (all: readonly FakeChannel[]): readonly FakeChannel[] => all;
+  let selectCategories = (all: FakeCatalogue["categories"]): FakeCatalogue["categories"] => all;
   let catalogueFailure: number | null = null;
   const channels = new Map(
     catalogue.channels.map((channel) => [String(channel.streamId), channel]),
@@ -501,7 +504,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     if (action === "get_live_categories") {
       return json(
         response,
-        catalogue.categories.map((category) => ({
+        selectCategories(catalogue.categories).map((category) => ({
           category_id: category.id,
           category_name: category.name,
           parent_id: 0,
@@ -704,6 +707,9 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     activeStreams: () => slots,
     serveChannels(next) {
       select = next;
+    },
+    serveCategories(next) {
+      selectCategories = next;
     },
     failCatalogue(status) {
       catalogueFailure = status;

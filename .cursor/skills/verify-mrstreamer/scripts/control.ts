@@ -11,6 +11,7 @@ import { runDownloads } from "./downloads.ts";
 import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
 import { homeScenario } from "./home.ts";
+import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
 import {
   electronExecutable,
@@ -34,6 +35,7 @@ const scenarios = [
   "subscriptions",
   "background-refresh",
   "live-tv",
+  "live-categories",
   "titles",
   "watchlist",
   "downloads",
@@ -122,11 +124,27 @@ async function run(scenario: Scenario) {
     profile = await mkdtemp(join(tmpdir(), "mrstreamer-verify-"));
     const stage = scenario === "home-stage" || scenario === "home-stage-live-only";
     provider = await startFakeProvider({
-      channels: 60,
+      channels: scenario === "live-categories" ? 64000 : 60,
       titles: 30,
       live: true,
+      ...(scenario === "live-categories"
+        ? {
+            channelOf: (channel) =>
+              channel.fixture || channel.streamId < 2000
+                ? channel
+                : { ...channel, name: `${channel.name} ${channel.streamId}`, guideId: null },
+          }
+        : {}),
       ...(stage ? { channelOf: stageChannel, logoSvg: stageLogo, adultChannels: true } : {}),
     });
+    if (scenario === "live-categories")
+      other = await startFakeProvider({ channels: 300, titles: 10, live: true });
+    if (scenario === "live-categories")
+      provider.serveCategories((all) =>
+        all.map((category) =>
+          category.id === "1" ? { ...category, name: LONG_CATEGORY } : category,
+        ),
+      );
     if (scenario === "home-stage-live-only") playlist = await startFakePlaylist();
     if (scenario === "home-stage")
       other = await startFakeProvider({
@@ -480,6 +498,45 @@ async function run(scenario: Scenario) {
         launch,
         quit,
       });
+    } else if (scenario === "live-categories") {
+      await liveCategoriesScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          otherUrl: other!.url,
+          refresh: (kind) => {
+            provider!.serveCategories((all) =>
+              all
+                .filter((category) => kind !== "remove" || category.name !== "BE | Entertainment")
+                .map((category) =>
+                  category.id === "1" ? { ...category, name: LONG_CATEGORY } : category,
+                )
+                .toReversed(),
+            );
+            other!.serveCategories((all) =>
+              all
+                .filter((category) => kind !== "remove" || category.name !== "BE | Entertainment")
+                .toReversed(),
+            );
+          },
+          streams: () => ({
+            requests: provider!.streamRequests(),
+            active: provider!.activeStreams(),
+          }),
+        },
+      );
     } else if (scenario === "live-tv") {
       await click("Open global Search", "document.querySelector('button[aria-label=Search]')");
       action("Search TEST | H.264 + AAC");
@@ -581,6 +638,10 @@ async function run(scenario: Scenario) {
     await doctor();
   } catch (error) {
     failed = error;
+    if (scenario === "live-categories" && page)
+      observed["failedFixtureUi"] = await page
+        .evaluate("document.body.innerText")
+        .catch(() => "unavailable");
     if (page) {
       const shot = await page
         .send("Page.captureScreenshot", { format: "png" })

@@ -173,7 +173,7 @@ async function favouritesPage(count: number, list: ChannelList = { kind: "favour
       }),
     type: (text: string) =>
       act(async () => {
-        const field = container.querySelector("input");
+        const field = container.querySelector<HTMLInputElement>("main input");
         if (!field) throw new Error("The list has no search field.");
         const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
         setValue?.call(field, text);
