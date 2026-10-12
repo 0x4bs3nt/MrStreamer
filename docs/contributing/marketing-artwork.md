@@ -2,12 +2,12 @@
 
 The website shows four captures of the real app. They live in `docs/assets`:
 
-| File                     | Shows                                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------- |
-| `marketing-home.png`     | Home actions, a compact muted live preview, Continue watching and a local recommendation |
-| `marketing-live-tv.png`  | Live TV, with eight channels and what's on now and next                                  |
-| `marketing-library.png`  | A series' details, with its story, cast, Play, Save and a related title                  |
-| `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle panel beside it              |
+| File                     | Shows                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `marketing-home.png`     | Stage preview and compact channel list, rounded actions, Continue watching and a local recommendation |
+| `marketing-live-tv.png`  | Live TV, with eight channels and what's on now and next                                               |
+| `marketing-library.png`  | A series' details, with its story, cast, Play, Save and a related title                               |
+| `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle panel beside it                           |
 
 Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these four files, and the social picture too. The page changes when you commit new captures and at no other time.
 
@@ -36,7 +36,7 @@ onmac pull docs/assets .local/marketing-masters
 onmac pull .local/marketing-captures .local/marketing-proof
 ```
 
-If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying the four masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
+If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. For a Home-only refresh, copy only Home and its manifest entry. Keep the unchanged masters and their original provenance; an entry's `provenance` overrides the manifest's top-level capture provenance. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
 
 Finally run `pnpm build:marketing` locally and inspect the real site at wide and 390px widths. This builds local output; deployment is separate.
 
@@ -90,6 +90,8 @@ The script verifies the owned CDP arguments and renderer URL, then retains raw p
 - Run `pnpm build:marketing` and look at the page on a wide screen and a phone. The phone shows a part of each window, set in `prepare-assets.ts`. If the app's layout moved, move those parts with it and keep `index.html`'s sizes in step.
 - Put the four files' sizes in the pull request, each and in total. They are lossless and run to a few megabytes.
 
-The 0.0.11 Home refresh was captured on the Mac mini on 11 October 2026 from Personal Home source `7b54b5265a9a62c1b20ed890c012f2041baa443a`. The source package still reports 0.0.10. It is an unsigned source build on macOS 27.0.1, arm64 and Electron 44.4.5, not an installed 0.0.11 release. Exact capture, bundle and master hashes are in `marketing-capture.json`.
+The original PR 208 captures were made on the Mac mini on 11 October 2026 from Personal Home source `7b54b5265a9a62c1b20ed890c012f2041baa443a`. Live TV, details and watching retain those masters and the manifest's original top-level provenance.
 
-Home's phone asset keeps the full 1280 × 800 window so Watchlist, Customize, the right-hand preview and the left-hand personalized rows all survive. The watching crop is 884 × 758 points at 396,42, keeping the real subtitle beside the right-hand panel. Live TV and details keep their existing crops. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.
+Home was replaced on 12 October 2026 from merged Stage source `5db40b13ec7b3bf7a39781a71363f4fb17f2ad6d`, tree `c7d534d273b787d20d4728db6660f40857052bd0`. Its entry records the new capture provenance. This unsigned source build reports 0.0.10 on macOS 27.0.1, arm64 and Electron 44.4.5; it is not an installed 0.0.11 release. Exact capture, bundle and master hashes are in `marketing-capture.json`.
+
+Home's phone asset keeps the full 1280 × 800 window so Watchlist, Customize, the left-hand Stage preview, compact channel list and personalized rows all survive. The watching crop is 884 × 758 points at 396,42, keeping the real subtitle beside the right-hand panel. Live TV and details keep their existing crops. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.

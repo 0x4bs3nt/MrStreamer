@@ -52,13 +52,26 @@
       "file": "marketing-home.png",
       "width": 2560,
       "height": 1600,
-      "bytes": 702296,
-      "sha256": "97a698dfa94dfa8ca8edb79f5970111d4482bcb2543f67ff059dfe257c8d4d59",
+      "bytes": 1090249,
+      "sha256": "76303e3e3a0f1721e48329c168e2ccd4dccbab02399eba55993af2506500b1e9",
       "videoBox": {
-        "left": 946.34375,
-        "top": 115,
-        "width": 298.65625,
-        "height": 168
+        "left": 35,
+        "top": 118.5,
+        "width": 541.375,
+        "height": 304.515625
+      },
+      "provenance": {
+        "capturedAt": "2026-10-12T13:53:09.948Z",
+        "appSource": "5db40b13ec7b3bf7a39781a71363f4fb17f2ad6d",
+        "appVersion": "0.0.10",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "system": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434\n",
+        "electron": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.10 Chrome/152.0.7977.130 Electron/44.4.5 Safari/537.36",
+        "mainSha256": "3ebabf729301361b43252ffefca01f8553ed1290a494cec8f49f42db9e958711",
+        "demoManifestSha256": "98dc48b13b655e8acbe38f365de9bcfb24bd33c44041fa4b65ab3d9c77b81d74",
+        "captureScriptSha256": "c32519fc1db8fe71d857ebd37148109ed91b9c46bde1cfde16d67a0fddfff1b9",
+        "sourceTree": "c7d534d273b787d20d4728db6660f40857052bd0"
       }
     }
   ]
