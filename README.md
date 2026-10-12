@@ -17,19 +17,6 @@ A clean, fast, open-source IPTV player for macOS, Windows and Linux. Bring your 
 
 <p align="center"><strong><a href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest">Download for macOS, Windows or Linux</a></strong></p>
 
-<table>
-  <thead><tr><th></th><th>Xtream Codes login</th><th>M3U playlist</th></tr></thead>
-  <tbody>
-    <tr><th>Live TV with a guide</th><td>Yes</td><td>Yes, guide from the playlist or an XMLTV address</td></tr>
-    <tr><th>Movies and series</th><td>Yes</td><td>From 0.0.9, supported files after mapping groups in Settings</td></tr>
-    <tr><th>Sound and subtitle tracks</th><td colspan="2">Every track the provider sends</td></tr>
-    <tr><th>Streams at once</th><td colspan="2">One, across every subscription</td></tr>
-    <tr><th>Recording, downloads</th><td colspan="2">No</td></tr>
-    <tr><th>On a TV</th><td colspan="2">AirPlay on macOS, Google Cast on Windows, not on Linux</td></tr>
-    <tr><th>Signed</th><td colspan="2">Mac DMG and Store package. The Windows .exe is not signed yet</td></tr>
-  </tbody>
-</table>
-
 ### Live TV
 
 <img src="docs/assets/readme-live-tv.webp" alt="Live TV: channels with what's on now and next" width="100%">
@@ -92,7 +79,7 @@ Mr. Streamer looks for updates after it starts and every four hours. When one is
 <summary><strong>Limits</strong></summary>
 
 - One stream at a time, across every subscription you add: Xtream Codes access, or an M3U playlist. Mixed-playlist movie and series import needs 0.0.9 and explicit group mapping.
-- No recording or downloads. [Playing on a TV](docs/user/playback.md#playing-on-a-tv) uses AirPlay on macOS and Google Cast on Windows; the Linux builds play on the computer only.
+- [Download movies and episodes](docs/user/downloads.md) to watch offline. Live TV cannot be recorded. [Playing on a TV](docs/user/playback.md#playing-on-a-tv) uses AirPlay on macOS and Google Cast on Windows; the Linux builds play on the computer only.
 - Surround sound that needs converting plays as stereo, and converting a picture uses much more of your computer's processor than playing it as it is.
 - Choosing another sound track on a live channel starts the channel again for a moment.
 - The Windows installer isn't signed yet; the Microsoft Store version is.
@@ -103,7 +90,7 @@ Mr. Streamer looks for updates after it starts and every four hours. When one is
 
 ## Help
 
-[Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md)
+[Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md)
 
 Found a bug? [Report it](https://github.com/Mr-Streamer-OSS/MrStreamer/issues/new/choose) with your system, the Mr. Streamer version from Settings > About, and what happened.
 
@@ -118,3 +105,31 @@ GPL-3.0. See [LICENSE](LICENSE). Installers include FFmpeg and x264, also under 
 Movie and series details come from [TMDB](https://www.themoviedb.org). This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. Where titles stream comes from [JustWatch](https://www.justwatch.com).
 
 <sub>Store screenshots and the trailer include Big Buck Bunny (c) copyright 2008, Blender Foundation, [www.bigbuckbunny.org](https://www.bigbuckbunny.org), [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/): excerpts, renamed and subtitled in the demo. Earth views: NASA. Grand Canyon footage: U.S. National Park Service.</sub>
+
+## How it compares
+
+VLC is a general media player. Kodi is compared with its official [IPTV Simple](https://github.com/kodi-pvr/pvr.iptvsimple) add-on.
+
+### Getting set up
+
+|                   | Platforms                                                                             | Xtream / M3U                                     | Guide (XMLTV)                                         | Movies and series                                            |
+| ----------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------ |
+| **Mr. Streamer**  | macOS (Apple silicon), Windows, Linux                                                 | Xtream login, M3U link                           | Provider or playlist guide, or your own XMLTV address | Library with TMDB details; M3U after mapping groups          |
+| **TiviMate**      | Android TV                                                                            | Xtream Codes, M3U, Stalker Portal                | TV guide (EPG) grid; XMLTV source not stated          | Movies and shows                                             |
+| **IPTV Smarters** | Android, Android TV, iPhone, iPad, Apple TV, macOS, Windows, LG and Samsung TVs       | M3U, provider API login (Xtream not named)       | EPG from your source; XMLTV address not stated        | Movies and series                                            |
+| **IPTVX**         | iPhone, iPad, Apple TV, Apple Vision, Apple silicon Mac, Android, Android TV, Fire OS | Xtream, M3U, also Plex and SMB                   | Server EPG, or your own EPG URL                       | Movies and TV shows                                          |
+| **VLC**           | Windows, macOS, Linux, Android, iOS, Apple TV                                         | Opens M3U playlists; Xtream login not documented | Not stated                                            | Plays playlist entries                                       |
+| **Kodi**          | Windows, macOS, Linux, Android, iOS, tvOS, webOS, Raspberry Pi                        | M3U file or URL; Xtream login not documented     | XMLTV file or URL                                     | VOD from M3U media entries, listed as recordings or channels |
+
+### Watching later and elsewhere
+
+|                   | Downloads                                  | Live TV recording                              | Casting                                             | Price, source                                                           |
+| ----------------- | ------------------------------------------ | ---------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------- |
+| **Mr. Streamer**  | Movies, episodes; whole series from 0.0.12 | No                                             | AirPlay on macOS, Google Cast on Windows; not Linux | Free, open source (GPL-3.0)                                             |
+| **TiviMate**      | Not stated                                 | Yes                                            | Not stated                                          | Free, premium upgrade                                                   |
+| **IPTV Smarters** | Not stated                                 | Not stated                                     | Not stated                                          | Apple app: free, ads and a premium purchase; other platforms not stated |
+| **IPTVX**         | On iPhone and iPad                         | With IPTVX Media Server on a NAS, Linux or Mac | AirPlay 2, casting to supported targets             | Free download, subscriptions                                            |
+| **VLC**           | Convert/Save to a file                     | Record button saves what plays                 | Chromecast                                          | Free, open source                                                       |
+| **Kodi**          | Not stated                                 | Not with IPTV Simple                           | Not stated                                          | Free, open source (GPL-2.0)                                             |
+
+<sub>Checked 12 October 2026 against each project's own site, docs or store listing. Not stated means those sources don't say. TiviMate: [tivimate.com](https://tivimate.com), [Google Play](https://play.google.com/store/apps/details?id=ar.tvplayer.tv). IPTV Smarters: [getiptvsmarters.com](https://getiptvsmarters.com/download), [features](https://getiptvsmarters.com/features), [App Store](https://apps.apple.com/us/app/smarters-player-lite/id1628995509). IPTVX: [features](https://iptvx.app/features/index.html), [App Store](https://apps.apple.com/us/app/iptvx/id1451470024), [Google Play](https://play.google.com/store/apps/details?id=com.bendingx.iptvx.android). VLC: [videolan.org](https://www.videolan.org/vlc/), [M3U](https://wiki.videolan.org/M3U), [recording](https://docs.videolan.me/vlc-user/desktop/3.0/en/basic/recording/playing.html), [Convert/Save](https://docs.videolan.me/vlc-user/desktop/3.0/en/advanced/transcode/transcode_and_save.html), [Chromecast](https://www.videolan.org/vlc/releases/3.0.0.html). Kodi: [kodi.tv](https://kodi.tv/download/), [IPTV Simple](https://github.com/kodi-pvr/pvr.iptvsimple), [capabilities](https://github.com/kodi-pvr/pvr.iptvsimple/blob/Piers/src/IptvSimple.cpp), [licence](https://github.com/xbmc/xbmc/blob/master/LICENSE.md).</sub>

@@ -29,6 +29,12 @@ export const GUIDES = [
       "Find movies and series, use the watchlist and continue episodes from your Xtream Codes subscriptions in Mr. Streamer.",
   },
   {
+    slug: "downloads",
+    title: "Downloads",
+    description:
+      "Download movies and episodes in Mr. Streamer, manage the queue and watch saved copies offline.",
+  },
+  {
     slug: "updates",
     title: "Updates and channels",
     description:
@@ -63,6 +69,13 @@ export const PAGES: readonly Page[] = [
     file: "index.html",
     title: "Mr. Streamer: free IPTV player for Mac, Windows and Linux",
     description: "Free, open source IPTV player for Mac, Windows and Linux.",
+  },
+  {
+    address: "/faq",
+    file: "faq/index.html",
+    title: "Mr. Streamer: questions",
+    description:
+      "Answers about channels, M3U playlists, downloads, supported systems, updates and privacy in Mr. Streamer.",
   },
   {
     address: "/privacy",
@@ -242,6 +255,7 @@ export function renderPage(
         '/latest">Release notes</a>.</p><h2',
     );
   if (page.address === "/docs") content = guideIndex();
+  if (page.address === "/faq") content = readFileSync(join(root, "src/faq.html"), "utf8");
   if (page.address === "/download") content = readFileSync(join(root, "src/download.html"), "utf8");
   if (page.address === "/releases") content = releaseHistory(releases);
   const guide = GUIDES.find((guide) => page.address === `/docs/${guide.slug}`);
@@ -257,8 +271,8 @@ export function renderPage(
     .replaceAll("<!-- title -->", escapeHtml(title))
     .replaceAll("<!-- description -->", escapeHtml(page.description))
     .replaceAll("<!-- address -->", SITE + page.address)
-    .replace("<!-- content -->", () => crumb + content + other)
-    .replace(`href="${guide ? "/docs" : page.address}"`, `$& aria-current="page"`);
+    .replaceAll(`href="${guide ? "/docs" : page.address}"`, `$& aria-current="page"`)
+    .replace("<!-- content -->", () => crumb + content + other);
   if (page.address === "/download")
     html = html
       .replace("<title>", "<title data-download-title>")

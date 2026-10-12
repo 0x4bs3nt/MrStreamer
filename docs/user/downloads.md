@@ -46,4 +46,4 @@ Quitting the app, or playback taking the connection, keeps the downloaded part. 
 
 ## Where they are kept
 
-Downloads are kept in the `downloads` folder inside Mr. Streamer's data folder, listed in the [privacy policy](../privacy.md#data-stored-on-your-computer). Mr. Streamer manages that folder: use **Delete** rather than removing files by hand. A copy whose file is gone shows as missing and can only be deleted.
+Downloads are kept in the `downloads` folder inside Mr. Streamer's data folder, listed in the [privacy policy](../privacy.md#on-your-computer). Mr. Streamer manages that folder: use **Delete** rather than removing files by hand. A copy whose file is gone shows as missing and can only be deleted.

@@ -62,10 +62,28 @@ describe("public document pages without JavaScript", () => {
       document.querySelector('a[href="/docs/troubleshooting#where-your-data-is"]'),
     ).not.toBeNull();
     expect(document.querySelector('main a[href="https://mrstreamer.app/download"]')).not.toBeNull();
-    expect(document.querySelectorAll(".other-guides li")).toHaveLength(5);
+    expect(document.querySelectorAll(".other-guides li")).toHaveLength(6);
     open(renderPage("docs/index.html", null, null));
-    expect(document.querySelectorAll(".guide-list dt a")).toHaveLength(6);
+    expect(document.querySelectorAll(".guide-list dt a")).toHaveLength(7);
     expect(document.querySelector('a[href="/docs#installed-from-the-microsoft-store"]')).toBeNull();
+  });
+
+  it("offers the grouped FAQ and its working guide links without JavaScript", () => {
+    open(renderPage("faq/index.html", null, null));
+    expect([...document.querySelectorAll("main h2")].map((heading) => heading.textContent)).toEqual(
+      ["Getting started", "Watching", "Installing and updates", "Price and privacy"],
+    );
+    expect(document.querySelectorAll(".faq-rows > div[id]")).toHaveLength(13);
+    expect(document.querySelector("#download")?.textContent).toContain(
+      "Download a movie or an episode",
+    );
+    expect(document.querySelector("#record")?.textContent).toContain("Live TV can't be recorded");
+    expect(document.querySelector('main a[href="/docs/downloads"]')).not.toBeNull();
+    expect(
+      document.querySelector('main a[href="/docs/subscriptions#mapping-mixed-playlists"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('nav a[href="/faq"][aria-current="page"]')).not.toBeNull();
+    expect(document.querySelector('footer a[href="/faq"][aria-current="page"]')).not.toBeNull();
   });
 
   it("sends non-public documentation to the repository and renders untrusted notes safely", () => {

@@ -222,7 +222,7 @@ h1 {
 }
 
 .note a,
-.questions a,
+#questions a,
 .download-links a,
 #downloads > p a {
   color: #fff;
@@ -288,9 +288,8 @@ h1 {
   line-height: 1.45;
 }
 
-/* What you need, Questions and Downloads: a heading over one reading column. */
-.column > p,
-.questions dd {
+/* What you need, the FAQ link and Downloads: one reading column. */
+.column > p {
   max-width: 36em;
   line-height: 1.5;
 }
@@ -304,17 +303,8 @@ h1 {
   margin-top: 0.7em;
 }
 
-.questions dt,
 .rows dt {
   font-weight: 650;
-}
-
-.questions dt {
-  margin-top: 1.2em;
-}
-
-.questions dd {
-  margin-top: 0.2em;
 }
 
 /* Downloads: a row for each system, its installers and what to know before running one. */
@@ -361,23 +351,12 @@ h1 {
   line-height: 1.45;
 }
 
-/* Questions and rows that scroll in together follow each other. */
-.questions div:nth-child(2),
+/* Download rows scroll in together. */
 .row:nth-child(2) {
   --nth: 1;
 }
-
-.questions div:nth-child(3),
 .row:nth-child(3) {
   --nth: 2;
-}
-
-.questions div:nth-child(4) {
-  --nth: 3;
-}
-
-.questions div:nth-child(5) {
-  --nth: 4;
 }
 
 footer {
@@ -400,12 +379,8 @@ footer p {
   flex-basis: 100%;
 }
 
-/* A narrow phone: the bar keeps Downloads alone, and the hero's button takes the width. */
+/* A narrow phone: navigation wraps and the hero's button takes the width. */
 @media (max-width: 30em) {
-  .bar nav a:not(.heavy) {
-    display: none;
-  }
-
   .actions .button {
     flex: 1;
   }
@@ -555,7 +530,7 @@ footer p {
  *   button pops, its line rises and the hero's window stands up, or rises while stacked.
  * - As a part scrolls into view, main.ts adds `revealed` to it and takes it off when its
  *   animation ends: a feature's text slides in from the page's edge while a black panel wipes
- *   off its window, and What you need, each question and each download row come in after it.
+ *   off its window, and What you need and each download row come in after it.
  * - As the page scrolls, main.ts sets --tilt on the hero's window and marks it `tipped`: 0 tips
  *   it back 20 degrees, and at 1 it loses both and stands upright with no transform, which is
  *   also how it stands without the script. The stand-up ends on that tilt, so the two never jump.
@@ -914,5 +889,28 @@ footer p {
 
   .not-found h1 {
     font-size: 3.4em;
+  }
+}
+
+/* The FAQ uses the approved grouped question/answer rows, stacked on phones. */
+.faq-rows {
+  border-top: 1px solid var(--line);
+}
+
+.faq-rows > div {
+  display: grid;
+  gap: 0.25em 1.5em;
+  padding: 0.8em 0;
+  border-bottom: 1px solid var(--line);
+  scroll-margin-top: 1em;
+}
+
+.faq-rows dt {
+  font-weight: 650;
+}
+
+@media (min-width: 40rem) {
+  .faq-rows > div {
+    grid-template-columns: 15em 1fr;
   }
 }

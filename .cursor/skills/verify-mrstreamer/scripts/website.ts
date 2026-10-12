@@ -162,10 +162,13 @@ app.on('window-all-closed', () => app.quit());
     );
     await doctor();
     let lastCapture = "";
+    let pageScriptsDisabled = false;
     const capture = async (name: string) => {
-      await livePage.evaluate(
-        "document.fonts.ready.then(async () => { await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => undefined))); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })",
-      );
+      // Script-disabled pages cannot schedule the animation-frame callback.
+      if (!pageScriptsDisabled)
+        await livePage.evaluate(
+          "document.fonts.ready.then(async () => { await Promise.all(document.getAnimations().filter(animation => animation.effect?.getTiming().iterations !== Infinity).map(animation => animation.finished.catch(() => undefined))); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); })",
+        );
       await delay(500, undefined, { signal: abort.signal });
       const screenshot = await send("Page.captureScreenshot", { format: "png" });
       if (!record(screenshot) || typeof screenshot["data"] !== "string")
@@ -207,7 +210,7 @@ app.on('window-all-closed', () => app.quit());
       const element = `[...document.querySelectorAll(${JSON.stringify(`a[href="${href}"]`)})].find(a => { const box = a.getBoundingClientRect(); return box.width > 0 && box.height > 0; })`;
       await wait(() => livePage.evaluate<boolean>(`!!${element}`));
       let scrolled = false;
-      // On narrow Home the Guides link is in the footer, below the hidden desktop navigation.
+      // Scroll when a requested link is below the current viewport.
       await wait(async () => {
         const box = await livePage.evaluate<{ y: number; height: number }>(
           `(() => { const box = ${element}.getBoundingClientRect(); return { y: box.y, height: box.height }; })()`,
@@ -262,6 +265,8 @@ app.on('window-all-closed', () => app.quit());
       await capture(name);
       await doctor();
     };
+    await visit("/faq", "Questions", "faq");
+    await visit("/docs/downloads", "Downloads", "downloads-guide");
     await visit("/docs", "Guides", "guides");
     await visit("/docs/subscriptions", "Subscriptions", "subscriptions-guide");
     await visit("/download", "Download", "downloads");
@@ -302,6 +307,21 @@ app.on('window-all-closed', () => app.quit());
     observed["downloadTargets"] = downloads;
     await visit("/releases", "Releases", "releases");
     await visit("/privacy", "Privacy", "privacy");
+    await send("Emulation.setScriptExecutionDisabled", { value: true });
+    pageScriptsDisabled = true;
+    await send("Page.navigate", { url: origin + "/faq" });
+    await wait(() =>
+      livePage.evaluate<boolean>(
+        "location.pathname === '/faq' && document.readyState === 'complete' && document.querySelectorAll('.faq-rows > div').length === 13",
+      ),
+    );
+    actions.push({ action: "Read FAQ with page scripts disabled", at: new Date().toISOString() });
+    observed["faqWithoutScripts"] = await livePage.evaluate(
+      "({ title: document.title, groups: [...document.querySelectorAll('main h2')].map(h => h.textContent), rows: document.querySelectorAll('.faq-rows > div').length, width: innerWidth, contentWidth: document.documentElement.scrollWidth })",
+    );
+    await capture("faq-without-scripts");
+    await doctor();
+    await visit("/docs/downloads", "Downloads", "downloads-guide-without-scripts");
     const missing = await fetch(origin + "/verification-missing-page");
     observed["missingRouteStatus"] = missing.status;
     if (missing.status !== 404) throw new Error("Unknown route does not answer 404.");

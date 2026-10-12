@@ -5,10 +5,10 @@ Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. Brin
 ## What it plays
 
 - Live TV from Xtream Codes or an M3U playlist, with a programme guide when your provider or playlist supplies one. You can also give it an XMLTV guide address.
-- Movies and series with Xtream Codes access, with a watchlist and saved progress. A playlist without an Xtream Codes login brings live TV only.
+- Movies and series from Xtream Codes or a playlist whose groups you mapped in Settings, with a watchlist and saved progress. Playlist movies and episodes need finished files; HLS entries stay out.
 - The sound and subtitle tracks your provider sends. See [What plays](user/playback.md) for formats, playback on a TV and limits.
 
-Mr. Streamer does not record or download programmes, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
+You can [download movies and episodes](user/downloads.md) to watch offline. Mr. Streamer does not record live TV, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
 
 It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI movies and episodes. Playback depends on the file's tracks and your system's decoders; [What plays](user/playback.md) describes conversion and the known limits. DASH streams are not supported.
 
@@ -24,7 +24,7 @@ It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI m
 
 ## Your data
 
-Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider logins go to the provider in each request. From 0.0.11, basic first-seen profile and weekly app-use statistics default on and can be turned off in **Settings > General > Privacy**. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections and the website's analytics; [Security](security.md) explains login storage and installer signing.
+Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider logins go to the provider in each request. From 0.0.11, usage statistics default on and can be turned off in **Settings > General > Privacy**: first-seen profiles and daily app use, and from 0.0.12 the parts of the app opened, playback, download and update-check results, and unexpected window stops. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections and the website's analytics; [Security](security.md) explains login storage and installer signing.
 
 ## Licence and source
 

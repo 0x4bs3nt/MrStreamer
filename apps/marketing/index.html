@@ -6,7 +6,7 @@
     <title>Mr. Streamer: free IPTV player for Mac, Windows and Linux</title>
     <meta
       name="description"
-      content="Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series with Xtream Codes."
+      content="Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series from Xtream Codes or a mapped playlist."
     />
     <link rel="canonical" href="https://mrstreamer.app/" />
     <meta name="theme-color" content="#000000" />
@@ -20,7 +20,7 @@
     <meta property="og:title" content="Mr. Streamer: free IPTV player for Mac, Windows and Linux" />
     <meta
       property="og:description"
-      content="Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series with Xtream Codes."
+      content="Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series from Xtream Codes or a mapped playlist."
     />
     <meta property="og:image" content="https://mrstreamer.app/generated/social.png" />
     <meta property="og:image:width" content="1200" />
@@ -43,7 +43,7 @@
         },
         "codeRepository": "https://github.com/Mr-Streamer-OSS/MrStreamer",
         "url": "https://mrstreamer.app/",
-        "description": "Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series with Xtream Codes.",
+        "description": "Free, open source IPTV player for Mac, Windows and Linux. Live TV from an M3U playlist or Xtream Codes login. Movies and series from Xtream Codes or a mapped playlist.",
         "applicationCategory": "MultimediaApplication",
         "operatingSystem": "macOS 13 or later (Apple silicon), Windows 11 (64-bit), Linux (64-bit)",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -69,8 +69,8 @@
           <img src="/generated/mark.svg" alt="" width="100" height="100" />mr. streamer
         </a>
         <nav aria-label="Site">
-          <a href="#live-tv">Live TV</a>
           <a href="/docs">Guides</a>
+          <a href="/faq">FAQ</a>
           <a class="heavy" href="/download">Downloads</a>
         </nav>
       </header>
@@ -302,8 +302,8 @@
           </p>
           <p>
             Xtream Codes access gets you live TV, movies and series. That's a server address,
-            username and password, or an M3U link that carries them. A playlist link without a login
-            gets live TV only.
+            username and password, or an M3U link that carries them. A playlist gets live TV, and
+            movies and series once you map its groups.
           </p>
           <p>
             The guide comes from your provider. Channels it doesn't cover show their name and
@@ -317,35 +317,7 @@
         </section>
 
         <section class="column" id="questions">
-          <h2 data-reveal>Questions</h2>
-          <dl class="questions">
-            <div data-reveal>
-              <dt>Does it come with channels?</dt>
-              <dd>No. You connect the subscription you already have.</dd>
-            </div>
-            <div data-reveal>
-              <dt>Will my M3U playlist work?</dt>
-              <dd>For live TV, yes. Movies and series need Xtream Codes access.</dd>
-            </div>
-            <div data-reveal>
-              <dt>Is it really free?</dt>
-              <dd>
-                Yes. GPL-3.0, no ads, no account.
-                <a href="https://github.com/Mr-Streamer-OSS/MrStreamer">Don't like it? Fork it.</a>
-              </dd>
-            </div>
-            <div data-reveal>
-              <dt>Store or .exe on Windows?</dt>
-              <dd>
-                The Store copy is signed and the Store updates it. The .exe does the same job
-                without the Store and updates itself.
-              </dd>
-            </div>
-            <div data-reveal>
-              <dt>Can it record or download?</dt>
-              <dd>No. It plays what your provider streams.</dd>
-            </div>
-          </dl>
+          <p>Questions about playlists, downloads or updates? <a href="/faq">Read the FAQ</a>.</p>
         </section>
 
         <section class="column" id="downloads">
@@ -389,6 +361,7 @@
       <footer>
         <b>mr. streamer</b>
         <a href="/docs">Guides</a>
+        <a href="/faq">FAQ</a>
         <a href="/download">Downloads</a>
         <a href="/releases">Releases</a>
         <a href="/about">About</a>

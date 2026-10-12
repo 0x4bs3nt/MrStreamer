@@ -2,24 +2,25 @@
 
 Static pages for `https://mrstreamer.app`, built with Vite from HTML, CSS, TypeScript and the repository's Markdown. The homepage's pictures are captures of the real app, kept in `docs/assets` and described in [marketing artwork](../../docs/contributing/marketing-artwork.md).
 
-| File                                                                 | Holds                                                                          |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `index.html`                                                         | The homepage and its shortened Downloads section                               |
-| `src/page.html`                                                      | The shared privacy, guides, about, security, download and releases layout      |
-| `src/download.html`                                                  | Installer rows, requirements, checksum and source links                        |
-| `privacy/`, `docs/`, `about/`, `security/`, `download/`, `releases/` | HTML entry points, expanded by the build                                       |
-| `404.html`                                                           | The page for a missing address                                                 |
-| `src/styles.css`                                                     | Layout, download button visibility and finite homepage motion                  |
-| `src/main.ts`                                                        | Page-view analytics, homepage motion and one download-feed refresh             |
-| `src/system.ts`                                                      | Which system a visitor is on, for the hero's one download button               |
-| `src/downloads.ts`                                                   | Verified installer links, version metadata and the release's auxiliary links   |
-| `scripts/pages.ts`                                                   | Page registry, metadata and Markdown rendering with public documentation links |
-| `scripts/releases.ts`                                                | Paginated stable release history from GitHub, with a bounded fallback          |
-| `vite.config.ts`                                                     | Build inputs, HTML expansion and local routing                                 |
-| `scripts/prepare-assets.ts`                                          | Pictures, icons and the social picture in `public/generated/`                  |
-| `scripts/package-vercel.ts`                                          | Vercel's static package, routes and public page/link checks                    |
-| `public/`                                                            | `robots.txt` and the Store, Apple and Linux marks                              |
-| `test/`                                                              | Download, system detection, static document and release-history contracts      |
+| File                                                                         | Holds                                                                          |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `index.html`                                                                 | The homepage and its shortened Downloads section                               |
+| `src/page.html`                                                              | The shared FAQ, privacy, guides, about, security, download and releases layout |
+| `src/faq.html`                                                               | Grouped questions and answers, readable without scripts                        |
+| `src/download.html`                                                          | Installer rows, requirements, checksum and source links                        |
+| `faq/`, `privacy/`, `docs/`, `about/`, `security/`, `download/`, `releases/` | HTML entry points, expanded by the build                                       |
+| `404.html`                                                                   | The page for a missing address                                                 |
+| `src/styles.css`                                                             | Layout, download button visibility and finite homepage motion                  |
+| `src/main.ts`                                                                | Page-view analytics, homepage motion and one download-feed refresh             |
+| `src/system.ts`                                                              | Which system a visitor is on, for the hero's one download button               |
+| `src/downloads.ts`                                                           | Verified installer links, version metadata and the release's auxiliary links   |
+| `scripts/pages.ts`                                                           | Page registry, metadata and Markdown rendering with public documentation links |
+| `scripts/releases.ts`                                                        | Paginated stable release history from GitHub, with a bounded fallback          |
+| `vite.config.ts`                                                             | Build inputs, HTML expansion and local routing                                 |
+| `scripts/prepare-assets.ts`                                                  | Pictures, icons and the social picture in `public/generated/`                  |
+| `scripts/package-vercel.ts`                                                  | Vercel's static package, routes and public page/link checks                    |
+| `public/`                                                                    | `robots.txt` and the Store, Apple and Linux marks                              |
+| `test/`                                                                      | Download, system detection, static document and release-history contracts      |
 
 `public/generated/`, `dist/` and `.vercel/` are built and stay out of git.
 
@@ -63,7 +64,7 @@ Vercel alone answers `/_vercel/insights/`, for [website analytics](#website-anal
 
 - Keep the words true and few. Every claim on the page comes from the README or the docs. The app's limits are in [what plays](../../docs/user/playback.md).
 - True black, white text, minimal copy. Screenshots describe the app, so a feature is its name and one sentence beside its window.
-- The page order is the bar, the hero, the Home window, the three features, What you need, Questions, Downloads, the footer. The hero has the page's one button. The bar links Downloads as text.
+- The page order is the bar, the hero, the Home window, the three features, What you need, the FAQ link, Downloads, the footer. The hero has the page's one button. The bar links Downloads as text.
 - The homepage title and description name the product and systems. Its single h1 names Mr. Streamer above the existing slogan. Structured data describes `SoftwareApplication` and `SoftwareSourceCode`, with the alternate product name, publisher, repository and four screenshots. `softwareVersion` comes only from a stable release with a verified installer. There are no invented ratings or reviews. Every document has its own metadata, canonical address and sitemap entry. Add no page for a single system or search phrase.
 - Nothing moves by itself, and every animation runs once and ends:
   - As the page opens, the bar drops in, the headline and lead rise, the one button pops, its line rises and the Home window stands up, or only rises while the layout is stacked. This is CSS alone, so it runs without JavaScript.
@@ -74,7 +75,7 @@ Vercel alone answers `/_vercel/insights/`, for [website analytics](#website-anal
   Only `transform` and `opacity` change. `main.ts` adds `revealed` to a part once and takes it off when its animation ends or is dropped, so no class, panel or layer stays behind. Once the page is open, the script works only after a scroll, a resize or a changed preference. With reduced motion nothing moves, also when the preference changes while the page is open. Nothing waits hidden for the script. An animation only starts from hidden, and a part that never animates is in place.
 
 - New pictures come from new captures. Follow the [artwork recipe](../../docs/contributing/marketing-artwork.md). A phone shows a part of each window, set in `prepare-assets.ts`, with its size repeated in `index.html`.
-- Markdown remains the source for privacy, the six guides, about and security. The site builds the checked-out `main`, rather than copying guides from a stable tag. Coordinate new feature documentation with its release. Relative guide links become public page links, retaining fragments. Documents that are not public pages link to GitHub, never to a nonexistent site route. Scripts are not needed to read any document. Merging a change to any rendered Markdown source starts the marketing publication workflow.
+- Markdown remains the source for privacy, the seven guides, about and security. The site builds the checked-out `main`, rather than copying guides from a stable tag. Coordinate new feature documentation with its release. Relative guide links become public page links, retaining fragments. Documents that are not public pages link to GitHub, never to a nonexistent site route. Scripts are not needed to read any document. Merging a change to any rendered Markdown source starts the marketing publication workflow.
 
 ## Downloads
 
@@ -243,7 +244,7 @@ npx --yes vercel@62.2.0 deploy --prebuilt --archive=tgz --prod --cwd apps/market
 
 A project's first deployment is its production deployment. No domain is attached yet, so it is live only at the project's `vercel.app` address. Check there:
 
-- The homepage, `/download`, `/releases`, `/about`, `/security`, `/docs` and a guide on a wide screen and a phone, also without JavaScript.
+- The homepage, `/download`, `/releases`, `/about`, `/security`, `/faq`, `/docs` and a guide on a wide screen and a phone, also without JavaScript.
 - `/privacy` and `/privacy/` both show the whole policy.
 - An address with no page, such as `/nothing/here`, shows Page not found.
 - `/robots.txt`, `/sitemap.xml` and `/generated/social.png` answer.
