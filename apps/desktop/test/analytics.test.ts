@@ -595,22 +595,58 @@ describe("analytics delivery and deadlines", () => {
       toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
     });
     vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
-    const { owner, dataDir } = await start({ transport: { send: () => new Promise(() => {}) } });
+    const store = memoryStore();
+    let signal: AbortSignal | undefined;
+    const { owner } = await start({
+      store,
+      transport: {
+        send(_event, owned) {
+          signal = owned;
+          return new Promise(() => {});
+        },
+      },
+    });
     owner.setForeground(true);
-    await until(async () => (await saved(dataDir)).firstSeen);
+    // Finish each observation before moving the clock; file visibility can precede save completion.
+    await vi.advanceTimersByTimeAsync(0);
+    const first = await store.load();
+    expect(first?.firstSeen).toBe(true);
+    expect(signal).toBeDefined();
     for (let day = 2; day <= 20; day++) {
       owner.setForeground(false);
-      vi.setSystemTime(new Date(`2026-10-${String(day).padStart(2, "0")}T12:00:00Z`));
+      const date = `2026-10-${String(day).padStart(2, "0")}`;
+      vi.setSystemTime(new Date(`${date}T12:00:00Z`));
       owner.setForeground(true);
-      await until(
-        async () => (await saved(dataDir)).lastDay === `2026-10-${String(day).padStart(2, "0")}`,
-      );
+      await vi.advanceTimersByTimeAsync(0);
+      const record = await store.load();
+      expect(record?.lastDay).toBe(date);
+      expect(record?.pending.length).toBeLessThanOrEqual(8);
     }
-    expect((await saved(dataDir)).pending).toHaveLength(8);
-    expect((await saved(dataDir)).pending[0]?.event.event).toBe("installation_observed");
+    const kept = await store.load();
+    expect(kept?.pending).toHaveLength(8);
+    expect(kept?.pending[0]?.event.event).toBe("installation_observed");
+    expect(kept?.pending[0]?.event).toEqual(first?.pending[0]?.event);
+    expect(kept?.installationId).toBe(first?.installationId);
+    expect(kept?.firstSeen).toBe(true);
+    expect(
+      kept?.pending.flatMap(({ event }) =>
+        event.event === "app_active_day" ? [event.properties.activity_date] : [],
+      ),
+    ).toEqual([
+      "2026-10-14",
+      "2026-10-15",
+      "2026-10-16",
+      "2026-10-17",
+      "2026-10-18",
+      "2026-10-19",
+      "2026-10-20",
+    ]);
+    expect(await owner.settings()).toEqual({ enabled: true, transport: "local" });
     const closing = owner.close();
     await vi.advanceTimersByTimeAsync(500);
     await closing;
+    expect(signal?.aborted).toBe(true);
+    expect(await store.load()).toEqual(kept);
   });
 
   it("bounds quit and aborts a hung transport without losing its durable retry identity", async () => {

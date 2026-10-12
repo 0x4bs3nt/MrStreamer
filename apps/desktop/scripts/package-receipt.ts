@@ -91,7 +91,12 @@ function requiredFiles(
     case "mac-arm64":
       return [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"];
     case "linux-x64":
-      return [`${base}.AppImage`, `${base}.deb`, "latest-linux.yml"];
+      // electron-builder expands x64 to each Linux package format's architecture name.
+      return [
+        `Mr-Streamer-${identity.appVersion}-linux-x86_64.AppImage`,
+        `Mr-Streamer-${identity.appVersion}-linux-amd64.deb`,
+        "latest-linux.yml",
+      ];
     case "win-x64":
       return [`${base}-setup.exe`, `${base}-setup.exe.blockmap`, "latest.yml"];
   }

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 import {
   packageArtifacts,
   producePackageReceipt,
@@ -33,9 +34,33 @@ function fixture(build = builds[2]!) {
       : build.platform === "mac-arm64"
         ? [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"]
         : build.platform === "linux-x64"
-          ? [`${base}.AppImage`, `${base}.deb`, "latest-linux.yml"]
+          ? [
+              `Mr-Streamer-${VERSION}-linux-x86_64.AppImage`,
+              `Mr-Streamer-${VERSION}-linux-amd64.deb`,
+              "latest-linux.yml",
+            ]
           : [`${base}-setup.exe`, `${base}-setup.exe.blockmap`, "latest.yml"];
   const files = new Map(names.map((name) => [name, strToU8(`Synthetic ${name}`)]));
+  if (build.platform === "linux-x64") {
+    const name = names[0]!;
+    const installer = files.get(name)!;
+    const sha512 = createHash("sha512").update(installer).digest("base64");
+    files.set(
+      "latest-linux.yml",
+      strToU8(
+        stringify({
+          version: VERSION,
+          files: names.slice(0, 2).map((url) => ({
+            url,
+            sha512: createHash("sha512").update(files.get(url)!).digest("base64"),
+            size: files.get(url)!.length,
+          })),
+          path: name,
+          sha512,
+        }),
+      ),
+    );
+  }
   const archive = zipSync(Object.fromEntries(files));
   const identity: PackageIdentity = {
     ...build,
@@ -277,20 +302,24 @@ describe("successful package receipts", () => {
     await expect(world.resolve()).rejects.toThrow(/does not match its digest/);
   });
 
-  it("fails a modified file even when the archive's GitHub digest and receipt artifact hash match", async () => {
-    const world = fixture();
-    const file = world.receipt().files[0]!;
-    const bytes = zipSync({
-      ...Object.fromEntries(world.files),
-      [file.name]: strToU8("x".repeat(file.bytes)),
-    });
-    world.archives.set(30, bytes);
-    world.artifact.digest = `sha256:${sha256(bytes)}`;
-    const receipt = world.receipt();
-    receipt.artifact.sha256 = sha256(bytes);
-    world.updateReceipt(receipt);
-    await expect(world.resolve()).rejects.toThrow(/SHA-256/);
-  });
+  it.each([builds[1]!, builds[2]!])(
+    "fails modified $platform installers or updater metadata even when the archive digest matches",
+    async (build) => {
+      for (const file of fixture(build).receipt().files) {
+        const world = fixture(build);
+        const bytes = zipSync({
+          ...Object.fromEntries(world.files),
+          [file.name]: strToU8("x".repeat(file.bytes)),
+        });
+        world.archives.set(30, bytes);
+        world.artifact.digest = `sha256:${sha256(bytes)}`;
+        const receipt = world.receipt();
+        receipt.artifact.sha256 = sha256(bytes);
+        world.updateReceipt(receipt);
+        await expect(world.resolve()).rejects.toThrow(/SHA-256/);
+      }
+    },
+  );
 
   it("rejects missing or unexpected package files", async () => {
     const world = fixture();
@@ -362,66 +391,117 @@ describe("successful package receipts", () => {
     ).rejects.toThrow(/incomplete artifact listing/);
   });
 
-  it("the workflow CLI writes a receipt for a complete checked-out package and leaves no success on failure", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "package-receipt-cli-"));
-    const world = fixture();
-    const git = (...args: string[]) => {
-      const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
-      if (result.status !== 0) throw new Error(result.stderr);
-      return result.stdout.trim();
-    };
-    try {
-      git("init", "-q");
-      await writeFile(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
-      git("add", "package.json");
-      git(
-        "-c",
-        "user.name=Receipt test",
-        "-c",
-        "user.email=receipt@example.com",
-        "commit",
-        "-qm",
-        "Synthetic source",
-      );
-      await mkdir(join(dir, "dist"));
-      for (const [name, bytes] of world.files) await writeFile(join(dir, "dist", name), bytes);
-      const env = {
-        PATH: process.env["PATH"],
-        GITHUB_REPOSITORY: world.identity.repository,
-        GITHUB_RUN_ID: "900",
-        GITHUB_RUN_ATTEMPT: "2",
-        PACKAGE_SOURCE: git("rev-parse", "HEAD"),
-        PACKAGE_WORKFLOW_COMMIT: world.identity.workflowCommit,
-        PACKAGE_APP_VERSION: VERSION,
-        PACKAGE_VERSION: VERSION,
-        PACKAGE_PLATFORM: "win-x64",
-        PACKAGE_DISTRIBUTION: "direct",
-        PACKAGE_RUN_HEAD: world.identity.run.headCommit,
-        PACKAGE_ARTIFACT_ID: "30",
-        PACKAGE_ARTIFACT_NAME: world.identity.artifact.name,
-        PACKAGE_ARTIFACT_SHA256: world.identity.artifact.sha256,
+  it.each([builds[1]!, builds[2]!])(
+    "the workflow CLI binds $platform installers and updater metadata, leaving no success on failure",
+    async (build) => {
+      const dir = await mkdtemp(join(tmpdir(), "package-receipt-cli-"));
+      const world = fixture(build);
+      const git = (...args: string[]) => {
+        const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+        if (result.status !== 0) throw new Error(result.stderr);
+        return result.stdout.trim();
       };
-      const run = (overrides = {}) =>
-        spawnSync(process.execPath, [resolve("apps/desktop/scripts/package-receipt.ts")], {
-          cwd: dir,
-          encoding: "utf8",
-          env: { ...env, ...overrides },
+      try {
+        git("init", "-q");
+        await writeFile(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
+        git("add", "package.json");
+        git(
+          "-c",
+          "user.name=Receipt test",
+          "-c",
+          "user.email=receipt@example.com",
+          "commit",
+          "-qm",
+          "Synthetic source",
+        );
+        await mkdir(join(dir, "dist"));
+        for (const [name, bytes] of world.files) await writeFile(join(dir, "dist", name), bytes);
+        const env = {
+          PATH: process.env["PATH"],
+          GITHUB_REPOSITORY: world.identity.repository,
+          GITHUB_RUN_ID: "900",
+          GITHUB_RUN_ATTEMPT: "2",
+          PACKAGE_SOURCE: git("rev-parse", "HEAD"),
+          PACKAGE_WORKFLOW_COMMIT: world.identity.workflowCommit,
+          PACKAGE_APP_VERSION: VERSION,
+          PACKAGE_VERSION: VERSION,
+          PACKAGE_PLATFORM: build.platform,
+          PACKAGE_DISTRIBUTION: "direct",
+          PACKAGE_RUN_HEAD: world.identity.run.headCommit,
+          PACKAGE_ARTIFACT_ID: "30",
+          PACKAGE_ARTIFACT_NAME: world.identity.artifact.name,
+          PACKAGE_ARTIFACT_SHA256: world.identity.artifact.sha256,
+        };
+        const run = (overrides = {}) =>
+          spawnSync(process.execPath, [resolve("apps/desktop/scripts/package-receipt.ts")], {
+            cwd: dir,
+            encoding: "utf8",
+            env: { ...env, ...overrides },
+          });
+        const wrongSource = run({ PACKAGE_SOURCE: "e".repeat(40) });
+        expect(wrongSource.status).toBe(1);
+        expect(wrongSource.stderr).toMatch(/checkout is not/);
+        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
+        const wrongVersion = run({ PACKAGE_APP_VERSION: "0.0.11" });
+        expect(wrongVersion.status).toBe(1);
+        expect(wrongVersion.stderr).toMatch(/package.json is not/);
+        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
+        // Unfinished files are not uploaded, so they must not appear in a success receipt.
+        const installer = [...world.files.keys()][0]!;
+        await writeFile(join(dir, "dist", `${installer}.part`), "unfinished download");
+        const successful = run();
+        expect(successful.status, successful.stderr).toBe(0);
+        const receipt = JSON.parse(await readFile(join(dir, "package-receipt.json"), "utf8"));
+        expect(receipt).toMatchObject({
+          schemaVersion: 1,
+          status: "success",
+          sourceCommit: env.PACKAGE_SOURCE,
         });
-      expect(run({ PACKAGE_SOURCE: "e".repeat(40) }).stderr).toMatch(/checkout is not/);
-      await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
-      const successful = run();
-      expect(successful.status, successful.stderr).toBe(0);
-      expect(JSON.parse(await readFile(join(dir, "package-receipt.json"), "utf8"))).toMatchObject({
-        schemaVersion: 1,
-        status: "success",
-        sourceCommit: env.PACKAGE_SOURCE,
-      });
-      await rm(join(dir, "package-receipt.json"));
-      await rm(join(dir, "dist", `Mr-Streamer-${VERSION}-win-x64-setup.exe`));
-      expect(run().stderr).toMatch(/exact uploaded package set/);
-      await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }, 15_000);
+        world.updateReceipt(receipt);
+        const resolved = await world.resolve({
+          ...world.identity,
+          sourceCommit: env.PACKAGE_SOURCE,
+        });
+        expect(resolved.files).toEqual(world.files);
+        expect(resolved.receipt.platform).toBe(build.platform);
+        if (build.platform === "linux-x64") {
+          const image = `Mr-Streamer-${VERSION}-linux-x86_64.AppImage`;
+          const deb = `Mr-Streamer-${VERSION}-linux-amd64.deb`;
+          const metadata = parse(new TextDecoder().decode(resolved.files.get("latest-linux.yml")!));
+          expect(metadata).toEqual({
+            version: VERSION,
+            path: image,
+            sha512: createHash("sha512").update(resolved.files.get(image)!).digest("base64"),
+            files: [image, deb].map((url) => ({
+              url,
+              sha512: createHash("sha512").update(resolved.files.get(url)!).digest("base64"),
+              size: resolved.files.get(url)!.length,
+            })),
+          });
+        }
+        await rm(join(dir, "package-receipt.json"));
+        for (const [name, bytes] of world.files) {
+          await rm(join(dir, "dist", name));
+          const incomplete = run();
+          expect(incomplete.status).toBe(1);
+          expect(incomplete.stderr).toMatch(/exact uploaded package set/);
+          await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
+          await writeFile(join(dir, "dist", name), bytes);
+        }
+        await writeFile(join(dir, "dist", installer), "");
+        expect(run().status).toBe(1);
+        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
+        await writeFile(join(dir, "dist", installer), world.files.get(installer)!);
+        const extra = build.platform === "linux-x64" ? "other.deb" : "other.exe";
+        await writeFile(join(dir, "dist", extra), "extra installer");
+        const ambiguous = run();
+        expect(ambiguous.status).toBe(1);
+        expect(ambiguous.stderr).toMatch(/exact uploaded package set/);
+        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
 });
