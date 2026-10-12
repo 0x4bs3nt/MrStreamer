@@ -7,6 +7,7 @@ import { Failed } from "@mrstreamer/core/failure";
 import * as Layer from "effect/Layer";
 import { diagnosticsLogLayer } from "../src/main/platform/diagnostics-log.ts";
 import type { TcpConnect } from "../src/main/providers/xtream.ts";
+import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import type { FakeProvider } from "./fake-provider.ts";
@@ -22,6 +23,7 @@ async function app(fetchImpl: typeof fetch, tcpConnect?: TcpConnect) {
   const dataDir = await tempDir();
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: null }).pipe(
+      Layer.provide(PlaybackCoordination.layer),
       Layer.provideMerge(
         Subscriptions.layer({
           dataDir,

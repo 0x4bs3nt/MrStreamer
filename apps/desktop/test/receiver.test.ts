@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { Codec, StreamFailure } from "@mrstreamer/contracts/playback";
 import * as Layer from "effect/Layer";
+import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback, type PlaybackDeps, type ReceiverTarget } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import { fixture, type FakeProviderOptions } from "./fake-provider.ts";
@@ -44,6 +45,7 @@ async function receiver(
   const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 50, ...options });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: FFMPEG, ffprobe: FFPROBE, ...deps }).pipe(
+      Layer.provide(PlaybackCoordination.layer),
       Layer.provideMerge(
         Subscriptions.layer({
           dataDir: await tempDir(),
@@ -924,6 +926,7 @@ describe("an HLS channel for a receiver", () => {
     ]);
     const runtime = runtimeFor(
       Playback.layer({ userAgent, ffmpeg: null }).pipe(
+        Layer.provide(PlaybackCoordination.layer),
         Layer.provideMerge(
           Subscriptions.layer({
             dataDir: await tempDir(),

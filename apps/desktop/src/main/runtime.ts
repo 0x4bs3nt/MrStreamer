@@ -30,6 +30,7 @@ import { Library } from "./services/library.ts";
 import { OnDemand, type OnDemandDeps } from "./services/ondemand.ts";
 import { Output, type OutputDeps } from "./services/output.ts";
 import { appNotices, Licences } from "./services/licences.ts";
+import { PlaybackCoordination } from "./services/playback-coordination.ts";
 import { Playback } from "./services/playback.ts";
 import { Settings } from "./services/preferences.ts";
 import { SubtitleAccounts } from "./services/subtitle-accounts.ts";
@@ -69,6 +70,7 @@ export type MainServices =
   | Library
   | OnDemand
   | Playback
+  | PlaybackCoordination
   | Output
   | Updates
   | Guide
@@ -114,7 +116,11 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     Updates.layer({ dataDir, ...config.updates }),
     Licences.layer(appNotices()),
     SubtitleAccounts.layer(dataDir, config.secrets),
-  ).pipe(Layer.provideMerge(Layer.mergeAll(accounts, verifiedFiles, savedSubtitles)));
+  ).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(accounts, verifiedFiles, savedSubtitles, PlaybackCoordination.layer),
+    ),
+  );
 
   const subtitleSessions = Layer.effect(
     SubtitleSessions,

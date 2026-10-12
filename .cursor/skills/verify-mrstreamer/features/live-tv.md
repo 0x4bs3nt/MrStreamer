@@ -24,6 +24,8 @@ For subtitle availability and subtitle-only outages, use `apps/desktop/test/e2e/
 
 Source: `docs/user/live-tv.md`, `apps/desktop/src/renderer/src/player/`, `apps/desktop/test/e2e/packaged-app.ts`.
 
+Connection admission for local and receiver opens is owned by `services/playback-coordination.ts` (`PlaybackCoordination`). Playback reports media session registration and scope closure; downloads consume its per-subscription lease and availability stream. The existing playback, downloads and output service suites cover stale turns, switching and reclaim closure. The per-title upstream reader policy remains separate.
+
 ## Gotchas
 
 Only the synthetic codec-test channels play media. A final frame can conceal stopped playback; require clock progress and decoded sound. Home deliberately keeps the stream running. Linux Xvfb proves functional decoding only; audible sound, GPU use, real streams and AirPlay/Cast remain separate checks.
