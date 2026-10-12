@@ -323,7 +323,8 @@ jobs:
           xvfb-run -a node test/e2e/packaged-app.ts "/opt/Mr. Streamer/mrstreamer" -- --no-sandbox
           xvfb-run -a node test/e2e/packaged-app.ts dist/*.AppImage -- --no-sandbox
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.target }}-${{ inputs.version }}
           path: |
@@ -335,6 +336,32 @@ jobs:
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
           # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_PLATFORM: ${{ matrix.target }}
+          PACKAGE_DISTRIBUTION: direct
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: release-${{ matrix.target }}-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-${{ matrix.target }}-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
           if-no-files-found: error
 
@@ -439,7 +466,8 @@ jobs:
           node test/e2e/packaged-app.ts "$env:LOCALAPPDATA\Programs\mrstreamer\Mr. Streamer.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-win-x64-${{ inputs.version }}
           path: |
@@ -447,6 +475,32 @@ jobs:
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
           # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_PLATFORM: win-x64
+          PACKAGE_DISTRIBUTION: direct
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: release-win-x64-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-win-x64-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
           if-no-files-found: error
 
@@ -536,6 +590,7 @@ jobs:
           [ordered]@{ version = $env:VERSION; packageVersion = $version; commit = $env:SHA; sha256 = $hash } |
             ConvertTo-Json | Set-Content "dist/Mr-Streamer-$env:VERSION-win-x64.msix.json"
           Add-Content $env:GITHUB_OUTPUT "sha256=$hash"
+          Add-Content $env:GITHUB_OUTPUT "package-version=$version"
           Add-Content $env:GITHUB_STEP_SUMMARY "Mr. Streamer $env:VERSION is package $version, named '$name', built from $env:SHA. SHA-256 $hash."
 
       # Windows installs only signed packages. A certificate made here, with the package's
@@ -610,7 +665,8 @@ jobs:
 
       # Only a package that passed every step above gets this name, which is the one the Store
       # job and a submission by hand take it under.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msix-${{ inputs.version }}
           path: |
@@ -619,6 +675,32 @@ jobs:
             apps/desktop/dist/*.wack.xml
           # A release's package is the one the Store gets, at once or in a later run, so it's
           # kept longer.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ steps.check.outputs.package-version }}
+          PACKAGE_PLATFORM: win-x64
+          PACKAGE_DISTRIBUTION: store
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: msix-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-win-x64-store-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
           if-no-files-found: error
       # What a failed check left, to look at. Never submitted.

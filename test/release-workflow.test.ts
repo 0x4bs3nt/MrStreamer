@@ -492,7 +492,7 @@ describe("sending a stable release to the Microsoft Store", () => {
   });
 
   it("takes the package under the name the build job gives one that passed its checks", () => {
-    const version = known({ "inputs.version": "0.0.4" });
+    const version = known({ "inputs.version": "0.0.4", "github.run_attempt": "2" });
     const uploads = (build.jobs["msix"]?.steps ?? []).filter((step) =>
       step.uses?.startsWith("actions/upload-artifact@"),
     );
@@ -503,6 +503,7 @@ describe("sending a stable release to the Microsoft Store", () => {
       uploads.map((step) => [step.if, evaluate(String(step.with?.["name"]), version)]),
     ).toEqual([
       [undefined, artifactName("0.0.4")],
+      [undefined, "package-receipt-win-x64-store-0.0.4-attempt-2"],
       ["failure()", "msix-failed-0.0.4"],
     ]);
     expect(evaluate(String(download?.with?.["name"]), version)).toBe(artifactName("0.0.4"));
@@ -640,7 +641,10 @@ describe("what each job of a release waits for", () => {
       "mac-arm64",
       "linux-x64",
     ]);
-    expect(uploads("package-windows")).toEqual(["release-win-x64-${{ inputs.version }}"]);
+    expect(uploads("package-windows")).toEqual([
+      "release-win-x64-${{ inputs.version }}",
+      "package-receipt-win-x64-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}",
+    ]);
   });
 
   it("gives the Store package the JS bundle the Windows installer has already taken", () => {
