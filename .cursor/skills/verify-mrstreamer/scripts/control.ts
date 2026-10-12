@@ -176,8 +176,7 @@ async function run(scenario: Scenario) {
           ...(process.env["MR_STREAMER_FFMPEG"]
             ? { MR_STREAMER_FFMPEG: process.env["MR_STREAMER_FFMPEG"] }
             : {}),
-          LANGUAGE: system,
-          LANG: `${system}.UTF-8`,
+          ...(process.platform === "linux" ? { LANGUAGE: system, LANG: `${system}.UTF-8` } : {}),
           MR_STREAMER_UPDATE_CHECKS: "off",
           MR_STREAMER_TMDB_API: ownedTmdb.url,
           MR_STREAMER_TMDB_KEY: "test-key",
@@ -273,7 +272,7 @@ async function run(scenario: Scenario) {
     };
     const click = async (label: string, element: string) => {
       await wait(() => exists(element));
-      await livePage.evaluate(`${element}.scrollIntoView({ block: "nearest" })`);
+      await livePage.evaluate(`(${element})?.scrollIntoView({ block: "nearest" })`);
       // Popup transitions and late details can move a button after it enters the DOM. Like a
       // viewer, press its painted, enabled control, never coordinates from the initial layout.
       await wait(() =>
@@ -284,8 +283,22 @@ async function run(scenario: Scenario) {
         for (let parent = target; parent; parent = parent.parentElement)
           if (parent.getAnimations().some(a => a.playState === 'running' || a.pending)) return false;
         const before = target.getBoundingClientRect();
+        const inViewport = box => {
+          const x = box.x + box.width / 2, y = box.y + box.height / 2;
+          return box.width > 0 && box.height > 0 && x >= 0 && x < innerWidth && y >= 0 && y < innerHeight;
+        };
+        // Late details can push an already scrolled control below the window. Reposition it,
+        // then let the next probe require stable geometry and a hit on the control itself.
+        if (!inViewport(before)) {
+          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return false;
+        }
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const after = target.getBoundingClientRect();
+        if (!inViewport(after)) {
+          target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return false;
+        }
         const hit = document.elementFromPoint(after.x + after.width / 2, after.y + after.height / 2);
         return target.isConnected && after.width > 0 && after.height > 0 &&
           ['x', 'y', 'width', 'height'].every(key => Math.abs(before[key] - after[key]) < 0.5) &&
