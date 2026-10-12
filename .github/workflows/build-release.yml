@@ -3,9 +3,9 @@
 # docs/maintainers/releasing.md describes the process.
 #
 # Every job checks out the planned commit, except the Store job, which runs main's scripts on the
-# package the run built. Pull requests are dry runs: they build, sign and test, prepare the source
-# archives a release attaches, keep the files as workflow artifacts and publish nothing, whatever
-# the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
+# package the run built. Windows also reads its toolchain action from the workflow commit.
+# Pull requests are dry runs: they build, sign and test, prepare the source archives a release
+# attaches, keep the files as workflow artifacts and publish nothing, whatever the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
 # It has no concurrency group of its own: release.yml's queue already holds the whole run, and a
 # group here that a release run's own jobs shared could leave them waiting on that run.
 #
@@ -323,7 +323,8 @@ jobs:
           xvfb-run -a node test/e2e/packaged-app.ts "/opt/Mr. Streamer/mrstreamer" -- --no-sandbox
           xvfb-run -a node test/e2e/packaged-app.ts dist/*.AppImage -- --no-sandbox
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.target }}-${{ inputs.version }}
           path: |
@@ -335,6 +336,32 @@ jobs:
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
           # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_PLATFORM: ${{ matrix.target }}
+          PACKAGE_DISTRIBUTION: direct
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: release-${{ matrix.target }}-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-${{ matrix.target }}-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
           if-no-files-found: error
 
@@ -365,22 +392,30 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Include the setup action, environment and package list in the Windows cache identity.
+      # Keep setup with this workflow even when stable promotes source predating the action.
+      # All callers use local reusable workflows, from the caller's workflow commit.
+      - name: Read the Windows FFmpeg toolchain
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ffmpeg-toolchain
+          sparse-checkout: apps/desktop/scripts/windows-ffmpeg-toolchain
+          persist-credentials: false
+
+      # Hash the actual setup definition and the release source's pinned sources/build flags.
       # No restore prefix: a UCRT64 build must never restore an old MINGW64 binary.
       - id: ffmpeg-key
-        run: echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('apps/desktop/scripts/build-ffmpeg.sh', '.github/workflows/build-release.yml') }}" >> "$GITHUB_OUTPUT"
+        run: |
+          test -f ../../.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml
+          test -f scripts/build-ffmpeg.sh
+          echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml', 'apps/desktop/scripts/build-ffmpeg.sh') }}" >> "$GITHUB_OUTPUT"
       - id: ffmpeg
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/ffmpeg/win-x64
           key: ${{ steps.ffmpeg-key.outputs.key }}
       - if: steps.ffmpeg.outputs.cache-hit != 'true'
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
-        with:
-          msystem: UCRT64
-          update: false
-          install: >-
-            make git curl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-pkgconf
+        uses: ./.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain
       - name: Build ffmpeg on Windows
         if: steps.ffmpeg.outputs.cache-hit != 'true'
         shell: msys2 {0}
@@ -431,7 +466,8 @@ jobs:
           node test/e2e/packaged-app.ts "$env:LOCALAPPDATA\Programs\mrstreamer\Mr. Streamer.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-win-x64-${{ inputs.version }}
           path: |
@@ -439,6 +475,32 @@ jobs:
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
           # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGE_PLATFORM: win-x64
+          PACKAGE_DISTRIBUTION: direct
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: release-win-x64-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-win-x64-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
           if-no-files-found: error
 
@@ -528,6 +590,7 @@ jobs:
           [ordered]@{ version = $env:VERSION; packageVersion = $version; commit = $env:SHA; sha256 = $hash } |
             ConvertTo-Json | Set-Content "dist/Mr-Streamer-$env:VERSION-win-x64.msix.json"
           Add-Content $env:GITHUB_OUTPUT "sha256=$hash"
+          Add-Content $env:GITHUB_OUTPUT "package-version=$version"
           Add-Content $env:GITHUB_STEP_SUMMARY "Mr. Streamer $env:VERSION is package $version, named '$name', built from $env:SHA. SHA-256 $hash."
 
       # Windows installs only signed packages. A certificate made here, with the package's
@@ -602,7 +665,8 @@ jobs:
 
       # Only a package that passed every step above gets this name, which is the one the Store
       # job and a submission by hand take it under.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - id: package-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: msix-${{ inputs.version }}
           path: |
@@ -611,6 +675,32 @@ jobs:
             apps/desktop/dist/*.wack.xml
           # A release's package is the one the Store gets, at once or in a later run, so it's
           # kept longer.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
+          if-no-files-found: error
+
+      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
+      # These non-product scripts load only after native checks and package upload succeed.
+      - name: Write successful package receipt
+        shell: bash
+        env:
+          PACKAGE_SOURCE: ${{ inputs.sha }}
+          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+          PACKAGE_APP_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ steps.check.outputs.package-version }}
+          PACKAGE_PLATFORM: win-x64
+          PACKAGE_DISTRIBUTION: store
+          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_NAME: msix-${{ inputs.version }}
+          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
+          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
+          node scripts/package-receipt.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-receipt-win-x64-store-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: apps/desktop/package-receipt.json
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
           if-no-files-found: error
       # What a failed check left, to look at. Never submitted.

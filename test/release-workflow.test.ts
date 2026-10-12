@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -285,6 +286,137 @@ describe("checking the Store package of a stable release", () => {
   });
 });
 
+describe("Windows FFmpeg setup and cache inputs", () => {
+  const windows = read("build-release.yml").jobs["package-windows"];
+  const key = windows?.steps?.find((step) => step.id === "ffmpeg-key");
+  const checkout = windows?.steps?.find(
+    (step) => step.name === "Read the Windows FFmpeg toolchain",
+  );
+  const setup = windows?.steps?.find((step) => step.uses?.includes("/windows-ffmpeg-toolchain"));
+  const actionPath = `${setup?.uses?.replace(/^\.\//, "")}/action.yml`;
+  const definitionPath = "apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml";
+  const definition = readFileSync(definitionPath, "utf8");
+  const build = readFileSync("apps/desktop/scripts/build-ffmpeg.sh", "utf8");
+  const root = mkdtempSync(join(tmpdir(), "windows-ffmpeg-key-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  /** Runs the workflow's key command, supplying hashFiles as the Actions runner does. */
+  function cacheKey(toolchain: string | undefined, source: string | undefined, workflow = "") {
+    const dir = mkdtempSync(join(root, "source-"));
+    mkdirSync(join(dir, "apps/desktop/scripts"), { recursive: true });
+    for (const [path, contents] of [
+      [actionPath, toolchain],
+      ["apps/desktop/scripts/build-ffmpeg.sh", source],
+      [".github/workflows/build-release.yml", workflow],
+    ] as const) {
+      if (contents === undefined) continue;
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), contents);
+    }
+    const output = join(dir, "output");
+    const command = key?.run?.replace(
+      /\$\{\{\s*hashFiles\((.*?)\)\s*\}\}/g,
+      (_, patterns: string) => {
+        const paths = [...patterns.matchAll(/'([^']+)'/g)]
+          .map((match) => join(dir, match[1]!))
+          .filter(existsSync)
+          .sort();
+        if (!paths.length) return "";
+        const hash = createHash("sha256");
+        for (const path of paths)
+          hash.update(createHash("sha256").update(readFileSync(path)).digest());
+        return hash.digest("hex");
+      },
+    );
+    if (!command) throw new Error("Windows has no cache key command.");
+    const result = spawnSync("bash", ["-e", "-c", command], {
+      cwd: join(dir, "apps/desktop"),
+      env: { ...process.env, GITHUB_OUTPUT: output },
+      encoding: "utf8",
+    });
+    return {
+      status: result.status,
+      output: existsSync(output) ? readFileSync(output, "utf8") : "",
+    };
+  }
+
+  it("sets up the same UCRT64 action that the cache hashes, from the workflow revision", () => {
+    expect(checkout?.uses).toMatch(/^actions\/checkout@/);
+    expect(checkout?.with).toMatchObject({
+      ref: "${{ github.workflow_sha }}",
+      path: ".ffmpeg-toolchain",
+      "sparse-checkout": "apps/desktop/scripts/windows-ffmpeg-toolchain",
+      "persist-credentials": false,
+    });
+    expect(setup?.if).toBe("steps.ffmpeg.outputs.cache-hit != 'true'");
+    const action: { runs: { using: string; steps: Step[] } } = parse(definition);
+    expect(action.runs.using).toBe("composite");
+    expect(action.runs.steps).toHaveLength(1);
+    expect(action.runs.steps[0]?.uses).toBe(
+      "msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e",
+    );
+    expect(action.runs.steps[0]?.with).toEqual({
+      msystem: "UCRT64",
+      update: false,
+      install:
+        "make git curl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-pkgconf",
+    });
+    const result = cacheKey(definition, build);
+    expect(result.status).toBe(0);
+    expect(result.output).toMatch(/^key=ffmpeg-win-x64-ucrt64-[a-f0-9]{64}\n$/);
+    // Only the source's build script is present: promoted source need not contain the new action.
+  });
+
+  it("reuses the key after an unrelated release workflow edit", () => {
+    const workflow = readFileSync(`${WORKFLOWS}/build-release.yml`, "utf8");
+    const before = cacheKey(definition, build, workflow);
+    const after = cacheKey(
+      definition,
+      build,
+      workflow.replace("timeout-minutes: 60", "timeout-minutes: 61"),
+    );
+    expect(before.status).toBe(0);
+    expect(after).toEqual(before);
+  });
+
+  it.each([
+    [
+      "setup action revision",
+      "ec48f7c5447b3140e2b088413ae3a55687bccb6e",
+      "another-action-revision",
+    ],
+    ["runtime", "UCRT64", "MINGW64"],
+    ["package list", "make git curl", "make git curl patch"],
+    ["package update policy", "update: false", "update: true"],
+  ])("invalidates the key after changing the %s", (_, before, after) => {
+    const baseline = cacheKey(definition, build);
+    const changed = cacheKey(definition.replace(before, after), build);
+    expect(changed.status).toBe(0);
+    expect(changed.output).not.toBe(baseline.output);
+  });
+
+  it.each([
+    ["FFmpeg source", "FFMPEG_VERSION=9.0.2", "FFMPEG_VERSION=9.0.3"],
+    ["source checksum", "FFMPEG_SHA256=", "FFMPEG_SHA256=0"],
+    ["x264 source", "X264_COMMIT=", "X264_COMMIT=0"],
+    ["codec configuration", "--enable-decoder=h264,hevc", "--enable-decoder=h264"],
+    ["build flags", "--extra-ldflags=-static", "--extra-ldflags=-static-libgcc"],
+  ])("invalidates the key after changing the %s", (_, before, after) => {
+    const changed = cacheKey(definition, build.replace(before, after));
+    expect(changed.status).toBe(0);
+    expect(changed.output).not.toBe(cacheKey(definition, build).output);
+  });
+
+  it.each(["toolchain", "source"])("refuses a key with missing %s inputs", (missing) => {
+    const result = cacheKey(
+      missing === "toolchain" ? undefined : definition,
+      missing === "source" ? undefined : build,
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.output).toBe("");
+  });
+});
+
 describe("Windows FFmpeg provenance across promoted source revisions", () => {
   const root = mkdtempSync(join(tmpdir(), "ffmpeg-provenance-"));
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -360,7 +492,7 @@ describe("sending a stable release to the Microsoft Store", () => {
   });
 
   it("takes the package under the name the build job gives one that passed its checks", () => {
-    const version = known({ "inputs.version": "0.0.4" });
+    const version = known({ "inputs.version": "0.0.4", "github.run_attempt": "2" });
     const uploads = (build.jobs["msix"]?.steps ?? []).filter((step) =>
       step.uses?.startsWith("actions/upload-artifact@"),
     );
@@ -371,6 +503,7 @@ describe("sending a stable release to the Microsoft Store", () => {
       uploads.map((step) => [step.if, evaluate(String(step.with?.["name"]), version)]),
     ).toEqual([
       [undefined, artifactName("0.0.4")],
+      [undefined, "package-receipt-win-x64-store-0.0.4-attempt-2"],
       ["failure()", "msix-failed-0.0.4"],
     ]);
     expect(evaluate(String(download?.with?.["name"]), version)).toBe(artifactName("0.0.4"));
@@ -508,7 +641,10 @@ describe("what each job of a release waits for", () => {
       "mac-arm64",
       "linux-x64",
     ]);
-    expect(uploads("package-windows")).toEqual(["release-win-x64-${{ inputs.version }}"]);
+    expect(uploads("package-windows")).toEqual([
+      "release-win-x64-${{ inputs.version }}",
+      "package-receipt-win-x64-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}",
+    ]);
   });
 
   it("gives the Store package the JS bundle the Windows installer has already taken", () => {
@@ -533,9 +669,8 @@ describe("what each job of a release waits for", () => {
     expect(save?.uses).toMatch(/^actions\/cache@/);
     expect(save?.with?.["key"]).toBe("${{ steps.ffmpeg-key.outputs.key }}");
     expect(windows?.outputs?.["ffmpeg-key"]).toBe("${{ steps.ffmpeg-key.outputs.key }}");
-    expect(key?.run).toContain(
-      "hashFiles('apps/desktop/scripts/build-ffmpeg.sh', '.github/workflows/build-release.yml')",
-    );
+    expect(key?.run).toBeTruthy();
+    expect(save?.with?.["restore-keys"]).toBeUndefined();
     // The cache is saved when the job succeeds, so a cold build is there for the job that needs it.
     expect(restore?.with).toEqual({
       path: save?.with?.["path"],

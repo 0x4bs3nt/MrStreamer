@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { strToU8, zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
+import { producePackageReceipt } from "../scripts/package-receipt.ts";
 import {
   readPins,
   resolvePackages,
@@ -28,7 +29,7 @@ const latest = (version: string, bytes: Uint8Array) => {
 };
 
 /** GitHub as the check sees it when every pin holds; each test spoils one answer. */
-function github() {
+function github(withReceipt = false) {
   const files = {
     stable: strToU8("prior stable setup"),
     a: strToU8("nightly A setup"),
@@ -77,6 +78,16 @@ function github() {
     html_url: "https://github.com/owner/player/actions/runs/900",
     repository: { full_name: REPOSITORY },
     head_repository: { full_name: REPOSITORY },
+  };
+  const attempt = {
+    ...run,
+    referenced_workflows: [
+      {
+        path: `${REPOSITORY}/.github/workflows/build-release.yml@${"c".repeat(40)}`,
+        sha: "c".repeat(40),
+      },
+      { path: `${REPOSITORY}/.github/workflows/ci.yml@${"c".repeat(40)}`, sha: "c".repeat(40) },
+    ],
   };
   const jobs = {
     jobs: [
@@ -131,11 +142,13 @@ function github() {
     [`/compare/${PINS.aSha}...main?per_page=1`]: onMain,
     "/actions/workflows/release.yml": { id: 7 },
     "/actions/runs/900": run,
+    "/actions/runs/900/attempts/1": attempt,
     "/actions/runs/900/attempts/1/jobs?per_page=100": jobs,
     "/pulls/200": pull,
     "/pulls/200/commits?per_page=100": [{ sha: PINS.aSha }, { sha: PINS.bSha }],
     [`/compare/${PINS.aSha}...${PINS.bSha}`]: diff,
-    "/actions/runs/900/artifacts?per_page=100": artifacts,
+    "/actions/runs/900/artifacts?per_page=100&page=1": artifacts,
+    [`/commits/${PINS.bSha}/pulls?per_page=100`]: [{ ...pull, number: 200 }],
   };
   const log = [
     '2026-10-10T09:00:00.0000000Z ##[group]Run gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/200/labels/release%20dry%20run" --silent || echo "The label was already off."',
@@ -151,6 +164,39 @@ function github() {
     ...Object.fromEntries([...assets].map(([id, value]) => [`/releases/assets/${id}`, value])),
     "/actions/artifacts/30/zip": archive,
   };
+  let packageReceipt: ReturnType<typeof producePackageReceipt> | undefined;
+  if (withReceipt) {
+    const receipt = producePackageReceipt(
+      {
+        repository: REPOSITORY,
+        sourceCommit: PINS.bSha,
+        workflowCommit: "c".repeat(40),
+        appVersion: B,
+        packageVersion: B,
+        platform: "win-x64",
+        distribution: "direct",
+        run: { id: 900, attempt: 1, headCommit: PINS.bSha },
+        artifact: { id: 30, name: `release-win-x64-${B}`, sha256: hex(archive) },
+      },
+      new Map([
+        [setup(B), files.b],
+        [`${setup(B)}.blockmap`, strToU8("blockmap")],
+        ["latest.yml", latest(B, files.b)],
+      ]),
+    );
+    packageReceipt = receipt;
+    const receiptArchive = zipSync({ "package-receipt.json": strToU8(JSON.stringify(receipt)) });
+    artifacts.artifacts.push({
+      ...artifacts.artifacts[0]!,
+      id: 33,
+      name: `package-receipt-win-x64-direct-${B}-attempt-1`,
+      digest: `sha256:${hex(receiptArchive)}`,
+    });
+    artifacts.total_count++;
+    bytes["/actions/artifacts/33/zip"] = receiptArchive;
+    // New selection must succeed even when logs are unavailable or change their presentation.
+    delete text["/actions/jobs/11/logs"];
+  }
   const answer = <T>(table: Record<string, T>, path: string): T => {
     if (!(path in table)) throw new Error(`No fixture for ${path}`);
     return table[path]!;
@@ -163,10 +209,12 @@ function github() {
   };
   return {
     api,
+    packageReceipt,
     json,
     aRelease,
     onMain,
     run,
+    attempt,
     jobs,
     pull,
     diff,
@@ -292,12 +340,14 @@ describe("the installers an installed upgrade check accepts", () => {
     ],
     [
       "a B run with two Windows artifacts",
-      (world) =>
+      (world) => {
         world.artifacts.artifacts.push({
           ...world.artifacts.artifacts[0]!,
           id: 40,
           name: `release-win-x64-${A}`,
-        }),
+        });
+        world.artifacts.total_count++;
+      },
       /2 Windows artifacts/,
     ],
     [
@@ -341,5 +391,142 @@ describe("the pins of an installed upgrade check", () => {
     ["the same commit for A and B", { "b-sha": PINS.aSha }],
   ])("refuse %s", (_, change) => {
     expect(() => readPins({ ...valid, ...change })).toThrow(/Refused/);
+  });
+});
+
+describe("installed-upgrade selection from package receipts", () => {
+  it("resolves the complete chain with no Plan log", async () => {
+    const world = github(true);
+    const { receipt } = await world.resolve();
+    expect(receipt.packages[2].version).toBe(B);
+    expect(receipt.packages[2].provenance).toMatchObject({
+      selection: "package receipt v1",
+      receiptArtifactId: 33,
+    });
+  });
+
+  it("records the bounded historical fallback when the old run genuinely lacks receipts", async () => {
+    const world = github();
+    delete world.json["/actions/runs/900/attempts/1"];
+    expect((await world.resolve()).receipt.packages[2].provenance.selection).toBe(
+      "historical Plan log",
+    );
+  });
+
+  it("rejects newer runs that lack receipts", async () => {
+    const world = github();
+    world.run.run_number = 297;
+    await expect(world.resolve()).rejects.toThrow(/new run has no package receipt/);
+  });
+
+  it("never uses old logs after malformed JSON or an unsupported receipt schema", async () => {
+    for (const value of ["{ broken JSON", '{"schemaVersion":2}']) {
+      const world = github(true);
+      const archive = zipSync({ "package-receipt.json": strToU8(value) });
+      world.bytes["/actions/artifacts/33/zip"] = archive;
+      world.artifacts.artifacts[3]!.digest = `sha256:${hex(archive)}`;
+      await expect(world.resolve()).rejects.toThrow();
+    }
+  });
+
+  it("rejects an earlier attempt's receipt rather than reading logs", async () => {
+    const world = github(true);
+    world.run.run_attempt = 2;
+    world.json["/actions/runs/900/attempts/2/jobs?per_page=100"] = world.jobs;
+    world.json["/actions/runs/900/attempts/2"] = { ...world.attempt, run_attempt: 2 };
+    await expect(world.resolve()).rejects.toThrow(/attempt-2.*found 0/);
+  });
+
+  it("matches the selected attempt's workflow commit, independently of package source and run head", async () => {
+    const world = github(true);
+    world.run.run_attempt = 2;
+    world.json["/actions/runs/900/attempts/2/jobs?per_page=100"] = world.jobs;
+    world.json["/actions/runs/900/attempts/2"] = { ...world.attempt, run_attempt: 2 };
+    const receipt = {
+      ...world.packageReceipt!,
+      run: { ...world.packageReceipt!.run, attempt: 2 },
+    };
+    const archive = zipSync({ "package-receipt.json": strToU8(JSON.stringify(receipt)) });
+    world.bytes["/actions/artifacts/33/zip"] = archive;
+    world.artifacts.artifacts[3]!.name = `package-receipt-win-x64-direct-${B}-attempt-2`;
+    world.artifacts.artifacts[3]!.digest = `sha256:${hex(archive)}`;
+    // Latest-run metadata can differ; only the selected attempt's referenced workflow is used.
+    world.json["/actions/runs/900"] = {
+      ...world.run,
+      referenced_workflows: [
+        { path: `${REPOSITORY}/.github/workflows/build-release.yml@main`, sha: "d".repeat(40) },
+      ],
+    };
+    const result = await world.resolve();
+    expect(result.receipt.packages[2].provenance.packageReceipt).toMatchObject({
+      workflowCommit: "c".repeat(40),
+      sourceCommit: PINS.bSha,
+      run: { attempt: 2, headCommit: PINS.bSha },
+    });
+  });
+
+  it.each([
+    ["missing references", { referenced_workflows: undefined }, /referenced_workflows/],
+    ["missing workflow", { referenced_workflows: [] }, /no single build-release.yml/],
+    [
+      "another repository",
+      {
+        referenced_workflows: [
+          { path: "fork/player/.github/workflows/build-release.yml@main", sha: "c".repeat(40) },
+        ],
+      },
+      /no single build-release.yml/,
+    ],
+    [
+      "ambiguous workflow",
+      {
+        referenced_workflows: [
+          { path: `${REPOSITORY}/.github/workflows/build-release.yml@main`, sha: "c".repeat(40) },
+          { path: `${REPOSITORY}/.github/workflows/build-release.yml@other`, sha: "d".repeat(40) },
+        ],
+      },
+      /no single build-release.yml/,
+    ],
+    [
+      "different workflow commit",
+      {
+        referenced_workflows: [
+          { path: `${REPOSITORY}/.github/workflows/build-release.yml@main`, sha: "d".repeat(40) },
+        ],
+      },
+      /workflowCommit/,
+    ],
+    ["wrong attempt", { run_attempt: 2 }, /selected attempt does not match/],
+    ["wrong run", { id: 901 }, /selected attempt does not match/],
+    ["wrong head", { head_sha: "e".repeat(40) }, /selected attempt does not match/],
+    ["failed attempt", { conclusion: "failure" }, /selected attempt does not match/],
+  ] satisfies [string, Record<string, unknown>, RegExp][])(
+    "refuses %s metadata instead of historical logs",
+    async (_, changes, message) => {
+      const world = github(true);
+      world.json["/actions/runs/900/attempts/1"] = { ...world.attempt, ...changes };
+      await expect(world.resolve()).rejects.toThrow(message);
+    },
+  );
+
+  it("does not turn a selected-attempt API failure into a legacy fallback", async () => {
+    const world = github(true);
+    const api: GitHub = {
+      ...world.api,
+      json: async (path) => {
+        if (path === "/actions/runs/900/attempts/1")
+          throw new Error("GitHub answered 403 for selected attempt.");
+        return world.api.json(path);
+      },
+    };
+    await expect(resolvePackages(api, PINS, world.stablePin, NOW)).rejects.toThrow(
+      /GitHub answered 403/,
+    );
+  });
+
+  it("requires a single matching pull request from GitHub metadata", async () => {
+    const world = github(true);
+    world.json[`/commits/${PINS.bSha}/pulls?per_page=100`] = [];
+    await expect(world.resolve()).rejects.toThrow(/no single matching/);
   });
 });

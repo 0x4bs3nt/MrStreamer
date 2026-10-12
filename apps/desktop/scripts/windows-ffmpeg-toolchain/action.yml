@@ -1,0 +1,12 @@
+# This is both the setup definition and an input to the Windows FFmpeg cache identity.
+name: Windows FFmpeg toolchain
+description: Install the UCRT64 compiler and build tools for bundled FFmpeg
+runs:
+  using: composite
+  steps:
+    - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+      with:
+        msystem: UCRT64
+        update: false
+        install: >-
+          make git curl mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-pkgconf
