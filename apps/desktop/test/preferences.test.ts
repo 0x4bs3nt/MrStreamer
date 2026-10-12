@@ -63,6 +63,20 @@ const stored = async (dataDir: string): Promise<unknown> =>
   JSON.parse(await readFile(join(dataDir, "preferences.json"), "utf8"));
 
 describe("preferences", () => {
+  it("keeps Home row order, hidden and future rows across restart and subscription removal", async () => {
+    const { dataDir, settings, subscriptions, id } = await connected();
+    const homeRows = [
+      { id: "watchlist", visible: false },
+      { id: "future-row", visible: false },
+      { id: "continue", visible: true },
+    ];
+    await settings.update({ homeRows });
+    await settings.update({ volume: 0.4 });
+    expect((await (await settingsIn(dataDir)).get()).homeRows).toEqual(homeRows);
+    await settings.forget(await savedAs(subscriptions, id));
+    expect((await (await settingsIn(dataDir)).get()).homeRows).toEqual(homeRows);
+  });
+
   it("changes only what the UI sends, and survives a restart", async () => {
     const dataDir = await tempDir();
     await (await settingsIn(dataDir)).update({ audioLanguage: "nl", autoplayNext: false });

@@ -2,9 +2,13 @@
 
 ## Home
 
-Home plays the channel you watched last, muted, behind what's on it now: the programme, how long it has left and what comes next. **Watch** opens it full window with sound, on the same stream, so it doesn't start again. The speaker button turns the sound on without leaving Home.
+Home plays the channel you watched last, muted, in a compact preview with what's on it now: the programme, how long it has left and what comes next. **Watch** opens it full window with sound, on the same stream, so it doesn't start again. The speaker button turns the sound on without leaving Home.
 
-Below come one row each of what you were watching (see [Movies and series](movies-and-series.md)), your favourite channels, the channels you watched recently, new movies, new series and your current category. **All** opens the whole list in Live TV, Movies or Series, and **All channels** opens every channel.
+Below the preview, Home starts with **Continue watching**, local **Recommendations** and **Watchlist**, then favourite and recent channels, new movies, new series and your current category. Rows with nothing to show stay out. **All** opens a full list, and **All channels** opens every channel.
+
+**Watchlist** at the top of Home always opens all saved titles, even when its row is hidden or empty. **Customize** lists every row, including empty ones. Use the checkboxes to show or hide rows and the up/down buttons to reorder them. Tab reaches each control; Enter activates a move and Space changes a checkbox. Changes survive restart. **Reset to defaults** restores the order above and shows every row.
+
+Recommendations use up to three available titles from a bounded recent local viewing record and the catalogue already on your computer. Each suggestion names the title you watched and its matching genre, category or name. Without viewing history, Home keeps its ordinary catalogue and channel rows. Titles for adults never appear on Home, even with **For adults** on.
 
 Until you've watched something, the backdrop shows a channel without playing it.
 

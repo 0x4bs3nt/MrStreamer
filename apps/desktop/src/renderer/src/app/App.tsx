@@ -89,7 +89,7 @@ export function App() {
  * The page (Home, Live TV, Movies, Series, Watchlist or Downloads), with details, Watch and a playing title
  * opening over it. The page stays laid out underneath, so leaving any of them finds it scrolled
  * where it was, and takes no input meanwhile. Search and settings are available everywhere.
- * Subscriptions with live TV only, unmapped playlists, have no Movies, Series or Watchlist: Home stands in
+ * Subscriptions with live TV only, unmapped playlists, have no Movies or Series: Home stands in
  * for them. While a receiver on the network is connected, its bar stands at the foot of every
  * page, and the pages end above.
  */

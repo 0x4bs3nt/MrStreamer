@@ -62,6 +62,7 @@ import {
   type StoredViewing,
 } from "@mrstreamer/core/viewing/service";
 import {
+  STARTED_SECONDS,
   accepted,
   continueWatching,
   progressed,
@@ -221,6 +222,7 @@ const PlacedRow = type({ type: ChannelEventType, channel_id: "string", sequence:
 interface AccountRecord {
   readonly state: ViewingState;
   readonly continueWatching: readonly RawProgress[];
+  readonly recentTitles: readonly RawProgress[];
   /** Each marked series' latest mark and where the series goes on, most recent first. */
   readonly marked: readonly Omit<StoredViewing["marked"][number], "account">[];
   readonly sequence: number;
@@ -715,13 +717,18 @@ function storeOn(db: DatabaseSync): ViewingStore["Service"] {
     };
   };
 
-  const readOne = (account: string): AccountRecord => ({
-    ...listsOf(account),
-    continueWatching: continueWatching(
-      titleRows(statements.recentTitles.all(account, CONTINUE_WINDOW)),
-    ),
-    marked: markedOf(account),
-  });
+  const readOne = (account: string): AccountRecord => {
+    const rows = titleRows(statements.recentTitles.all(account, CONTINUE_WINDOW));
+    return {
+      ...listsOf(account),
+      continueWatching: continueWatching(rows),
+      recentTitles: rows
+        .filter((row) => !row.hidden && (row.finished || row.position >= STARTED_SECONDS))
+        .slice(0, 32)
+        .map(({ hidden: _hidden, removedAt: _removedAt, ...progress }) => progress),
+      marked: markedOf(account),
+    };
+  };
 
   /** The records of `accounts` as one. One account's is its lists as they are stored. */
   const read = (accounts: readonly string[]): StoredViewing => {
@@ -753,6 +760,12 @@ function storeOn(db: DatabaseSync): ViewingStore["Service"] {
       marked: several
         ? marks.sort((a, b) => b.mark.at - a.mark.at).slice(0, CONTINUE_OFFERED)
         : marks,
+      recentTitles: records
+        .flatMap(({ account, recentTitles }) =>
+          recentTitles.map((progress) => ({ account, progress })),
+        )
+        .sort((a, b) => b.progress.at - a.progress.at)
+        .slice(0, 32),
       sequence: Math.max(0, ...records.map((record) => record.sequence)),
     };
   };

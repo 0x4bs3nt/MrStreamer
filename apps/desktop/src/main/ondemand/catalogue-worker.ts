@@ -23,7 +23,12 @@ import {
   searchPage,
   type IndexedCatalogue,
 } from "@mrstreamer/core/ondemand/catalogue";
-import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import type {
+  CollectionId,
+  HomeRecommendation,
+  Title,
+  TitleKind,
+} from "@mrstreamer/contracts/ondemand";
 import { listedFileKey } from "@mrstreamer/core/ondemand/files";
 import {
   filterOptions,
@@ -700,6 +705,50 @@ const handlers: {
       if (titles.length === 0 || !name) return [];
       return [{ id, name, total: titles.length, titles: titles.slice(0, ROW_TITLES) }];
     });
+  },
+  recommendations: async ({ owners, language, seeds }) => {
+    const members = owners.flatMap((owner) => {
+      const held = loaded.get(owner.subscriptionId);
+      return held && held.importRevision === owner.importRevision ? [held] : [];
+    });
+    const found = shownOf(members, language);
+    const catalogues = {
+      movie: collectionsOf(found, "movie").list("all"),
+      series: collectionsOf(found, "series").list("all"),
+    };
+    const recent = seeds.slice(0, 32).flatMap(({ kind, version }) => {
+      const title = catalogues[kind].find(
+        (title) =>
+          !title.adult && title.versions.some((each) => ownedKey(each) === ownedKey(version)),
+      );
+      return title ? [{ title, version }] : [];
+    });
+    const excluded = new Set(recent.map(({ title }) => title.key));
+    const used = new Set<string>();
+    const results: HomeRecommendation[] = [];
+    for (const { title: seed, version } of recent) {
+      if (used.has(seed.key)) continue;
+      used.add(seed.key);
+      const own = members.find((member) => member.subscriptionId === version.subscriptionId);
+      const facts = own ? relatedFactsOf(own, seed.kind, found.index) : undefined;
+      const related = relatedTitles({
+        opened: seed,
+        version,
+        titles: catalogues[seed.kind],
+        provider: (each) =>
+          each.subscriptionId === version.subscriptionId ? (facts?.get(each.id) ?? null) : null,
+      });
+      let contributed = 0;
+      for (const { title, reason } of related.titles) {
+        if (excluded.has(title.key)) continue;
+        excluded.add(title.key);
+        results.push({ title, reason, seed: seed.title });
+        if (results.length === 12) return results;
+        if (++contributed === 4) break;
+      }
+      if (used.size === 3) break;
+    }
+    return results;
   },
   related: async ({ language, kind, version, owners, metadata: about }) => {
     const members = owners.flatMap((owner) => {

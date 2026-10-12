@@ -2,7 +2,7 @@
 // suite can't, because happy-dom lays nothing out, moves no real focus and plays nothing. The
 // first provider's subscription is saved alone at first. In order:
 //
-// - The top bar has Watchlist, its page says how to save while nothing is, and Home has no row.
+// - Home permanently opens Watchlist, whose page says how to save while empty.
 // - A real click on Save in a movie's details saves it once the record has it, and the button
 //   reads Saved.
 // - In a series' details, Tab reaches Save from Play; Space saves, Enter takes it off again and
@@ -190,7 +190,7 @@ async function enter(page: Page): Promise<void> {
 
 /** Presses Tab until the keyboard is on something `wanted` accepts, a few times at most. */
 async function tabTo(page: Page, wanted: (focus: string) => boolean): Promise<boolean> {
-  for (let presses = 0; presses < 12; presses++) {
+  for (let presses = 0; presses < 24; presses++) {
     if (wanted(await focused(page))) return true;
     await key(page, "Tab", 9);
     await delay(100);
@@ -281,7 +281,8 @@ const tiles = (page: Page) =>
   );
 
 async function openWatchlist(page: Page): Promise<void> {
-  await click(page, pageButton("Watchlist"));
+  await click(page, pageButton("Home"));
+  await click(page, withText("button", "Watchlist"));
   await waitFor(() => exists(page, withText("h1", "Watchlist")), 10_000);
   await delay(400);
 }
@@ -322,7 +323,7 @@ try {
     const pages = await page.evaluate<string[]>(
       `[...document.querySelectorAll("header button")].map((each) => each.textContent.trim()).filter(Boolean)`,
     );
-    if (pages.join() !== "Home,Live TV,Movies,Series,Watchlist") {
+    if (pages.join() !== "Home,Live TV,Movies,Series,Downloads") {
       problems.push(`the top bar has ${pages.join(", ")}`);
     }
     if (await exists(page, withText("h2", "Watchlist"))) problems.push("Home has a Watchlist row");
@@ -330,7 +331,7 @@ try {
     if (!(await says(page, "Nothing saved yet. Save a movie or series from its details."))) {
       problems.push("the empty page doesn't say how to save");
     }
-    report("Watchlist is a page of its own, and says how to save while empty", problems);
+    report("Home opens the full Watchlist and its empty saving instructions", problems);
   }
 
   {

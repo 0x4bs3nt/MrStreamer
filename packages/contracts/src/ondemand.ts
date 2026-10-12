@@ -80,6 +80,18 @@ export interface RelatedTitles {
   readonly titles: readonly { readonly title: Title; readonly reason: string }[];
 }
 
+/** A bounded recommendation from an actual recent local play and loaded catalogue. */
+export interface HomeRecommendation {
+  readonly title: Title;
+  readonly seed: string;
+  readonly reason: string;
+}
+
+export interface HomeSeed {
+  readonly kind: TitleKind;
+  readonly version: OwnedId;
+}
+
 /** One version of a title as the provider lists it, often one per language. */
 export interface TitleVersion {
   /** The subscription that lists it. With `id`, it names the version (`OwnedId`). */

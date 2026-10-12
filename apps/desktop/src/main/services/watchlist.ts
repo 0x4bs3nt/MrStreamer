@@ -37,6 +37,7 @@ import { sameSource, Subscriptions, type SavedSubscription } from "./subscriptio
 
 /** Which page of the watchlist. */
 export interface WatchlistQuery {
+  readonly home?: boolean;
   readonly sort: WatchlistSort;
   readonly offset: number;
   readonly limit: number;
@@ -176,14 +177,20 @@ function make() {
     };
 
     return {
-      list: ({ sort, offset, limit }: WatchlistQuery) =>
+      list: ({ sort, offset, limit, home }: WatchlistQuery) =>
         Effect.gen(function* () {
           const found = yield* saving;
           if (found.length === 0) return { total: 0, entries: [] };
           yield* aligned(found);
           const members = yield* membersOf(found);
           if (members.length === 0) return { total: 0, entries: [] };
-          return yield* onDemand.saved(found, { members, sort, offset, limit });
+          return yield* onDemand.saved(found, {
+            members,
+            sort,
+            offset,
+            limit,
+            ...(home ? { home } : {}),
+          });
         }),
 
       saved: (kind: TitleKind, version: OwnedId) =>

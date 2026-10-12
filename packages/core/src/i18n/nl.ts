@@ -3,6 +3,12 @@
 import type { Translation } from "../i18n.ts";
 
 export const nl: Translation = {
+  Customize: "Aanpassen",
+  "Customize Home": "Home aanpassen",
+  Recommendations: "Aanbevelingen",
+  "Current category": "Huidige categorie",
+  "Reset to defaults": "Standaard herstellen",
+  "Because you watched {name}": "Omdat je {name} keek",
   Settings: "Instellingen",
   General: "Algemeen",
   Subscriptions: "Abonnementen",

@@ -760,6 +760,34 @@ describe("whose channels and titles the record names", () => {
 });
 
 describe("how far movies and episodes got", () => {
+  it("offers bounded recent started plays including finished movies as owned Home seeds after restart", async () => {
+    const app = await viewingApp();
+    await app.connect(0);
+    const viewing = await app.start();
+    await viewing.played(movie("barely"), 60, 6000);
+    await viewing.played(movie("credits"), 5800, 6000);
+    for (let index = 0; index < 35; index++) await viewing.played(movie(`m${index}`), 600, 6000);
+    const first = await viewing.record.state();
+    expect(first.recentTitles).toHaveLength(32);
+    expect(
+      first.recentTitles?.every(
+        ({ title }) => title.subscriptionId === first.recentTitles?.[0]?.title.subscriptionId,
+      ),
+    ).toBe(true);
+    expect((await (await app.start()).record.state()).recentTitles).toEqual(first.recentTitles);
+    const restarted = await app.start();
+    await restarted.played(movie("credits"), 5800, 6000);
+    const recent = (await restarted.record.state()).recentTitles!;
+    expect(recent[0]).toMatchObject({ title: { kind: "movie", id: "credits" }, finished: true });
+    expect(recent.some(({ title }) => title.id === "barely")).toBe(false);
+    await restarted.remove({ movieIds: ["credits"] });
+    expect(
+      (await restarted.record.state()).recentTitles?.some(({ title }) => title.id === "credits"),
+    ).toBe(false);
+    await app.connect(1);
+    expect((await (await app.start()).record.state()).recentTitles).toEqual([]);
+  });
+
   it("lists movies started and not finished, and the latest episode of each series", async () => {
     const app = await viewingApp();
     await app.connect(0);

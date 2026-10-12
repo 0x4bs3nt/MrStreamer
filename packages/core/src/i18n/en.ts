@@ -4,6 +4,12 @@
 import type { Plural } from "../i18n.ts";
 
 export const en = {
+  Customize: "Customize",
+  "Customize Home": "Customize Home",
+  Recommendations: "Recommendations",
+  "Current category": "Current category",
+  "Reset to defaults": "Reset to defaults",
+  "Because you watched {name}": "Because you watched {name}",
   Settings: "Settings",
   General: "General",
   Subscriptions: "Subscriptions",

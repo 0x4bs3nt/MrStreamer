@@ -74,10 +74,13 @@ export function Artwork({
 export function PosterTile({
   title,
   line,
+  wrapLine = false,
   onOpen,
 }: {
   title: Title;
   line?: string;
+  /** Home recommendation reasons include the seed and must remain readable. */
+  wrapLine?: boolean;
   onOpen: () => void;
 }) {
   const source = useSourceOf()(title);
@@ -91,7 +94,9 @@ export function PosterTile({
         <Artwork url={title.posterUrl} name={title.title} size="card" />
       </span>
       <span className="mt-2 block truncate text-[0.875rem] font-medium">{title.title}</span>
-      <span className="block truncate text-xs text-muted-foreground">
+      <span
+        className={cn("block text-xs text-muted-foreground", wrapLine ? "break-words" : "truncate")}
+      >
         {[line ?? [title.year, ...title.tags].filter(Boolean).join(" · "), source]
           .filter(Boolean)
           .join(" · ")}

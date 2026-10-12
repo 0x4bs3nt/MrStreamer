@@ -69,6 +69,9 @@ export async function languageScenario(d: Driver): Promise<void> {
       labels: [...document.querySelectorAll('header [aria-label]')].map(b => b.getAttribute('aria-label')),
     }))()`);
 
+  await homeControls(d, "en-US");
+  await d.capture("home-en-US");
+
   // English first, as the system speaks it.
   await openSettings();
   const english = await shown();
@@ -126,6 +129,7 @@ export async function languageScenario(d: Driver): Promise<void> {
       `Window bar in ${locale}`,
       bar,
     );
+    await homeControls(d, locale);
     await d.capture(`home-${locale}`);
     visits[locale] = { settings, bar };
     await openSettings();
@@ -378,10 +382,20 @@ async function liveTv(d: Driver, locale: Locale) {
 async function pages(d: Driver, locale: Locale) {
   const fits: Record<string, unknown> = {};
   for (const page of ["Live TV", "Movies", "Series", "Watchlist", "Home"] as const) {
-    await d.click(`Open ${page}`, byText("header button", translate(locale, page)));
+    if (page === "Watchlist")
+      await d.click(
+        "Return Home for Watchlist",
+        byText("header button", translate(locale, "Home")),
+      );
+    await d.click(
+      `Open ${page}`,
+      byText(page === "Watchlist" ? "button" : "header button", translate(locale, page)),
+    );
     await d.wait(() =>
       d.evaluate<boolean>(
-        `${byText("header button", translate(locale, page))}?.getAttribute('aria-current') === 'page'`,
+        page === "Watchlist"
+          ? `${byText("h1", translate(locale, "Watchlist"))} !== undefined`
+          : `${byText("header button", translate(locale, page))}?.getAttribute('aria-current') === 'page'`,
       ),
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -572,4 +586,22 @@ async function smallestWindow(d: Driver) {
 function expect(condition: boolean, what: string, seen?: unknown): asserts condition {
   if (!condition)
     throw new Error(`Expected: ${what}${seen ? `, saw ${JSON.stringify(seen)}` : ""}`);
+}
+
+async function homeControls(d: Driver, locale: Locale) {
+  await d.click("Open Home customization", byText("button", translate(locale, "Customize")));
+  const section = `document.querySelector('section[aria-label="${translate(locale, "Customize Home")}"]')`;
+  await d.wait(() => d.exists(section));
+  const rows = await d.evaluate<string[]>(
+    `[...${section}.querySelectorAll('li label')].map(e => e.textContent.trim())`,
+  );
+  expect(
+    rows.length === 8 &&
+      rows.includes(translate(locale, "Recommendations")) &&
+      rows.includes(translate(locale, "Current category")),
+    `Home controls in ${locale}`,
+    rows,
+  );
+  await d.capture(`home-controls-${locale}`);
+  await d.click("Done customizing", byText("button", translate(locale, "Done")));
 }

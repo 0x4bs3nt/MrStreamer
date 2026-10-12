@@ -15,6 +15,75 @@ afterEach(async () => {
 });
 
 describe("related titles from available subscriptions", { timeout: 20_000 }, () => {
+  it("offers bounded local Home recommendations with actual seeds, no eager requests and current ownership", async () => {
+    const provider = await fakeProvider({ titles: 60 });
+    const other = await fakeProvider({ titles: 60, second: true });
+    const runtime = runtimeFor(mainLayer(testConfig(await tempDir())));
+    const subscriptions = await promised(runtime, Subscriptions);
+    const service = await promised(runtime, OnDemand);
+    const roster = await promised(runtime, Roster);
+    const one = await subscriptions.add({
+      server: provider.url,
+      username: "demo",
+      password: "demo",
+    });
+    const two = await subscriptions.add({ server: other.url, username: "demo", password: "demo" });
+    const seed = { kind: "movie" as const, version: { subscriptionId: one.id, id: "90000" } };
+    expect(await service.recommendations([])).toEqual([]);
+    expect(await service.recommendations([seed])).toEqual([]);
+    expect(provider.titleListRequests() + other.titleListRequests()).toBe(0);
+    await service.refresh(one.id);
+    await service.refresh(two.id);
+    const before = [provider.titleListRequests(), other.titleListRequests()];
+    const seeds = [
+      seed,
+      { ...seed, version: { subscriptionId: one.id, id: "90001" } },
+      { ...seed, version: { subscriptionId: two.id, id: "90000" } },
+    ];
+    const result = await service.recommendations([...seeds, ...seeds]);
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.length).toBeLessThanOrEqual(12);
+    expect(new Set(result.map(({ title }) => title.key)).size).toBe(result.length);
+    const watched = await service.titles(
+      "movie",
+      seeds.map((seed) => seed.version),
+    );
+    expect(
+      result.every(
+        ({ title, seed, reason }) =>
+          !title.adult &&
+          !watched.some((each) => each.key === title.key) &&
+          watched.some((each) => each.title === seed) &&
+          reason.length > 0,
+      ),
+    ).toBe(true);
+    expect([provider.titleListRequests(), other.titleListRequests()]).toEqual(before);
+    expect(
+      provider.detailRequests() +
+        other.detailRequests() +
+        provider.fileRequests() +
+        other.fileRequests(),
+    ).toBe(0);
+    expect(
+      await service.recommendations([
+        { kind: "series", version: { subscriptionId: one.id, id: "79999" } },
+      ]),
+    ).toEqual([]);
+    expect(
+      await service.recommendations([
+        { ...seed, version: { subscriptionId: two.id, id: "missing" } },
+      ]),
+    ).toEqual([]);
+    provider.serveTitles((all) => ({
+      ...all,
+      movies: all.movies.filter((movie) => String(movie.id) !== "90000"),
+    }));
+    await service.refresh(one.id);
+    expect(await service.recommendations([seed])).toEqual([]);
+    await roster.remove(two.id, false);
+    expect(await service.recommendations([seeds[2]!])).toEqual([]);
+  });
+
   it("does not fetch unopened lists or details, caps matches and removes a forgotten owner's titles", async () => {
     const dataDir = await tempDir();
     const provider = await fakeProvider({ titles: 60 });
@@ -152,6 +221,10 @@ http://127.0.0.1/neighbour.mp4
         await service.collection({ kind: "movie", id: "all", offset: 0, limit: 100 })
       ).titles.find((title) => title.subscriptionId === own.id && title.tmdbId === "42")!;
       expect(opened.genres).toEqual([]);
+      const home = await service.recommendations([{ kind: "movie", version: opened }]);
+      expect(home).toMatchObject([{ seed: opened.title, reason: "Same category" }]);
+      expect(home.every(({ title }) => title.subscriptionId === own.id && !title.adult)).toBe(true);
+
       expect((await service.related("movie", opened)).basis).toBe("Same category");
       expect(tmdb.aboutRequests()).toBe(0);
       const changed = await collect(runtime, service.detailsChanged);

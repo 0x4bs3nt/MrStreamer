@@ -1144,6 +1144,9 @@ describe("titles for adults on the watchlist", { timeout: 30_000 }, () => {
     expect(await saving.list()).toMatchObject({ total: 2 });
     await saving.settings.update({ adultTitles: true });
     expect(await saving.list()).toMatchObject({ total: 3 });
+    expect(
+      await saving.watchlist.list({ sort: "saved", offset: 0, limit: 100, home: true }),
+    ).toMatchObject({ total: 2 });
     expect((await saving.shown())[0]).toEqual({ name: "After Dark", available: true });
 
     // The provider drops the one, and marks another for adults.
@@ -1176,6 +1179,9 @@ describe("titles for adults on the watchlist", { timeout: 30_000 }, () => {
       { ...turned, title: { adult: true } },
       { title: { adult: false } },
     ]);
+    const home = await saving.watchlist.list({ sort: "saved", offset: 0, limit: 100, home: true });
+    expect(home.total).toBe(1);
+    expect(home.entries.map((entry) => entry.name)).toEqual(ordinary.map((entry) => entry.name));
   });
 
   it("keeps a saved title for adults its own while another title has its provider id", async () => {

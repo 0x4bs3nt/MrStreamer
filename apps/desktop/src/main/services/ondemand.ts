@@ -22,6 +22,8 @@ import type {
   MetadataProgress,
   OnDemandStatus,
   RelatedTitles,
+  HomeRecommendation,
+  HomeSeed,
   RowTab,
   Season,
   Title,
@@ -198,6 +200,9 @@ export class OnDemand extends Context.Service<
     details(kind: TitleKind, version: OwnedId): Effect.Effect<TitleDetails, Failed>;
     /** Related titles from lists already in memory. Never opens another library or file. */
     related(kind: TitleKind, version: OwnedId): Effect.Effect<RelatedTitles, Failed>;
+    recommendations(
+      seeds: readonly HomeSeed[],
+    ): Effect.Effect<readonly HomeRecommendation[], Failed>;
     /**
      * The episodes of season `season` of a series version, for when the viewer opens it: the
      * provider's, with TMDB's details.
@@ -839,6 +844,15 @@ function make(deps: OnDemandDeps) {
         loaded((owners, language) =>
           call("rows", { owners, language, kind, tab, ...(like ? { like } : {}) }),
         ),
+      recommendations: (seeds: readonly HomeSeed[]) =>
+        Effect.gen(function* () {
+          const saved = yield* listed;
+          return yield* call("recommendations", {
+            owners: saved.map(ownerOf),
+            language: yield* language,
+            seeds: seeds.slice(0, 32),
+          });
+        }),
       related: (kind: TitleKind, version: OwnedId) =>
         Effect.gen(function* () {
           const saved = yield* listed;
@@ -983,7 +997,7 @@ function make(deps: OnDemandDeps) {
             ...query,
             owners: saved.map(ownerOf),
             language: yield* language,
-            adults: (yield* settings.get).adultTitles ?? false,
+            adults: query.home ? false : ((yield* settings.get).adultTitles ?? false),
           });
         }),
 

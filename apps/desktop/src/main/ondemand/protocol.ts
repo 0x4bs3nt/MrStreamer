@@ -11,6 +11,8 @@ import type {
   CollectionTile,
   RowTab,
   RelatedTitles,
+  HomeRecommendation,
+  HomeSeed,
   Title,
   TitleKind,
   TitleMatches,
@@ -77,6 +79,7 @@ export interface WorkerStatus {
 
 /** Which page of the watchlist, in which order. */
 export interface SavedQuery {
+  readonly home?: boolean;
   /** Everything the subscriptions saved: the lists say which to show, and in what order. */
   readonly members: readonly SavedMember[];
   readonly sort: WatchlistSort;
@@ -156,6 +159,10 @@ export interface WorkerCalls {
       metadata?: { readonly genres: readonly string[]; readonly language: string | null };
     };
     result: RelatedTitles;
+  };
+  recommendations: {
+    args: Owners & { language: string; seeds: readonly HomeSeed[] };
+    result: readonly HomeRecommendation[];
   };
   /** Genres or streaming services as tiles. */
   tiles: {

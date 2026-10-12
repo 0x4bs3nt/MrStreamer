@@ -28,6 +28,8 @@ export interface Viewing {
    * not, most recent first, at most `CONTINUE_OFFERED`. Removed ones stay out until played again.
    */
   readonly continueWatching: readonly TitleProgress[];
+  /** At most 32 recent started local plays, including finished movies, for Home seeds. */
+  readonly recentTitles?: readonly TitleProgress[];
   /**
    * The series an episode of which was marked, with where each goes on, most recent first, at
    * most `CONTINUE_OFFERED`. One taken out of Continue watching since stays out, as a played one

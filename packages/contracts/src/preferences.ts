@@ -7,6 +7,8 @@ import { QUALITIES, type Quality } from "./library.ts";
  * channels live in the viewing record; files from before it may still carry them until imported.
  */
 export const Preferences = type({
+  /** Stable Home row IDs. Unknown IDs survive an older release; absent uses defaults. */
+  "homeRows?": type({ id: "string > 0", visible: "boolean" }).array(),
   volume: "0 <= number <= 1",
   muted: "boolean",
   /**

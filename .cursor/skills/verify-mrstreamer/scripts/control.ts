@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runDownloads } from "./downloads.ts";
+import { homeScenario } from "./home.ts";
 import { languageScenario } from "./language.ts";
 import { electronExecutable, freePort, record, stop } from "./session.ts";
 import { connect, type Page } from "../../../../apps/desktop/test/e2e/app.ts";
@@ -18,6 +19,7 @@ import { isLocale } from "../../../../packages/contracts/src/language.ts";
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const desktop = join(root, "apps/desktop");
 const scenarios = [
+  "home",
   "subscriptions",
   "background-refresh",
   "live-tv",
@@ -164,6 +166,8 @@ async function run(scenario: Scenario) {
       if (spawnError) throw spawnError;
       await doctor();
       await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+      await send("Network.enable");
+      await send("Network.setBlockedURLs", { urls: ["*image.example*", "*image.tmdb.org*"] });
     };
     /** Quits the app as the viewer does, keeping the profile for the next `launch`. */
     const quit = async () => {
@@ -214,6 +218,11 @@ async function run(scenario: Scenario) {
     const exists = (expression: string) => livePage.evaluate<boolean>(`!!(${expression})`);
     const action = (label: string) => actions.push({ action: label, at: new Date().toISOString() });
     const capture = async (name: string) => {
+      // DOM readiness can precede Chromium's paint, especially immediately after a locale switch.
+      await livePage.evaluate(
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+      );
+      await delay(200, undefined, { signal: abort.signal });
       const shot = await send("Page.captureScreenshot", { format: "png" });
       if (!record(shot) || typeof shot["data"] !== "string")
         throw new Error("No screenshot returned.");
@@ -237,8 +246,18 @@ async function run(scenario: Scenario) {
       `[...document.querySelectorAll(${JSON.stringify(selector)})].find(b => b.textContent.trim() === ${JSON.stringify(text)})`;
     const key = async (name: string, code: number) => {
       action(`Press ${name}`);
-      for (const type of ["rawKeyDown", "keyUp"])
-        await send("Input.dispatchKeyEvent", { type, key: name, windowsVirtualKeyCode: code });
+      const native = name === "Enter" || name === " ";
+      await send("Input.dispatchKeyEvent", {
+        type: native ? "keyDown" : "rawKeyDown",
+        key: name,
+        windowsVirtualKeyCode: code,
+        ...(native ? { text: name === "Enter" ? "\r" : " " } : {}),
+      });
+      await send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: name,
+        windowsVirtualKeyCode: code,
+      });
     };
     await wait(() =>
       livePage.evaluate<boolean>("document.querySelectorAll('form input').length >= 3"),
@@ -258,7 +277,31 @@ async function run(scenario: Scenario) {
       ),
     );
     await capture("connected");
-    if (scenario === "background-refresh") {
+    if (scenario === "home") {
+      await homeScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        () => ({
+          titleLists: provider!.titleListRequests(),
+          details: provider!.detailRequests(),
+          files: provider!.fileRequests(),
+          tmdbDetails: tmdb!.detailRequests(),
+          tmdbAbout: tmdb!.aboutRequests(),
+        }),
+      );
+    } else if (scenario === "background-refresh") {
       await click("Stay on Live TV while the guide waits", button("button", "Watch"));
       await wait(() => exists("document.querySelector('[data-view=watch]')"));
       // Status reads readiness without fetching. Home may already have requested missing lists.
@@ -385,7 +428,8 @@ async function run(scenario: Scenario) {
         observed["savedButton"] = true;
         await capture("saved");
         await key("Escape", 27);
-        await click("Open Watchlist", button("header button", "Watchlist"));
+        await click("Return Home", button("header button", "Home"));
+        await click("Open Watchlist from Home", button("button", "Watchlist"));
         await wait(() =>
           livePage.evaluate<boolean>(
             "document.querySelector('h1')?.textContent === 'Watchlist' && [...document.querySelectorAll('button[title]')].some(b => b.title.includes('Two sound tracks'))",
