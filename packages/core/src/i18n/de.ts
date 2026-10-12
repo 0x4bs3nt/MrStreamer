@@ -45,6 +45,7 @@ export const de: Translation = {
   "{name} is no longer listed. Showing all channels.":
     "{name} ist nicht mehr gelistet. Alle Sender werden angezeigt.",
   "Live TV": "Live-TV",
+  Sort: "Sortierung",
   Quality: "Qualität",
   "Automatic tries the nearest if one fails": "Automatisch versucht bei Fehlern die nächste",
   "Channels with their own quality": "Sender mit eigener Qualität",
@@ -1179,4 +1180,35 @@ export const de: Translation = {
   "Downloads, {status}": "Downloads, {status}",
   // The close button on a playback error.
   "Close message": "Meldung schließen",
+  // Whole-series downloads.
+  "Downloading {percent}": "Download läuft {percent}",
+  "{done} of {count}": "{done} von {count}",
+  "{done} of {total} · {count} failed": {
+    one: "{done} von {total} · {count} fehlgeschlagen",
+    other: "{done} von {total} · {count} fehlgeschlagen",
+  },
+  "Download {count} new": {
+    one: "{count} neue herunterladen",
+    other: "{count} neue herunterladen",
+  },
+  "To download": "Herunterzuladen",
+  "Already downloaded": "Bereits heruntergeladen",
+  "Already queued": "Bereits eingereiht",
+  "Download {count} episodes": {
+    one: "{count} Folge herunterladen",
+    other: "{count} Folgen herunterladen",
+  },
+  "Retry failed": "Fehlgeschlagene erneut versuchen",
+  "Cancel the rest": "Rest abbrechen",
+  "Open Downloads": "Downloads öffnen",
+  "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.": {
+    one: "{added} von {attempted} eingereiht. {count} konnte nicht hinzugefügt werden: {episodes}.",
+    other:
+      "{added} von {attempted} eingereiht. {count} konnten nicht hinzugefügt werden: {episodes}.",
+  },
+  "Queued {count} episodes. {complete} already downloaded, {queued} already queued.": {
+    one: "{count} Folge eingereiht. {complete} bereits heruntergeladen, {queued} bereits eingereiht.",
+    other:
+      "{count} Folgen eingereiht. {complete} bereits heruntergeladen, {queued} bereits eingereiht.",
+  },
 };

@@ -100,11 +100,15 @@ export function CollectionGrid({
   active,
   filters,
   onFilters,
+  sortControl,
+  hideCount,
 }: {
   kind: TitleKind;
   id: CollectionId;
   sort?: CollectionSort;
   active: boolean;
+  sortControl?: ReactNode;
+  hideCount?: boolean;
 } & Partial<TitleFilterControls>) {
   const listed = useCollection(kind, id, sort, filters);
   // Each poster is the version the grid lists, as the 4K tab's are their 4K versions.
@@ -123,6 +127,8 @@ export function CollectionGrid({
           onFilters={onFilters}
           total={listed.total}
           unfiltered={listed.unfiltered}
+          sortControl={sortControl}
+          hideCount={hideCount ?? false}
         />
       )}
       {listed.error ? (

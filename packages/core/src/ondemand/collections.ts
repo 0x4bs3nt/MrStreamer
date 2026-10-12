@@ -12,6 +12,20 @@ import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { GENRES, tmdbImage, type TitleMetadata } from "../metadata/tmdb.ts";
 import { suitability, suits } from "./languages.ts";
 
+/** The order a collection uses before the viewer chooses another sort. */
+export function collectionSort(id: CollectionId): CollectionSort {
+  if (id === "top-rated") return "rating";
+  if (
+    id === "recent" ||
+    id === "popular" ||
+    id.startsWith("genre:") ||
+    id.startsWith("service:") ||
+    id.startsWith("like:")
+  )
+    return "popular";
+  return "added";
+}
+
 /** A streaming service and the TMDB ids of what it streams in the viewer's region. */
 export interface ServiceTitles {
   readonly id: number;
@@ -139,61 +153,53 @@ export function collections(source: CollectionSource): Collections {
     title: (a, b) => collator.compare(a.title.title, b.title.title),
   };
 
-  /** A collection's members and the order it shows them in unless asked otherwise. */
-  function members(id: CollectionId): { entries: readonly Ranked[]; order: CollectionSort } {
-    if (id === "all") return { entries: ranked, order: "added" };
-    if (id === "adult") return { entries: adult, order: "added" };
+  /** The titles included in a collection before sorting. */
+  function members(id: CollectionId): { entries: readonly Ranked[] } {
+    if (id === "all") return { entries: ranked };
+    if (id === "adult") return { entries: adult };
     if (id === "new-week") {
       return {
         entries: suiting.filter((entry) => added(entry) > source.now - 7 * DAY_MS),
-        order: "added",
       };
     }
     if (id === "new-month") {
       return {
         entries: suiting.filter((entry) => added(entry) > source.now - 30 * DAY_MS),
-        order: "added",
       };
     }
     if (id === "recent") {
       const year = new Date(source.now).getUTCFullYear();
       return {
         entries: suiting.filter((entry) => (entry.title.year ?? 0) >= year - 1),
-        order: "popular",
       };
     }
-    if (id === "popular")
-      return { entries: suiting.filter((entry) => entry.popularity > 0), order: "popular" };
+    if (id === "popular") return { entries: suiting.filter((entry) => entry.popularity > 0) };
     if (id === "top-rated")
       return {
         entries: suiting.filter((entry) => entry.rated && entry.rating >= TOP_RATING),
-        order: "rating",
       };
     if (id === "4k") {
       return {
         entries: suiting.flatMap((entry) =>
           entry.fourK ? [{ ...entry, title: entry.fourK }] : [],
         ),
-        order: "added",
       };
     }
     if (id.startsWith("genre:")) {
       const genre = id.slice("genre:".length);
-      return { entries: suiting.filter((entry) => entry.genres.includes(genre)), order: "popular" };
+      return { entries: suiting.filter((entry) => entry.genres.includes(genre)) };
     }
     if (id.startsWith("service:")) {
       const service = source.services.find((each) => `service:${each.id}` === id);
-      if (!service) return { entries: [], order: "popular" };
+      if (!service) return { entries: [] };
       return {
         entries: suiting.filter(
           (entry) => entry.title.tmdbId && service.ids.has(entry.title.tmdbId),
         ),
-        order: "popular",
       };
     }
-    if (id.startsWith("like:"))
-      return { entries: alike(id.slice("like:".length)), order: "popular" };
-    return { entries: [], order: "added" };
+    if (id.startsWith("like:")) return { entries: alike(id.slice("like:".length)) };
+    return { entries: [] };
   }
 
   /** The title one of whose versions `key` names, as `ownedKey` writes it. */
@@ -218,8 +224,8 @@ export function collections(source: CollectionSource): Collections {
       const key = `${id}|${sort ?? ""}`;
       let list = lists.get(key);
       if (!list) {
-        const { entries, order } = members(id);
-        list = entries.toSorted(orders[sort ?? order]).map((entry) => entry.title);
+        const { entries } = members(id);
+        list = entries.toSorted(orders[sort ?? collectionSort(id)]).map((entry) => entry.title);
         lists.set(key, list);
       }
       return list;

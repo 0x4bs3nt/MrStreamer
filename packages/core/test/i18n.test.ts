@@ -23,6 +23,50 @@ vi.mock("../src/i18n/nl.ts", async (original) => {
 
 afterEach(() => setLanguage({ locale: "en-US", formats: "en-US" }));
 
+it.each([
+  ["en-US", "Queued 1 episode.", "Queued 2 episodes."],
+  ["de-DE", "1 Folge eingereiht.", "2 Folgen eingereiht."],
+  ["es-ES", "1 episodio en cola.", "2 episodios en cola."],
+  ["fr-FR", "1 épisode en attente.", "2 épisodes en attente."],
+  ["nl-NL", "1 aflevering in wachtrij.", "2 afleveringen in wachtrij."],
+] as const)("%s pluralises the number of episodes actually queued", (locale, one, other) => {
+  setLanguage({ locale, formats: locale });
+  const key = "Queued {count} episodes. {complete} already downloaded, {queued} already queued.";
+  expect(t(key, { count: 1, complete: 0, queued: 4 })).toContain(one);
+  expect(t(key, { count: 2, complete: 0, queued: 4 })).toContain(other);
+});
+
+it.each([
+  ["en-US", "1 couldn't be added", "2 couldn't be added"],
+  ["de-DE", "1 konnte nicht", "2 konnten nicht"],
+  ["es-ES", "No se pudo añadir 1", "No se pudieron añadir 2"],
+  ["fr-FR", "1 n’a pas pu être ajouté", "2 n’ont pas pu être ajoutés"],
+  ["nl-NL", "1 kon niet", "2 konden niet"],
+] as const)("%s pluralises failed additions independently from attempts", (locale, one, other) => {
+  setLanguage({ locale, formats: locale });
+  const key = "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.";
+  expect(t(key, { added: 3, attempted: 5, count: 1, episodes: "S1 E1" })).toContain(one);
+  expect(t(key, { added: 3, attempted: 5, count: 2, episodes: "S1 E1, S1 E2" })).toContain(other);
+});
+
+it.each([
+  ["es-ES", "Descargar 1 nuevo", "Descargar 2 nuevos", "1 fallido", "2 fallidos"],
+  ["fr-FR", "Télécharger 1 nouveau", "Télécharger 2 nouveaux", "1 en échec", "2 en échec"],
+] as const)(
+  "%s agrees with one or several new and failed downloads",
+  (locale, one, other, failedOne, failedOther) => {
+    setLanguage({ locale, formats: locale });
+    expect(t("Download {count} new", { count: 1 })).toBe(one);
+    expect(t("Download {count} new", { count: 2 })).toBe(other);
+    expect(t("{done} of {total} · {count} failed", { done: 3, total: 5, count: 1 })).toContain(
+      failedOne,
+    );
+    expect(t("{done} of {total} · {count} failed", { done: 3, total: 5, count: 2 })).toContain(
+      failedOther,
+    );
+  },
+);
+
 describe("the interface language", () => {
   it("follows the system's first language the app speaks, by its language alone", () => {
     expect(resolveLanguage(undefined, ["ja-JP", "nl-BE", "de-DE"])).toEqual({

@@ -600,7 +600,7 @@ it.each([
     const trigger = document.body.querySelector<HTMLButtonElement>(
       '[aria-label="Versions for S1 E2"]',
     );
-    expect(trigger?.textContent).toBe("2 versions");
+    expect(trigger?.getAttribute("title")).toBe("2 versions");
     await act(async () => trigger?.click());
     const files = () => [...document.body.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
     await until(() => expect(files()).toHaveLength(2));

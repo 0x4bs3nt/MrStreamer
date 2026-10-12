@@ -45,6 +45,7 @@ export const fr: Translation = {
   "{name} is no longer listed. Showing all channels.":
     "{name} n’est plus proposée. Toutes les chaînes sont affichées.",
   "Live TV": "TV en direct",
+  Sort: "Tri",
   Quality: "Qualité",
   "Automatic tries the nearest if one fails":
     "En automatique, la plus proche est essayée en cas d'échec",
@@ -1238,4 +1239,34 @@ export const fr: Translation = {
   "Downloads, {status}": "Téléchargements, {status}",
   // The close button on a playback error.
   "Close message": "Fermer le message",
+  // Whole-series downloads.
+  "Downloading {percent}": "Téléchargement {percent}",
+  "{done} of {count}": "{done} sur {count}",
+  "{done} of {total} · {count} failed": {
+    one: "{done} sur {total} · {count} en échec",
+    other: "{done} sur {total} · {count} en échec",
+  },
+  "Download {count} new": {
+    one: "Télécharger {count} nouveau",
+    other: "Télécharger {count} nouveaux",
+  },
+  "To download": "À télécharger",
+  "Already downloaded": "Déjà téléchargés",
+  "Already queued": "Déjà en attente",
+  "Download {count} episodes": {
+    one: "Télécharger {count} épisode",
+    other: "Télécharger {count} épisodes",
+  },
+  "Retry failed": "Réessayer les échecs",
+  "Cancel the rest": "Annuler le reste",
+  "Open Downloads": "Ouvrir les téléchargements",
+  "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.": {
+    one: "{added} sur {attempted} en attente. {count} n’a pas pu être ajouté : {episodes}.",
+    other: "{added} sur {attempted} en attente. {count} n’ont pas pu être ajoutés : {episodes}.",
+  },
+  "Queued {count} episodes. {complete} already downloaded, {queued} already queued.": {
+    one: "{count} épisode en attente. Déjà téléchargés : {complete}. Déjà en attente : {queued}.",
+    other:
+      "{count} épisodes en attente. Déjà téléchargés : {complete}. Déjà en attente : {queued}.",
+  },
 };

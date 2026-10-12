@@ -2,13 +2,23 @@
 // episode's row. One control says how the download of that exact version stands and does the one
 // thing that fits: Download, Cancel while it is queued or transfers, Retry after it failed, and
 // Watch offline once it is on this computer, with Delete in the menu beside it. There is no
-// season-wide download.
+// automatic download of future episodes.
 import { Menu } from "@base-ui/react/menu";
+import type { ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { ArrowDownToLine, Check, ChevronDown, Play, RotateCw } from "lucide-react";
+import {
+  ArrowDownToLine,
+  Check,
+  ChevronDown,
+  Play,
+  RotateCw,
+  Square,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import type { Download, DownloadFailure } from "@mrstreamer/contracts/downloads";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
-import { formatPercent, t } from "@mrstreamer/core/i18n";
+import { formatBytes, formatPercent, t } from "@mrstreamer/core/i18n";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -54,8 +64,70 @@ export function MovieDownload({ title }: { title: TitleRef }) {
   const { download, busy, add, remove, retry, error } = useDownload(title);
   return (
     <>
-      <MovieState download={download} busy={busy} add={add} remove={remove} retry={retry} />
-      {error && <p className="basis-full text-sm text-destructive">{error}</p>}
+      <DownloadPill faces={<MovieFaces />}>
+        <span className="flex min-w-0 [&>button]:w-full [&>button]:px-4">
+          <MovieState download={download} busy={busy} add={add} remove={remove} retry={retry} />
+        </span>
+      </DownloadPill>
+      {error && <p className="order-last basis-full text-sm text-destructive">{error}</p>}
+    </>
+  );
+}
+
+/** The widest translated face reserves space, so changing state never moves Save. */
+export function DownloadPill({ faces, children }: { faces: ReactNode; children: ReactNode }) {
+  return (
+    <span className="inline-grid min-w-[200px] max-w-full flex-none grid-cols-[minmax(0,1fr)] [&>*]:[grid-area:1/1]">
+      <span aria-hidden className="invisible grid min-w-0 overflow-hidden [&>*]:[grid-area:1/1]">
+        {faces}
+      </span>
+      {children}
+    </span>
+  );
+}
+
+/** These spans use the real control styles and never receive input or accessibility focus. */
+function MovieFaces() {
+  return (
+    <>
+      <Button render={<span />} size="lg" className="px-4">
+        <ArrowDownToLine />
+        {t("Download")}
+      </Button>
+      {(["Queued", "Waiting for playback"] as const).map((label) => (
+        <Button key={label} render={<span />} size="lg" className="px-4">
+          {t(label)} · {t("Cancel")}
+        </Button>
+      ))}
+      <Button render={<span />} size="lg" className="px-4 tabular-nums">
+        <Progress value={1} className="w-12" />
+        {formatPercent(1)}
+      </Button>
+      <Button render={<span />} size="lg" className="px-4">
+        {t("Downloading")}
+      </Button>
+      {(["Disk full", "Can't write", "Refused", "Stopped"] as const).map((label) => (
+        <Button key={label} render={<span />} size="lg" variant="destructive" className="px-4">
+          <RotateCw />
+          {t(label)} · {t("Retry")}
+        </Button>
+      ))}
+      <Button render={<span />} size="lg" variant="destructive" className="px-4">
+        {t("File missing")} · {t("Delete")}
+      </Button>
+      <span className="flex">
+        <Button render={<span />} size="lg" className="rounded-r-none px-3">
+          <Play className="fill-current" />
+          {t("Watch offline")}
+        </Button>
+        <Button
+          render={<span />}
+          size="lg"
+          className="rounded-l-none border-l border-black/40 px-3"
+        >
+          <ChevronDown />
+        </Button>
+      </span>
     </>
   );
 }
@@ -77,7 +149,7 @@ function MovieState({
     return (
       <Button variant="secondary" size="lg" disabled={busy} onClick={add}>
         <ArrowDownToLine />
-        {t("Download")}
+        <span className="min-w-0 truncate">{t("Download")}</span>
       </Button>
     );
   }
@@ -97,7 +169,9 @@ function MovieState({
           }
           onClick={() => remove(id)}
         >
-          {status.kind === "queued" ? t("Queued") : t("Waiting for playback")} · {t("Cancel")}
+          <span className="min-w-0 truncate">
+            {status.kind === "queued" ? t("Queued") : t("Waiting for playback")} · {t("Cancel")}
+          </span>
         </Button>
       );
     case "transferring": {
@@ -117,7 +191,7 @@ function MovieState({
           className="tabular-nums"
         >
           {done !== null && <Progress value={done} className="w-12" />}
-          {percent ?? t("Downloading")}
+          <span className="min-w-0 truncate">{percent ?? t("Downloading")}</span>
         </Button>
       );
     }
@@ -131,26 +205,30 @@ function MovieState({
           onClick={() => retry(id)}
         >
           <RotateCw />
-          {shortly(status.failure)} · {t("Retry")}
+          <span className="min-w-0 truncate">
+            {shortly(status.failure)} · {t("Retry")}
+          </span>
         </Button>
       );
     case "missing":
       return (
         <Button variant="destructive" size="lg" disabled={busy} onClick={() => remove(id)}>
-          {t("File missing")} · {t("Delete")}
+          <span className="min-w-0 truncate">
+            {t("File missing")} · {t("Delete")}
+          </span>
         </Button>
       );
     case "complete":
       return (
-        <span className="flex">
+        <span className="flex w-full">
           <Button
             variant="secondary"
             size="lg"
             onClick={() => watchOffline(download)}
-            className="rounded-r-none pr-5"
+            className="min-w-0 flex-1 rounded-r-none px-3"
           >
             <Play className="fill-current" />
-            {t("Watch offline")}
+            <span className="min-w-0 truncate">{t("Watch offline")}</span>
           </Button>
           <Menu.Root>
             <Menu.Trigger
@@ -184,13 +262,13 @@ function MovieState({
   }
 }
 
-/** An episode row's download: an icon to start it, then how it stands. */
+/** Every episode action keeps the same icon target; its state is written in the facts line. */
 export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "episode" }> }) {
   const { download, busy, add, remove, retry, error } = useDownload(title);
   const label = episodeLabel(title.season, title.episode);
   const shared = {
     variant: "ghost",
-    size: "sm",
+    size: "icon-sm",
     disabled: busy,
     title: error ?? undefined,
   } as const;
@@ -216,7 +294,6 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           onClick={() => watchOffline(download)}
         >
           <Check />
-          {t("Downloaded")}
         </Button>
       );
     case "queued":
@@ -227,11 +304,10 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           aria-label={t("Cancel download of {title}", { title: label })}
           onClick={() => remove(id)}
         >
-          {status.kind === "queued" ? t("Queued") : t("Waiting")}
+          <X />
         </Button>
       );
     case "transferring": {
-      const done = transferred(download);
       return (
         <Button
           {...shared}
@@ -239,8 +315,7 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           onClick={() => remove(id)}
           className="tabular-nums"
         >
-          {done !== null && <Progress value={done} className="w-9" />}
-          {done === null ? "…" : formatPercent(Math.floor(done * 100) / 100)}
+          <Square />
         </Button>
       );
     }
@@ -256,7 +331,6 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           className="text-destructive"
         >
           <RotateCw />
-          {t("Retry")}
         </Button>
       );
     case "missing":
@@ -267,8 +341,44 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           onClick={() => remove(id)}
           className="text-destructive"
         >
-          {t("Missing")}
+          <TriangleAlert />
         </Button>
       );
   }
+}
+
+/** The existing download states as short words, beside an episode's date and duration. */
+export function EpisodeDownloadStatus({ download }: { download: Download | null }) {
+  if (!download) return null;
+  const { status } = download;
+  const label =
+    status.kind === "complete"
+      ? t("Downloaded")
+      : status.kind === "queued"
+        ? t("Queued")
+        : status.kind === "waiting"
+          ? t("Waiting")
+          : status.kind === "failed"
+            ? shortly(status.failure)
+            : status.kind === "missing"
+              ? t("Missing")
+              : transferred(download) === null
+                ? [t("Downloading"), status.received > 0 ? formatBytes(status.received) : null]
+                    .filter(Boolean)
+                    .join(" ")
+                : t("Downloading {percent}", {
+                    percent: formatPercent(Math.floor(transferred(download)! * 100) / 100),
+                  });
+  return (
+    <span
+      className={
+        status.kind === "failed" || status.kind === "missing"
+          ? "max-w-[60%] flex-none truncate text-destructive"
+          : "max-w-[60%] flex-none truncate text-white tabular-nums"
+      }
+      title={status.kind === "failed" ? describeFailure(status.failure) : label}
+    >
+      {label}
+    </span>
+  );
 }

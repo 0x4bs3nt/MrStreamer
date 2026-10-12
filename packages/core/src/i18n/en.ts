@@ -45,6 +45,7 @@ export const en = {
   "{name} is no longer listed. Showing all channels.":
     "{name} is no longer listed. Showing all channels.",
   "Live TV": "Live TV",
+  Sort: "Sort",
   Quality: "Quality",
   "Automatic tries the nearest if one fails": "Automatic tries the nearest if one fails",
   "Channels with their own quality": "Channels with their own quality",
@@ -1149,4 +1150,33 @@ export const en = {
   "Downloads, {status}": "Downloads, {status}",
   // The close button on a playback error.
   "Close message": "Close message",
+  // Whole-series downloads.
+  "Downloading {percent}": "Downloading {percent}",
+  "{done} of {count}": "{done} of {count}",
+  "{done} of {total} · {count} failed": {
+    one: "{done} of {total} · {count} failed",
+    other: "{done} of {total} · {count} failed",
+  },
+  "Download {count} new": {
+    one: "Download {count} new",
+    other: "Download {count} new",
+  },
+  "To download": "To download",
+  "Already downloaded": "Already downloaded",
+  "Already queued": "Already queued",
+  "Download {count} episodes": {
+    one: "Download {count} episode",
+    other: "Download {count} episodes",
+  },
+  "Retry failed": "Retry failed",
+  "Cancel the rest": "Cancel the rest",
+  "Open Downloads": "Open Downloads",
+  "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.": {
+    one: "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.",
+    other: "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.",
+  },
+  "Queued {count} episodes. {complete} already downloaded, {queued} already queued.": {
+    one: "Queued {count} episode. {complete} already downloaded, {queued} already queued.",
+    other: "Queued {count} episodes. {complete} already downloaded, {queued} already queued.",
+  },
 } as const satisfies Readonly<Record<string, string | Plural>>;

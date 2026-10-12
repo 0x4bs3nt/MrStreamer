@@ -18,11 +18,11 @@ import {
   type TitleKind,
 } from "@mrstreamer/contracts/ondemand";
 import { ownedId, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
+import { collectionSort } from "@mrstreamer/core/ondemand/collections";
 import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
 import { formatDecimal, formatNumber, type PlainKey, t } from "@mrstreamer/core/i18n";
 import { isMac, isTyping } from "../../app/platform.ts";
 import { openDetails, openView, useUi } from "../../app/ui-store.ts";
-import { Sorts } from "../../components/Sorts.tsx";
 import { Artwork, PosterTile, StillTile } from "../../components/TitleArt.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
@@ -42,7 +42,12 @@ import { useDebounced } from "../../lib/use-debounced.ts";
 import { useFit } from "../../lib/use-fit.ts";
 import { cn } from "../../lib/utils.ts";
 import { CollectionGrid, TitleGrid, useCollection } from "./CollectionGrid.tsx";
-import { FilterEmpty, TitleFilterBar, type TitleFilterControls } from "./TitleFilters.tsx";
+import {
+  FilterEmpty,
+  TitleChoiceMenu,
+  TitleFilterBar,
+  type TitleFilterControls,
+} from "./TitleFilters.tsx";
 
 type Tab = "for-you" | "new" | "genres" | "services" | "4k" | "adult" | "all";
 
@@ -238,9 +243,6 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
             <Tiles kind={kind} of={tab} onOpen={open} />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col pl-10">
-              {tab === "all" && (
-                <Sorts options={SORTS} value={place.sort} onChange={(sort) => go({ sort })} />
-              )}
               <CollectionGrid
                 kind={kind}
                 id={tab}
@@ -248,6 +250,11 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
                 active={active}
                 filters={filters}
                 onFilters={onFilters}
+                sortControl={
+                  tab === "all" ? (
+                    <SortMenu value={place.sort} onChange={(sort) => go({ sort })} />
+                  ) : undefined
+                }
               />
             </div>
           )}
@@ -388,6 +395,26 @@ const SORTS: readonly { value: CollectionSort; label: PlainKey }[] = [
   { value: "title", label: "A–Z" },
 ];
 
+function SortMenu({
+  value,
+  onChange,
+}: {
+  value: CollectionSort | null;
+  onChange: (sort: CollectionSort) => void;
+}) {
+  return (
+    <TitleChoiceMenu
+      label={t("Sort")}
+      choices={SORTS.map((entry) => ({ ...entry, label: t(entry.label) }))}
+      value={value ?? undefined}
+      onChange={(sort) => {
+        if (sort) onChange(sort);
+      }}
+      showLabel={false}
+    />
+  );
+}
+
 /** A collection opened from a row, a genre or a service: its name, its order, its grid. */
 function Collection({
   kind,
@@ -407,13 +434,14 @@ function Collection({
   const listed = useCollection(kind, id, sort ?? undefined, filters);
   return (
     <div className="flex min-h-0 flex-1 flex-col pt-2 pl-10">
-      <div className="mb-3 flex items-baseline gap-3">
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 pr-8">
         <h1 className="text-2xl font-semibold tracking-tight">{listed.name}</h1>
-        <span className="text-sm text-muted-foreground tabular-nums">
-          {listed.total === null ? null : formatNumber(listed.total)}
+        <span className="text-sm text-muted-foreground tabular-nums" aria-live="polite">
+          {listed.total === null || listed.unfiltered === null
+            ? null
+            : t("{shown} of {total}", { shown: listed.total, total: listed.unfiltered })}
         </span>
       </div>
-      <Sorts options={SORTS} value={sort} onChange={onSort} />
       <CollectionGrid
         kind={kind}
         id={id}
@@ -421,6 +449,8 @@ function Collection({
         active={active}
         filters={filters}
         onFilters={onFilters}
+        sortControl={<SortMenu value={sort ?? collectionSort(id)} onChange={onSort} />}
+        hideCount
       />
     </div>
   );

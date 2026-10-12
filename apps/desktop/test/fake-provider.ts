@@ -137,6 +137,8 @@ interface FakeSeries {
   readonly added: number;
   /** Episodes per season, in order. */
   readonly seasons: readonly (readonly FakeEpisode[])[];
+  /** Explicit provider season numbers, including Specials at zero. */
+  readonly seasonNumbers?: readonly number[];
   /** The TMDB id it shares with another version of the series, when it is one. */
   readonly tmdb?: string;
 }
@@ -181,6 +183,10 @@ export interface FakeProvider {
    * reads a run.
    */
   slowFileParts(ms: number): void;
+  /** Hold an episode transfer at a byte boundary for UI queue/progress proof. */
+  stallEpisodeFile(episodeId: number, at: number, ms: number): void;
+  /** Replace an episode file, including an empty answer to exercise failure and retry. */
+  replaceEpisodeFile(episodeId: number, file: string | Buffer): void;
   /** How many requests for a movie's or series' details reached the provider. */
   detailRequests(): number;
   /**
@@ -473,21 +479,21 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       // Panels list seasons incompletely: the last season is missing here.
       return json(response, {
         seasons: series.seasons.slice(0, -1).map((_episodes, index) => ({
-          season_number: index + 1,
+          season_number: series.seasonNumbers?.[index] ?? index + 1,
           name: `Seizoen ${index + 1}`,
           cover: "",
         })),
         info: { name: series.name, plot: `All about ${series.name}.`, episode_run_time: "45" },
         episodes: Object.fromEntries(
           series.seasons.map((episodes, index) => [
-            String(index + 1),
+            String(series.seasonNumbers?.[index] ?? index + 1),
             episodes.map((episode, place) => {
               const number = episode.number ?? place + 1;
               return {
                 id: String(episode.id),
                 episode_num: number,
-                season: index + 1,
-                title: `${series.name} - S${String(index + 1).padStart(2, "0")}E${String(number).padStart(2, "0")} - Part ${number}`,
+                season: series.seasonNumbers?.[index] ?? index + 1,
+                title: `${series.name} - S${String(series.seasonNumbers?.[index] ?? index + 1).padStart(2, "0")}E${String(number).padStart(2, "0")} - Part ${number}`,
                 container_extension: episode.container,
                 added: String(episode.added),
                 info: {
@@ -686,6 +692,14 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     stallMovieFile(movieId, at, ms) {
       const movie = movieFiles.get(String(movieId));
       if (movie) stalls.set(movie, { at, ms });
+    },
+    stallEpisodeFile(episodeId, at, ms) {
+      const episode = episodeFiles.get(String(episodeId));
+      if (episode) stalls.set(episode, { at, ms });
+    },
+    replaceEpisodeFile(episodeId, file) {
+      const episode = episodeFiles.get(String(episodeId));
+      if (episode) replace(episode, typeof file === "string" ? fixture(file) : file);
     },
     slowFileParts(ms) {
       partsWait = ms;

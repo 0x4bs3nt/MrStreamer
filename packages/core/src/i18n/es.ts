@@ -45,6 +45,7 @@ export const es: Translation = {
   "{name} is no longer listed. Showing all channels.":
     "{name} ya no figura. Se muestran todos los canales.",
   "Live TV": "TV en directo",
+  Sort: "Orden",
   Quality: "Calidad",
   "Automatic tries the nearest if one fails": "En automático se prueba la más cercana si una falla",
   "Channels with their own quality": "Canales con calidad propia",
@@ -1247,4 +1248,33 @@ export const es: Translation = {
   "Downloads, {status}": "Descargas, {status}",
   // The close button on a playback error.
   "Close message": "Cerrar mensaje",
+  // Whole-series downloads.
+  "Downloading {percent}": "Descargando {percent}",
+  "{done} of {count}": "{done} de {count}",
+  "{done} of {total} · {count} failed": {
+    one: "{done} de {total} · {count} fallido",
+    other: "{done} de {total} · {count} fallidos",
+  },
+  "Download {count} new": {
+    one: "Descargar {count} nuevo",
+    other: "Descargar {count} nuevos",
+  },
+  "To download": "Por descargar",
+  "Already downloaded": "Ya descargados",
+  "Already queued": "Ya en cola",
+  "Download {count} episodes": {
+    one: "Descargar {count} episodio",
+    other: "Descargar {count} episodios",
+  },
+  "Retry failed": "Reintentar fallidos",
+  "Cancel the rest": "Cancelar el resto",
+  "Open Downloads": "Abrir descargas",
+  "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.": {
+    one: "{added} de {attempted} en cola. No se pudo añadir {count}: {episodes}.",
+    other: "{added} de {attempted} en cola. No se pudieron añadir {count}: {episodes}.",
+  },
+  "Queued {count} episodes. {complete} already downloaded, {queued} already queued.": {
+    one: "{count} episodio en cola. Ya descargados: {complete}. Ya en cola: {queued}.",
+    other: "{count} episodios en cola. Ya descargados: {complete}. Ya en cola: {queued}.",
+  },
 };

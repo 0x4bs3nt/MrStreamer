@@ -45,6 +45,7 @@ export const nl: Translation = {
   "{name} is no longer listed. Showing all channels.":
     "{name} is niet meer vermeld. Alle zenders worden getoond.",
   "Live TV": "Live-tv",
+  Sort: "Sorteren",
   Quality: "Kwaliteit",
   "Automatic tries the nearest if one fails":
     "Automatisch probeert de dichtstbijzijnde als er een faalt",
@@ -1174,4 +1175,34 @@ export const nl: Translation = {
   "Downloads, {status}": "Downloads, {status}",
   // The close button on a playback error.
   "Close message": "Melding sluiten",
+  // Whole-series downloads.
+  "Downloading {percent}": "Downloaden {percent}",
+  "{done} of {count}": "{done} van {count}",
+  "{done} of {total} · {count} failed": {
+    one: "{done} van {total} · {count} mislukt",
+    other: "{done} van {total} · {count} mislukt",
+  },
+  "Download {count} new": {
+    one: "{count} nieuwe downloaden",
+    other: "{count} nieuwe downloaden",
+  },
+  "To download": "Te downloaden",
+  "Already downloaded": "Al gedownload",
+  "Already queued": "Al in wachtrij",
+  "Download {count} episodes": {
+    one: "{count} aflevering downloaden",
+    other: "{count} afleveringen downloaden",
+  },
+  "Retry failed": "Mislukte opnieuw proberen",
+  "Cancel the rest": "De rest annuleren",
+  "Open Downloads": "Downloads openen",
+  "Queued {added} of {attempted}. {count} couldn't be added: {episodes}.": {
+    one: "{added} van {attempted} in wachtrij. {count} kon niet worden toegevoegd: {episodes}.",
+    other:
+      "{added} van {attempted} in wachtrij. {count} konden niet worden toegevoegd: {episodes}.",
+  },
+  "Queued {count} episodes. {complete} already downloaded, {queued} already queued.": {
+    one: "{count} aflevering in wachtrij. {complete} al gedownload, {queued} al in wachtrij.",
+    other: "{count} afleveringen in wachtrij. {complete} al gedownload, {queued} al in wachtrij.",
+  },
 };

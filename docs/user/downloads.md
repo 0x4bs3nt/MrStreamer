@@ -1,13 +1,14 @@
 # Downloads
 
-From 0.0.10 you can download a movie or a single episode and watch it later on this computer, without a network connection and without a subscription.
+From 0.0.10 you can download a movie or a single episode, and from 0.0.12 a whole series, and watch it later on this computer, without a network connection and without a subscription.
 
 ## Downloading
 
 - **Movies:** open the movie and press **Download**, beside **Play** and **Save**. It downloads the version **Play** would play, so pick another with the arrow beside **Play** first if you want that one.
-- **Episodes:** each episode row in a series has its own download button. There is no download for a whole season.
+- **Series**, from 0.0.12: open **Download**, beside **Play** and **Save**. Its menu names every available season, including Specials, and the selected provider version. Pick another version with Play’s arrow first. Confirm **Download … episodes** to add the remaining episodes to the end of the queue. Each episode uses the file its row would play, including its resumed file when still listed. Already downloaded or queued files are skipped; failed files are retried. A partial result names files that could not be added and offers **Retry**, while successful additions stay in the queue. The menu also offers **Retry failed**, **Cancel the rest** and **Open Downloads**. New episodes need another confirmation.
+- **Episodes:** each row keeps a download icon in the same place. Queued, progress, waiting and failure messages appear beside its date and duration; a thin progress bar runs along the still. The icon cancels an unfinished download, retries a failed one, or watches a completed copy offline.
 
-The button then shows how the download stands: **Queued**, its progress, **Waiting for playback**, or what went wrong with **Retry**. Pressing it while it is queued or downloading cancels it. Once it is on this computer it reads **Watch offline**, and on a movie the arrow beside it has **Delete download**.
+A movie’s button then shows how the download stands: **Queued**, its progress, **Waiting for playback**, or what went wrong with **Retry**. Pressing it while it is queued or downloading cancels it. Once it is on this computer it reads **Watch offline**, and on a movie the arrow beside it has **Delete download**.
 
 Supported are movies and episodes of Xtream subscriptions and of playlists whose groups you mapped to movies or series. Live TV can't be recorded.
 

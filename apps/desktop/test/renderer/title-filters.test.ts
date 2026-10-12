@@ -7,7 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { FilterOptions } from "@mrstreamer/contracts/title-filters";
 import type { Title, TitleKind, MovieDetails } from "@mrstreamer/contracts/ondemand";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
-import { TitlesPage } from "../../src/renderer/src/features/titles/TitlesPage.tsx";
+import { openCollection, TitlesPage } from "../../src/renderer/src/features/titles/TitlesPage.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { queries } from "../../src/renderer/src/lib/queries.ts";
 import { DetailsView } from "../../src/renderer/src/features/titles/DetailsView.tsx";
@@ -93,19 +93,19 @@ async function mount() {
   const group = (label: string) =>
     container.querySelector<HTMLElement>(`[role=group][aria-label="${label}"]`)!;
   const click = async (label: string, inGroup?: string) => {
-    const parent = inGroup ? group(inGroup) : container;
-    const button = [...parent.querySelectorAll<HTMLButtonElement>("button")].find(
+    if (inGroup && !document.querySelector(`[role="menu"][aria-label="${inGroup}"]`)) {
+      const trigger = group(inGroup).querySelector<HTMLButtonElement>("button")!;
+      await act(async () => trigger.click());
+      await until(() => expect(document.querySelector('[role="menu"]')).not.toBeNull());
+    }
+    const parent = inGroup ? document.querySelector('[role="menu"]')! : container;
+    const button = [...parent.querySelectorAll<HTMLElement>("button, [role=menuitemradio]")].find(
       (each) => each.textContent === label,
     );
     expect(button).toBeDefined();
-    await act(async () => {
-      // happy-dom omits mouse focus. Apply the browser default only when mousedown permits it.
-      const allowed = button!.dispatchEvent(
-        new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }),
-      );
-      if (allowed) button!.focus();
-      button!.click();
-    });
+    await act(async () => button!.click());
+    // After choosing with the pointer, leave the menu before handing keys to the grid.
+    if (inGroup) await act(async () => (document.activeElement as HTMLElement)?.blur());
   };
   await render("movie");
   await click("All movies");
@@ -147,64 +147,89 @@ it("keeps grid arrows and Enter after a mouse click on an inline filter word", a
   });
 });
 
-it("keeps the grid's keys after a mouse selection in More and returns keyboard focus there", async () => {
+it("keeps additional languages reachable in one menu and returns keyboard focus to its trigger", async () => {
   const page = await mount();
-  const second: Title = {
-    ...film,
-    id: "second",
-    key: "movie:second",
-    versions: [{ subscriptionId: SUBSCRIPTION, id: "second", tags: ["4K", "PL"] }],
-  };
-  ipc.always("ondemand.collection", {
-    name: "All",
-    titles: [film, second],
-    total: 2,
-    unfiltered: 10,
-  });
-  const summary = page.group("Language").querySelector("summary")!;
+  const trigger = page.group("Language").querySelector<HTMLButtonElement>("button")!;
+  await act(async () => trigger.click());
+  await page.until(() => expect(document.querySelector('[role="menu"]')).not.toBeNull());
+  const polish = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')].find(
+    (each) => each.textContent === "Polski",
+  )!;
   await act(async () => {
-    const allowed = summary.dispatchEvent(
-      new MouseEvent("mousedown", {
-        bubbles: true,
-        cancelable: true,
-        button: 0,
-      }),
-    );
-    if (allowed) summary.focus();
-    summary.click();
-  });
-  await page.click("Polski", "Language");
-  await page.until(() => expect(page.container.textContent).toContain("2 of 10"));
-  await act(async () => {
-    document.activeElement?.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "ArrowRight",
-        bubbles: true,
-      }),
-    );
-  });
-  await act(async () => {
-    document.activeElement?.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        key: "Enter",
-        bubbles: true,
-      }),
-    );
-  });
-  expect(useUi.getState().details?.id).toBe("second");
-  useUi.setState({ details: null });
-  await act(async () => {
-    summary.focus();
-    summary.closest("details")!.open = true;
-    const polish = [...page.group("Language").querySelectorAll("button")].find(
-      (button) => button.textContent === "Polski",
-    )!;
     polish.focus();
     polish.click();
   });
-  expect(document.activeElement).toBe(summary);
-  expect(summary.closest("details")!.open).toBe(false);
+  await page.until(() =>
+    expect(ipc.argsOf("ondemand.collection").at(-1)?.filters).toEqual({ language: "pl" }),
+  );
+  expect(document.activeElement).toBe(trigger);
+  expect(trigger.textContent).toContain("Polski");
+  await page.click("Any", "Language");
+  await page.until(() => expect(trigger.textContent).toBe("Language"));
 });
+
+it.each(["Quality", "Sort"])(
+  "leaves a collection with Escape from a closed %s control",
+  async (label) => {
+    const page = await mount();
+    await act(async () => openCollection("movie", "genre:Drama"));
+    const back = () =>
+      [...page.container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Back",
+      );
+    await page.until(() => expect(back()).toBeDefined());
+    const trigger = page.group(label).querySelector<HTMLButtonElement>("button")!;
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await page.until(() => expect(back()).toBeUndefined());
+  },
+);
+
+it("closes the popup on the first Escape and leaves the collection on the next", async () => {
+  const page = await mount();
+  await act(async () => openCollection("movie", "genre:Drama"));
+  const trigger = page.group("Quality").querySelector<HTMLButtonElement>("button")!;
+  await act(async () => trigger.click());
+  await page.until(() => expect(document.querySelector('[role="menu"]')).not.toBeNull());
+  await act(async () => {
+    document
+      .querySelector<HTMLElement>('[role="menuitemradio"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  await page.until(() => expect(document.querySelector('[role="menu"]')).toBeNull());
+  expect(page.container.textContent).toContain("Back");
+  expect(document.activeElement).toBe(trigger);
+  await act(async () =>
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+  );
+  await page.until(() => expect(page.container.textContent).not.toContain("Back"));
+});
+
+it.each(["Quality", "Sort"])(
+  "lets application modifier shortcuts pass the closed %s control",
+  async (label) => {
+    const page = await mount();
+    const trigger = page.group(label).querySelector<HTMLButtonElement>("button")!;
+    const shortcut = vi.fn();
+    window.addEventListener("keydown", shortcut);
+    try {
+      await act(async () => {
+        trigger.focus();
+        trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+        );
+        trigger.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }),
+        );
+      });
+      expect(shortcut).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener("keydown", shortcut);
+    }
+  },
+);
 
 it.each(["filter", "4k tab", "normal list"] as const)(
   "opens the correct version over a remembered choice from %s and keeps menu alternatives",
@@ -235,9 +260,7 @@ it.each(["filter", "4k tab", "normal list"] as const)(
     else await page.client.invalidateQueries({ queryKey: ["ondemand", "collection"] });
     await page.until(() => expect(page.container.textContent).toContain("1 of 10"));
     if (entry === "filter") {
-      const control = page
-        .group("Quality")
-        .querySelector<HTMLButtonElement>('[aria-pressed="true"]')!;
+      const control = page.group("Quality").querySelector<HTMLButtonElement>("button")!;
       expect(document.activeElement).not.toBe(control);
       await act(async () => {
         control.focus();
@@ -312,19 +335,21 @@ it.each(["filter", "4k tab", "normal list"] as const)(
   },
 );
 
-it("uses current-kind words, keeps Unknown and MULTI inline, resets between kinds and makes no file reads", async () => {
+it("uses current-kind words, keeps Unknown and MULTI reachable, resets between kinds and makes no file reads", async () => {
   const page = await mount();
-  expect(page.container.querySelector('[aria-label="Verified"]')).toBeNull();
-  expect(page.group("Language").querySelector("details")?.textContent).toContain("Polski");
-  expect(page.group("Language").querySelector("details")?.textContent).not.toContain("Unknown");
-  expect(page.group("Language").querySelector("details")?.textContent).not.toContain("MULTI");
+  await act(async () => page.group("Language").querySelector<HTMLButtonElement>("button")!.click());
+  await page.until(() =>
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Polski"),
+  );
+  expect(document.querySelector('[role="menu"]')?.textContent).toContain("Unknown");
+  expect(document.querySelector('[role="menu"]')?.textContent).toContain("MULTI");
   await page.click("Polski", "Language");
   await page.until(() =>
     expect(ipc.argsOf("ondemand.collection")).toContainEqual(
       expect.objectContaining({ kind: "movie", id: "all", filters: { language: "pl" } }),
     ),
   );
-  expect(page.group("Language").querySelector("summary")?.textContent).toBe("More: Polski");
+  expect(page.group("Language").querySelector("button")?.textContent).toBe("LanguagePolski");
   ipc.always("ondemand.collection", { name: "All", titles: [], total: 3, unfiltered: 10 });
   await page.click("4K", "Quality");
   await page.until(() => expect(page.container.textContent).toContain("3 of 10"));
@@ -334,12 +359,12 @@ it("uses current-kind words, keeps Unknown and MULTI inline, resets between kind
   });
   await page.click("Reset");
   await page.until(() =>
-    expect(page.group("Quality").querySelector('[aria-pressed="true"]')?.textContent).toBe("Any"),
+    expect(page.group("Quality").querySelector("button")?.textContent).toBe("Quality"),
   );
   await page.click("Unknown", "Language");
   await page.render("series");
   await page.until(() =>
-    expect(page.group("Language").querySelector('[aria-pressed="true"]')?.textContent).toBe("Any"),
+    expect(page.group("Language").querySelector("button")?.textContent).toBe("Language"),
   );
   expect(
     ipc
@@ -348,7 +373,7 @@ it("uses current-kind words, keeps Unknown and MULTI inline, resets between kind
       .every((entry) => !entry.filters),
   ).toBe(true);
   await page.render("movie");
-  expect(page.group("Language").querySelector('[aria-pressed="true"]')?.textContent).toBe("Any");
+  expect(page.group("Language").querySelector("button")?.textContent).toBe("Language");
   expect(
     ipc
       .methods()
@@ -368,8 +393,16 @@ it("refreshes locally verified choices after playback and keeps a late old-filte
     ],
   });
   await page.render("movie", true);
-  await page.until(() => expect(page.group("Verified").textContent).toContain("Dutch subtitles"));
-  expect(page.group("Verified").textContent).toContain("1 file");
+  await act(async () => page.group("Verified").querySelector<HTMLButtonElement>("button")!.click());
+  await page.until(() =>
+    expect(document.querySelector('[role="menu"]')?.textContent).toContain("Dutch subtitles"),
+  );
+  expect(document.querySelector('[role="menu"]')?.textContent).toContain("1 current file");
+  await act(async () =>
+    document
+      .querySelector<HTMLElement>('[role="menu"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+  );
   const old = ipc.hold("ondemand.collection");
   await page.click("4K", "Quality");
   await page.until(() =>
@@ -413,7 +446,7 @@ it("filters the tab search while global search remains unfiltered and filter-but
   );
   await page.client.fetchQuery(queries.titleSearch("Harbour"));
   expect(ipc.argsOf("ondemand.search").at(-1)).toEqual({ query: "Harbour" });
-  const quality = page.group("Quality").querySelector<HTMLButtonElement>('[aria-pressed="true"]')!;
+  const quality = page.group("Quality").querySelector<HTMLButtonElement>("button")!;
   await act(async () => {
     quality.focus();
     quality.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -424,4 +457,68 @@ it("filters the tab search while global search remains unfiltered and filter-but
   await act(async () => {
     field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   });
+});
+
+const second: Title = {
+  ...film,
+  id: "second",
+  key: "movie:second",
+  versions: [{ subscriptionId: SUBSCRIPTION, id: "second", tags: ["4K", "EN"] }],
+};
+
+it("Shift+ArrowRight on a closed filter control stays out of the grid", async () => {
+  const page = await mount();
+  ipc.always("ondemand.collection", {
+    name: "All",
+    titles: [film, second],
+    total: 2,
+    unfiltered: 10,
+  });
+  await page.client.invalidateQueries({ queryKey: ["ondemand", "collection"] });
+  await page.until(() => expect(page.container.textContent).toContain("2 of 10"));
+  const control = page.group("Quality").querySelector<HTMLButtonElement>("button")!;
+  await act(async () => {
+    control.focus();
+    control.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", shiftKey: true, bubbles: true }),
+    );
+  });
+  control.blur();
+  await act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  // The grid's own selection should still be the first poster.
+  expect(useUi.getState().details?.id).toBe("4k");
+});
+
+it("Shift+Enter inside an open filter menu does not open a poster", async () => {
+  const page = await mount();
+  ipc.always("ondemand.collection", {
+    name: "All",
+    titles: [film, second],
+    total: 2,
+    unfiltered: 10,
+  });
+  await page.client.invalidateQueries({ queryKey: ["ondemand", "collection"] });
+  await page.until(() => expect(page.container.textContent).toContain("2 of 10"));
+  const trigger = page.group("Quality").querySelector<HTMLButtonElement>("button")!;
+  await act(async () => trigger.click());
+  await page.until(() => expect(document.querySelector('[role="menu"]')).not.toBeNull());
+  await act(async () => {
+    document
+      .querySelector<HTMLElement>('[role="menuitemradio"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+  });
+  expect(useUi.getState().details).toBeNull();
+});
+
+it("announces a collection's count when filtering changes it", async () => {
+  const page = await mount();
+  await act(async () => openCollection("movie", "genre:Drama"));
+  const count = page.container.querySelector<HTMLElement>('[aria-live="polite"]');
+  expect(count).not.toBeNull();
+  await page.until(() => expect(count?.textContent).toBe("10 of 10"));
+  ipc.always("ondemand.collection", { name: "Drama", titles: [], total: 2, unfiltered: 10 });
+  await page.click("4K", "Quality");
+  await page.until(() => expect(count?.textContent).toBe("2 of 10"));
 });

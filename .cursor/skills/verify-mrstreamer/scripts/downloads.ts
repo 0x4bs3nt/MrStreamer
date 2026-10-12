@@ -1044,9 +1044,10 @@ export async function runDownloads(
       if (opened) break;
       if (attempt === 3) throw new Error("The subscription's row didn't open.");
     }
+    const [removeBefore, removeAfter] = t("Remove {name}", { name: "\n" }).split("\n");
     await offline.click(
       "Ask to remove it",
-      `[...(${subscriptionRow})?.querySelectorAll('button') ?? []].find(b => b.textContent.trim().startsWith(${JSON.stringify(t("Remove {name}", { name: "" }))}))`,
+      `[...(${subscriptionRow})?.querySelectorAll('button') ?? []].find(b => b.textContent.trim().startsWith(${JSON.stringify(removeBefore?.trim() ?? "")}) && b.textContent.trim().endsWith(${JSON.stringify(removeAfter?.trim() ?? "")}))`,
     );
     // The question after the subscription's name, which the fixture chose.
     const question = t("Remove {name}, and the lists loaded with it, from this device?", {

@@ -62,7 +62,13 @@ import {
 } from "../../lib/titles.ts";
 import { cn } from "../../lib/utils.ts";
 import { useSaveToggle, type SaveToggle } from "../../lib/watchlist.ts";
-import { EpisodeDownload, MovieDownload } from "../downloads/DownloadControls.tsx";
+import {
+  EpisodeDownload,
+  EpisodeDownloadStatus,
+  MovieDownload,
+} from "../downloads/DownloadControls.tsx";
+import { SeriesDownload } from "../downloads/SeriesDownload.tsx";
+import { transferred, useDownloads } from "../../lib/downloads.ts";
 import { SaveButton, SaveError } from "../watchlist/SaveButton.tsx";
 import { EpisodeMenu, MarkNotice, useEpisodeMarks } from "./EpisodeMarks.tsx";
 import { RelatedTitles } from "./RelatedTitles.tsx";
@@ -435,14 +441,28 @@ function SeriesActions({
   saving: SaveToggle;
 }) {
   const { standing, error, retry } = useStanding(details);
+  const namedVersion = useVersionNames(versions.title)(versions.playing);
   const removal = useRemoveFromContinue();
   const listed = useInContinueWatching(details.title);
+  const download = (
+    <SeriesDownload
+      key={ownedKey(versions.playing)}
+      details={details}
+      progress={standing?.progress ?? []}
+      marks={standing?.marks ?? []}
+      version={[namedVersion?.label, namedVersion?.source].filter(Boolean).join(" · ")}
+      disabled={switching}
+    />
+  );
   if (!standing) {
     // Where the series goes on can't be said: nothing offers to play or resume on a guess. The
     // episodes below still play, each from its beginning.
     return (
       <div className="mt-6">
-        <SaveButton state={saving} />
+        <div className="flex flex-wrap items-center gap-3">
+          {download}
+          <SaveButton state={saving} />
+        </div>
         <SaveError state={saving} />
         {error && (
           <p role="alert" className="mt-6 text-[0.9375rem] text-destructive">
@@ -460,7 +480,10 @@ function SeriesActions({
     // Nothing to play yet, and still a series to save for when there is.
     return (
       <div className="mt-6">
-        <SaveButton state={saving} />
+        <div className="flex flex-wrap items-center gap-3">
+          {download}
+          <SaveButton state={saving} />
+        </div>
         <SaveError state={saving} />
         <p className="mt-6 text-[0.9375rem] text-muted-foreground">{t("No episodes yet.")}</p>
       </div>
@@ -486,6 +509,7 @@ function SeriesActions({
       onBeginning={partly ? () => playTitle(now, 0) : null}
       onRemove={listed ? () => removal.mutate(details.title) : null}
       removeError={removal.error}
+      download={download}
     />
   );
 }
@@ -514,7 +538,7 @@ function Actions({
   onRemove: (() => void) | null;
   /** Why the last removal failed. */
   removeError: Error | null;
-  /** A movie's Download, beside Play and Watchlist. */
+  /** The selected movie or series download action, beside Play and Watchlist. */
   download?: ReactNode;
 }) {
   const { title, playing, automatic } = versions;
@@ -649,6 +673,7 @@ function Episodes({ details }: { details: SeriesDetails }) {
   // another subscription's are other files. While that can't be read, a row says nothing of how
   // its episode stands and offers no mark.
   const { standing } = useStanding(details);
+  const downloads = useDownloads().data;
   const stateOf = standing && episodeStates(standing.progress, standing.marks);
   const target = standing ? continuation(details, standing.progress, standing.marks) : null;
   const marking = useEpisodeMarks(ownedId(details.title), standing);
@@ -706,6 +731,15 @@ function Episodes({ details }: { details: SeriesDetails }) {
             target?.episode &&
             sameOwned(target.episode, episodeFileVersion(episode, target.episode.id));
           const partly = state?.kind === "partial" ? state.progress : undefined;
+          const file = episodeRef(episodeFileVersion(episode, partly?.title.id));
+          const download =
+            downloads?.items.find(
+              (item) =>
+                item.subscription?.id === file.subscriptionId &&
+                item.title.kind === file.kind &&
+                item.title.id === file.id,
+            ) ?? null;
+          const done = download ? transferred(download) : null;
           const saving = marks.busy && marks.change?.episode.id === episode.id;
           const facts = [
             episode.airDate ? airDate(episode.airDate) : null,
@@ -745,6 +779,17 @@ function Episodes({ details }: { details: SeriesDetails }) {
                     size="wide"
                     className="text-[0.625rem]"
                   />
+                  {done !== null && (
+                    <span
+                      aria-hidden
+                      className="absolute right-0 bottom-0 left-0 h-[3px] bg-white/20"
+                    >
+                      <span
+                        className="block h-full bg-white"
+                        style={{ width: `${Math.min(100, Math.max(0, done * 100))}%` }}
+                      />
+                    </span>
+                  )}
                 </span>
                 <span className="min-w-0">
                   <span className="flex items-baseline gap-3">
@@ -757,9 +802,11 @@ function Episodes({ details }: { details: SeriesDetails }) {
                       </span>
                     )}
                   </span>
-                  {facts && (
-                    <span className="block truncate text-xs text-muted-foreground">{facts}</span>
-                  )}
+                  <span className="flex h-4 min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                    <EpisodeDownloadStatus download={download} />
+                    {download && facts && <span aria-hidden>·</span>}
+                    <span className="min-w-0 truncate">{facts}</span>
+                  </span>
                   {partly && (
                     <Progress value={partly.position / partly.duration} className="mt-2 w-40" />
                   )}
@@ -775,10 +822,8 @@ function Episodes({ details }: { details: SeriesDetails }) {
                   )}
                 </span>
               </button>
-              <span className="flex min-w-8 flex-col items-center gap-1.5 text-muted-foreground">
-                <EpisodeDownload
-                  title={episodeRef(episodeFileVersion(episode, partly?.title.id))}
-                />
+              <span className="flex w-8 flex-none flex-col items-center gap-1.5 text-muted-foreground">
+                <EpisodeDownload title={file} />
                 {episode.versions && episode.versions.length > 1 && (
                   <EpisodeVersionMenu
                     episode={episode}
@@ -833,7 +878,8 @@ function EpisodeVersionMenu({
       trigger={
         <Button
           variant="ghost"
-          size="sm"
+          size="icon-sm"
+          title={t("{count} versions", { count: episode.versions?.length ?? 0 })}
           aria-label={t("Versions for {episode}", {
             episode: episodeLabel(episode.season, episode.number),
           })}
@@ -858,7 +904,7 @@ function EpisodeVersionMenu({
         );
       }}
     >
-      {t("{count} versions", { count: episode.versions?.length ?? 0 })}
+      <ChevronDown />
     </VersionMenu>
   );
 }
