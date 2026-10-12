@@ -67,6 +67,65 @@ export function Artwork({
   );
 }
 
+/** The shared frame ratio and minimum name/caption allowance for poster rows and grids. */
+export const POSTER_ASPECT_RATIO = 2 / 3;
+export const POSTER_CAPTION_HEIGHT_REM = 2.75;
+
+/** Containers assign width; every loaded or fallback picture fills the same poster frame. */
+export function PosterContent({
+  artworkUrl,
+  name,
+  caption,
+  selected = false,
+  unavailable = false,
+  wrapCaption = false,
+}: {
+  artworkUrl: string | null;
+  name: string;
+  caption: string;
+  selected?: boolean;
+  unavailable?: boolean;
+  /** Home recommendation reasons can use more than the grid's one caption line. */
+  wrapCaption?: boolean;
+}) {
+  return (
+    <>
+      <span
+        style={{ aspectRatio: POSTER_ASPECT_RATIO }}
+        className={cn(
+          "block w-full overflow-hidden rounded-xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]",
+          selected && "ring-2 ring-white",
+        )}
+      >
+        <Artwork
+          url={artworkUrl}
+          name={name}
+          size="card"
+          className={cn(unavailable && "opacity-45 saturate-[0.2]")}
+        />
+      </span>
+      <span className="block pt-2" style={{ minHeight: `${POSTER_CAPTION_HEIGHT_REM}rem` }}>
+        <span
+          className={cn(
+            "block truncate text-[0.875rem] leading-5 font-medium",
+            unavailable && "text-muted-foreground",
+          )}
+        >
+          {name}
+        </span>
+        <span
+          className={cn(
+            "block text-xs leading-4 text-muted-foreground",
+            wrapCaption ? "break-words" : "truncate",
+          )}
+        >
+          {caption}
+        </span>
+      </span>
+    </>
+  );
+}
+
 /**
  * A movie or series as a poster, with its name and a short line under it. The line ends with the
  * subscription the title is from where another's reads the same and isn't it.
@@ -88,19 +147,16 @@ export function PosterTile({
     <button
       onMouseDown={(event) => event.preventDefault()}
       onClick={onOpen}
-      className="group min-w-0 text-left"
+      className="group block w-full min-w-0 text-left"
     >
-      <span className="block aspect-[2/3] overflow-hidden rounded-xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]">
-        <Artwork url={title.posterUrl} name={title.title} size="card" />
-      </span>
-      <span className="mt-2 block truncate text-[0.875rem] font-medium">{title.title}</span>
-      <span
-        className={cn("block text-xs text-muted-foreground", wrapLine ? "break-words" : "truncate")}
-      >
-        {[line ?? [title.year, ...title.tags].filter(Boolean).join(" · "), source]
+      <PosterContent
+        artworkUrl={title.posterUrl}
+        name={title.title}
+        wrapCaption={wrapLine}
+        caption={[line ?? [title.year, ...title.tags].filter(Boolean).join(" · "), source]
           .filter(Boolean)
           .join(" · ")}
-      </span>
+      />
     </button>
   );
 }

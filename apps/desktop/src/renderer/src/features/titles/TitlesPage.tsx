@@ -588,7 +588,7 @@ function Tiles({
   }
   const empty = tiles.data?.length === 0;
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-10 pb-16">
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-10 pt-1 pb-16">
       {empty ? (
         <p className="text-[0.9375rem] text-muted-foreground">
           {!metadata

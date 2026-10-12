@@ -17,12 +17,15 @@ import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
 import { formatDecimal } from "@mrstreamer/core/i18n";
 import { hasModifier, isTyping } from "../../app/platform.ts";
 import { openDetails, useUi } from "../../app/ui-store.ts";
-import { Artwork } from "../../components/TitleArt.tsx";
+import {
+  PosterContent,
+  POSTER_ASPECT_RATIO,
+  POSTER_CAPTION_HEIGHT_REM,
+} from "../../components/TitleArt.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { useKeyboardMode } from "../../lib/input-mode.ts";
 import { queries, useSourceOf } from "../../lib/queries.ts";
 import { useRem } from "../../lib/use-rem.ts";
-import { cn } from "../../lib/utils.ts";
 import { FilterEmpty, TitleFilterBar, type TitleFilterControls } from "./TitleFilters.tsx";
 
 /** Titles asked for together as rows come into view. */
@@ -231,7 +234,7 @@ export function Grid<T>({
   const columns = Math.max(1, Math.floor((inner + gap) / (POSTER_REM * rem + gap)));
   const tileWidth = (inner - gap * (columns - 1)) / columns;
   // A poster, its name and one line, then the gap before the next row.
-  const rowHeight = tileWidth * 1.5 + 2.75 * rem + gap;
+  const rowHeight = tileWidth / POSTER_ASPECT_RATIO + POSTER_CAPTION_HEIGHT_REM * rem + gap;
   const rows = Math.ceil(total / columns);
   const virtual = useVirtualizer({
     count: rows,
@@ -359,21 +362,15 @@ function GridPoster({
     <button
       onMouseDown={(event) => event.preventDefault()}
       onClick={onOpen}
-      className="group min-w-0 text-left"
+      className="group block w-full min-w-0 text-left"
       title={title.name}
     >
-      <span
-        className={cn(
-          "block aspect-[2/3] overflow-hidden rounded-xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]",
-          selected && "ring-2 ring-white",
-        )}
-      >
-        <Artwork url={title.posterUrl} name={title.title} size="card" />
-      </span>
-      <span className="mt-2 block truncate text-[0.875rem] font-medium">{title.title}</span>
-      <span className="block truncate text-xs text-muted-foreground">
-        {[caption, source].filter(Boolean).join(" · ")}
-      </span>
+      <PosterContent
+        artworkUrl={title.posterUrl}
+        name={title.title}
+        selected={selected}
+        caption={[caption, source].filter(Boolean).join(" · ")}
+      />
     </button>
   );
 }

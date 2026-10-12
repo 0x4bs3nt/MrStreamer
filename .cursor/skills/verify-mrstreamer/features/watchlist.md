@@ -16,6 +16,8 @@ For removal, Home entry, keyboard actions, ordering, unavailable titles, databas
 
 Source: `docs/user/movies-and-series.md#watchlist`, `apps/desktop/src/renderer/src/features/watchlist/WatchlistPage.tsx`, `apps/desktop/test/e2e/watchlist-app.ts`.
 
+Saved tiles share `PosterContent` with title grids and related rows. Their container assigns width; loaded and unavailable artwork keep the same 2:3 bounds. Verify long names, source attribution, selected focus and the removal cross after resizing. An unavailable entry uses the short `Sheet`, whose outer rounded frame clips its inner scroll viewport.
+
 ## Gotchas
 
 Save is a toggle, so clicking twice undoes the first action. One displayed tile does not establish keyboard removal, series saves, ordering or persistence. A removed subscription can preserve its watchlist for reconnecting; ticked deletion has different acceptance. Verify the path the task actually changed.

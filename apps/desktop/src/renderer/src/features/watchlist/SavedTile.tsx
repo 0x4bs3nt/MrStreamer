@@ -6,9 +6,8 @@ import { ownedId } from "@mrstreamer/contracts/subscription";
 import type { WatchlistEntry } from "@mrstreamer/contracts/watchlist";
 import { t } from "@mrstreamer/core/i18n";
 import { openDetails, openSavedEntry } from "../../app/ui-store.ts";
-import { Artwork } from "../../components/TitleArt.tsx";
+import { PosterContent } from "../../components/TitleArt.tsx";
 import { useSourceOf } from "../../lib/queries.ts";
-import { cn } from "../../lib/utils.ts";
 import { kindLabel } from "../../lib/watchlist.ts";
 
 /** Opens what a saved entry has to show: its title's details, or what was kept of it. */
@@ -52,30 +51,15 @@ export function SavedTile({
         className="block w-full text-left"
         title={title?.name}
       >
-        <span
-          className={cn(
-            "block aspect-[2/3] overflow-hidden rounded-xl ring-1 ring-white/8 transition-[box-shadow,transform] duration-150 group-hover:ring-2 group-hover:ring-white/40 group-active:scale-[0.98]",
-            selected && "ring-2 ring-white",
-          )}
-        >
-          <Artwork
-            url={title?.posterUrl ?? entry.artworkUrl}
-            name={name}
-            size="card"
-            className={cn(unavailable && "opacity-45 saturate-[0.2]")}
-          />
-        </span>
-        <span
-          className={cn(
-            "mt-2 block truncate text-[0.875rem] font-medium",
-            unavailable && "text-muted-foreground",
-          )}
-        >
-          {name}
-        </span>
-        <span className="block truncate text-xs text-muted-foreground">
-          {!unavailable ? facts : brief ? t("Unavailable") : `${t("Unavailable")} · ${facts}`}
-        </span>
+        <PosterContent
+          artworkUrl={title?.posterUrl ?? entry.artworkUrl}
+          name={name}
+          selected={selected}
+          unavailable={unavailable}
+          caption={
+            !unavailable ? facts : brief ? t("Unavailable") : `${t("Unavailable")} · ${facts}`
+          }
+        />
       </button>
       {onRemove && (
         <button
