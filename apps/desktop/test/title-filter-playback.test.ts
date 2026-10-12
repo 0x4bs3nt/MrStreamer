@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import { mainLayer } from "../src/main/runtime.ts";
 import { VerifiedFiles } from "../src/main/platform/verified-files.ts";
 import { OnDemand } from "../src/main/services/ondemand.ts";
+import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import { fixture } from "./fake-provider.ts";
@@ -217,6 +218,7 @@ describe.skipIf(!hasTools)("playback produces verified filter facts", { timeout:
     // A separate public Playback service models another still-running consumer of the same store.
     const newerRuntime = runtimeFor(
       Playback.layer({ userAgent, ffmpeg: FFMPEG, ffprobe: FFPROBE }).pipe(
+        Layer.provide(PlaybackCoordination.layer),
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(Subscriptions, await app.runtime.runPromise(Subscriptions)),

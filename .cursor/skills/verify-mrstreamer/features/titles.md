@@ -32,6 +32,8 @@ A press on the Position scrubber leaves the keys with the player: the thumb give
 
 Source: `docs/user/movies-and-series.md`, `docs/user/playback.md`, `apps/desktop/src/renderer/src/features/titles/TitlesPage.tsx`, `DetailsView.tsx`, `TitleWatch.tsx`, `SubtitlePanel.tsx`, `features/watch/CloseMessage.tsx`, `SubtitleTimingControls.tsx`, `features/watch/SubtitleSettings.tsx`, `SpeedMenu.tsx`, `features/settings/OnlineSubtitlesSection.tsx`, and `apps/desktop/test/fake-tmdb.ts`.
 
+Local and receiver title opens share `PlaybackCoordination` in `services/playback-coordination.ts` for serialized admission, latest-turn checks and download reclaim. Playback retains file probing, serving and its per-title upstream reader policy. Downloaded copies register without a subscription, use no provider lease and preserve receiver sessions.
+
 ## Gotchas
 
 Category compatibility uses `docs/user/category-compatibility.md`. Xtream movie and series memberships share the Live adapter's conversion, with unchanged raw title IDs. Core playlist-import cases prove inherited `#EXTGRP` groups follow explicit Movie/Series picks and retain version IDs when blocks reorder. These are public contracts; title-version playback and installed restart acceptance still require the corresponding app path.

@@ -40,7 +40,7 @@
 // subscription, provider or catalogue asked. Its session is of no subscription and closes nothing
 // a receiver plays.
 //
-// Downloads borrow a subscription's provider connection from here (`lend`), and only while
+// PlaybackCoordination owns admission and lends a provider connection to Downloads only while
 // nothing of that subscription plays. Every open of a provider's stream takes it back first,
 // in its turn, and goes on only once the download's request is over and its file closed:
 // playback comes first, and the provider never sees the download and the stream at once. An open
@@ -70,6 +70,7 @@ import type {
 } from "@mrstreamer/contracts/playback";
 import { audioTracks, languageCode, subtitleTracks } from "@mrstreamer/core/ondemand/tracks";
 import { Diagnostics } from "@mrstreamer/core/diagnostics";
+import { PlaybackCoordination } from "./playback-coordination.ts";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
 import type { Provider } from "@mrstreamer/core/provider";
 import * as Context from "effect/Context";
@@ -82,7 +83,6 @@ import { VerifiedFiles } from "../platform/verified-files.ts";
 import { SavedSubtitles, subtitlesOfCopy, type SubtitleFile } from "../platform/saved-subtitles.ts";
 import { fileRequest } from "../playback/file-source.ts";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { createCleanStart } from "../playback/clean-start.ts";
 import { ffmpegArguments, planConversion, type Conversion } from "../playback/convert.ts";
@@ -663,19 +663,6 @@ export interface PlaybackDeps {
  * login an address was made under (`SavedSubscription.revision`): one made under a login that
  * changed since isn't opened, nor one whose login changed while its file was read.
  */
-/** A subscription's provider connection, lent to a download (see `Playback.lend`). */
-export interface Lent {
-  readonly signal: AbortSignal;
-  /** The download's request is over: the connection is the provider's to give again. */
-  release(): void;
-}
-
-/**
- * How long an open waits for a download to give its connection back. One that doesn't by then
- * fails, as a network failure the player asks again after, and asks the provider for nothing.
- */
-const RECLAIM_MS = 10_000;
-
 export interface Asked {
   readonly turn?: number | undefined;
   readonly revision?: number | undefined;
@@ -745,17 +732,6 @@ export class Playback extends Context.Service<
     ): Effect.Effect<CopySession, Failed>;
     /** Closes what plays a copy, as before it is deleted. */
     closeCopy(copyId: string): Effect.Effect<void>;
-    /**
-     * Lends a subscription's provider connection to a download, while nothing of that
-     * subscription plays: null while something does, or another download has it. The lease's
-     * `signal` aborts once an open of that subscription asks for the connection, and that open
-     * waits until `release` says the download's request is over.
-     */
-    lend(subscriptionId: string): Effect.Effect<Lent | null>;
-    /** The subscriptions something plays from now, which a download of theirs waits for. */
-    readonly busy: Effect.Effect<ReadonlySet<string>>;
-    /** Says when a session opened or closed: `busy` may have changed. */
-    readonly busyChanged: Stream.Stream<void>;
     /** The current local title only, with no provider address or request headers. */
     subtitleContext(sessionId: string): Effect.Effect<SubtitlePlayback | null, Failed>;
     /**
@@ -836,6 +812,7 @@ export class Playback extends Context.Service<
 function make(deps: PlaybackDeps) {
   return Effect.gen(function* () {
     const subscriptions = yield* Subscriptions;
+    const coordination = yield* PlaybackCoordination;
     const diagnostics = yield* Diagnostics;
     // The app provides storage; standalone playback ports can run without a database.
     const verifiedFiles = Option.getOrNull(yield* Effect.serviceOption(VerifiedFiles));
@@ -843,14 +820,8 @@ function make(deps: PlaybackDeps) {
     const replaced = yield* PubSub.unbounded<string>();
     const readingAhead = yield* PubSub.unbounded<string>();
     const tracksChanged = yield* PubSub.unbounded<string>();
-    const busyChanged = yield* PubSub.sliding<void>(1);
     const scope = yield* Effect.scope;
     const sessions = new Map<string, Session>();
-    /** The download each subscription's connection is lent to, while one is. */
-    const lent = new Map<
-      string,
-      { readonly controller: AbortController; readonly released: Promise<void> }
-    >();
     /** The subscription whose provider a session reads from; none for a copy's. */
     const subscriptionOf = (session: Session): string | null =>
       session.kind === "live"
@@ -858,51 +829,13 @@ function make(deps: PlaybackDeps) {
         : session.origin.kind === "provider"
           ? session.origin.title.subscriptionId
           : null;
-    /**
-     * Takes a subscription's connection back from the download it is lent to, if it is, and
-     * waits until the download's request is over and its file closed: for the open about to read
-     * from that provider. Fails when that takes longer than `RECLAIM_MS`; the lease stays until
-     * the download gives it back, so the next open waits for it again.
-     */
-    const reclaim = (subscriptionId: string) =>
-      Effect.flatMap(
-        Effect.promise(async () => {
-          const lease = lent.get(subscriptionId);
-          if (!lease) return true;
-          lease.controller.abort();
-          let timer: NodeJS.Timeout | undefined;
-          const late = new Promise<boolean>(
-            (resolve) => (timer = setTimeout(() => resolve(false), RECLAIM_MS)),
-          );
-          const given = await Promise.race([lease.released.then(() => true), late]);
-          clearTimeout(timer);
-          return given;
-        }),
-        (given) => (given ? Effect.void : Effect.fail(stillLent())),
-      );
     /** A session is open: what plays, and so `busy`, changed. */
     const register = (session: Session) => {
       sessions.set(session.id, session);
-      PubSub.publishUnsafe(busyChanged, undefined);
+      coordination.opened(session.id, subscriptionOf(session));
     };
     /** When channel streams failed, by upstream address, for `FAILED_STREAM_MS`. */
     const failedAt = new Map<string, number>();
-    /** Opens one at a time, so switching fast never leaves two sessions open. */
-    const openOne = (yield* Semaphore.make(1)).withPermits(1);
-    /** Counts what the viewer asked to play or stop: `begin`. */
-    let turns = 0;
-    /** Fails once the viewer asked for something else since `turn` began. */
-    const whileAsked = (turn: number | undefined) =>
-      Effect.suspend(() =>
-        turn === undefined || turn === turns ? Effect.void : Effect.fail(superseded()),
-      );
-    /**
-     * Runs an open in its turn at the provider, unless the viewer asked for something else since
-     * it was asked for: then nothing closes and nothing opens. The open looks again itself once
-     * the provider answered it (`whileAsked`), since its turn can pass while it waits.
-     */
-    const inTurn = <A>(turn: number | undefined, open: Effect.Effect<A, Failed>) =>
-      openOne(Effect.andThen(whileAsked(turn), open));
     /**
      * Fails unless `source` is still saved with the login it had: what was looked up under a
      * login that changed, or for a subscription that went, plays nothing.
@@ -3549,7 +3482,8 @@ function make(deps: PlaybackDeps) {
           forked,
           Effect.sync(() => {
             closed.abort();
-            if (sessions.delete(id)) PubSub.publishUnsafe(busyChanged, undefined);
+            sessions.delete(id);
+            coordination.closed(id);
             receiver?.closed?.();
           }),
         );
@@ -3596,7 +3530,7 @@ function make(deps: PlaybackDeps) {
         );
         // Looked up under the login it had: with another by now, they are no longer its streams.
         yield* whileSaved(source);
-        yield* whileAsked(options.turn);
+        yield* coordination.whileAsked(options.turn);
         const streams = listed.toSorted(
           (a, b) => Number(failedAt.has(a.url)) - Number(failedAt.has(b.url)),
         );
@@ -3778,9 +3712,10 @@ function make(deps: PlaybackDeps) {
           decoders,
           receiver,
         );
-        const standing = Effect.andThen(whileAsked(asked.turn), whileSaved(source)).pipe(
-          Effect.tapError(() => Scope.close(session.scope, Exit.void)),
-        );
+        const standing = Effect.andThen(
+          coordination.whileAsked(asked.turn),
+          whileSaved(source),
+        ).pipe(Effect.tapError(() => Scope.close(session.scope, Exit.void)));
         yield* standing;
         if (verifiedFiles && verified && probes.get(session.probeKey) === probe) {
           const { account, sourceStamp, listingKey } = verified;
@@ -3857,7 +3792,7 @@ function make(deps: PlaybackDeps) {
         }),
 
       openCopy: (copy: LocalCopy, decoders: readonly Codec[], turn?: number) =>
-        inTurn(
+        coordination.inTurn(
           turn,
           Effect.gen(function* () {
             // What plays here goes; a receiver plays on, and a copy plays here only.
@@ -3906,42 +3841,13 @@ function make(deps: PlaybackDeps) {
           ),
         ),
 
-      lend: (subscriptionId: string) =>
-        openOne(
-          Effect.sync((): Lent | null => {
-            if (lent.has(subscriptionId)) return null;
-            for (const session of sessions.values()) {
-              if (subscriptionOf(session) === subscriptionId) return null;
-            }
-            const controller = new AbortController();
-            let release = () => {};
-            const released = new Promise<void>((resolve) => (release = resolve));
-            const lease = { controller, released };
-            lent.set(subscriptionId, lease);
-            return {
-              signal: controller.signal,
-              release: () => {
-                if (lent.get(subscriptionId) === lease) lent.delete(subscriptionId);
-                release();
-              },
-            };
-          }),
-        ),
-
-      busy: Effect.sync(
-        (): ReadonlySet<string> =>
-          new Set([...sessions.values()].flatMap((session) => subscriptionOf(session) ?? [])),
-      ),
-
-      busyChanged: Stream.fromPubSub(busyChanged),
-
       fileReplaced: Stream.fromPubSub(replaced),
       readingAhead: Stream.fromPubSub(readingAhead),
       tracksChanged: Stream.fromPubSub(tracksChanged),
 
-      begin: Effect.sync(() => ++turns),
+      begin: coordination.begin,
 
-      passed: (turn: number) => Effect.sync(() => turn !== turns),
+      passed: coordination.passed,
 
       open: (
         channel: OwnedId,
@@ -3955,7 +3861,7 @@ function make(deps: PlaybackDeps) {
           readonly turn?: number | undefined;
         } = {},
       ) =>
-        inTurn(
+        coordination.inTurn(
           options.turn,
           Effect.gen(function* () {
             // Looked at in the open's own turn, before anything closes: no receiver's open can
@@ -3965,7 +3871,7 @@ function make(deps: PlaybackDeps) {
                 error: { kind: "unexpected", detail: t("A receiver has playback.") },
               });
             }
-            yield* reclaim(channel.subscriptionId);
+            yield* coordination.reclaim(channel.subscriptionId);
             const session = yield* liveSession(channel, decoders, options, null);
             const extension = session.format === "mpegts" ? "ts" : "m3u8";
             return {
@@ -3983,10 +3889,10 @@ function make(deps: PlaybackDeps) {
         decoders: readonly Codec[],
         asked: Asked = {},
       ) =>
-        inTurn(
+        coordination.inTurn(
           asked.turn,
           Effect.gen(function* () {
-            yield* reclaim(title.subscriptionId);
+            yield* coordination.reclaim(title.subscriptionId);
             const { session, probe } = yield* titleSession(
               title,
               upstreamUrl,
@@ -4015,10 +3921,10 @@ function make(deps: PlaybackDeps) {
           readonly turn?: number | undefined;
         } = {},
       ) =>
-        inTurn(
+        coordination.inTurn(
           options.turn,
           Effect.gen(function* () {
-            yield* reclaim(channel.subscriptionId);
+            yield* coordination.reclaim(channel.subscriptionId);
             const session = yield* liveSession(channel, receiver.decoders, options, receiver);
             // The provider's stream starts now, so the receiver finds segments when it asks.
             if (session.receiver && !session.hls) void runLive(session, session.receiver);
@@ -4036,10 +3942,10 @@ function make(deps: PlaybackDeps) {
         receiver: ReceiverTarget,
         asked: Asked = {},
       ) =>
-        inTurn(
+        coordination.inTurn(
           asked.turn,
           Effect.gen(function* () {
-            yield* reclaim(title.subscriptionId);
+            yield* coordination.reclaim(title.subscriptionId);
             const { session, probe, standing } = yield* titleSession(
               title,
               upstreamUrl,
@@ -4137,7 +4043,7 @@ function make(deps: PlaybackDeps) {
       closeAll,
 
       closeOf: (subscriptionId: string) =>
-        openOne(
+        coordination.exclusive(
           Effect.suspend(() =>
             Effect.forEach(
               [...sessions.values()].filter(
@@ -4620,21 +4526,3 @@ async function readStart(answer: Response, address: string): Promise<Started | n
     playlist: startsPlaylist(Buffer.concat(parts)),
   };
 }
-
-/**
- * Something else was asked for since: this open gave way before it began. Made when it fails, as
- * the next one, in the interface language of the moment.
- */
-export const superseded = () =>
-  new Failed({
-    error: { kind: "unexpected", detail: t("Something else played in the meantime.") },
-  });
-
-/** A download still holds the provider's connection: this open asks the provider nothing. */
-const stillLent = () =>
-  new Failed({
-    error: {
-      kind: "stream",
-      failure: { kind: "network", detail: t("A download still holds the provider's connection.") },
-    },
-  });

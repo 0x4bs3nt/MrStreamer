@@ -56,6 +56,7 @@ import { Library } from "./services/library.ts";
 import { OnDemand } from "./services/ondemand.ts";
 import { Output } from "./services/output.ts";
 import { Licences } from "./services/licences.ts";
+import { PlaybackCoordination } from "./services/playback-coordination.ts";
 import { Playback } from "./services/playback.ts";
 import { OnlineSubtitles } from "./services/online-subtitles.ts";
 import { Settings } from "./services/preferences.ts";
@@ -402,6 +403,7 @@ async function start(): Promise<void> {
     library,
     onDemand,
     playback,
+    coordination,
     onlineSubtitles,
     output,
     updates,
@@ -419,6 +421,7 @@ async function start(): Promise<void> {
       library: Library,
       onDemand: OnDemand,
       playback: Playback,
+      coordination: PlaybackCoordination,
       onlineSubtitles: OnlineSubtitles,
       output: Output,
       updates: Updates,
@@ -684,7 +687,7 @@ async function start(): Promise<void> {
               error: { kind: "unexpected", detail: t("A receiver has playback.") },
             });
           }
-          const turn = yield* playback.begin;
+          const turn = yield* coordination.begin;
           const channel = yield* library.channel(named);
           const variants = yield* streamsOf(channel, variant);
           return yield* playback.open(ownedId(channel), decoders, {
@@ -712,7 +715,7 @@ async function start(): Promise<void> {
       "subtitles.cancel": ({ sessionId }) => Effect.as(onlineSubtitles.cancel(sessionId), null),
       "playback.openTitle": ({ title, decoders }) =>
         Effect.gen(function* () {
-          const turn = yield* playback.begin;
+          const turn = yield* coordination.begin;
           // What plays goes first, whichever subscription it is of, so no provider sees a
           // connection beside the one about to open.
           yield* playback.closeAll;
@@ -726,11 +729,12 @@ async function start(): Promise<void> {
         }),
       "playback.openCopy": ({ copy, decoders }) =>
         Effect.gen(function* () {
-          const turn = yield* playback.begin;
+          const turn = yield* coordination.begin;
           return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
         }),
       "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
-      "playback.closeAll": () => Effect.andThen(playback.begin, Effect.as(playback.closeAll, null)),
+      "playback.closeAll": () =>
+        Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
       "playback.failure": ({ sessionId }) => playback.failure(sessionId),
       "playback.tracks": ({ sessionId }) => playback.tracks(sessionId),
       "playback.playing": ({ sessionId }) => playback.playing(sessionId),
@@ -775,7 +779,7 @@ async function start(): Promise<void> {
       "output.disconnect": () => Effect.as(output.disconnect, null),
       "output.playChannel": ({ channel: named, variant, audio, audioLanguage, name }) =>
         Effect.gen(function* () {
-          const turn = yield* playback.begin;
+          const turn = yield* coordination.begin;
           const channel = yield* library.channel(named);
           const variants = yield* streamsOf(channel, variant);
           return yield* output.playChannel(ownedId(channel), {
@@ -788,7 +792,7 @@ async function start(): Promise<void> {
         }),
       "output.openTitle": ({ title, since }) =>
         Effect.gen(function* () {
-          const turn = yield* playback.begin;
+          const turn = yield* coordination.begin;
           const { url, revision, headers, listingKey } = yield* onDemand.file(title);
           return yield* output.openTitle(title, url, since, {
             turn,

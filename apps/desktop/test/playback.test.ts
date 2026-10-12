@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import type { Codec } from "@mrstreamer/contracts/playback";
 import * as Layer from "effect/Layer";
+import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import { captionDecoder } from "@mrstreamer/core/subtitles/captions";
@@ -40,6 +41,7 @@ async function connectedPlayback(options: { slotReleaseMs?: number; ffmpeg?: boo
   });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: options.ffmpeg ? FFMPEG : null }).pipe(
+      Layer.provide(PlaybackCoordination.layer),
       Layer.provideMerge(
         Subscriptions.layer({
           dataDir: await tempDir(),
@@ -551,6 +553,7 @@ describe("one stream across several subscriptions", () => {
     ];
     const runtime = runtimeFor(
       Playback.layer({ userAgent, ffmpeg: null }).pipe(
+        Layer.provide(PlaybackCoordination.layer),
         Layer.provideMerge(
           Subscriptions.layer({
             dataDir: await tempDir(),
@@ -618,6 +621,7 @@ describe("one stream across several subscriptions", () => {
     const start = async () => {
       const runtime = runtimeFor(
         Playback.layer({ userAgent, ffmpeg: null }).pipe(
+          Layer.provide(PlaybackCoordination.layer),
           Layer.provideMerge(
             Subscriptions.layer({
               dataDir,
@@ -699,6 +703,7 @@ describe("one stream across several subscriptions", () => {
     const start = async (open: (sealed: string) => string) => {
       const runtime = runtimeFor(
         Playback.layer({ userAgent, ffmpeg: null }).pipe(
+          Layer.provide(PlaybackCoordination.layer),
           Layer.provideMerge(
             Subscriptions.layer({
               dataDir,

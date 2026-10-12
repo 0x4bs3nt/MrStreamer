@@ -62,7 +62,8 @@ import {
   type ScreenRect,
   type TransportStatus,
 } from "../receivers/adapter.ts";
-import { Playback, superseded, type Asked, type ReceiverTarget } from "./playback.ts";
+import { PlaybackCoordination } from "./playback-coordination.ts";
+import { Playback, type Asked, type ReceiverTarget } from "./playback.ts";
 
 /**
  * How long a receiver gets to ask this computer for what it was sent. One that never does can't
@@ -179,7 +180,7 @@ export class Output extends Context.Service<
         readonly audio?: number | null;
         readonly audioLanguage?: string | null;
         readonly shown: Shown;
-        /** The turn it was asked under (`Playback.begin`): it plays nothing once another began. */
+        /** The turn it was asked under (`PlaybackCoordination.begin`): it plays nothing once another began. */
         readonly turn?: number | undefined;
       },
     ): Effect.Effect<RemoteMedia, Failed>;
@@ -234,6 +235,7 @@ export class Output extends Context.Service<
 function make(deps: OutputDeps) {
   return Effect.gen(function* () {
     const playback = yield* Playback;
+    const coordination = yield* PlaybackCoordination;
     const viewing = yield* ViewingRecord;
     const updates = yield* PubSub.unbounded<OutputStatus>();
     /** Changes to what is connected and what plays run one at a time. */
@@ -284,12 +286,7 @@ function make(deps: OutputDeps) {
       Effect.tryPromise({ try: call, catch: (cause) => failed(failureOf(cause)) });
 
     /** Fails, before anything of the receiver's changes, once the viewer asked for something else. */
-    const inTurn = (turn: number | undefined) =>
-      turn === undefined
-        ? Effect.void
-        : Effect.flatMap(playback.passed(turn), (passed) =>
-            passed ? Effect.fail(superseded()) : Effect.void,
-          );
+    const inTurn = coordination.whileAsked;
 
     /** Runs what an adapter's or the playback service's callback sets off, outside any call. */
     const later = (effect: Effect.Effect<void>) => void Effect.runFork(effect);

@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { Codec } from "@mrstreamer/contracts/playback";
 import * as Layer from "effect/Layer";
+import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback, type PlaybackDeps } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import { subtitleDecoder, type SubtitleCodec } from "@mrstreamer/core/subtitles/decoder";
@@ -47,6 +48,7 @@ async function titles(
   const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 50, ...options });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: FFMPEG, ffprobe: FFPROBE, ...deps }).pipe(
+      Layer.provide(PlaybackCoordination.layer),
       Layer.provideMerge(
         Subscriptions.layer({
           dataDir: await tempDir(),

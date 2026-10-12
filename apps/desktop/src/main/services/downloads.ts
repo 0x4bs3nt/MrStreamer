@@ -5,9 +5,9 @@
 // logins stay here; the window sees the records as `Download`s.
 //
 // One download transfers at a time, of whichever subscription: the first in the queue whose
-// subscription plays nothing. Playback lends it that subscription's provider connection and takes
-// it back for any stream of that subscription (see Playback.lend): the transfer stops, its
-// request ends, and it waits in the queue with its partial file until nothing of its subscription
+// subscription plays nothing. PlaybackCoordination lends its provider connection and takes
+// it back for any stream of that subscription (see PlaybackCoordination.lend): the transfer
+// stops, its request ends, and it waits with its partial file until nothing of its subscription
 // plays. Another subscription's stream lets it go on. A transfer goes on from its partial file
 // only when the provider proves it is the same file; otherwise it starts again and says so (see
 // ../downloads/transfer.ts). It becomes a copy once every byte is on disk: the partial is flushed,
@@ -48,7 +48,8 @@ import {
 } from "../platform/downloads-store.ts";
 import { SavedSubtitles, subtitlesOfCopy } from "../platform/saved-subtitles.ts";
 import { OnDemand } from "./ondemand.ts";
-import { Playback, type Lent, type LocalCopy } from "./playback.ts";
+import { Playback, type LocalCopy } from "./playback.ts";
+import { PlaybackCoordination, type Lent } from "./playback-coordination.ts";
 import { Subscriptions } from "./subscription.ts";
 
 /** How often the window hears how a transfer goes, at most. */
@@ -127,6 +128,7 @@ function make(deps: DownloadsDeps) {
   return Effect.gen(function* () {
     const store = yield* DownloadStore;
     const playback = yield* Playback;
+    const coordination = yield* PlaybackCoordination;
     const onDemand = yield* OnDemand;
     const subscriptions = yield* Subscriptions;
     const savedSubtitles = yield* SavedSubtitles;
@@ -274,7 +276,7 @@ function make(deps: DownloadsDeps) {
 
     const view = Effect.gen(function* () {
       const owners = yield* accounts;
-      const busy = yield* playback.busy;
+      const busy = yield* coordination.busy;
       const all = [...records.values()];
       const queue = all.filter((record) => record.state !== "complete");
       const copies = all
@@ -339,10 +341,10 @@ function make(deps: DownloadsDeps) {
         do {
           again = false;
           if (active || closing) return;
-          const busy = await Effect.runPromise(playback.busy);
+          const busy = await Effect.runPromise(coordination.busy);
           for (const record of records.values()) {
             if (record.state !== "queued" || busy.has(record.subscriptionId)) continue;
-            const lent = await Effect.runPromise(playback.lend(record.subscriptionId));
+            const lent = await Effect.runPromise(coordination.lend(record.subscriptionId));
             if (!lent) continue;
             // Removed, or the app began to close, while it waited for its lease.
             if (closing || records.get(record.id) !== record) {
@@ -570,7 +572,7 @@ function make(deps: DownloadsDeps) {
 
     // Whatever plays decides which subscriptions' downloads wait.
     yield* Effect.forkIn(
-      Stream.runForEach(playback.busyChanged, () =>
+      Stream.runForEach(coordination.busyChanged, () =>
         Effect.sync(() => {
           tell();
           wake();
@@ -634,7 +636,7 @@ function make(deps: DownloadsDeps) {
                 wake();
               }
               const owners = yield* accounts;
-              return downloadOf(records.get(known.id) ?? known, owners, yield* playback.busy);
+              return downloadOf(records.get(known.id) ?? known, owners, yield* coordination.busy);
             });
           const known = knownOf();
           if (known) return yield* answer(known);
@@ -675,7 +677,7 @@ function make(deps: DownloadsDeps) {
           );
           tell();
           wake();
-          return downloadOf(record, yield* accounts, yield* playback.busy);
+          return downloadOf(record, yield* accounts, yield* coordination.busy);
         }),
 
       remove: (id: string) =>
