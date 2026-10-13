@@ -2,7 +2,7 @@
 // the build it claims to be. Every input is pinned, every answer from GitHub is checked, and any
 // doubt stops the check before anything is installed:
 //
-// - stable: v0.0.9's published setup, by its SHA-256.
+// - stable: v0.0.11's published setup, by its SHA-256.
 // - A: a published nightly, by tag and commit. The tag must still name that commit, the commit be
 //   on the default branch, and the setup match the release's SHA256SUMS.txt and latest.yml.
 // - B: the Windows artifact of one successful release dry run of a same-repository pull request
@@ -40,9 +40,9 @@ export interface StablePin {
 }
 
 export const STABLE: StablePin = {
-  tag: "v0.0.9",
-  source: "5a25a6a5018ea14b343778bfebc37c13ab7b3c75",
-  sha256: "d40c871a8432fa0eaf0eb6fd801f30d8fc97f81c2f7f222bc5790d377469fe8e",
+  tag: "v0.0.11",
+  source: "5db40b13ec7b3bf7a39781a71363f4fb17f2ad6d",
+  sha256: "7413b501aa675f86a6c94f35a0c624f27417e84b302b57dad17823197aebbfd5",
 };
 
 /**

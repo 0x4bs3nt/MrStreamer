@@ -62,6 +62,13 @@ let updateEndpoint = "";
 const updateFeed = createServer((_req, res) => {
   res.statusCode = rejectUpdate ? 503 : 200;
   res.setHeader("Content-Type", "application/json");
+  const offeredRelease = {
+    published: new Date().toISOString(),
+    page: "https://example.test/release",
+    files: updateEndpoint + "/files/",
+    notes: "Loopback fixture release",
+    platforms: ["latest-linux.yml", "latest-mac.yml", "latest.yml"],
+  };
   res.end(
     JSON.stringify({
       schema: 1,
@@ -69,14 +76,15 @@ const updateFeed = createServer((_req, res) => {
       stable: offerUpdate
         ? {
             version: "99.0.0",
-            published: new Date().toISOString(),
-            page: "https://example.test/release",
-            files: updateEndpoint + "/files/",
-            notes: "Loopback fixture release",
-            platforms: ["latest-linux.yml", "latest-mac.yml", "latest.yml"],
+            ...offeredRelease,
           }
         : null,
-      nightly: null,
+      nightly: offerUpdate
+        ? {
+            version: "99.0.0-nightly.20261013.999",
+            ...offeredRelease,
+          }
+        : null,
     }),
   );
 });

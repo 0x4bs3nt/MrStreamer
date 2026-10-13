@@ -1440,7 +1440,7 @@ async function start(
         30_000,
         "the legacy Connect form",
       );
-    // Legacy 0.0.9 predates language.get and renders fixed English. Observe that UI directly.
+    // Legacy mode observes English through the Connect label on its stable stage.
     const language =
       pkg.stage === "stable" && !subtitleOrigin
         ? {

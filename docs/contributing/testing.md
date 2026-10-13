@@ -283,7 +283,7 @@ node apps/desktop/test/e2e/download-memory.ts 2048 .local/download-memory.json
 
 `resolve` downloads and checks the three installers before anything is installed, and refuses on any doubt:
 
-- the prior stable v0.0.9 setup, by its pinned SHA-256
+- the prior stable v0.0.11 setup, by its pinned SHA-256
 - A: a published nightly whose tag still names the pinned commit, which `main` contains, with its setup in the release's `SHA256SUMS.txt` and `latest.yml`
 - B: the one `release-win-x64-*` artifact of a successful, unexpired Release dry run of a pull request from this repository into `main`. Its validated package receipt must bind the pinned source/version/run/attempt to GitHub artifact metadata and all downloaded bytes. GitHub commit metadata must identify its repository pull request, the publishing jobs must have been skipped, the commit must descend from A and change only the workflow, tests and docs, and the archive must match its digest and its `latest.yml`. A dry run has no `SHA256SUMS.txt`, so no release checksum covers B.
 
@@ -299,7 +299,7 @@ Whenever the long movie's copy plays again after being left, once on A and twice
 
 Changes go through the window with pointer and keys; state is read only through the app's read-only calls. Evidence, `proof.json` and screenshots with their text, is uploaded for 14 days. On success the run removes its firewall rules, uninstalls the app and deletes the profile. On failure, its own or a cleanup step's, it still removes the rules and stops the fake services, but leaves the install, the profile and `profile.lock` as they are, and uploads the profile without Chromium's caches for 7 days. `proof.json` names what is still on disk. The profile holds only the fake subscription, fixtures and synthetic TMDB/SubDL keys.
 
-The 12-second episode is recorded as finished, so resuming an unfinished episode isn't shown; the 150-second movie's unfinished progress and its copy's resume are. Legacy stable 0.0.9 has no online subtitle requirement. Nightly A configures a synthetic SubDL account and opts in through Settings, chooses a fixture result and nondefault offset/drift through the CC panel before the long movie downloads. B checks that same saved exact-file result and timing with the fixture stopped, including no new service attempts. Installs use the setup, not the in-app updater, and not the Store package. Decoded sound isn't audible output.
+The 12-second episode is recorded as finished, so resuming an unfinished episode isn't shown; the 150-second movie's unfinished progress and its copy's resume are. Legacy mode has no online subtitle requirement on stable. Nightly A configures a synthetic SubDL account and opts in through Settings, chooses a fixture result and nondefault offset/drift through the CC panel before the long movie downloads. B checks that same saved exact-file result and timing with the fixture stopped, including no new service attempts. Installs use the setup, not the in-app updater, and not the Store package. Decoded sound isn't audible output.
 
 ### Published stable to exact nightly
 
