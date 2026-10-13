@@ -1,0 +1,59 @@
+diff --git a/lib/staple.js b/lib/staple.js
+index 47dbd85b2fc279d999b57f47fb8171e1cc674436..2d6ff57fbe44527c1653f445209d2e7e25f9aaca 100644
+--- a/lib/staple.js
++++ b/lib/staple.js
+@@ -37,20 +37,45 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.stapleApp = void 0;
+ const debug_1 = __importDefault(require("debug"));
++const child_process_1 = require("child_process");
+ const path = __importStar(require("path"));
+-const spawn_1 = require("./spawn");
+ const d = (0, debug_1.default)('electron-notarize:staple');
++const delays = [30000, 60000, 120000];
++const ticketLookup = 'api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup';
+ function stapleApp(opts) {
+     return __awaiter(this, void 0, void 0, function* () {
+-        d('attempting to staple app:', opts.appPath);
+-        const result = yield (0, spawn_1.spawn)('xcrun', ['stapler', 'staple', '-v', path.basename(opts.appPath)], {
+-            cwd: path.dirname(opts.appPath),
+-        });
+-        if (result.code !== 0) {
+-            throw new Error(`Failed to staple your application with code: ${result.code}\n\n${result.output}`);
++        const deadline = Date.now() + 300000;
++        for (let attempt = 1; attempt <= delays.length + 1; attempt++) {
++            const remaining = deadline - Date.now();
++            if (remaining <= 0) {
++                throw new Error('App stapling retry deadline exceeded.');
++            }
++            d('attempting to staple app:', opts.appPath, `attempt ${attempt}/${delays.length + 1}`);
++            const result = (0, child_process_1.spawnSync)('xcrun', ['stapler', 'staple', '-v', path.basename(opts.appPath)], {
++                cwd: path.dirname(opts.appPath),
++                encoding: 'utf8',
++                timeout: Math.min(60000, remaining),
++                killSignal: 'SIGKILL',
++            });
++            const output = `${result.stdout || ''}${result.stderr || ''}`;
++            if (output) process.stderr.write(output);
++            if (result.status === 0 && !result.error) {
++                d('staple succeeded');
++                return;
++            }
++            const failure = new Error(`Failed to staple your application with code: ${result.status === null ? 'unknown' : result.status}${result.error ? ` (${result.error.message})` : ''}\n\n${output}`);
++            const lostTicketConnection = !result.error &&
++                result.status === 68 &&
++                /NSURLErrorDomain Code=-1005\b/.test(output) &&
++                output.includes(ticketLookup);
++            if (!lostTicketConnection) throw failure;
++            const delay = delays[attempt - 1];
++            if (delay === undefined || deadline - Date.now() <= delay) {
++                throw new Error(`App ticket download failed after ${attempt} attempts: retry budget exhausted.\n\n${output}`);
++            }
++            process.stderr.write(`App ticket download lost connection (attempt ${attempt}); retrying in ${delay / 1000}s.\n`);
++            yield new Promise(resolve => setTimeout(resolve, delay));
+         }
+-        d('staple succeeded');
+-        return;
+     });
+ }
+ exports.stapleApp = stapleApp;

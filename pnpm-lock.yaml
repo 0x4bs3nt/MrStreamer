@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@electron/notarize@2.5.0': bb57c112ba81c5936aa8199b69910a136b8f609f7ef202a327986b6d79b7656c
+
 importers:
 
   .:
@@ -3361,7 +3364,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@electron/notarize@2.5.0(supports-color@7.2.0)':
+  '@electron/notarize@2.5.0(patch_hash=bb57c112ba81c5936aa8199b69910a136b8f609f7ef202a327986b6d79b7656c)(supports-color@7.2.0)':
     dependencies:
       debug: 4.4.3(supports-color@7.2.0)
       fs-extra: 9.1.0
@@ -4322,7 +4325,7 @@ snapshots:
       '@electron/asar': 3.4.1
       '@electron/fuses': 1.8.0
       '@electron/get': 3.1.0(supports-color@7.2.0)
-      '@electron/notarize': 2.5.0(supports-color@7.2.0)
+      '@electron/notarize': 2.5.0(patch_hash=bb57c112ba81c5936aa8199b69910a136b8f609f7ef202a327986b6d79b7656c)(supports-color@7.2.0)
       '@electron/osx-sign': 1.3.3(supports-color@7.2.0)
       '@electron/rebuild': 4.2.0(supports-color@7.2.0)
       '@electron/universal': 2.0.3(supports-color@7.2.0)

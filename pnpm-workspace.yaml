@@ -6,6 +6,9 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   sharp: true
+# Keep accepted app notarization single-shot; retry only CloudKit ticket download during stapling.
+patchedDependencies:
+  "@electron/notarize@2.5.0": patches/@electron__notarize@2.5.0.patch
 # electron-vite and electron-builder look for electron from their own install location.
 publicHoistPattern:
   - electron

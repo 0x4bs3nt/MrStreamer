@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { runStaplerTicket } from "./stapler-ticket.ts";
 
 const dmg = process.argv[2];
 if (!dmg?.endsWith(".dmg")) throw new Error("Usage: node scripts/notarize-dmg.ts <file>.dmg");
@@ -40,8 +41,8 @@ if (submission.status !== "Accepted") {
 }
 console.log(`Notarization ${submission.id} ${submission.status}`);
 console.log(`Stapling ${basename(dmg)}`);
-execFileSync("xcrun", ["stapler", "staple", dmg], { stdio: "inherit" });
-execFileSync("xcrun", ["stapler", "validate", dmg], { stdio: "inherit" });
+await runStaplerTicket("staple", dmg);
+await runStaplerTicket("validate", dmg);
 
 rmSync(`${dmg}.blockmap`, { force: true });
 const metadata = join(dirname(dmg), "latest-mac.yml");

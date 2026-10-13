@@ -286,8 +286,13 @@ jobs:
           codesign -dv "$app" 2>&1 | grep -q "flags=0x10000(runtime)"
           spctl --assess --type execute --verbose "$app"
           spctl --assess --type open --context context:primary-signature --verbose dist/*.dmg
-          xcrun stapler validate "$app"
-          xcrun stapler validate dist/*.dmg
+          if [ -f scripts/stapler-ticket.ts ]; then
+            node scripts/stapler-ticket.ts validate "$app"
+            node scripts/stapler-ticket.ts validate dist/*.dmg
+          else
+            xcrun stapler validate "$app"
+            xcrun stapler validate dist/*.dmg
+          fi
 
       - name: Check the AirPlay helper starts
         if: runner.os == 'macOS'
