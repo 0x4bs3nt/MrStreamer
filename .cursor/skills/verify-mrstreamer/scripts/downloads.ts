@@ -746,9 +746,12 @@ export async function runDownloads(
     };
     // Header copy changes how many CSS pixels the pages need. Find the actual fold while
     // still requiring its current-page marker, percentage label and keyboard behavior below.
+    // The bar folds a frame or more after the resize, so each width is read once it has settled;
+    // read sooner, a slow runner steps past the fold to a width where no names fit.
     let foldedWidth: number | undefined;
     for (let width = 760; width >= 520; width -= 20) {
       await layOut(online, width);
+      await settledBar(online);
       if (await folded(true)) {
         foldedWidth = width;
         break;
