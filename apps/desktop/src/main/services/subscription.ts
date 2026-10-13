@@ -1,3 +1,4 @@
+import type { UsageObservers } from "../analytics/observers.ts";
 // The saved subscriptions: each validated with its provider and stored with a sealed password or,
 // for a playlist, a sealed link. Every one of them shows in the app at once; none is "the active
 // one".
@@ -185,6 +186,7 @@ interface Saved {
 }
 
 export interface SubscriptionDeps {
+  readonly usage?: UsageObservers | undefined;
   readonly dataDir: string;
   readonly secrets: Secrets;
   readonly providerOptions: ProviderOptions;
@@ -531,6 +533,7 @@ function make(deps: SubscriptionDeps) {
 
       add: (login: LoginInput) =>
         Effect.gen(function* () {
+          const added = deps.usage?.action("playlist_added");
           const { account, schemeless } = yield* Effect.try({
             try: () => parseLogin(login),
             catch: failedWith,
@@ -581,7 +584,7 @@ function make(deps: SubscriptionDeps) {
                       ...(previous.stored.mapping ? { mapping: previous.stored.mapping } : {}),
                     }
                   : stored;
-              return yield* save(
+              const result = yield* save(
                 {
                   id: previous?.id ?? randomUUID(),
                   // The first one saved is where every release looks for a login.
@@ -596,6 +599,8 @@ function make(deps: SubscriptionDeps) {
                 },
                 previous,
               );
+              if (!previous) added?.();
+              return result;
             }),
           );
         }).pipe(diagnosed("connect")),
@@ -651,6 +656,7 @@ function make(deps: SubscriptionDeps) {
         writeOne(
           Effect.gen(function* () {
             // Settled first, so nothing a start still writes comes after the removal.
+            const removed = deps.usage?.action("playlist_removed");
             const roster = yield* load;
             const subscription = roster.find((each) => each.id === subscriptionId);
             if (!subscription) return;
@@ -679,6 +685,7 @@ function make(deps: SubscriptionDeps) {
               }
               spare.delete(key);
             });
+            removed?.();
           }),
         ),
 

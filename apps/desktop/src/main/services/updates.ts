@@ -1,3 +1,4 @@
+import type { UsageObservers } from "../analytics/observers.ts";
 // In-app updates and the release channel.
 //
 // The app checks on its own after starting and every four hours, quietly: an automatic check that
@@ -83,6 +84,7 @@ const RETRY_AFTER = ["15 minutes", "30 minutes", "1 hour", "2 hours", "4 hours"]
 export interface DirectUpdates {
   /** Finds releases this platform can install. Rejects with `DiscoveryFailed`. */
   readonly discover: (signal: AbortSignal) => Promise<readonly Offer[]>;
+  readonly onChannelChanged?: (channel: Channel) => void;
   readonly observeCheck?: (channel: Channel) => ReturnType<OperationObserver>;
   readonly installer: Installer;
   /** When automatic checks run; null for none, as in most tests. */
@@ -104,7 +106,10 @@ export type UpdatesConfig = {
   readonly installed: string;
 } & (DirectUpdates | StoreUpdates);
 
-export type UpdatesDeps = UpdatesConfig & { readonly dataDir: string };
+export type UpdatesDeps = UpdatesConfig & {
+  readonly dataDir: string;
+  readonly usage?: UsageObservers | undefined;
+};
 
 export class Updates extends Context.Service<
   Updates,
@@ -172,6 +177,8 @@ function make(deps: UpdatesDeps & DirectUpdates) {
     const stored = yield* Effect.promise(() => readJsonFile(settingsPath, SettingsFile));
     let channel: Channel = stored?.channel ?? channelOf(installed);
     let dismissed: string | null = stored?.dismissed ?? null;
+    let savedChannel = channel;
+    let savedDismissed = dismissed;
     let update: UpdatePhase = { kind: "idle" };
     /** The release the last check found for the channel, whether or not it is newer. */
     let target: Offer | null = null;
@@ -187,7 +194,19 @@ function make(deps: UpdatesDeps & DirectUpdates) {
 
     // Keeps what a newer release added to the file, for when it runs again.
     const save = writeOne(
-      Effect.promise(() => writeJsonFile(settingsPath, { ...stored, channel, dismissed })),
+      Effect.promise(async () => {
+        const next = { ...stored, channel, dismissed };
+        const currentTarget = target ? formatVersion(target.version) : null;
+        const dismissedUpdate =
+          next.dismissed !== savedDismissed && next.dismissed === currentTarget
+            ? deps.usage?.action("update_dismissed")
+            : undefined;
+        await writeJsonFile(settingsPath, next);
+        if (savedChannel !== next.channel) deps.onChannelChanged?.(next.channel);
+        savedChannel = next.channel;
+        savedDismissed = next.dismissed;
+        if (target && formatVersion(target.version) === next.dismissed) dismissedUpdate?.();
+      }),
     );
     if (!stored) yield* save;
 

@@ -29,6 +29,7 @@ import { withoutTitles, useUi, type View } from "./ui-store.ts";
 export function App() {
   const subscriptions = useQuery(queries.subscriptions());
   const preferences = useQuery(queries.preferences());
+  const updateOffer = !!useQuery(queries.updates()).data?.offer;
   const left = useSubscriptionPreferences();
 
   // Restore the volume once, before anything plays.
@@ -66,6 +67,7 @@ export function App() {
     subscriptions.isSuccess && !preferences.isPending,
     connect,
     subscriptions.isSuccess && !subscriptions.data.some(hasTitles),
+    updateOffer,
   );
   // Downloads stand alone without one: Connect opens them, and Add subscription goes back.
   const offline = useUi((state) => state.view === "downloads");

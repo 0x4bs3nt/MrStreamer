@@ -104,6 +104,7 @@ const bridge = {
     if (answer) return answer;
     const always = standing.get(method);
     if (always) return Promise.resolve(always);
+    if (method.startsWith("analytics.")) return Promise.resolve({ ok: true, value: null });
     if (method === "viewing.episodes") {
       return Promise.resolve({ ok: true, value: { progress: [], marks: [], undoable: null } });
     }

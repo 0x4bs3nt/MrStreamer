@@ -5,6 +5,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   app,
+  powerMonitor,
   autoUpdater,
   BrowserWindow,
   dialog,
@@ -381,6 +382,9 @@ async function start(): Promise<void> {
   });
   const analytics = new Analytics({
     dataDir,
+    playbackReset: () => {
+      if (mainWindow) emit(mainWindow.webContents, "analytics.reset", null);
+    },
     origin: initialProfileOrigin,
     properties: {
       ...buildProperties,
@@ -403,23 +407,36 @@ async function start(): Promise<void> {
       localEndpoint,
     }),
   });
+  powerMonitor.on("suspend", () => analytics.suspendPlayback());
+  powerMonitor.on("resume", () => analytics.suspendPlayback());
   let dimensionsReady = storeCopy;
-  const observeOperation = (operation: SummaryOperation) => () => {
+  const observeOperation = (operation: SummaryOperation, playbackToken?: string) => () => {
     const generation = dimensionsReady ? analytics.noteOperationStarted(operation) : null;
-    return (outcome: SummaryOutcome, failure?: SummaryFailure) =>
+    const failedPlayback =
+      operation === "playback_open" ? analytics.playbackFailureObserver(playbackToken) : null;
+    return (outcome: SummaryOutcome, failure?: SummaryFailure) => {
       analytics.noteOperationFinished(operation, generation, outcome, failure);
+      if (outcome === "failed") failedPlayback?.(failure ?? "app");
+    };
   };
 
   const runtime = ManagedRuntime.make(
     mainLayer({
       dataDir,
+      usage: {
+        action: (action) => analytics.actionObserver(action),
+        setting: (setting) => analytics.settingObserver(setting),
+      },
       downloads: { observeTransfer: observeOperation("download_transfer") },
       secrets: keychainSecrets,
       userAgent,
       ffmpeg: toolPath("ffmpeg"),
       ffprobe: toolPath("ffprobe"),
       catalogueWorker: (setup) => createCatalogueWorker({ workerData: setup }),
-      output: { adapters: receiverAdapters() },
+      output: {
+        adapters: receiverAdapters(),
+        observePlayback: (kind, control) => analytics.remotePlayback(kind, control),
+      },
       // MR_STREAMER_TMDB_KEY at run time overrides the key built in, for testing.
       tmdbKey: process.env["MR_STREAMER_TMDB_KEY"] || __TMDB_KEY__ || null,
       region: app.getLocaleCountryCode() || "US",
@@ -431,6 +448,10 @@ async function start(): Promise<void> {
         ? { installed: app.getVersion(), openStore: () => shell.openExternal(STORE_PAGE) }
         : {
             installed: app.getVersion(),
+            onChannelChanged: (channel) => {
+              analytics.setUpdateChannel(channel);
+              analytics.noteSetting("update_channel");
+            },
             observeCheck: (channel) => {
               analytics.setUpdateChannel(channel);
               dimensionsReady = true;
@@ -689,18 +710,14 @@ async function start(): Promise<void> {
       "ondemand.recommendations": ({ seeds }) => onDemand.recommendations(seeds),
       "ondemand.tiles": ({ kind, of }) => onDemand.tiles(kind, of),
       "ondemand.collection": (query) => onDemand.collection(query),
-      "playback.open": ({
-        channel: named,
-        variant,
-        decoders,
-        repair,
-        audio,
-        audioLanguage,
-        preview,
-      }) =>
-        observeOpen(
+      "playback.open": (
+        { channel: named, variant, decoders, repair, audio, audioLanguage, preview, measurement },
+        frame,
+      ) => {
+        const token = analytics.admitPlayback("live", preview ? undefined : measurement, frame);
+        return observeOpen(
           coordination,
-          observeOperation("playback_open"),
+          observeOperation("playback_open", token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               const channel = yield* library.channel(named);
@@ -724,7 +741,8 @@ async function start(): Promise<void> {
               });
             }
           }),
-        ),
+        );
+      },
       "subtitles.settings": () => onlineSubtitles.settings,
       "subtitles.configure": ({ preferences, credentials }) =>
         onlineSubtitles.configure(preferences, credentials),
@@ -739,27 +757,37 @@ async function start(): Promise<void> {
       "subtitles.hide": ({ sessionId }) => Effect.as(onlineSubtitles.hide(sessionId), null),
       "subtitles.forget": ({ sessionId }) => Effect.as(onlineSubtitles.forget(sessionId), null),
       "subtitles.cancel": ({ sessionId }) => Effect.as(onlineSubtitles.cancel(sessionId), null),
-      "playback.openTitle": ({ title, decoders }) =>
-        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
-          Effect.gen(function* () {
-            // What plays goes first, whichever subscription it is of, so no provider sees a
-            // connection beside the one about to open.
-            yield* playback.closeAll;
-            const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-            return yield* playback.openTitle(title, url, decoders, {
-              turn,
-              revision,
-              headers,
-              listingKey,
-            });
-          }),
-        ),
-      "playback.openCopy": ({ copy, decoders }) =>
-        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
-          Effect.gen(function* () {
-            return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
-          }),
-        ),
+      "playback.openTitle": ({ title, decoders, measurement }, frame) => {
+        const token = analytics.admitPlayback("vod", measurement, frame);
+        return observeOpen(
+          coordination,
+          observeOperation("playback_open", token ?? undefined),
+          (turn) =>
+            Effect.gen(function* () {
+              // What plays goes first, whichever subscription it is of, so no provider sees a
+              // connection beside the one about to open.
+              yield* playback.closeAll;
+              const { url, revision, headers, listingKey } = yield* onDemand.file(title);
+              return yield* playback.openTitle(title, url, decoders, {
+                turn,
+                revision,
+                headers,
+                listingKey,
+              });
+            }),
+        );
+      },
+      "playback.openCopy": ({ copy, decoders, measurement }, frame) => {
+        const token = analytics.admitPlayback("vod", measurement, frame);
+        return observeOpen(
+          coordination,
+          observeOperation("playback_open", token ?? undefined),
+          (turn) =>
+            Effect.gen(function* () {
+              return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
+            }),
+        );
+      },
       "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
       "playback.closeAll": () =>
         Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
@@ -805,49 +833,75 @@ async function start(): Promise<void> {
         }),
       "output.closePicker": ({ request }) => Effect.as(output.closePicker(request), null),
       "output.disconnect": () => Effect.as(output.disconnect, null),
-      "output.playChannel": ({ channel: named, variant, audio, audioLanguage, name }) =>
-        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
-          Effect.gen(function* () {
-            const channel = yield* library.channel(named);
-            const variants = yield* streamsOf(channel, variant);
-            return yield* output.playChannel(ownedId(channel), {
-              variants,
-              audio: audio ?? null,
-              audioLanguage: audioLanguage ?? null,
-              shown: { name },
-              turn,
-            });
-          }),
-        ),
-      "output.openTitle": ({ title, since }) =>
-        observeOpen(coordination, observeOperation("playback_open"), (turn) =>
-          Effect.gen(function* () {
-            const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-            return yield* output.openTitle(title, url, since, {
-              turn,
-              revision,
-              headers,
-              listingKey,
-            });
-          }),
-        ),
-      "output.playTitle": ({
-        sessionId,
-        position,
-        audio,
-        subtitle,
-        paused,
-        name,
-        detail,
-        artworkUrl,
-      }) =>
-        output.playTitle(sessionId, {
+      "output.playChannel": (
+        { channel: named, variant, audio, audioLanguage, name, measurement },
+        frame,
+      ) => {
+        const token = analytics.admitPlayback("live", measurement, frame);
+        const control =
+          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
+            ? measurement.control
+            : undefined;
+        return observeOpen(
+          coordination,
+          observeOperation("playback_open", token ?? undefined),
+          (turn) =>
+            Effect.gen(function* () {
+              const channel = yield* library.channel(named);
+              const variants = yield* streamsOf(channel, variant);
+              return yield* output.playChannel(ownedId(channel), {
+                variants,
+                audio: audio ?? null,
+                audioLanguage: audioLanguage ?? null,
+                shown: { name },
+                turn,
+                measurement: control,
+              });
+            }),
+        );
+      },
+      "output.openTitle": ({ title, since, measurement }, frame) => {
+        const token = analytics.admitPlayback("vod", measurement, frame);
+        const control =
+          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
+            ? measurement.control
+            : undefined;
+        return observeOpen(
+          coordination,
+          observeOperation("playback_open", token ?? undefined),
+          (turn) =>
+            Effect.gen(function* () {
+              const { url, revision, headers, listingKey } = yield* onDemand.file(title);
+              return yield* output.openTitle(title, url, since, {
+                turn,
+                measurement: control,
+                revision,
+                headers,
+                listingKey,
+              });
+            }),
+        );
+      },
+      "output.playTitle": (
+        { sessionId, measurement, position, audio, subtitle, paused, name, detail, artworkUrl },
+        frame,
+      ) => {
+        analytics.admitPlayback("vod", measurement, frame);
+        const control =
+          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
+            ? measurement.control
+            : undefined;
+        const failedBeforeLoad = analytics.receiverLoadFailureObserver(control, frame);
+        return output.playTitle(sessionId, {
+          measurement: control,
+          onPreloadFailure: failedBeforeLoad,
           position,
           audio,
           subtitle,
           paused,
           shown: { name, detail, artworkUrl },
-        }),
+        });
+      },
       "output.command": ({ generation, ...command }) =>
         Effect.as(output.command(generation, command), null),
       "output.volume": (volume) => Effect.as(output.setVolume(volume), null),
@@ -860,6 +914,56 @@ async function start(): Promise<void> {
           applyLanguage(language);
           return language;
         }),
+      "analytics.action": (action) =>
+        Effect.sync(() => {
+          analytics.noteAction(action);
+          return null;
+        }),
+      // Registration happens at invocation, never when an optional reply later settles.
+      "analytics.playbackBegin": ({ kind, measurement }, frame) =>
+        Effect.succeed(analytics.admitPlayback(kind, measurement, frame)),
+      "analytics.playbackResume": ({ kind, measurement }, frame) =>
+        Effect.succeed(analytics.admitPlayback(kind, measurement, frame)),
+      "analytics.playbackBind": ({ kind, measurement, sessionId }, frame) => {
+        const token = analytics.admitPlayback(kind, measurement, frame);
+        return Effect.gen(function* () {
+          const session = yield* playback.measurement(sessionId);
+          if (
+            !token ||
+            !session ||
+            session.kind !== kind ||
+            session.closed.aborted ||
+            analytics.controlledPlayback(measurement.control, frame) !== token
+          )
+            return null;
+          return analytics.bindPlayback(token, "local", session.kind, session.closed);
+        });
+      },
+      "analytics.playbackState": ({ token: control, binding, sequence, state }, frame) => {
+        const token = analytics.controlledPlayback(control, frame);
+        return Effect.sync(() => {
+          if (token) analytics.notePlaybackState(token, binding, sequence, state);
+          return null;
+        });
+      },
+      "analytics.playbackFailure": ({ token: control, binding, failure }, frame) => {
+        const token = analytics.controlledPlayback(control, frame);
+        return Effect.sync(() => {
+          if (token) analytics.notePlaybackFailure(token, binding, failure);
+          return null;
+        });
+      },
+      "analytics.playbackEligible": ({ token: control, eligible }, frame) => {
+        const token = analytics.controlledPlayback(control, frame);
+        return Effect.sync(() => {
+          if (token) analytics.setPlaybackEligible(token, eligible);
+          return null;
+        });
+      },
+      "analytics.playbackEnd": ({ token: control }, frame) => {
+        analytics.endControlledPlayback(control, frame);
+        return Effect.succeed(null);
+      },
       "analytics.feature": (feature) =>
         Effect.sync(() => {
           analytics.noteFeature(feature);
@@ -1025,9 +1129,11 @@ async function start(): Promise<void> {
     });
     window.webContents.on("did-start-loading", () => {
       requestedClose = false;
+      analytics.rendererGone();
       analytics.noteRenderer("starts");
     });
     window.webContents.on("render-process-gone", (_event, details) => {
+      analytics.rendererGone();
       if (leaving || requestedClose || details.reason === "clean-exit") return;
       analytics.noteRenderer(
         details.reason === "crashed" ? "crashed" : details.reason === "killed" ? "killed" : "other",
@@ -1053,6 +1159,7 @@ async function start(): Promise<void> {
   };
   const leave = () => {
     leaving = true;
+    analytics.rendererGone();
     analytics.setForeground(false);
     // No list opens from a window on its way out.
     closeList();

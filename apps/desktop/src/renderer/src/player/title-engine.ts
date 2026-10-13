@@ -1,3 +1,5 @@
+import type { AnalyticsPlaybackState } from "@mrstreamer/contracts/analytics";
+import { observeMediaPlayback } from "./analytics.ts";
 // Movies and episodes through Media Source Extensions. One run plays the title from a position
 // with the chosen tracks, as the proxy sends it (see src/main/playback/title.ts): fragmented MP4
 // whose `x-start` header says where its picture begins. Placing the fragments there makes the
@@ -80,6 +82,7 @@ export interface SubtitleState {
 }
 
 export interface TitleEngine {
+  onPlayback?(listener: (state: AnalyticsPlaybackState) => void): void;
   /** Resolves once the picture moves. Rejects with an `EngineError`. */
   readonly started: Promise<void>;
   /** Called at most once, when playback breaks after it started. */
@@ -108,6 +111,7 @@ export interface TitleEngine {
 }
 
 export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine {
+  const observation = observeMediaPlayback(video);
   const abort = new AbortController();
   /** Ends the subtitles with the run, or before it, when the viewer turns them off. */
   const subtitlesOff = new AbortController();
@@ -150,6 +154,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   started.catch(() => {});
 
   const fail = (error: EngineError) => {
+    observation.stop();
     if (finished) return;
     finished = true;
     stopWatching();
@@ -506,6 +511,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   });
 
   return {
+    onPlayback: observation.listen,
     started,
     onFailure(listener) {
       failureListener = listener;
@@ -554,6 +560,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     destroy() {
       if (abort.signal.aborted) return;
       finished = true;
+      observation.stop();
       stopWatching();
       abort.abort();
       if (!settled) reject({ kind: "network", detail: "Stopped." } satisfies EngineError);

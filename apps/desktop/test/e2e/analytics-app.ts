@@ -57,21 +57,38 @@ const capture = createServer(async (req, res) => {
 });
 let endpoint = "";
 let rejectUpdate = false;
+let offerUpdate = false;
 let updateEndpoint = "";
 const updateFeed = createServer((_req, res) => {
   res.statusCode = rejectUpdate ? 503 : 200;
   res.setHeader("Content-Type", "application/json");
   res.end(
-    JSON.stringify({ schema: 1, generated: new Date().toISOString(), stable: null, nightly: null }),
+    JSON.stringify({
+      schema: 1,
+      generated: new Date().toISOString(),
+      stable: offerUpdate
+        ? {
+            version: "99.0.0",
+            published: new Date().toISOString(),
+            page: "https://example.test/release",
+            files: updateEndpoint + "/files/",
+            notes: "Loopback fixture release",
+            platforms: ["latest-linux.yml", "latest-mac.yml", "latest.yml"],
+          }
+        : null,
+      nightly: null,
+    }),
   );
 });
 const actions: { action: string; at: string }[] = [];
 const observations: Record<string, unknown> = {};
+const pointerInputs: Record<string, unknown>[] = [];
 const log: string[] = [];
 let app: ChildProcess | undefined;
 let page: Page | undefined;
 let mainPage: Page | undefined;
 let debuggingPort = 0;
+const broadcasts = new Set<ChildProcess>();
 let failure: unknown;
 const cleanupErrors: string[] = [];
 
@@ -186,21 +203,82 @@ async function quit() {
   mainPage = undefined;
 }
 
-/** Pointer input, with the element located from the current DOM rather than guessed coordinates. */
-async function click(selector: string, index = 0) {
-  const element = `document.querySelectorAll(${JSON.stringify(selector)})[${index}]`;
-  await waitFor(() => live().evaluate<boolean>(`!!(${element})`));
-  await live().evaluate(`${element}.scrollIntoView({block:'center'})`);
-  const point = await live().evaluate<{ x: number; y: number }>(
-    `(() => { const r=${element}.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`,
-  );
-  for (const event of ["mousePressed", "mouseReleased"])
+/** Re-resolve named targets and require settled geometry and a hit before actual pointer input. */
+async function click(selector: string, index = 0, match?: { name: string; title: boolean }) {
+  const elements = `[...document.querySelectorAll(${JSON.stringify(selector)})]`;
+  const element = match
+    ? `${elements}.find(b => ${match.title ? `b.title.includes(${JSON.stringify(match.name)})` : `b.textContent.trim() === ${JSON.stringify(match.name)}`})`
+    : `${elements}[${index}]`;
+  const frame = `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`;
+  let point = { x: 0, y: 0 };
+  await waitFor(async () => {
+    if (!(await live().evaluate<boolean>(`!!(${element})`))) return false;
+    await live().evaluate(`(async () => {
+      (${element}).scrollIntoView({behavior:'instant',block:'center'});
+      await ${frame};
+    })()`);
+    const before = await live().evaluate<{ x: number; y: number }>(
+      `(() => { const r=(${element}).getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`,
+    );
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", ...before });
+    // Hover, scrolling and the preceding action can all change layout. Check again before down.
+    const settled = await live().evaluate<{ x: number; y: number } | null>(`(async () => {
+      await ${frame};
+      const target=(${element});
+      if (!target || target.disabled || target.getAttribute('aria-disabled') === 'true') return null;
+      const r=target.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+      const hit=document.elementFromPoint(x,y);
+      if (r.width<=0 || r.height<=0 || Math.abs(x-${before.x})>.25 || Math.abs(y-${before.y})>.25 || !hit || !target.contains(hit)) return null;
+      const describe=e => e ? {tag:e.tagName, text:(e.textContent||'').trim().slice(0,80), title:e.getAttribute('title'), label:e.getAttribute('aria-label')} : null;
+      window.__analyticsPointer={intended:describe(target), hit:describe(hit), point:{x,y}, actual:null};
+      const down=e => {
+        const matched=e.target instanceof Node && target.contains(e.target);
+        window.__analyticsPointer.actual={target:describe(e.target), x:e.clientX, y:e.clientY, matched};
+        if (!matched) { e.preventDefault(); e.stopImmediatePropagation(); }
+      };
+      const guard=e => {
+        if (!window.__analyticsPointer.actual?.matched) { e.preventDefault(); e.stopImmediatePropagation(); }
+      };
+      document.addEventListener('mousedown',down,{capture:true,once:true});
+      document.addEventListener('click',guard,true);
+      window.__analyticsPointerCleanup=() => {
+        document.removeEventListener('mousedown',down,true);
+        document.removeEventListener('click',guard,true);
+      };
+      return {x,y};
+    })()`);
+    if (!settled) return false;
+    point = settled;
+    return true;
+  });
+  try {
     await send("Input.dispatchMouseEvent", {
-      type: event,
+      type: "mousePressed",
       ...point,
       button: "left",
       clickCount: 1,
     });
+  } finally {
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      ...point,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+  const input = await live().evaluate<{ actual: { matched: boolean } | null }>(`(() => {
+    window.__analyticsPointerCleanup();
+    return window.__analyticsPointer;
+  })()`);
+  pointerInputs.push({
+    selector,
+    index: match ? undefined : index,
+    match,
+    at: new Date().toISOString(),
+    ...input,
+  });
+  if (!input.actual?.matched)
+    throw new Error(`Pointer target changed before pressing ${match?.name ?? selector}.`);
 }
 
 async function settings() {
@@ -261,9 +339,7 @@ async function keyEscape() {
 }
 
 async function namedButton(selector: string, name: string, title = false) {
-  const expression = `[...document.querySelectorAll(${JSON.stringify(selector)})].findIndex(b => ${title ? `b.title.includes(${JSON.stringify(name)})` : `b.textContent.trim() === ${JSON.stringify(name)}`})`;
-  await waitFor(async () => (await live().evaluate<number>(expression)) >= 0);
-  await click(selector, await live().evaluate<number>(expression));
+  await click(selector, 0, { name, title });
   actions.push({ action: `Pressed ${name}`, at: new Date().toISOString() });
 }
 
@@ -278,6 +354,57 @@ async function analyticsState() {
 async function productPaths() {
   await keyEscape();
   await namedButton("header button", "Live TV");
+  // Actual guide expansion/favourite/search use, without treating schedule queries as actions.
+  await click('button[aria-label="Later programmes"]');
+  await click('button[aria-label="Add to favourites"]');
+  await waitFor(async () => (await analyticsState()).summary?.counts.actions.favourite_added === 1);
+  await click('button[aria-label="Search"]');
+  await send("Input.insertText", { text: "TEST | H.264 + AAC" });
+  await waitFor(() =>
+    live().evaluate<boolean>(
+      "document.querySelector('[aria-label=\"Search results\"] [aria-selected=true]')?.textContent.includes('H.264 + AAC') ?? false",
+    ),
+  );
+  await send("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Enter",
+    code: "Enter",
+    windowsVirtualKeyCode: 13,
+  });
+  await waitFor(async () => (await analyticsState()).summary?.counts.playback.live.starts === 1);
+  await waitFor(() =>
+    live().evaluate<boolean>(
+      "!!document.querySelector('[data-view=watch]') && document.querySelector('video').videoWidth > 0",
+    ),
+  );
+  // Real eligible elapsed time, rather than media position or an injected duration.
+  await waitFor(async () => ((await analyticsState()).summary?.watch_ms.live ?? 0) >= 32_000);
+  await snapshot("confirmed-live-watch");
+  await keyEscape();
+  await namedButton("header button", "Home");
+  await waitFor(() =>
+    live().evaluate<boolean>(
+      "!document.querySelector('[data-view=watch]') && document.querySelector('video').muted && !document.querySelector('video').paused",
+    ),
+  );
+  await delay(1500);
+  const previewTime = (await analyticsState()).summary?.watch_ms.live ?? 0;
+  await delay(3500);
+  const afterPreview = (await analyticsState()).summary?.watch_ms.live ?? 0;
+  if (afterPreview !== previewTime) throw new Error("Home preview accrued watch time.");
+  await snapshot("excluded-home-preview");
+  await namedButton("button", "Watch");
+  await delay(2500);
+  if ((await analyticsState()).summary?.counts.playback.live.starts !== 1)
+    throw new Error("Preview promotion counted another start.");
+  await keyEscape();
+  observations["previewExclusion"] = { previewTime, afterPreview, starts: 1 };
   await namedButton("header button", "Movies");
   await namedButton("nav button", "All movies");
   await namedButton("button[title]", "Index at the end", true);
@@ -291,7 +418,18 @@ async function productPaths() {
   await waitFor(
     async () => ((await analyticsState()).summary?.counts.playback_open.success ?? 0) >= 1,
   );
+  await waitFor(async () => (await analyticsState()).summary?.counts.playback.vod.starts === 1);
   await snapshot("provider-title-open");
+  await click('button[aria-label="Pause"]');
+  await click('button[aria-label="Forward 10 seconds"]');
+  await delay(1200);
+  if ((await analyticsState()).summary?.counts.playback.vod.starts !== 1)
+    throw new Error("Paused seek created another start.");
+  await click('[data-view="title"] button[aria-label="Play"]');
+  await delay(1500);
+  if ((await analyticsState()).summary?.counts.playback.vod.starts !== 1)
+    throw new Error("Resume created another start.");
+  await snapshot("vod-paused-seek-resume");
   await keyEscape();
   await keyEscape();
   await namedButton("header button", "Downloads");
@@ -299,6 +437,7 @@ async function productPaths() {
   await waitFor(() =>
     live().evaluate<boolean>("!!document.querySelector('[data-view=title] video')"),
   );
+  await waitFor(async () => (await analyticsState()).summary?.counts.playback.vod.starts === 2);
   await snapshot("copy-playing");
   await keyEscape();
   await namedButton("header button", "Movies");
@@ -337,8 +476,20 @@ async function productPaths() {
   await snapshot("search-entry");
   await keyEscape();
   await settings();
+  await click('[role="checkbox"][aria-label="Next episode"]');
+  await waitFor(async () => (await analyticsState()).summary?.counts.settings.autoplay_next === 1);
+  offerUpdate = true;
   await namedButton("button", "Check now");
   await waitFor(async () => (await analyticsState()).summary?.counts.update_check.success === 1);
+  await keyEscape();
+  await click("[data-update-notice]");
+  await waitFor(async () => (await analyticsState()).summary?.counts.actions.update_seen === 1);
+  await namedButton("button", "Not now");
+  await waitFor(
+    async () => (await analyticsState()).summary?.counts.actions.update_dismissed === 1,
+  );
+  await snapshot("update-panel-dismissed");
+  await settings();
   rejectUpdate = true;
   await namedButton("button", "Check now");
   await waitFor(async () => (await analyticsState()).summary?.counts.update_check.failed === 1);
@@ -376,7 +527,7 @@ async function productPaths() {
     const observed = await analyticsState();
     return (
       (observed.summary?.counts.features.home ?? 0) >= 3 &&
-      (observed.summary?.counts.features.settings ?? 0) >= 3
+      (observed.summary?.counts.features.settings ?? 0) >= 4
     );
   });
   const before = await analyticsState();
@@ -434,9 +585,39 @@ async function productPaths() {
   const summary = enabled.find((event) => event.event === "app_summary_day");
   if (!summary || summary.event !== "app_summary_day")
     throw new Error("No actual summary capture.");
-  if (!isDeepStrictEqual(summary.properties.counts, before.summary.counts))
+  const completedCounts = structuredClone(before.summary.counts);
+  for (const kind of ["live", "vod"] as const)
+    completedCounts.playback[kind].watch_minutes = Math.floor(
+      (before.summary.watch_ms[kind] + 30_000) / 60_000,
+    );
+  if (!isDeepStrictEqual(summary.properties.counts, completedCounts))
     throw new Error("Capture lost observed counts.");
   const operations = summary.properties.counts;
+  if (
+    (operations.playback?.live?.watch_minutes ?? 0) < 1 ||
+    operations.playback?.live?.starts !== 1 ||
+    (operations.playback?.vod?.starts ?? 0) < 2 ||
+    (operations.playback?.vod?.errors ?? 0) < 1
+  )
+    throw new Error("Missing expanded playback capture.");
+  for (const action of [
+    "playlist_added",
+    "playlist_refreshed",
+    "favourite_added",
+    "epg_opened",
+    "search_used",
+    "update_seen",
+    "update_dismissed",
+  ] as const)
+    if ((operations.actions?.[action] ?? 0) < 1)
+      throw new Error(`Missing expanded action ${action}.`);
+  if (operations.settings?.autoplay_next !== 1)
+    throw new Error("Missing committed setting capture.");
+  observations["expandedCapture"] = {
+    playback: operations.playback,
+    actions: operations.actions,
+    settings: operations.settings,
+  };
   observations["rates"] = Object.fromEntries(
     (["playback_open", "download_transfer", "update_check"] as const).map((name) => [
       name,
@@ -458,7 +639,38 @@ async function productPaths() {
 try {
   profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-"));
   profiles.push(profile);
-  provider = await startFakeProvider({ channels: 3, titles: 3 });
+  provider = await startFakeProvider({
+    channels: 3,
+    titles: 3,
+    streams: (_channel, out, signal) => {
+      // A continuous fake broadcast is needed to observe a real rounded watch minute. The usual
+      // three-second fixture deliberately stalls, which is useful for recovery tests instead.
+      const stream = spawn(
+        process.env["MR_STREAMER_FFMPEG"] ?? "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-re",
+          "-stream_loop",
+          "-1",
+          "-i",
+          join(desktop, "test/fixtures/h264-aac.mpegts"),
+          "-c",
+          "copy",
+          "-f",
+          "mpegts",
+          "pipe:1",
+        ],
+        { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      broadcasts.add(stream);
+      stream.once("close", () => broadcasts.delete(stream));
+      stream.once("error", () => out.destroy(new Error("Fixture broadcast unavailable.")));
+      stream.stdout.pipe(out);
+      signal.addEventListener("abort", () => stream.kill("SIGTERM"), { once: true });
+    },
+  });
   tmdb = await startFakeTmdb();
   await new Promise<void>((resolve) => capture.listen(0, "127.0.0.1", resolve));
   const address = capture.address();
@@ -636,6 +848,7 @@ try {
   };
   await clean(quit);
   if (provider) await clean(() => provider!.close());
+  for (const broadcast of broadcasts) await clean(() => stop(broadcast, undefined));
   if (tmdb) await clean(() => tmdb!.close());
   if (updateFeed.listening)
     await clean(async () => {
@@ -662,6 +875,7 @@ try {
         status: failure ? "failed" : "passed",
         error: failure instanceof Error ? failure.message : undefined,
         actions,
+        pointerInputs,
         scenario: "analytics",
         build: packagedExecutable ? undefined : build,
         verificationSource: packagedExecutable ? build : undefined,
@@ -670,6 +884,7 @@ try {
         cleanup: {
           appExited,
           fixturesClosed: cleanupErrors.length === 0 && !capture.listening,
+          broadcastsExited: broadcasts.size === 0,
           profileRemoved: (
             await Promise.all(
               profiles.map((owned) =>

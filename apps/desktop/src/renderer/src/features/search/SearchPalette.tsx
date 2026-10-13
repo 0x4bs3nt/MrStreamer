@@ -1,3 +1,4 @@
+import { useSearchUsage } from "../../app/analytics.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Search, Star } from "lucide-react";
@@ -73,6 +74,7 @@ function Palette() {
   // Mounted each time it opens.
   const [query, setQuery] = useState(() => useUi.getState().searchFrom);
   const debounced = useDebounced(query, 120);
+  useSearchUsage("global", debounced, true);
   // Share the Guide's catalogue read so the first name search builds during the typing delay.
   useQuery({ ...queries.searchGroups(), enabled: query.trim() !== "" });
   const channels = useQuery(queries.search(debounced));

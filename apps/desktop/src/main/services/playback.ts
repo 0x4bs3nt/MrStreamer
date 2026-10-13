@@ -674,6 +674,9 @@ export interface Asked {
 export class Playback extends Context.Service<
   Playback,
   {
+    measurement(
+      sessionId: string,
+    ): Effect.Effect<{ kind: "live" | "vod"; closed: AbortSignal } | null>;
     /**
      * Begins what the viewer asked to play or stop next, whichever subscription it is of, and
      * names it: a number later asks outgrow. One stream plays at a time across every
@@ -4055,6 +4058,16 @@ function make(deps: PlaybackDeps) {
           ),
         ),
 
+      measurement: (sessionId: string) =>
+        Effect.sync(() => {
+          const session = sessions.get(sessionId);
+          return session && session.lan === null
+            ? {
+                kind: session.kind === "live" ? ("live" as const) : ("vod" as const),
+                closed: session.closed.signal,
+              }
+            : null;
+        }),
       failure: (sessionId: string) => Effect.sync(() => sessions.get(sessionId)?.failure ?? null),
 
       tracks: (sessionId: string) =>

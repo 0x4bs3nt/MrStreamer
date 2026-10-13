@@ -57,3 +57,33 @@ it("notifies fixed screen entries once through StrictMode renders and overlay ch
     "settings",
   ]);
 });
+
+it("counts search episodes without terms, survives remount/refetch, and resets on clearing or leaving", async () => {
+  ipc.reset();
+  ipc.always("analytics.action", null);
+  useUi.setState({ settings: null, updateDialog: null, searchOpen: false });
+  const { useSearchUsage } = await import("../../src/renderer/src/app/analytics.ts");
+  function Search({ query, active }: { query: string; active: boolean }) {
+    useSearchUsage("movies", query, active);
+    return null;
+  }
+  const container = document.createElement("div");
+  let root = createRoot(container);
+  unmount = () => act(() => root.unmount());
+  const render = (query: string, active = true) =>
+    act(async () =>
+      root.render(createElement(StrictMode, null, createElement(Search, { query, active }))),
+    );
+  await render("");
+  await render("PRIVATE title");
+  await render("PRIVATE title changed");
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await render("PRIVATE title changed");
+  expect(ipc.argsOf("analytics.action")).toEqual(["search_used"]);
+  await render("");
+  await render("ANOTHER private term");
+  await render("ANOTHER private term", false);
+  await render("ANOTHER private term");
+  expect(ipc.argsOf("analytics.action")).toEqual(["search_used", "search_used", "search_used"]);
+});

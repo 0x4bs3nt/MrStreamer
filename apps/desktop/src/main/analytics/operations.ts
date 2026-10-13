@@ -7,7 +7,7 @@ import type { SummaryFailure, SummaryOutcome } from "./summary.ts";
 /** A start returns its generation-bound terminal note. No request data crosses this port. */
 export type OperationObserver = () => (outcome: SummaryOutcome, failure?: SummaryFailure) => void;
 
-function streamFailure(failure: StreamFailure): SummaryFailure {
+export function streamFailure(failure: StreamFailure): SummaryFailure {
   switch (failure.kind) {
     case "network":
       return "network";

@@ -1,3 +1,5 @@
+import type { RemotePlaybackObservers, RemotePlaybackObserver } from "../analytics/observers.ts";
+import { streamFailure, appFailure } from "../analytics/operations.ts";
 // Where playback goes: this computer, or a receiver on the local network, a TV the viewer sends
 // it to with Google Cast or AirPlay.
 //
@@ -40,6 +42,7 @@ import type {
   RemotePlayingTitle,
   RemoteTitle,
 } from "@mrstreamer/contracts/output";
+import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
 import { randomUUID } from "node:crypto";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { StreamFailure } from "@mrstreamer/contracts/playback";
@@ -86,6 +89,7 @@ const REOPENED = "reopened";
 const CLOSED = "closed";
 
 export interface OutputDeps {
+  readonly observePlayback?: RemotePlaybackObservers;
   /** The ways this build reaches receivers: Google Cast, AirPlay, both or none. */
   readonly adapters: readonly ReceiverAdapter[];
   /** This computer's addresses on the local network, likeliest first, when not the system's. */
@@ -111,6 +115,7 @@ export interface Shown {
 
 /** What plays on the receiver, with what this service needs to follow it. */
 interface Playing {
+  readonly measurement: RemotePlaybackObserver | undefined;
   readonly generation: number;
   readonly sessionId: string;
   readonly item: RemoteItem;
@@ -126,6 +131,9 @@ interface Playing {
 
 /** A title opened for the receiver. */
 interface OpenedTitle {
+  readonly measurement: string | null;
+  /** The public open turn that prepared this session, when one was supplied. */
+  readonly turn: number | undefined;
   readonly info: RemoteTitle;
   /** Seconds between the start of the title and where a receiver's clock starts. */
   readonly offset: number;
@@ -176,6 +184,7 @@ export class Output extends Context.Service<
     playChannel(
       channel: OwnedId,
       options: {
+        readonly measurement?: string | undefined;
         readonly variants: readonly string[];
         readonly audio?: number | null;
         readonly audioLanguage?: string | null;
@@ -196,7 +205,7 @@ export class Output extends Context.Service<
       title: TitleRef,
       upstreamUrl: string,
       since: number,
-      asked?: Asked,
+      asked?: Asked & { readonly measurement?: string | undefined },
     ): Effect.Effect<RemoteTitle, Failed>;
     /** Plays an opened title on the receiver from `position` seconds with these tracks. */
     playTitle(
@@ -207,6 +216,9 @@ export class Output extends Context.Service<
         readonly subtitle: number | null;
         readonly paused?: boolean | undefined;
         readonly shown: Shown;
+        readonly measurement?: string | undefined;
+        /** A failed request before this load has a physical observer; fixed category only. */
+        readonly onPreloadFailure?: ((failure: AnalyticsFailure) => void) | undefined;
       },
     ): Effect.Effect<RemoteMedia, Failed>;
     /** Tells the receiver. Does nothing when `generation` is no longer what it plays. */
@@ -262,6 +274,8 @@ function make(deps: OutputDeps) {
       null;
     let playing: Playing | null = null;
     let generation = 0;
+    /** New receiver title requests retire an older load's pre-observer failure callback. */
+    let titleLoadRequest = 0;
     /** Which of this computer's addresses the next load is served on, counted round. */
     let addressTurn = 0;
     /** Titles opened for the receiver, by session. */
@@ -329,6 +343,7 @@ function make(deps: OutputDeps) {
       Effect.gen(function* () {
         const was = playing;
         playing = null;
+        was?.measurement?.stop();
         was?.watch.abort();
         yield* checkpoint(was);
         if (was && close) yield* playback.close(was.sessionId);
@@ -338,6 +353,7 @@ function make(deps: OutputDeps) {
     const mediaFailed = (failure: OutputFailure, stop: boolean) =>
       Effect.gen(function* () {
         const was = playing;
+        was?.measurement?.failure(appFailure({ kind: "output", failure }));
         yield* drop(true);
         if (stop && was && connected) {
           yield* Effect.promise(() => connected!.connection.stop(was.generation).catch(() => {}));
@@ -387,6 +403,7 @@ function make(deps: OutputDeps) {
           const was = connected;
           if (was?.adapter !== adapter || output.kind !== "receiver") return;
           const { receiver } = output;
+          playing?.measurement?.failure(appFailure({ kind: "output", failure: event.failure }));
           return later(
             one(
               Effect.gen(function* () {
@@ -414,6 +431,7 @@ function make(deps: OutputDeps) {
             const stream =
               now.item.kind === "channel" ? yield* playback.failure(now.sessionId) : null;
             if (playing !== now) return;
+            if (stream) now.measurement?.failure(streamFailure(stream));
             yield* drop(true);
             if (output.kind !== "receiver") return;
             output = {
@@ -425,6 +443,15 @@ function make(deps: OutputDeps) {
           }),
         );
       }
+      now.measurement?.state(
+        said.state === "playing"
+          ? "playing"
+          : said.state === "paused"
+            ? "paused"
+            : said.state === "ended"
+              ? "stopped"
+              : "waiting",
+      );
       const before = now.media.state;
       now.media = {
         ...now.media,
@@ -497,12 +524,17 @@ function make(deps: OutputDeps) {
       tracks: Playing["tracks"],
       media: Omit<ReceiverMedia, "generation" | "metadata">,
       shown: Shown,
+      measurement: string | null,
     ) =>
       Effect.gen(function* () {
         const mine = ++generation;
         const watch = new AbortController();
         const offset = title?.offset ?? 0;
         const now: Playing = {
+          measurement: deps.observePlayback?.(
+            item.kind === "channel" ? "live" : "vod",
+            measurement,
+          ),
           generation: mine,
           sessionId,
           item,
@@ -723,6 +755,7 @@ function make(deps: OutputDeps) {
 
     /** Ends what the receiver plays and lets go of it, the session first. */
     const release = Effect.gen(function* () {
+      titleLoadRequest++;
       connecting?.abort();
       yield* drop(true);
       const was = connected;
@@ -796,6 +829,7 @@ function make(deps: OutputDeps) {
       playChannel: (
         channel: OwnedId,
         options: {
+          readonly measurement?: string | undefined;
           readonly variants: readonly string[];
           readonly audio?: number | null;
           readonly audioLanguage?: string | null;
@@ -831,12 +865,19 @@ function make(deps: OutputDeps) {
                 subtitles: false,
               },
               options.shown,
+              options.measurement ?? null,
             );
           }),
         ),
 
-      openTitle: (title: TitleRef, upstreamUrl: string, since: number, asked: Asked = {}) =>
-        one(
+      openTitle: (
+        title: TitleRef,
+        upstreamUrl: string,
+        since: number,
+        asked: Asked & { readonly measurement?: string | undefined } = {},
+      ) => {
+        titleLoadRequest++;
+        return one(
           Effect.gen(function* () {
             const connection = yield* receiver;
             yield* inTurn(asked.turn);
@@ -856,10 +897,17 @@ function make(deps: OutputDeps) {
               subtitles: session.subtitles,
               shows: ["text"],
             };
-            opened.set(session.sessionId, { info, offset: session.offset, since });
+            opened.set(session.sessionId, {
+              info,
+              offset: session.offset,
+              since,
+              measurement: asked.measurement ?? null,
+              turn: asked.turn,
+            });
             return info;
           }),
-        ),
+        );
+      },
 
       playTitle: (
         sessionId: string,
@@ -869,41 +917,64 @@ function make(deps: OutputDeps) {
           readonly subtitle: number | null;
           readonly paused?: boolean | undefined;
           readonly shown: Shown;
+          readonly measurement?: string | undefined;
+          readonly onPreloadFailure?: ((failure: AnalyticsFailure) => void) | undefined;
         },
-      ) =>
-        one(
+      ) => {
+        const request = ++titleLoadRequest;
+        const turn = opened.get(sessionId)?.turn;
+        return one(
           Effect.gen(function* () {
-            const connection = yield* receiver;
-            const title = opened.get(sessionId);
-            const loaded = title
-              ? yield* playback.loadReceiverTitle(sessionId, {
-                  audio: options.audio,
-                  subtitle: options.subtitle,
-                })
-              : null;
-            if (!title || !loaded) {
-              return yield* failed({ kind: "stream", failure: STOPPED });
-            }
-            // The same session with other tracks or from another position: only its load changes.
-            yield* drop(false);
+            const prepared = yield* Effect.gen(function* () {
+              const connection = yield* receiver;
+              const title = opened.get(sessionId);
+              const loaded = title
+                ? yield* playback.loadReceiverTitle(sessionId, {
+                    audio: options.audio,
+                    subtitle: options.subtitle,
+                  })
+                : null;
+              if (!title || !loaded) {
+                return yield* failed({ kind: "stream", failure: STOPPED });
+              }
+              // The same session with other tracks or from another position: only its load changes.
+              yield* drop(false);
+              return { connection, title, loaded };
+            }).pipe(
+              Effect.tapError((failure) =>
+                Effect.gen(function* () {
+                  if (
+                    request !== titleLoadRequest ||
+                    (turn !== undefined && (yield* coordination.passed(turn)))
+                  )
+                    return;
+                  options.onPreloadFailure?.(appFailure(failure.error));
+                }),
+              ),
+            );
             return yield* load(
-              connection,
+              prepared.connection,
               sessionId,
-              { kind: "title", title: title.info.title },
-              title,
-              { audio: options.audio, subtitle: loaded.subtitles ? options.subtitle : null },
+              { kind: "title", title: prepared.title.info.title },
+              prepared.title,
               {
-                url: loaded.url,
+                audio: options.audio,
+                subtitle: prepared.loaded.subtitles ? options.subtitle : null,
+              },
+              {
+                url: prepared.loaded.url,
                 live: false,
-                position: Math.max(0, options.position - title.offset),
+                position: Math.max(0, options.position - prepared.title.offset),
                 paused: options.paused === true,
-                duration: title.info.duration,
-                subtitles: loaded.subtitles,
+                duration: prepared.title.info.duration,
+                subtitles: prepared.loaded.subtitles,
               },
               options.shown,
+              options.measurement ?? prepared.title.measurement,
             );
           }),
-        ),
+        );
+      },
 
       command: (mine: number, command: RemoteCommand) =>
         one(
@@ -917,6 +988,7 @@ function make(deps: OutputDeps) {
               case "pause":
                 return yield* told(() => connection.pause(mine));
               case "seek":
+                now.measurement?.state("seeking");
                 // Where it was before the skip, as the UI's player saves it.
                 yield* checkpoint(now);
                 return yield* told(() =>

@@ -1,3 +1,4 @@
+import { PlaybackObservation, playbackFailure, streamFailure } from "./analytics.ts";
 // The player controller: owns the one video element, the open stream session and the playback state.
 //
 // Every `play` call starts a new selection. Anything that resolves for an older selection is
@@ -235,6 +236,16 @@ export function receiverState(phase: PlayerState["phase"]): ReceiverState | null
   return phase.kind === "playing" && phase.engine === "receiver" ? phase.state : null;
 }
 
+const observation = new PlaybackObservation("live");
+let explicitlySelected: LiveChannel | null = null;
+function selectForWatching(channel: LiveChannel): void {
+  if (!observation.hasRun() || !sameOwned(explicitlySelected, channel)) {
+    if (explicitlySelected && !sameOwned(explicitlySelected, channel))
+      void call("analytics.action", "channel_changed").catch(() => {});
+    explicitlySelected = channel;
+    observation.begin();
+  }
+}
 const video = document.createElement("video");
 video.playsInline = true;
 video.className = "size-full";
@@ -312,6 +323,7 @@ function cancelZap(): void {
 function release(): void {
   if (!current) return;
   if (sameOwned(tuned, store.getState().channel)) channelPlayed += current.engine.played();
+  observation.unbind();
   current.engine.destroy();
   clearSubtitles(video);
   void call("playback.close", { sessionId: current.sessionId }).catch(() => {});
@@ -381,6 +393,7 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     return;
   }
   const mine = ++selection;
+  const measurement = preview ? null : observation.measurement();
   const first = recovery.reconnects === 0;
   // A stream nobody listens to, such as one a channel switch opens just after leaving Watch, is
   // a preview: it doesn't reconnect against another device.
@@ -405,7 +418,9 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
       // The sound in the viewer's language, when the channel has it; the original is its own.
       audioLanguage: preferred && preferred !== ORIGINAL_SOUND ? preferred : null,
     };
+    if (!preview && mine !== selection) return;
     session = await call("playback.open", {
+      ...(measurement ? { measurement } : {}),
       channel: ownedId(channel),
       decoders: [...decoders],
       repair,
@@ -416,6 +431,7 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     });
   } catch (cause) {
     if (mine === selection) {
+      observation.failure(playbackFailure(appError(cause)));
       store.setState({ phase: failed({ kind: "app", error: appError(cause) }) });
     }
     return;
@@ -426,8 +442,12 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     return;
   }
 
+  observation.bind(session.sessionId);
   let engine = createEngine(session.format, video, session.url, sound);
   current = { sessionId: session.sessionId, engine };
+  engine.onPlayback?.((state) => {
+    if (mine === selection) observation.note(state);
+  });
   engine.onPrivateData((pid, data, at) => {
     if (mine === selection) showSubtitles(pid, data, at);
   });
@@ -458,6 +478,9 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     engine.destroy();
     engine = nativeEngine(video, session.url);
     current = { sessionId: session.sessionId, engine };
+    engine.onPlayback?.((state) => {
+      if (mine === selection) observation.note(state);
+    });
     failure = await startFailure(engine);
   }
   if (mine !== selection) return;
@@ -495,6 +518,7 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
  */
 async function startOnReceiver(channel: LiveChannel): Promise<void> {
   const mine = ++selection;
+  const measurement = observation.measurement();
   const first = recovery.reconnects === 0;
   quiet = false;
   if (first) tune(channel);
@@ -511,7 +535,10 @@ async function startOnReceiver(channel: LiveChannel): Promise<void> {
   try {
     const { audioId } = store.getState();
     const preferred = (await call("preferences.get").catch(() => null))?.audioLanguage;
+    if (mine !== selection) return;
+    observation.remote();
     const media = await call("output.playChannel", {
+      ...(measurement ? { measurement } : {}),
       channel: ownedId(channel),
       name: channel.title,
       ...(audioId !== null ? { audio: audioId } : {}),
@@ -684,6 +711,9 @@ async function recover(
     await start(channel, true);
     return;
   }
+  observation.failure(
+    upstream ? streamFailure(upstream) : error.kind === "network" ? "network" : "unsupported",
+  );
   const delay = retries(problem) ? nextReconnect() : null;
   release();
   if (delay === null) {
@@ -986,6 +1016,7 @@ export const player = {
   },
 
   play(channel: LiveChannel): void {
+    selectForWatching(channel);
     liveStarts?.();
     cancelZap();
     store.setState({ stopped: false });
@@ -997,10 +1028,12 @@ export const player = {
    * a failure reconnects as usual.
    */
   watch(channel: LiveChannel): void {
-    const { channel: current, phase } = store.getState();
+    const { channel: selected, phase } = store.getState();
     const open =
       phase.kind === "playing" || phase.kind === "tuning" || phase.kind === "reconnecting";
-    if (sameOwned(current, channel) && open && !zapTimer) {
+    if (sameOwned(selected, channel) && open && !zapTimer) {
+      selectForWatching(channel);
+      if (current) observation.bind(current.sessionId);
       liveStarts?.();
       quiet = false;
       store.setState({ stopped: false });
@@ -1038,6 +1071,7 @@ export const player = {
    */
   setAudible(audible: boolean): void {
     quiet = !audible;
+    observation.setEligible(audible);
     if (store.getState().audible === audible) return;
     store.setState({ audible });
     applyVolume();
@@ -1048,6 +1082,7 @@ export const player = {
    * opens once the viewer stops switching for a moment.
    */
   zap(channel: LiveChannel): void {
+    selectForWatching(channel);
     liveStarts?.();
     cancelZap();
     selection++;
@@ -1082,6 +1117,8 @@ export const player = {
 
   /** Stops the channel. On a receiver it ends the stream there and keeps the receiver. */
   stop(): void {
+    observation.end();
+    explicitlySelected = null;
     if (onReceiver) {
       const { load } = onReceiver;
       cancelZap();
@@ -1102,6 +1139,8 @@ export const player = {
    * forgotten, as the title takes its place there.
    */
   makeWay(): void {
+    observation.end();
+    explicitlySelected = null;
     if (!onReceiver) return player.suspend();
     cancelZap();
     selection++;
@@ -1133,6 +1172,8 @@ export const player = {
   /** Takes up a channel a receiver already plays, as when the window opens while it does. */
   adopt(channel: LiveChannel, media: RemoteMedia): void {
     if (onReceiver) return;
+    explicitlySelected = channel;
+    observation.adoptRemote();
     selection++;
     tune(channel);
     recovery = UNTRIED;
@@ -1143,6 +1184,8 @@ export const player = {
 
   /** Stops and forgets the selected channel, for when the subscription changes. */
   reset(): void {
+    observation.end();
+    explicitlySelected = null;
     onReceiver = null;
     player.suspend();
     tuned = null;

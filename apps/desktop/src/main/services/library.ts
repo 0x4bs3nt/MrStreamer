@@ -1,3 +1,4 @@
+import type { UsageObservers } from "../analytics/observers.ts";
 // The live catalogue: each saved subscription's, fetched from its provider and cached on disk,
 // and all of them together as the UI asks for them over IPC. Every channel and category says
 // which subscription lists it, and a request names its channels and categories the same way. A
@@ -147,6 +148,7 @@ export interface ChannelFilter {
 }
 
 export interface LibraryOptions {
+  readonly usage?: UsageObservers | undefined;
   /** Waits before a confirming fetch. Tests make it instant. */
   readonly confirmDelay?: Duration.Input;
 }
@@ -276,6 +278,7 @@ function make(options: LibraryOptions) {
 
     const fetchAndStore = (source: Source, playlist?: PlaylistRefresh) =>
       Effect.gen(function* () {
+        const refreshed = options.usage?.action("playlist_refreshed");
         const fetched = yield* complete(source, yield* cached(source), playlist);
         // Dropped when the subscription went, or its login changed, while it downloaded.
         if (!(yield* subscriptions.stands(source))) return yield* switched;
@@ -295,6 +298,7 @@ function make(options: LibraryOptions) {
         failures.delete(source.id);
         const status = yield* statusNow(source);
         yield* PubSub.publish(updates, status);
+        refreshed?.();
         return status;
       }).pipe(
         fetchOne,

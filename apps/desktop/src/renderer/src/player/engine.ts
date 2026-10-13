@@ -1,3 +1,5 @@
+import type { AnalyticsPlaybackState } from "@mrstreamer/contracts/analytics";
+import { observeMediaPlayback } from "./analytics.ts";
 // Playback engines behind one interface, so the rest of the UI only ever talks to `Engine`. The
 // main process delivers each stream in codecs these engines decode; see src/main/playback.
 import Hls from "hls.js";
@@ -51,6 +53,7 @@ export interface StreamInfo {
 
 /** One stream playing in a video element. Create one per stream. */
 export interface Engine {
+  onPlayback?(listener: (state: AnalyticsPlaybackState) => void): void;
   readonly name: EngineName;
   /** Resolves when the first frame (or for radio, the first audio) plays. Rejects with an `EngineError`. */
   readonly started: Promise<void>;
@@ -254,6 +257,7 @@ function failedEngine(name: EngineName, video: HTMLVideoElement, error: EngineEr
  * data piling up without playback means the format is unplayable, no data means the network.
  */
 function lifecycle(video: HTMLVideoElement, teardown: () => void) {
+  const observation = observeMediaPlayback(video);
   let settled = false;
   let finished = false;
   let destroyed = false;
@@ -350,6 +354,7 @@ function lifecycle(video: HTMLVideoElement, teardown: () => void) {
   video.addEventListener("error", onError);
 
   function detach(): void {
+    observation.stop();
     clearInterval(watchdog);
     video.removeEventListener("error", onError);
   }
@@ -357,6 +362,7 @@ function lifecycle(video: HTMLVideoElement, teardown: () => void) {
   return {
     fail,
     handle: {
+      onPlayback: observation.listen,
       started,
       onFailure(listener: (error: EngineError) => void): void {
         failureListener = listener;

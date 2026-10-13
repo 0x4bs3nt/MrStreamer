@@ -1,3 +1,4 @@
+import { useSearchUsage } from "../../app/analytics.ts";
 // Live TV: the lists on the left, the chosen list's channels with what's on now and next, and the
 // current stream, muted, on top. A click on a channel opens Watch; Back returns here unchanged.
 //   Up and Down move the selection; PageUp, PageDown, Home and End jump. Enter watches. Right opens
@@ -79,6 +80,13 @@ export function GuidePage({ active }: { active: boolean }) {
   const [focus, setFocus] = useState<"lists" | "channels">("channels");
   /** The channel whose schedule is open, by its `ownedKey`. */
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const previousSchedule = useRef<string | null>(null);
+  useEffect(() => {
+    const shown = expandedKey;
+    if (active && shown && shown !== previousSchedule.current)
+      void call("analytics.action", "epg_opened").catch(() => {});
+    previousSchedule.current = shown;
+  }, [active, expandedKey]);
 
   const lastCategoryTitle = useRef<string>("");
   if (list.kind === "category" && categoryMap.has(ownedKey(list.category)))
@@ -111,6 +119,7 @@ export function GuidePage({ active }: { active: boolean }) {
   const setText = (text: string) => setTyped({ key, text });
   const search = useListSearch(list, channels, text);
   const searching = search.query !== "";
+  useSearchUsage("live", search.query, active);
   const field = useRef<HTMLInputElement>(null);
 
   const ordered = list.kind === "favourites";

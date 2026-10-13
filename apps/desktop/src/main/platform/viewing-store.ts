@@ -1,3 +1,4 @@
+import type { UsageObservers } from "../analytics/observers.ts";
 // The viewing record on disk, in the SQLite database it shares with the watchlist (database.ts):
 // the events in order, the state they add up to per account, one row per movie or episode played,
 // one per episode marked by hand and one per marked series, with the episodes it listed and what
@@ -350,24 +351,30 @@ const TitleRowShape = type({
 });
 
 /** The viewing store, on the database the runtime keeps open. */
-export const viewingStoreLayer: Layer.Layer<ViewingStore, never, Database> = Layer.effect(
-  ViewingStore,
-  Effect.gen(function* () {
-    const opened = yield* Database;
-    if ("failure" in opened) return closed(opened.failure);
-    const { db } = opened;
-    return yield* Effect.try(() => {
-      prepare(db);
-      return storeOn(db);
-    }).pipe(
-      Effect.catchTag("UnknownError", (failure) =>
-        Effect.logWarning("[viewing] the record can't be read", failure.cause).pipe(
-          Effect.as(closed(String(failure.cause))),
+export const viewingStoreLayer = observedViewingStoreLayer();
+
+export function observedViewingStoreLayer(
+  usage?: UsageObservers,
+): Layer.Layer<ViewingStore, never, Database> {
+  return Layer.effect(
+    ViewingStore,
+    Effect.gen(function* () {
+      const opened = yield* Database;
+      if ("failure" in opened) return closed(opened.failure);
+      const { db } = opened;
+      return yield* Effect.try(() => {
+        prepare(db);
+        return storeOn(db, usage);
+      }).pipe(
+        Effect.catchTag("UnknownError", (failure) =>
+          Effect.logWarning("[viewing] the record can't be read", failure.cause).pipe(
+            Effect.as(closed(String(failure.cause))),
+          ),
         ),
-      ),
-    );
-  }),
-);
+      );
+    }),
+  );
+}
 
 /** Makes the record's tables, brings older ones up to date, and rebuilds the state when due. */
 function prepare(db: DatabaseSync): void {
@@ -539,7 +546,7 @@ function remembered() {
   return { view, rows, series };
 }
 
-function storeOn(db: DatabaseSync): ViewingStore["Service"] {
+function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Service"] {
   const statements = {
     state: db.prepare("select * from state where account = ?"),
     event: db.prepare(
@@ -824,14 +831,29 @@ function storeOn(db: DatabaseSync): ViewingStore["Service"] {
     marksIn: (account, seriesIds) => attempt(() => look.marksIn(account, seriesIds)),
     commit: ({ accounts, commandId, at, decide }) =>
       attempt(() => {
+        let favouriteAdded = false;
+        const added = usage?.action("favourite_added");
         written(() => {
           if (statements.done.get(commandId)) return [];
           const events = decide(read(accounts), look);
           // Thrown, so the transaction ends with nothing written.
           if (events instanceof Failed) throw events;
+          // Reordering writes remove/add pairs. Only a net addition is a viewer action.
+          const removed = new Map<string, Set<string>>();
+          for (const { account, event } of events) {
+            if (event.type !== "favourite-removed") continue;
+            const channels = removed.get(account) ?? new Set<string>();
+            channels.add(event.channelId);
+            removed.set(account, channels);
+          }
+          favouriteAdded = events.some(
+            ({ account, event }) =>
+              event.type === "favourite-added" && !removed.get(account)?.has(event.channelId),
+          );
           statements.receipt.run(commandId);
           return append(commandId, at, events);
         });
+        if (favouriteAdded) added?.();
         return read(accounts);
       }),
     importOnce: ({ account, at, events }) =>

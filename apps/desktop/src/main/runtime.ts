@@ -1,3 +1,4 @@
+import type { UsageObservers } from "./analytics/observers.ts";
 // The main process's services, assembled once from Layers. The app makes one runtime from
 // `mainLayer` at start and disposes of it when quitting: that stops background work and downloads,
 // closes streams and the proxy, and closes the database. Their diagnostics go to a log in the
@@ -22,7 +23,7 @@ import { guideStoreLayer } from "./platform/guide-store.ts";
 import type { Secrets } from "./platform/secrets.ts";
 import { VerifiedFiles, verifiedFilesLayer } from "./platform/verified-files.ts";
 import { SavedSubtitles, savedSubtitlesLayer } from "./platform/saved-subtitles.ts";
-import { viewingStoreLayer } from "./platform/viewing-store.ts";
+import { viewingStoreLayer, observedViewingStoreLayer } from "./platform/viewing-store.ts";
 import { xmltvFetch } from "./providers/xmltv.ts";
 import { watchlistStoreLayer } from "./platform/watchlist-store.ts";
 import { Downloads, type DownloadsDeps } from "./services/downloads.ts";
@@ -42,6 +43,7 @@ import { Watchlist } from "./services/watchlist.ts";
 
 export interface MainConfig {
   readonly dataDir: string;
+  readonly usage?: UsageObservers;
   readonly secrets: Secrets;
   readonly userAgent: string;
   /** The ffmpeg that converts streams, or null when this build has none. */
@@ -86,11 +88,12 @@ export type MainServices =
 /** Every main-process service, with the app's adapters for their ports. */
 export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
   const { dataDir } = config;
-  const accounts = Settings.layer(dataDir).pipe(
+  const accounts = Settings.layer(dataDir, config.usage).pipe(
     Layer.provideMerge(
       Subscriptions.layer({
         dataDir,
         secrets: config.secrets,
+        usage: config.usage,
         providerOptions: { userAgent: config.userAgent },
       }),
     ),
@@ -99,7 +102,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
   const verifiedFiles = verifiedFilesLayer.pipe(Layer.provide(database));
   const savedSubtitles = savedSubtitlesLayer.pipe(Layer.provide(database));
   const services = Layer.mergeAll(
-    Library.layer(),
+    Library.layer({ usage: config.usage }),
     OnDemand.layer({
       dataDir,
       userAgent: config.userAgent,
@@ -113,7 +116,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
       ffmpeg: config.ffmpeg,
       ffprobe: config.ffprobe ?? null,
     }),
-    Updates.layer({ dataDir, ...config.updates }),
+    Updates.layer({ dataDir, ...config.updates, usage: config.usage }),
     Licences.layer(appNotices()),
     SubtitleAccounts.layer(dataDir, config.secrets),
   ).pipe(
@@ -227,9 +230,10 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     ),
   );
   // One connection for viewing, saved titles, verified tracks and downloaded subtitle cues.
-  const stores = Layer.mergeAll(viewingStoreLayer, watchlistStoreLayer).pipe(
-    Layer.provide(database),
-  );
+  const stores = Layer.mergeAll(
+    config.usage ? observedViewingStoreLayer(config.usage) : viewingStoreLayer,
+    watchlistStoreLayer,
+  ).pipe(Layer.provide(database));
   const viewing = ViewingRecord.layer.pipe(
     Layer.provide(
       Layer.mergeAll(

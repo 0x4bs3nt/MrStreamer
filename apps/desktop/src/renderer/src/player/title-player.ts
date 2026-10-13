@@ -1,3 +1,4 @@
+import { PlaybackObservation, playbackFailure, streamFailure } from "./analytics.ts";
 // The controller for movies and episodes: which title is open, where it is, its tracks, and
 // what the viewer does with it. It plays in the same element as live TV (see player.ts): opening a
 // title stops the live stream, and starting a live channel closes the title, so the provider sees
@@ -281,6 +282,7 @@ let session: { readonly id: string; readonly url: string } | null = null;
  * and the main process saves a receiver's progress with it too.
  */
 let openedAt = 0;
+const observation = new PlaybackObservation("vod");
 let engine: TitleEngine | null = null;
 /** Voids the runs of an earlier open or run, like the live player's selection. */
 let generation = 0;
@@ -524,6 +526,7 @@ function playAt(speed: number): void {
 }
 
 function stopEngine(): void {
+  observation.unbind();
   engine?.destroy();
   engine = null;
   // Its subtitles went with it, and with them anything to say of them.
@@ -589,6 +592,10 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
     paused,
   });
   engine = started;
+  observation.bind(session.id);
+  started.onPlayback?.((state) => {
+    if (mine === generation) observation.note(state);
+  });
   if (store.getState().downloadedOn) paintDownloaded();
   started.onSubtitles((subtitleState) => {
     if (mine === generation && !store.getState().downloadedOn) store.setState({ subtitleState });
@@ -612,6 +619,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
   }, CHECKPOINT_MS);
   started.onEnded(() => {
     if (mine !== generation) return;
+    observation.end();
     const { duration: length } = store.getState();
     store.setState({ phase: { kind: "ended" }, position: length ?? started.position() });
     save();
@@ -641,8 +649,13 @@ async function recover(
     ? await call("playback.failure", { sessionId: session.id }).catch(() => null)
     : null;
   if (mine !== generation) return;
+  const fallback = !upstream && !wasPlaying && !convertSound && error.kind !== "network";
+  if (!fallback)
+    observation.failure(
+      upstream ? streamFailure(upstream) : error.kind === "network" ? "network" : "unsupported",
+    );
   stopEngine();
-  if (!upstream && !wasPlaying && !convertSound && error.kind !== "network") {
+  if (fallback) {
     convertSound = true;
     await run(position, attempt, paused);
     return;
@@ -719,9 +732,15 @@ async function openOnReceiver(
   receiver = { sessionId: null, load: null, subtitle: null, paused };
   confirmedMedia = null;
   try {
+    const measurement = observation.measurement();
+    observation.remote();
     const [opened, preferences] = await Promise.all([
       // The play the viewer began, wherever it played until now.
-      call("output.openTitle", { title: now.title, since: openedAt }),
+      call("output.openTitle", {
+        title: now.title,
+        since: openedAt,
+        ...(measurement ? { measurement } : {}),
+      }),
       call("preferences.get").catch((): Preferences | null => null),
     ]);
     if (mine !== generation || !receiver) return;
@@ -772,8 +791,12 @@ async function loadOnReceiver(start: number, paused = false): Promise<void> {
   confirmedMedia = null;
   store.setState({ phase: { kind: "starting" }, position: start, confirmed: null });
   try {
+    const measurement = observation.measurement();
+    if (mine !== generation || !receiver) return;
+    observation.remote();
     const media = await call("output.playTitle", {
       sessionId: receiver.sessionId,
+      ...(measurement ? { measurement } : {}),
       position: start,
       audio: audioId,
       subtitle: subtitle?.id ?? null,
@@ -971,9 +994,11 @@ async function moveHere(): Promise<void> {
   convertSound = false;
   store.setState({ phase: { kind: "opening" }, shows: null, confirmed: null });
   try {
+    const measurement = observation.measurement();
     const opened = await call("playback.openTitle", {
       title: now.title,
       decoders: [...titleDecoders],
+      ...(measurement ? { measurement } : {}),
     });
     if (mine !== generation) {
       void call("playback.close", { sessionId: opened.sessionId }).catch(() => {});
@@ -1110,9 +1135,10 @@ export const titlePlayer = {
   /**
    * Opens a title and plays it from `from` seconds: the resume position, or 0 to start at the
    * beginning. A copy goes on from where main kept it as it opens instead, with `from` shown until
-   * then. Closes whatever played before, live or on demand. `continued` is for `playNext`.
+   * then. Closes whatever played before, live or on demand. `continued` is for `playNext`;
+   * `retry` preserves the logical measurement when a failed open left no physical session.
    */
-  async open(now: NowPlaying, from: number, continued = false): Promise<void> {
+  async open(now: NowPlaying, from: number, continued = false, retry = false): Promise<void> {
     const before = store.getState();
     const sameSeries =
       before.now?.kind === "provider" &&
@@ -1120,10 +1146,11 @@ export const titlePlayer = {
       before.now.title.kind === "episode" &&
       now.title.kind === "episode" &&
       sameOwned(seriesOf(before.now.title), seriesOf(now.title));
-    titlePlayer.close();
+    titlePlayer.close(retry);
     // Subtitle timing belongs to a file; a new title starts on time.
     setSubtitleDelay(video, 0);
     player.makeWay();
+    if (!retry) observation.begin();
     const mine = ++generation;
     openedAt = Date.now();
     play++;
@@ -1141,13 +1168,26 @@ export const titlePlayer = {
     });
     // Which episode comes next, the record says: none is offered until it has.
     void refreshNext();
-    if (outputs.remote() && now.kind === "provider") return openOnReceiver(mine, now, from, null);
+    const measurement = observation.measurement();
+    if (mine !== generation) return;
+    if (outputs.remote() && now.kind === "provider") {
+      observation.remote();
+      return openOnReceiver(mine, now, from, null);
+    }
     try {
       // The languages chosen last, fresh: a choice in the title before counts.
       const [opened, preferences] = await Promise.all([
         now.kind === "provider"
-          ? call("playback.openTitle", { title: now.title, decoders: [...titleDecoders] })
-          : call("playback.openCopy", { copy: now.copy, decoders: [...titleDecoders] }),
+          ? call("playback.openTitle", {
+              title: now.title,
+              decoders: [...titleDecoders],
+              ...(measurement ? { measurement } : {}),
+            })
+          : call("playback.openCopy", {
+              copy: now.copy,
+              decoders: [...titleDecoders],
+              ...(measurement ? { measurement } : {}),
+            }),
         call("preferences.get").catch((): Preferences | null => null),
       ]);
       if (mine !== generation) {
@@ -1188,6 +1228,7 @@ export const titlePlayer = {
     } catch (cause) {
       if (mine !== generation) return;
       const error = appError(cause);
+      observation.failure(playbackFailure(error));
       store.setState({
         phase: {
           kind: "failed",
@@ -1209,6 +1250,10 @@ export const titlePlayer = {
     if ((!session && !receiver?.sessionId) || phase.kind === "opening") return;
     const target = Math.max(0, Math.min(position, (duration ?? Infinity) - 1));
     stopCountdown();
+    if (phase.kind === "ended") {
+      observation.begin();
+      if (session && !receiver) observation.bind(session.id);
+    }
     if (receiver) {
       // A receiver that played to the end, or was stopped, holds nothing to skip in.
       if (phase.kind === "ended" || phase.kind === "failed" || receiver.load === null) {
@@ -1276,7 +1321,7 @@ export const titlePlayer = {
       return void openOnReceiver(++generation, now, position, { audioId, subtitle });
     }
     if (session) void run(position);
-    else void titlePlayer.open(now, position, continued);
+    else void titlePlayer.open(now, position, continued, true);
   },
 
   /**
@@ -1559,6 +1604,7 @@ export const titlePlayer = {
     media: RemoteMedia,
   ): void {
     if (store.getState().now) return;
+    observation.adoptRemote();
     generation++;
     play++;
     openedAt = playing.since;
@@ -1586,7 +1632,8 @@ export const titlePlayer = {
    * Saves how far the title got, then closes it and its provider connection. One that plays on a
    * receiver is only let go of here: the receiver plays on, or what is played next takes its place.
    */
-  close(): void {
+  close(keepObservation = false): void {
+    if (!receiver && !keepObservation) observation.end();
     const { now, phase } = store.getState();
     if (!now) return;
     if (receiver) {

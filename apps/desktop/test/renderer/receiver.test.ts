@@ -411,8 +411,16 @@ describe("a movie with a receiver connected", () => {
 
     expect(Date.now() - began).toBe(180_000);
     expect(ipc.argsOf("output.openTitle")).toEqual([
-      { title: movieRef, since: began },
-      { title: movieRef, since: began },
+      {
+        title: movieRef,
+        since: began,
+        measurement: ipc.argsOf("analytics.playbackBegin")[0]!.measurement,
+      },
+      {
+        title: movieRef,
+        since: began,
+        measurement: ipc.argsOf("analytics.playbackBegin")[0]!.measurement,
+      },
     ]);
     const saved = ipc.argsOf("viewing.recordProgress");
     expect(saved.length).toBeGreaterThan(1);
@@ -463,8 +471,16 @@ describe("a movie with a receiver connected", () => {
     // as the play the viewer began a minute ago.
     await emit(connected());
     expect(ipc.argsOf("output.openTitle")).toEqual([
-      { title: movieRef, since: began },
-      { title: movieRef, since: began },
+      {
+        title: movieRef,
+        since: began,
+        measurement: ipc.argsOf("analytics.playbackBegin")[0]!.measurement,
+      },
+      {
+        title: movieRef,
+        since: began,
+        measurement: ipc.argsOf("analytics.playbackBegin")[0]!.measurement,
+      },
     ]);
     await act(async () => opened.resolve(remoteTitle("r2", movieRef)));
     expect(ipc.argsOf("output.playTitle").at(-1)).toMatchObject({
@@ -700,8 +716,13 @@ describe("a movie whose TV another takes the place of", () => {
   });
 
   it("stays at its end there, and plays again from the start", async () => {
+    const originalToken = "11111111-1111-4111-8111-111111111111";
+    const replayToken = "22222222-2222-4222-8222-222222222222";
+    ipc.always("analytics.playbackBegin", originalToken);
     await show(TitleWatch);
     const item = await onReceiver(movieNow(movie, null), 120, 1);
+    const original = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
+    expect(ipc.argsOf("output.playTitle").at(-1)?.measurement).toEqual(original);
     await emit(connected(said(1, item, "ended", 3600, 3600)));
 
     const opened = ipc.hold("output.openTitle");
@@ -711,8 +732,16 @@ describe("a movie whose TV another takes the place of", () => {
     expect(text()).toContain("Finished");
     expect(ipc.argsOf("output.playTitle")).toHaveLength(1);
 
+    const preparations = ipc.argsOf("output.openTitle").length;
+    ipc.always("analytics.playbackBegin", replayToken);
     await press("Play again");
-    expect(ipc.argsOf("output.playTitle").at(-1)).toMatchObject({ sessionId: "b1", position: 0 });
+    expect(ipc.argsOf("output.playTitle").at(-1)).toMatchObject({
+      sessionId: "b1",
+      position: 0,
+      measurement: ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement,
+    });
+    expect(ipc.argsOf("output.playTitle").at(-1)?.measurement?.control).not.toBe(original.control);
+    expect(ipc.argsOf("output.openTitle")).toHaveLength(preparations);
   });
 });
 
@@ -754,7 +783,13 @@ describe("an episode on a receiver", () => {
 
     expect(text()).toContain("The rest is watched");
     expect(text()).not.toContain("Plays in");
-    expect(ipc.argsOf("output.openTitle")).toEqual([{ title: item.title, since: began }]);
+    expect(ipc.argsOf("output.openTitle")).toEqual([
+      {
+        title: item.title,
+        since: began,
+        measurement: ipc.argsOf("analytics.playbackBegin")[0]!.measurement,
+      },
+    ]);
     expect(ipc.argsOf("viewing.finishSeries")).toMatchObject([{ since: began }]);
   });
 

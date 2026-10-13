@@ -1,6 +1,6 @@
 import { type } from "arktype";
 import { BuildProperties } from "./properties.ts";
-import { SummaryCounts, SummaryRecord } from "./summary.ts";
+import { WireSummaryCounts, SummaryRecord } from "./summary.ts";
 
 export const ProfileOrigin = type("'fresh' | 'upgrading' | 'unknown'");
 export type ProfileOrigin = typeof ProfileOrigin.infer;
@@ -37,7 +37,7 @@ export const CaptureEvent = Envelope.merge({
       event: "'app_summary_day'",
       properties: Properties.merge({
         summary_date: /^\d{4}-\d{2}-\d{2}$/,
-        counts: SummaryCounts,
+        counts: WireSummaryCounts,
       }).onUndeclaredKey("delete"),
     }).onUndeclaredKey("delete"),
   );

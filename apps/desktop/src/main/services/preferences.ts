@@ -1,3 +1,7 @@
+import { homeRows } from "@mrstreamer/core/home/rows";
+import { isDeepStrictEqual } from "node:util";
+import type { UsageObservers } from "../analytics/observers.ts";
+import { DEFAULT_LIVE_QUALITY, DEFAULT_SUBTITLE_LOOK } from "@mrstreamer/contracts/preferences";
 // Viewing settings in preferences.json. Two kinds share the file, as they always have, so the
 // newest stable release reads and writes it too. Preferences hold whichever subscription plays:
 // volume, mute, languages, the quality live channels start in. What the viewer left a subscription
@@ -74,10 +78,11 @@ export class Settings extends Context.Service<
   }
 >()("mrstreamer/Settings") {
   /** Settings in `dataDir`. */
-  static readonly layer = (dataDir: string) => Layer.effect(Settings, make(dataDir));
+  static readonly layer = (dataDir: string, usage?: UsageObservers) =>
+    Layer.effect(Settings, make(dataDir, usage));
 }
 
-function make(dataDir: string) {
+function make(dataDir: string, usage?: UsageObservers) {
   return Effect.gen(function* () {
     const subscriptions = yield* Subscriptions;
     const path = join(dataDir, "preferences.json");
@@ -98,9 +103,12 @@ function make(dataDir: string) {
     /** Applies a change to the file and writes it. Only runs while holding `one`. */
     const applied = (apply: (previous: Stored) => Stored) =>
       Effect.gen(function* () {
-        const next = apply(yield* stored);
+        const previous = yield* stored;
+        const next = apply(previous);
+        const changed = preferenceChanges(previous, next).map((key) => usage?.setting(key));
         yield* Effect.promise(() => writeJsonFile(path, next));
         current = next;
+        for (const note of changed) note?.();
         return next;
       });
 
@@ -226,4 +234,33 @@ function ofOriginal({
     ...(titleVersions ? { titleVersions } : {}),
     ...(channelVariants ? { channelVariants } : {}),
   };
+}
+
+/** Compare effective defaults inside the file serializer. Values never leave Settings. */
+function preferenceChanges(before: Stored, after: Stored) {
+  const keys = [
+    [
+      "interface_language",
+      before.interfaceLanguage ?? "system",
+      after.interfaceLanguage ?? "system",
+    ],
+    ["audio_language", before.audioLanguage ?? null, after.audioLanguage ?? null],
+    ["subtitle_language", before.subtitleLanguage ?? null, after.subtitleLanguage ?? null],
+    ["title_language", before.titleLanguage ?? "en", after.titleLanguage ?? "en"],
+    [
+      "live_quality",
+      before.liveQuality ?? DEFAULT_LIVE_QUALITY,
+      after.liveQuality ?? DEFAULT_LIVE_QUALITY,
+    ],
+    ["autoplay_next", before.autoplayNext ?? true, after.autoplayNext ?? true],
+    [
+      "subtitle_look",
+      before.subtitleLook ?? DEFAULT_SUBTITLE_LOOK,
+      after.subtitleLook ?? DEFAULT_SUBTITLE_LOOK,
+    ],
+    ["home_rows", homeRows(before.homeRows), homeRows(after.homeRows)],
+  ] as const;
+  return keys
+    .filter(([, previous, next]) => !isDeepStrictEqual(previous, next))
+    .map(([key]) => key);
 }

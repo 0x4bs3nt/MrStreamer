@@ -15,9 +15,15 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-/** One handler per IPC method. A handler fails with `Failed` to answer with a specific error. */
+/**
+ * One handler per IPC method. `frame` associates observations with the current main frame only;
+ * it is derived by main, never supplied by the renderer or captured. `Failed` answers a typed error.
+ */
 export type IpcHandlers = {
-  readonly [M in IpcMethod]: (input: IpcInput<M>) => Effect.Effect<IpcOutput<M>, Failed>;
+  readonly [M in IpcMethod]: (
+    input: IpcInput<M>,
+    frame: string | null,
+  ) => Effect.Effect<IpcOutput<M>, Failed>;
 };
 
 /**
@@ -34,12 +40,18 @@ export function registerIpc(
     // TypeScript cannot pair `ipcInputs[method]` with `handlers[method]` inside a loop over all
     // methods, so the loop uses erased types. `IpcHandlers` keeps each handler fully typed.
     const schema: () => (data: unknown) => unknown = ipcInputs[method];
-    const handler = handlers[method] as (input: unknown) => Effect.Effect<unknown, Failed>;
+    const handler = handlers[method] as (
+      input: unknown,
+      frame: string | null,
+    ) => Effect.Effect<unknown, Failed>;
     // Built on the method's first call, not while the app starts.
     let validate: ((data: unknown) => unknown) | null = null;
 
     ipcMain.handle(method, async (event, raw: unknown): Promise<Result<unknown>> => {
-      if (!isTrusted(event.sender)) {
+      if (
+        !isTrusted(event.sender) ||
+        (method.startsWith("analytics.") && event.senderFrame !== event.sender.mainFrame)
+      ) {
         return {
           ok: false,
           error: { kind: "unexpected", detail: "IPC call from an unknown window." },
@@ -50,11 +62,21 @@ export function registerIpc(
       if (input instanceof type.errors) {
         return {
           ok: false,
-          error: { kind: "invalid-input", detail: `${method}: ${input.summary}` },
+          error: {
+            kind: "invalid-input",
+            detail: method.startsWith("analytics.")
+              ? "Invalid analytics observation."
+              : `${method}: ${input.summary}`,
+          },
         };
       }
       const exit = await run(
-        handler(input).pipe(
+        handler(
+          input,
+          event.senderFrame && event.senderFrame === event.sender.mainFrame
+            ? `${event.senderFrame.processId}:${event.senderFrame.routingId}`
+            : null,
+        ).pipe(
           Effect.onExit((exit) =>
             Exit.isSuccess(exit) || closing(exit)
               ? Effect.void

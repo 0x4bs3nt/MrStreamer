@@ -1,3 +1,4 @@
+import { useSearchUsage } from "../../app/analytics.ts";
 // Movies or Series: tabs under the title bar, like Hulu and Apple TV. For you leads with a
 // featured title, what's being watched, titles like the last one and the collections that suit
 // the viewer's language; New gathers what was added; Genres and Services are pages of tiles; 4K
@@ -138,6 +139,8 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
   ];
 
   const searching = place.query.trim() !== "";
+  const measuredQuery = useDebounced(place.query.trim(), 120);
+  useSearchUsage(kind === "movie" ? "movies" : "series", searching ? measuredQuery : "", active);
   // Escape leaves an open collection, or the search, for the tab, one layer at a time.
   useEffect(() => {
     if (!active || (!place.collection && !searching)) return;

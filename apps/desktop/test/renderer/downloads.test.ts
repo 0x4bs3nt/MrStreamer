@@ -233,7 +233,13 @@ describe("with no subscription saved", () => {
     const opened = ipc.hold("playback.openCopy");
     await click(button(app, "Watch offline"));
     await until(() => app.querySelector("[data-view=title]") !== null);
-    expect(ipc.argsOf("playback.openCopy")).toEqual([{ copy: "d1", decoders: expect.any(Array) }]);
+    expect(ipc.argsOf("playback.openCopy")).toEqual([
+      {
+        copy: "d1",
+        decoders: expect.any(Array),
+        measurement: ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement,
+      },
+    ]);
     expect(labelled(app, "Search")).toBeNull();
     expect(labelled(app, "Settings")).toBeNull();
     opened.reject({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
@@ -285,7 +291,13 @@ describe("a copy playing offline", () => {
       });
       await settle();
     });
-    expect(ipc.argsOf("playback.openCopy")).toEqual([{ copy: "d1", decoders: expect.any(Array) }]);
+    expect(ipc.argsOf("playback.openCopy")).toEqual([
+      {
+        copy: "d1",
+        decoders: expect.any(Array),
+        measurement: ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement,
+      },
+    ]);
     expect(watch.textContent).toContain("Past Lives");
     expect(watch.textContent).toContain("2023 · Offline");
     // A copy plays here only: the receivers' button isn't offered.
