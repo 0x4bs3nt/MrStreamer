@@ -20,6 +20,9 @@ const marketing = join(root, "apps/marketing");
 const ENDPOINT = "https://eu.i.posthog.com/i/v0/e/";
 const CHOICE = "mrstreamer.site-analytics";
 const PRIVATE = ["private-query", "private-fragment", "campaign"];
+const SITE = "https://mrstreamer.app";
+/** posthog-js's cookieless placeholder distinct id. */
+const COOKIELESS = "$posthog_cookieless";
 
 if (process.argv.includes("--help")) {
   console.log(
@@ -37,6 +40,7 @@ interface Capture {
   readonly origin: string | null;
   readonly referer: string | null;
   readonly cookie: boolean;
+  readonly userAgent: string | null;
   readonly contentType: string | null;
   readonly raw: string;
   answered: boolean;
@@ -148,6 +152,7 @@ async function run() {
             origin: req.headers.origin ?? null,
             referer: req.headers.referer ?? null,
             cookie: req.headers.cookie !== undefined,
+            userAgent: req.headers["user-agent"] ?? null,
             contentType: req.headers["content-type"] ?? null,
             raw: Buffer.concat(chunks).toString("utf8"),
             answered: false,
@@ -346,14 +351,15 @@ app.on('window-all-closed', () => app.quit());
     /** Nothing new arrives, except the leave of a page that was already counting. */
     const quiet = async (from: number, what: string) => {
       await delay(1500);
+      // The page holds no id, so a leave is matched to an earlier page view by its address.
       const pageOf = (entry: Capture) =>
-        (JSON.parse(entry.raw) as { distinct_id: string }).distinct_id;
+        String(
+          (JSON.parse(entry.raw) as { properties: { $pathname?: unknown } }).properties.$pathname,
+        );
       const earlier = new Set(captures.slice(0, from).map(pageOf));
       const unexpected = captures
         .slice(from)
-        .filter(
-          (entry) => !(entry.raw.includes('"site_page_leave"') && earlier.has(pageOf(entry))),
-        );
+        .filter((entry) => !(entry.raw.includes('"$pageleave"') && earlier.has(pageOf(entry))));
       if (unexpected.length)
         throw new Error(`${what}: ${unexpected.length} unexpected request(s).`);
     };
@@ -386,16 +392,16 @@ app.on('window-all-closed', () => app.quit());
     const os = await evaluate<string>("document.documentElement.dataset.os ?? 'any'");
     observed["detectedSystem"] = os;
     await click(".hero .cta");
-    await wait(() => captures.some((c) => c.raw.includes("site_download_click")), "download click");
+    await wait(() => captures.some((c) => c.raw.includes('"download_clicked"')), "download click");
     await scrollToEnd();
     await wait(
-      () => captures.filter((c) => c.raw.includes("site_home_section_view")).length >= 6,
+      () => captures.filter((c) => c.raw.includes('"feature_section_viewed"')).length >= 6,
       "home sections",
       50,
     );
     await shot("home-footer-on-1280");
     await click('footer a[href="https://github.com/Mr-Streamer-OSS/MrStreamer"]');
-    await wait(() => captures.some((c) => c.raw.includes("site_github_click")), "GitHub click");
+    await wait(() => captures.some((c) => c.raw.includes('"github_link_clicked"')), "GitHub click");
     await narrow();
     await delay(200);
     observed["homeNarrow"] = await fits("Home");
@@ -409,12 +415,12 @@ app.on('window-all-closed', () => app.quit());
     await wide();
     await send("Page.navigate", { url: `${origin}/docs/subscriptions` });
     await wait(
-      () => captures.slice(beforeHeld).some((c) => c.raw.includes("site_guide_section_view")),
+      () => captures.slice(beforeHeld).some((c) => c.raw.includes('"guide_section_viewed"')),
       "held guide events",
     );
     await scrollToEnd();
     await shot("guide-footer-on-1280");
-    const held = () => captures.slice(beforeHeld).filter((c) => !c.raw.includes("site_page_leave"));
+    const held = () => captures.slice(beforeHeld).filter((c) => !c.raw.includes('"$pageleave"'));
     await click('[data-site-analytics="footer"] button');
     await wait(() => held().every((c) => c.aborted), "held requests aborted");
     hold = false;
@@ -458,7 +464,7 @@ app.on('window-all-closed', () => app.quit());
     await shot("home-footer-turned-on-1280");
     act("Open /faq#free from the address bar");
     await send("Page.navigate", { url: `${origin}/faq#free` });
-    await wait(() => captures.some((c) => c.raw.includes('"question":"free"')), "FAQ anchor");
+    await wait(() => captures.some((c) => c.raw.includes('"faq_question":"free"')), "FAQ anchor");
     await click('footer a[href="/privacy"]');
     await wait(
       () =>
@@ -503,7 +509,7 @@ app.on('window-all-closed', () => app.quit());
     const timed = () =>
       captures
         .slice(beforeDeadline)
-        .filter((c) => !c.raw.includes("site_page_leave") && !c.raw.includes("site_docs_click"));
+        .filter((c) => !c.raw.includes('"$pageleave"') && !c.raw.includes('"docs_link_clicked"'));
     await wait(() => timed().every((c) => c.aborted), "requests past their deadline", 130);
     hold = false;
     observed["deadline"] = {
@@ -514,7 +520,25 @@ app.on('window-all-closed', () => app.quit());
     if ((observed["deadline"] as { waitedMs: number }).waitedMs < 8_000)
       throw new Error("Held requests ended before their deadline.");
 
-    // 6. GPC, Do Not Track and failing storage keep a stored on from sending.
+    // 6. Release notes count each release seen, and an unknown address counts as /404 alone.
+    act("Open /releases from the address bar and scroll to its end");
+    await send("Page.navigate", { url: `${origin}/releases` });
+    await wait(() => captures.some((c) => c.raw.includes('"$pathname":"/releases"')), "releases");
+    await scrollToEnd();
+    await wait(() => captures.some((c) => c.raw.includes('"changelog_viewed"')), "release seen");
+    act("Open an unknown address with a private query and fragment");
+    await send("Page.navigate", {
+      url: `${origin}/private-route?campaign=private-query#private-fragment`,
+    });
+    await wait(
+      () => captures.some((c) => c.raw.includes('"$pageview"') && c.raw.includes('"/404"')),
+      "404 view",
+    );
+    observed["unknownAddressStatus"] = await evaluate<number>(
+      "performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0",
+    );
+
+    // 7. GPC, Do Not Track and failing storage keep a stored on from sending.
     const refusals = {
       gpc: "Object.defineProperty(Navigator.prototype, 'globalPrivacyControl', { get: () => true });",
       dnt: "Object.defineProperty(Navigator.prototype, 'doNotTrack', { get: () => '1' });",
@@ -551,18 +575,18 @@ app.on('window-all-closed', () => app.quit());
     if (observed["storageFooter"] !== "Site analytics: off. What's counted")
       throw new Error("Storage footer is wrong.");
 
-    // 7. Every request against the allowlist.
-    const pages = new Set<string>();
+    // 8. Every request against the allowlist.
+    const browserUserAgent = await evaluate<string>("navigator.userAgent");
     const allowed: Record<string, readonly string[]> = {
-      site_page_view: ["route"],
-      site_page_leave: ["route", "visible"],
-      site_download_click: ["os", "kind", "release_channel", "route", "location"],
-      site_github_click: ["route", "location"],
-      site_docs_click: ["doc_section", "route", "location"],
-      site_home_section_view: ["section"],
-      site_guide_section_view: ["guide", "section"],
-      site_faq_question_view: ["question", "via"],
-      site_release_view: ["version"],
+      $pageview: ["route"],
+      $pageleave: ["route", "visible"],
+      download_clicked: ["download_type", "os_hint", "kind", "route", "location"],
+      github_link_clicked: ["route", "link_location"],
+      docs_link_clicked: ["doc_section", "route", "location"],
+      feature_section_viewed: ["feature_name"],
+      guide_section_viewed: ["guide", "section"],
+      faq_question_viewed: ["faq_question", "via"],
+      changelog_viewed: ["version"],
     };
     const events = captures.map((entry) => {
       if (entry.method !== "POST" || entry.path !== "/i/v0/e/" || entry.host !== "eu.i.posthog.com")
@@ -577,22 +601,46 @@ app.on('window-all-closed', () => app.quit());
         Object.keys(rest).length ||
         api_key !== key ||
         typeof event !== "string" ||
-        typeof distinct_id !== "string" ||
-        !/^site_[0-9a-f-]{36}$/.test(distinct_id)
+        distinct_id !== COOKIELESS
       )
         throw new Error(`Body outside the allowlist: ${Object.keys(body).join(",")}`);
-      const { source, $process_person_profile, $geoip_disable, ...fields } = properties;
-      if (source !== "website" || $process_person_profile !== false || $geoip_disable !== true)
+      const {
+        source,
+        $process_person_profile,
+        $geoip_disable,
+        $cookieless_mode,
+        $raw_user_agent,
+        $current_url,
+        $pathname,
+        $host,
+        ...fields
+      } = properties;
+      if (
+        source !== "website" ||
+        $process_person_profile !== false ||
+        $geoip_disable !== true ||
+        $cookieless_mode !== true
+      )
         throw new Error("Fixed properties missing.");
+      // The user agent is the one the request's own header already carries, and nothing more.
+      if ($raw_user_agent !== browserUserAgent || $raw_user_agent !== entry.userAgent)
+        throw new Error("$raw_user_agent differs from the browser's User-Agent header.");
+      if (
+        typeof $pathname !== "string" ||
+        !/^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/.test($pathname) ||
+        $current_url !== `${SITE}${$pathname}` ||
+        $host !== "mrstreamer.app" ||
+        (fields["route"] !== undefined && fields["route"] !== $pathname)
+      )
+        throw new Error(`Address outside the site's fixed routes: ${String($current_url)}`);
       const names = allowed[event];
       if (!names || Object.keys(fields).some((name) => !names.includes(name)))
         throw new Error(
           `Property outside the allowlist on ${event}: ${Object.keys(fields).join(",")}`,
         );
-      pages.add(distinct_id);
       return {
         event,
-        page: [...pages].indexOf(distinct_id) + 1,
+        pathname: $pathname,
         properties: fields,
         contentType: entry.contentType,
         origin: entry.origin,
@@ -601,7 +649,8 @@ app.on('window-all-closed', () => app.quit());
       };
     });
     observed["events"] = events;
-    observed["distinctPages"] = pages.size;
+    observed["cookielessBodies"] = events.length;
+    observed["rawUserAgentEqualsHeaderOnEvery"] = true;
     observed["preflights"] = captures.filter((entry) => entry.method === "OPTIONS").length;
     observed["refusedTunnels"] = refusedTunnels;
     observed["blockedExternalRequests"] = [

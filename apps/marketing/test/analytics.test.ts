@@ -62,7 +62,17 @@ const click = (selector: string) =>
   document
     .querySelector<HTMLElement>(selector)
     ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-const fixed = { source: "website", $process_person_profile: false, $geoip_disable: true };
+/** What every event carries besides its own properties, for a page at `route`. */
+const fixed = (route: string) => ({
+  $current_url: `https://mrstreamer.app${route}`,
+  $pathname: route,
+  $host: "mrstreamer.app",
+  $raw_user_agent: navigator.userAgent,
+  $cookieless_mode: true,
+  source: "website",
+  $process_person_profile: false,
+  $geoip_disable: true,
+});
 
 beforeEach(() => {
   localStorage.clear();
@@ -83,7 +93,7 @@ afterEach(() => {
 });
 
 describe("website analytics", () => {
-  it("count a fresh visitor's page by default with fixed properties and a page-only id", () => {
+  it("count a fresh visitor's page by default as a cookieless pageview of its canonical address", () => {
     start(home, "/?campaign=secret#hero");
     expect(footer()).toBe("Site analytics: on. Turn off What's counted");
     expect(localStorage.length).toBe(0);
@@ -97,13 +107,12 @@ describe("website analytics", () => {
     });
     expect(view?.body).toEqual({
       api_key: "phc_test",
-      event: "site_page_view",
-      distinct_id: expect.stringMatching(/^site_[0-9a-f-]{36}$/),
-      properties: { route: "/", ...fixed },
+      event: "$pageview",
+      distinct_id: "$posthog_cookieless",
+      properties: { route: "/", ...fixed("/") },
     });
     expect(String(view?.init.body)).not.toMatch(/secret|hero|campaign/);
-    start(home);
-    expect(sent()[1]?.body.distinct_id).not.toBe(view?.body.distinct_id);
+    expect(localStorage.length).toBe(0);
   });
 
   it("count downloads, GitHub links and how long the page was in view, once", () => {
@@ -122,43 +131,43 @@ describe("website analytics", () => {
     dispatchEvent(new Event("pagehide"));
     Reflect.deleteProperty(document, "visibilityState");
     expect(events()).toEqual([
-      ["site_page_view", { route: "/", ...fixed }],
+      ["$pageview", { route: "/", ...fixed("/") }],
       [
-        "site_download_click",
+        "download_clicked",
         {
-          os: "mac",
+          os_hint: "mac",
           kind: "dmg",
-          release_channel: "stable",
+          download_type: "stable",
           route: "/",
           location: "hero",
-          ...fixed,
+          ...fixed("/"),
         },
       ],
       [
-        "site_download_click",
+        "download_clicked",
         {
-          os: "windows",
+          os_hint: "windows",
           kind: "exe",
-          release_channel: "stable",
+          download_type: "stable",
           route: "/",
           location: "page",
-          ...fixed,
+          ...fixed("/"),
         },
       ],
       [
-        "site_download_click",
+        "download_clicked",
         {
-          os: "windows",
+          os_hint: "windows",
           kind: "store",
-          release_channel: "stable",
+          download_type: "stable",
           route: "/",
           location: "page",
-          ...fixed,
+          ...fixed("/"),
         },
       ],
-      ["site_github_click", { route: "/", location: "footer_source", ...fixed }],
-      ["site_github_click", { route: "/", location: "footer_bug", ...fixed }],
-      ["site_page_leave", { route: "/", visible: "30s_2m", ...fixed }],
+      ["github_link_clicked", { route: "/", link_location: "footer_source", ...fixed("/") }],
+      ["github_link_clicked", { route: "/", link_location: "footer_bug", ...fixed("/") }],
+      ["$pageleave", { route: "/", visible: "30s_2m", ...fixed("/") }],
     ]);
     // Only what comes as the page closes or follows a link outlives the page.
     expect(sent().map(({ init }) => init.keepalive)).toEqual([
@@ -179,12 +188,18 @@ describe("website analytics", () => {
     start(renderPage("faq/index.html", null, null), "/faq");
     click('main a[href="/docs/subscriptions#mapping-mixed-playlists"]');
     click('main a[href="/download"]');
-    expect(events().filter(([event]) => event === "site_docs_click")).toEqual([
-      ["site_docs_click", { doc_section: "index", route: "/", location: "header", ...fixed }],
-      ["site_docs_click", { doc_section: "index", route: "/", location: "footer", ...fixed }],
+    expect(events().filter(([event]) => event === "docs_link_clicked")).toEqual([
       [
-        "site_docs_click",
-        { doc_section: "subscriptions", route: "/faq", location: "page", ...fixed },
+        "docs_link_clicked",
+        { doc_section: "index", route: "/", location: "header", ...fixed("/") },
+      ],
+      [
+        "docs_link_clicked",
+        { doc_section: "index", route: "/", location: "footer", ...fixed("/") },
+      ],
+      [
+        "docs_link_clicked",
+        { doc_section: "subscriptions", route: "/faq", location: "page", ...fixed("/faq") },
       ],
     ]);
     expect(sent().every(({ init }) => !String(init.body).includes("mapping"))).toBe(true);
@@ -262,7 +277,7 @@ describe("website analytics", () => {
     dispatchEvent(new Event("pagehide"));
     expect(fetchMock).not.toHaveBeenCalled();
     start(home);
-    expect(events()).toEqual([["site_page_view", { route: "/", ...fixed }]]);
+    expect(events()).toEqual([["$pageview", { route: "/", ...fixed("/") }]]);
   });
 
   it("abort what is on its way when turned off, and send nothing after", () => {
@@ -317,12 +332,13 @@ describe("website analytics", () => {
     start(faq, "/faq#free");
     start(faq, "/faq#private-words");
     expect(events()).toEqual([
-      ["site_page_view", { route: "/faq", ...fixed }],
-      ["site_faq_question_view", { question: "free", via: "anchor", ...fixed }],
-      ["site_page_view", { route: "/faq", ...fixed }],
+      ["$pageview", { route: "/faq", ...fixed("/faq") }],
+      ["faq_question_viewed", { faq_question: "free", via: "anchor", ...fixed("/faq") }],
+      ["$pageview", { route: "/faq", ...fixed("/faq") }],
     ]);
-    start(missing, "/private/address");
-    expect(events().at(-1)).toEqual(["site_page_view", { route: "404", ...fixed }]);
+    start(missing, "/private/address?q=secret#words");
+    expect(events().at(-1)).toEqual(["$pageview", { route: "/404", ...fixed("/404") }]);
+    expect(sent().every(({ init }) => !/private|secret|words/.test(String(init.body)))).toBe(true);
   });
 
   it("show the policy's own switch, and static off text in a build without capture", () => {

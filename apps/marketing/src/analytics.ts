@@ -1,11 +1,16 @@
 // Website analytics: a few fixed events per page, sent to the app statistics' PostHog project
-// without an SDK. docs/privacy.md#website-analytics is the promise this keeps:
+// without an SDK, in PostHog's cookieless mode. docs/privacy.md#website-analytics is the promise
+// this keeps:
 // - On unless the browser sends Global Privacy Control or Do Not Track, the visitor turned them
 //   off, or local storage fails. Local storage holds only an explicit "on" or "off".
-// - A random id made when the page opens ties that page's events together. It is never stored,
-//   and its `site_` prefix keeps it apart from the app's installation ids.
-// - No address, referrer, query, fragment, typed text, device or browser detail is sent. Every
-//   value is fixed here or written into the page by the build, and anything else is dropped.
+// - The page holds no identifier. Each event carries posthog-js's cookieless flag and placeholder
+//   distinct id, and PostHog's ingestion replaces them with a daily-salted hash of the project,
+//   IP address, user agent and host, and its own session id. It then deletes the IP address and
+//   user agent from the event.
+// - The address sent is the page's canonical one on mrstreamer.app, never location, so no query,
+//   fragment or referrer. The user agent is sent only as the hash input ingestion requires. No
+//   typed text or other device or browser detail is sent, and every other value is fixed here or
+//   written into the page by the build.
 // - At most MAX_EVENTS requests per page, each aborted after DEADLINE_MS. No retry or queue.
 // - Turning off sends nothing more and aborts requests still open. Turning on sends nothing until
 //   the next page opens.
@@ -39,45 +44,46 @@ const HOME_SECTIONS = [
 type HomeSection = (typeof HOME_SECTIONS)[number];
 
 interface Download {
-  readonly os: "mac" | "windows" | "linux";
+  /** The system the link installs on, not the visitor's. */
+  readonly os_hint: "mac" | "windows" | "linux";
   readonly kind: "dmg" | "exe" | "appimage" | "deb" | "store";
 }
 /** By the `data-installer` names downloads.ts gives the release's files. */
 const INSTALLERS: Readonly<Record<string, Download>> = {
-  dmg: { os: "mac", kind: "dmg" },
-  exe: { os: "windows", kind: "exe" },
-  appImage: { os: "linux", kind: "appimage" },
-  deb: { os: "linux", kind: "deb" },
+  dmg: { os_hint: "mac", kind: "dmg" },
+  exe: { os_hint: "windows", kind: "exe" },
+  appImage: { os_hint: "linux", kind: "appimage" },
+  deb: { os_hint: "linux", kind: "deb" },
 };
-const STORE: Download = { os: "windows", kind: "store" };
+const STORE: Download = { os_hint: "windows", kind: "store" };
 
 type SiteEvent =
-  | { readonly event: "site_page_view"; readonly properties: { readonly route: string } }
+  | { readonly event: "$pageview"; readonly properties: { readonly route: string } }
   | {
-      readonly event: "site_page_leave";
+      readonly event: "$pageleave";
       readonly properties: {
         readonly route: string;
         readonly visible: "under_10s" | "10_30s" | "30s_2m" | "2_10m" | "over_10m";
       };
     }
   | {
-      readonly event: "site_download_click";
+      readonly event: "download_clicked";
       readonly properties: Download & {
         /** Every installer link and the Store carry stable releases. Nightlies are on GitHub. */
-        readonly release_channel: "stable";
+        readonly download_type: "stable";
         readonly route: string;
         readonly location: "hero" | "page";
       };
     }
   | {
-      readonly event: "site_github_click";
+      readonly event: "github_link_clicked";
       readonly properties: {
         readonly route: string;
-        readonly location: "footer_source" | "footer_bug" | "footer_license" | "page";
+        readonly link_location: "footer_source" | "footer_bug" | "footer_license" | "page";
       };
     }
   | {
-      readonly event: "site_docs_click";
+      readonly event: "docs_link_clicked";
       readonly properties: {
         /** "index" for /docs, or a guide's slug. */
         readonly doc_section: string;
@@ -86,20 +92,27 @@ type SiteEvent =
       };
     }
   | {
-      readonly event: "site_guide_section_view";
+      readonly event: "guide_section_viewed";
       readonly properties: { readonly guide: string; readonly section: string };
     }
   | {
-      readonly event: "site_home_section_view";
-      readonly properties: { readonly section: HomeSection };
+      readonly event: "feature_section_viewed";
+      readonly properties: { readonly feature_name: HomeSection };
     }
   | {
-      readonly event: "site_faq_question_view";
-      readonly properties: { readonly question: string; readonly via: "scroll" | "anchor" };
+      readonly event: "faq_question_viewed";
+      readonly properties: { readonly faq_question: string; readonly via: "scroll" | "anchor" };
     }
-  | { readonly event: "site_release_view"; readonly properties: { readonly version: string } };
+  | { readonly event: "changelog_viewed"; readonly properties: { readonly version: string } };
 
-const SITE = "https://mrstreamer.app";
+const HOST = "mrstreamer.app";
+const SITE = `https://${HOST}`;
+/**
+ * posthog-js's cookieless placeholder distinct id; `$cookieless_mode: true` is its flag
+ * (packages/browser/src/constants.ts). Ingestion hashes only events with the flag, and only in a
+ * project with cookieless tracking on.
+ */
+const COOKIELESS_DISTINCT_ID = "$posthog_cookieless";
 const REPOSITORY = "https://github.com/Mr-Streamer-OSS/MrStreamer";
 /** A link to the guides: /docs or /docs/<slug>, with any fragment left unread. */
 const DOCS = /^\/docs(?:\/([a-z0-9-]+))?\/?(?:#.*)?$/;
@@ -128,11 +141,11 @@ declare global {
   }
 }
 
-/** The page's route from its canonical address, or 404 for a page without one. */
+/** The page's route from its canonical address, or /404 for a page without one. */
 function routeOf(document: Document): string {
   const canonical = document.querySelector('link[rel="canonical"]')?.getAttribute("href") ?? "";
   const route = canonical.startsWith(`${SITE}/`) ? canonical.slice(SITE.length) : "";
-  return /^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/.test(route) ? route : "404";
+  return /^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/.test(route) ? route : "/404";
 }
 
 /** The stored choice, with absent meaning on. Any storage failure means off. */
@@ -171,8 +184,9 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
   const refused = navigator.globalPrivacyControl === true || navigator.doNotTrack === "1";
   let status: Status = refused ? "refused" : storedStatus();
   // Only a page that opened with analytics on sends, and only until they are turned off.
-  let sending = status === "on" && typeof crypto.randomUUID === "function";
-  const page = sending ? `site_${crypto.randomUUID()}` : "";
+  let sending = status === "on";
+  /** Web Analytics' address properties, built from the route alone. */
+  const address = { $current_url: `${SITE}${route}`, $pathname: route, $host: HOST };
   let budget = MAX_EVENTS;
   /** Each open request's abort and deadline, cleared as it settles. */
   const open = new Set<{
@@ -189,9 +203,14 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     const body = JSON.stringify({
       api_key: capture.token,
       event,
-      distinct_id: page,
+      distinct_id: COOKIELESS_DISTINCT_ID,
       properties: {
         ...properties,
+        ...address,
+        // Required by ingestion's cookieless hash, which drops an event without it. Ingestion
+        // deletes it, with the IP address, before storing the event.
+        $raw_user_agent: navigator.userAgent,
+        $cookieless_mode: true,
         source: "website",
         $process_person_profile: false,
         $geoip_disable: true,
@@ -201,10 +220,10 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     // as the page closes or follows a link need keepalive to arrive. Chromium doesn't cancel a
     // keepalive request once sent, so every other event goes without it and the signal stops it.
     const keepalive =
-      event === "site_page_leave" ||
-      event === "site_download_click" ||
-      event === "site_github_click" ||
-      event === "site_docs_click";
+      event === "$pageleave" ||
+      event === "download_clicked" ||
+      event === "github_link_clicked" ||
+      event === "docs_link_clicked";
     const controller = new AbortController();
     const request = {
       controller,
@@ -289,7 +308,7 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
       control.querySelector("[data-site-analytics-status]")?.setAttribute("role", "status");
   if (!sending) return () => listeners.abort();
 
-  send({ event: "site_page_view", properties: { route } });
+  send({ event: "$pageview", properties: { route } });
 
   let visibleMs = 0;
   let visibleSince = document.visibilityState === "visible" ? performance.now() : null;
@@ -298,7 +317,7 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     if (left) return;
     left = true;
     if (visibleSince !== null) visibleMs += performance.now() - visibleSince;
-    send({ event: "site_page_leave", properties: { route, visible: visibleBucket(visibleMs) } });
+    send({ event: "$pageleave", properties: { route, visible: visibleBucket(visibleMs) } });
   };
   addEventListener("pagehide", leave, on);
   document.addEventListener(
@@ -332,22 +351,22 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
           : link.closest("footer")
             ? "footer"
             : "page";
-        send({ event: "site_docs_click", properties: { doc_section, route, location } });
+        send({ event: "docs_link_clicked", properties: { doc_section, route, location } });
       } else if (download) {
         const location = link.closest(".hero") ? "hero" : "page";
         send({
-          event: "site_download_click",
-          properties: { ...download, release_channel: "stable", route, location },
+          event: "download_clicked",
+          properties: { ...download, download_type: "stable", route, location },
         });
       } else if (href.startsWith(REPOSITORY)) {
-        const location = !link.closest("footer")
+        const link_location = !link.closest("footer")
           ? "page"
           : href === REPOSITORY
             ? "footer_source"
             : href.includes("/issues")
               ? "footer_bug"
               : "footer_license";
-        send({ event: "site_github_click", properties: { route, location } });
+        send({ event: "github_link_clicked", properties: { route, link_location } });
       }
     },
     on,
@@ -360,34 +379,37 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     for (const section of document.querySelectorAll("main > section[id]")) {
       const id = HOME_SECTIONS.find((known) => known === section.id);
       if (id)
-        seen.set(section, () => ({ event: "site_home_section_view", properties: { section: id } }));
+        seen.set(section, () => ({
+          event: "feature_section_viewed",
+          properties: { feature_name: id },
+        }));
     }
   const guide = route.startsWith("/docs/") ? route.slice("/docs/".length) : "";
   if (ID.test(guide))
     for (const heading of document.querySelectorAll("article h2[id], article h3[id]"))
       if (ID.test(heading.id))
         seen.set(heading, () => ({
-          event: "site_guide_section_view",
+          event: "guide_section_viewed",
           properties: { guide, section: heading.id },
         }));
   if (route === "/faq")
     for (const row of document.querySelectorAll(".faq-rows > div[id]")) {
       if (!ID.test(row.id)) continue;
-      const question = row.id;
+      const faq_question = row.id;
       // The page opened on this question's address: counted now, as the reason it was read.
-      if (opened === question)
-        send({ event: "site_faq_question_view", properties: { question, via: "anchor" } });
+      if (opened === faq_question)
+        send({ event: "faq_question_viewed", properties: { faq_question, via: "anchor" } });
       else
         seen.set(row, () => ({
-          event: "site_faq_question_view",
-          properties: { question, via: "scroll" },
+          event: "faq_question_viewed",
+          properties: { faq_question, via: "scroll" },
         }));
     }
   if (route === "/releases")
     for (const heading of document.querySelectorAll(".release > h2[id]")) {
       const version = heading.id.slice(1);
       if (/^v\d+\.\d+\.\d+$/.test(heading.id))
-        seen.set(heading, () => ({ event: "site_release_view", properties: { version } }));
+        seen.set(heading, () => ({ event: "changelog_viewed", properties: { version } }));
     }
   if (seen.size && typeof IntersectionObserver === "function") {
     observer = new IntersectionObserver((entries) => {

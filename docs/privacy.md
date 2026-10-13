@@ -43,11 +43,13 @@ To link the newest installers, the home, download and about pages ask GitHub for
 
 ### Website analytics
 
-Website analytics are on unless your browser sends Global Privacy Control or Do Not Track. Turn them off with **Site analytics** at the foot of any page of mrstreamer.app. Your browser keeps only that choice, in its local storage. There is no cookie and no stored identifier.
+Website analytics are on unless your browser sends Global Privacy Control or Do Not Track. Turn them off with **Site analytics** at the foot of any page of mrstreamer.app. Your browser keeps only that choice, in its local storage. There is no cookie, and your browser stores no identifier.
 
-While they're on, each page you open sends PostHog a few events: which of our pages it is, roughly how long it was in view, and which of these you used on it: a download link, with its system and file type, a link to a guide or to GitHub and whether it was in the header or footer, a section of a guide, a part of the home page, a question in the FAQ, or a release in the release notes. A random number, made when the page opens and forgotten when it closes, ties one page's events together. It isn't stored, so it can't connect one page to the next, a later visit, or the app.
+While they're on, each page you open sends PostHog a few events: which of our pages it is, roughly how long it was in view, and which of these you used on it: a download link, with its system and file type, a link to a guide or to GitHub and whether it was in the header or footer, a section of a guide, a part of the home page, a question in the FAQ, or a release in the release notes. Each event names the page by its own address on mrstreamer.app, such as https://mrstreamer.app/faq, not the address in your browser.
 
-Website analytics never include the address you came from, anything after a ? or # in an address, what you type, your location, or details of your device or browser. There is no autocapture, session replay or person profile. PostHog receives your IP address and browser identification with each request, as any server does, and our project is set not to store the IP address.
+PostHog counts visitors and visits without a cookie. Each event carries your browser identification, and PostHog's servers combine it with your IP address, our site's name, our project and a random value that changes every day into a one-way code, a hash. PostHog then deletes the IP address and browser identification from the event and keeps the code. The code ties together the pages you open that day and splits them into visits, so it is pseudonymous, not anonymous. It changes the next day and isn't linked to the app. PostHog says it deletes each day's random value once that day's events are processed. People on the same network with the same browser can share a code.
+
+Website analytics never include the address you came from, anything after a ? or # in an address, what you type, your location, or details of your device or browser beyond the browser identification used for that code. There is no autocapture, session replay or person profile. PostHog receives your IP address and browser identification with each request, as any server does, and our project is set not to store the IP address.
 
 If your browser sends Global Privacy Control or Do Not Track, website analytics stay off and can't be turned on. Turning them off sends nothing more, and nothing is sent about the time they were off. Turning them on sends nothing about the page you're on. Counting starts on the next page you open. Without JavaScript nothing is sent.
 
@@ -58,7 +60,7 @@ Email to privacy@, hello@ or security@mrstreamer.app, and issues you open on Git
 ## How we use it
 
 - **Usage statistics**, to count which versions, builds, systems and features are in use, how much live TV and how many movies and series play, and how often playback, downloads, update checks and the app's window fail, so we know what to fix and support.
-- **Website analytics**, to see which pages, guides and questions people read and which downloads they pick.
+- **Website analytics**, to count visits and see which pages, guides and questions people read and which downloads they pick.
 - **Messages**, to answer you and fix what you report.
 
 Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You can object at any time by email, or for statistics and website analytics by turning them off. We don't use any of it for advertising. App statistics and website analytics share a PostHog project but use separate events and identifiers, and we don't link them.
