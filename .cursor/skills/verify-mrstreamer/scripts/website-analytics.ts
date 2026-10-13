@@ -23,6 +23,8 @@ const PRIVATE = ["private-query", "private-fragment", "campaign"];
 const SITE = "https://mrstreamer.app";
 /** posthog-js's cookieless placeholder distinct id. */
 const COOKIELESS = "$posthog_cookieless";
+/** The long guide whose measurements the run causes and checks. */
+const MEASURED = "/docs/movies-and-series";
 
 if (process.argv.includes("--help")) {
   console.log(
@@ -346,20 +348,31 @@ app.on('window-all-closed', () => app.quit());
         await delay(120);
       }
     };
+    const pageOf = (entry: Capture) =>
+      String(
+        (JSON.parse(entry.raw) as { properties: { $pathname?: unknown } }).properties.$pathname,
+      );
+    /** Nothing at all from `pathname` since `from`: its page was opened, or turned, off. */
+    const silent = (from: number, pathname: string, what: string) => {
+      const sent = captures.slice(from).filter((entry) => pageOf(entry) === pathname);
+      if (sent.length) throw new Error(`${what}: ${sent.length} request(s) from ${pathname}.`);
+    };
     const storage = () =>
       evaluate<Record<string, string>>("Object.fromEntries(Object.entries(localStorage))");
-    /** Nothing new arrives, except the leave of a page that was already counting. */
+    /** Nothing new arrives, except the leave and vitals of a page that was already counting. */
     const quiet = async (from: number, what: string) => {
       await delay(1500);
       // The page holds no id, so a leave is matched to an earlier page view by its address.
-      const pageOf = (entry: Capture) =>
-        String(
-          (JSON.parse(entry.raw) as { properties: { $pathname?: unknown } }).properties.$pathname,
-        );
       const earlier = new Set(captures.slice(0, from).map(pageOf));
       const unexpected = captures
         .slice(from)
-        .filter((entry) => !(entry.raw.includes('"$pageleave"') && earlier.has(pageOf(entry))));
+        .filter(
+          (entry) =>
+            !(
+              (entry.raw.includes('"$pageleave"') || entry.raw.includes('"$web_vitals"')) &&
+              earlier.has(pageOf(entry))
+            ),
+        );
       if (unexpected.length)
         throw new Error(`${what}: ${unexpected.length} unexpected request(s).`);
     };
@@ -387,6 +400,10 @@ app.on('window-all-closed', () => app.quit());
     if (observed["freshFooter"] !== "Site analytics: on. Turn off What's counted")
       throw new Error(`Fresh footer: ${String(observed["freshFooter"])}`);
     observed["freshStorage"] = await storage();
+    // web-vitals reports no LCP for a page that loaded while hidden.
+    observed["homeOpenedHidden"] = await evaluate<boolean>(
+      "performance.getEntriesByType('visibility-state').some(e => e.name === 'hidden')",
+    );
     if (Object.keys(observed["freshStorage"] as object).length)
       throw new Error("Fresh visit stored something.");
     const os = await evaluate<string>("document.documentElement.dataset.os ?? 'any'");
@@ -407,6 +424,54 @@ app.on('window-all-closed', () => app.quit());
     observed["homeNarrow"] = await fits("Home");
     await scrollToEnd();
     await shot("home-footer-on-390");
+    const geometry =
+      "({ scrollY, innerHeight, clientHeight: document.documentElement.clientHeight, scrollHeight: document.documentElement.scrollHeight })";
+    observed["homeGeometry390"] = await evaluate(geometry);
+
+    await wide();
+    await delay(300);
+    observed["homeGeometry1280"] = await evaluate(geometry);
+
+    // 1b. Real measurements on a long guide: a slow interaction, a layout shift and part of the
+    // page scrolled. The helper adds the slow handler and the shifting block; the browser and
+    // web-vitals measure them.
+    act(`Open ${MEASURED} from the address bar`);
+    await send("Page.navigate", { url: `${origin}${MEASURED}` });
+    await wait(() => captures.some((c) => pageOf(c) === MEASURED), "guide view");
+    await delay(1000);
+    await evaluate(
+      "addEventListener('pointerdown', () => { const end = performance.now() + 200; while (performance.now() < end); }, { capture: true })",
+    );
+    await click("main h1");
+    await delay(800);
+    act("Insert a 240px block at the top of the page, more than 500ms after any input");
+    await evaluate(
+      "(() => { const block = document.createElement('div'); block.style.height = '240px'; document.querySelector('main').prepend(block); })()",
+    );
+    await delay(300);
+    act("Scroll down twice with the mouse wheel");
+    for (let wheel = 0; wheel < 2; wheel++) {
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x: 400,
+        y: 400,
+        deltaX: 0,
+        deltaY: 400,
+      });
+      await delay(300);
+    }
+    // The shares the page should send, from the same geometry posthog-js reads.
+    observed["measuredDepthExpected"] = await evaluate<{ scroll: number; content: number }>(
+      "(() => { const r = document.documentElement, y = Math.ceil(scrollY); return { scroll: Math.round(y / Math.ceil(r.scrollHeight - r.clientHeight) * 100) / 100, content: Math.round(Math.ceil(scrollY + r.clientHeight) / Math.ceil(r.scrollHeight) * 100) / 100 }; })()",
+    );
+    await shot("guide-scrolled-1280");
+    act("Open /about from the address bar");
+    await send("Page.navigate", { url: `${origin}/about` });
+    await wait(
+      () => captures.some((c) => c.raw.includes('"$pageleave"') && pageOf(c) === MEASURED),
+      "guide leave",
+    );
+    await delay(1000);
 
     // 2. Turning off while a guide's events are held in flight aborts them, and nothing follows.
     hold = true;
@@ -420,8 +485,14 @@ app.on('window-all-closed', () => app.quit());
     );
     await scrollToEnd();
     await shot("guide-footer-on-1280");
-    const held = () => captures.slice(beforeHeld).filter((c) => !c.raw.includes('"$pageleave"'));
+    // An earlier page's leave and vitals keep alive past turning off, so only the guide's count.
+    const held = () =>
+      captures
+        .slice(beforeHeld)
+        .filter((c) => pageOf(c) === "/docs/subscriptions" && !c.raw.includes('"$pageleave"'));
+    const atOff = () => captures.length;
     await click('[data-site-analytics="footer"] button');
+    const turnedOff = atOff();
     await wait(() => held().every((c) => c.aborted), "held requests aborted");
     hold = false;
     observed["heldThenAborted"] = held().map((c) => ({
@@ -445,6 +516,8 @@ app.on('window-all-closed', () => app.quit());
       "FAQ",
     );
     await quiet(afterOff, "After turning off and leaving the guide");
+    // Its leave, scroll depth and vitals stay unsent too.
+    silent(turnedOff, "/docs/subscriptions", "Guide after turning off");
 
     // 3. A restarted browser keeps the stored off.
     act("Restart the browser on the same profile");
@@ -465,6 +538,8 @@ app.on('window-all-closed', () => app.quit());
     act("Open /faq#free from the address bar");
     await send("Page.navigate", { url: `${origin}/faq#free` });
     await wait(() => captures.some((c) => c.raw.includes('"faq_question":"free"')), "FAQ anchor");
+    // Home opened off: turning on there sent nothing, at its leave either.
+    silent(afterOff, "/", "Home opened off");
     await click('footer a[href="/privacy"]');
     await wait(
       () =>
@@ -509,7 +584,7 @@ app.on('window-all-closed', () => app.quit());
     const timed = () =>
       captures
         .slice(beforeDeadline)
-        .filter((c) => !c.raw.includes('"$pageleave"') && !c.raw.includes('"docs_link_clicked"'));
+        .filter((c) => pageOf(c) === "/docs/live-tv" && !c.raw.includes('"$pageleave"'));
     await wait(() => timed().every((c) => c.aborted), "requests past their deadline", 130);
     hold = false;
     observed["deadline"] = {
@@ -545,6 +620,7 @@ app.on('window-all-closed', () => app.quit());
       storage:
         "Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Blocked', 'SecurityError'); } });",
     };
+    const refusing = captures.length;
     for (const [name, script] of Object.entries(refusals)) {
       const added = await send("Page.addScriptToEvaluateOnNewDocument", { source: script });
       const before = captures.length;
@@ -567,6 +643,10 @@ app.on('window-all-closed', () => app.quit());
       if (record(added))
         await send("Page.removeScriptToEvaluateOnNewDocument", { identifier: added["identifier"] });
     }
+    act("Open /about to leave the last refused page");
+    await send("Page.navigate", { url: `${origin}/about` });
+    await delay(1500);
+    silent(refusing, "/", "Refused pages");
     if (
       !String(observed["gpcFooter"]).includes("asks sites not to track") ||
       !String(observed["dntFooter"]).includes("asks sites not to track")
@@ -579,7 +659,14 @@ app.on('window-all-closed', () => app.quit());
     const browserUserAgent = await evaluate<string>("navigator.userAgent");
     const allowed: Record<string, readonly string[]> = {
       $pageview: ["route"],
-      $pageleave: ["route", "visible"],
+      $pageleave: [
+        "route",
+        "visible",
+        "$prev_pageview_pathname",
+        "$prev_pageview_max_scroll_percentage",
+        "$prev_pageview_max_content_percentage",
+      ],
+      $web_vitals: ["$web_vitals_LCP_value", "$web_vitals_INP_value", "$web_vitals_CLS_value"],
       download_clicked: ["download_type", "os_hint", "kind", "route", "location"],
       github_link_clicked: ["route", "link_location"],
       docs_link_clicked: ["doc_section", "route", "location"],
@@ -638,6 +725,33 @@ app.on('window-all-closed', () => app.quit());
         throw new Error(
           `Property outside the allowlist on ${event}: ${Object.keys(fields).join(",")}`,
         );
+      // Measurements are bounded numbers in their units, and each leave carries all three.
+      const share = (value: unknown) =>
+        typeof value === "number" &&
+        value >= 0 &&
+        value <= 1 &&
+        Math.round(value * 100) / 100 === value;
+      if (
+        event === "$pageleave" &&
+        (fields["$prev_pageview_pathname"] !== $pathname ||
+          !share(fields["$prev_pageview_max_scroll_percentage"]) ||
+          !share(fields["$prev_pageview_max_content_percentage"]))
+      )
+        throw new Error(`Scroll depth malformed: ${JSON.stringify(fields)}`);
+      if (event === "$web_vitals") {
+        const vitals = Object.entries(fields);
+        const [name, value] = vitals[0] ?? [];
+        const whole = name === "$web_vitals_CLS_value" ? 1000 : 1;
+        if (
+          vitals.length !== 1 ||
+          typeof value !== "number" ||
+          !Number.isFinite(value) ||
+          value < 0 ||
+          value >= 15 * 60_000 ||
+          Math.round(value * whole) / whole !== value
+        )
+          throw new Error(`Vital malformed: ${JSON.stringify(fields)}`);
+      }
       return {
         event,
         pathname: $pathname,
@@ -649,6 +763,44 @@ app.on('window-all-closed', () => app.quit());
       };
     });
     observed["events"] = events;
+    // The measurements PostHog's health checks look for, with values the run caused.
+    const leaveOf = (pathname: string) =>
+      events.find((e) => e.event === "$pageleave" && e.pathname === pathname)?.properties;
+    const vitalOf = (pathname: string, name: string) =>
+      events
+        .filter((e) => e.event === "$web_vitals" && e.pathname === pathname)
+        .map((e) => e.properties[`$web_vitals_${name}_value`])
+        .filter((value) => typeof value === "number");
+    const expected = observed["measuredDepthExpected"] as { scroll: number; content: number };
+    observed["measurements"] = {
+      homeLeave: leaveOf("/"),
+      measuredLeave: leaveOf(MEASURED),
+      releasesLeave: leaveOf("/releases"),
+      LCP: Object.fromEntries(
+        [...new Set(events.map((e) => e.pathname))].map((path) => [path, vitalOf(path, "LCP")]),
+      ),
+      measuredCLS: vitalOf(MEASURED, "CLS"),
+      measuredINP: vitalOf(MEASURED, "INP"),
+    };
+    const measured = leaveOf(MEASURED);
+    const releases = leaveOf("/releases");
+    if (
+      releases?.["$prev_pageview_max_scroll_percentage"] !== 1 ||
+      releases["$prev_pageview_max_content_percentage"] !== 1
+    )
+      throw new Error("Release notes were scrolled to their foot but their leave says otherwise.");
+    if (
+      measured?.["$prev_pageview_max_scroll_percentage"] !== expected.scroll ||
+      measured["$prev_pageview_max_content_percentage"] !== expected.content ||
+      expected.scroll <= 0 ||
+      expected.scroll >= 1
+    )
+      throw new Error(`Guide scroll depth differs from ${JSON.stringify(expected)}.`);
+    if (!vitalOf(MEASURED, "LCP").length) throw new Error("No LCP after the first click.");
+    if (!vitalOf(MEASURED, "CLS").some((value) => Number(value) > 0))
+      throw new Error("The induced layout shift was not measured.");
+    if (!vitalOf(MEASURED, "INP").some((value) => Number(value) >= 150))
+      throw new Error("The slow interaction was not measured.");
     observed["cookielessBodies"] = events.length;
     observed["rawUserAgentEqualsHeaderOnEvery"] = true;
     observed["preflights"] = captures.filter((entry) => entry.method === "OPTIONS").length;
@@ -708,6 +860,7 @@ app.on('window-all-closed', () => app.quit());
             "PostHog ingestion, dashboards and the project's IP setting not observed",
             "GPC, Do Not Track and blocked storage emulated by page scripts in Electron's Chromium",
             "390px viewport is not a physical phone or Safari",
+            "The guide's layout shift and slow interaction are caused by helper scripts; Electron's Chromium and web-vitals measure them. Other browsers' vital support is not observed",
           ],
         },
         null,

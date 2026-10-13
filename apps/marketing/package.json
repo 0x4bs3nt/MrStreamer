@@ -9,6 +9,9 @@
     "build": "node scripts/prepare-assets.ts && vite build && node scripts/package-vercel.ts",
     "preview": "vite preview"
   },
+  "dependencies": {
+    "web-vitals": "6.2.3"
+  },
   "devDependencies": {
     "marked": "18.0.14",
     "sharp": "0.35.4",

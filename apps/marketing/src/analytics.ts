@@ -11,9 +11,14 @@
 //   fragment or referrer. The user agent is sent only as the hash input ingestion requires. No
 //   typed text or other device or browser detail is sent, and every other value is fixed here or
 //   written into the page by the build.
+// - Measurements are numbers only: how far down the page was scrolled, as shares of it, and the
+//   Core Web Vitals LCP, INP and CLS as web-vitals reports them. Never an element, address or
+//   pixel position.
 // - At most MAX_EVENTS requests per page, each aborted after DEADLINE_MS. No retry or queue.
-// - Turning off sends nothing more and aborts requests still open. Turning on sends nothing until
-//   the next page opens.
+// - Turning off sends nothing more, aborts requests still open and stops measuring. Turning on
+//   sends nothing until the next page opens.
+
+import { onCLS, onINP, onLCP, type CLSMetric, type INPMetric, type LCPMetric } from "web-vitals";
 
 /** Where the build points capture: PostHog's EU ingestion, or a loopback endpoint for checks. */
 export interface SiteCapture {
@@ -25,6 +30,8 @@ export interface SiteCapture {
 export const MAX_EVENTS = 64;
 /** How long one request may stay open before the page gives up on it. */
 export const DEADLINE_MS = 10_000;
+/** A vital this long or longer is a broken measurement and goes unsent, as posthog-js does. */
+const MAX_VITAL = 15 * 60_000;
 
 /** The one stored key. Absent means on. */
 export const CHOICE = "mrstreamer.site-analytics";
@@ -57,6 +64,9 @@ const INSTALLERS: Readonly<Record<string, Download>> = {
 };
 const STORE: Download = { os_hint: "windows", kind: "store" };
 
+/** The Core Web Vitals sent, by web-vitals' names. */
+type Vital = (CLSMetric | INPMetric | LCPMetric)["name"];
+
 type SiteEvent =
   | { readonly event: "$pageview"; readonly properties: { readonly route: string } }
   | {
@@ -64,7 +74,18 @@ type SiteEvent =
       readonly properties: {
         readonly route: string;
         readonly visible: "under_10s" | "10_30s" | "30s_2m" | "2_10m" | "over_10m";
+        /** The scroll-depth properties PostHog's Web analytics reads, as posthog-js names them. */
+        readonly $prev_pageview_pathname: string;
+        /** The deepest scroll, from 0 at the top to 1 at the foot. */
+        readonly $prev_pageview_max_scroll_percentage: number;
+        /** The deepest bottom edge of the view, as a share of the page's height. */
+        readonly $prev_pageview_max_content_percentage: number;
       };
+    }
+  | {
+      /** One vital per event: milliseconds for LCP and INP, a unitless score for CLS. */
+      readonly event: "$web_vitals";
+      readonly properties: Partial<Readonly<Record<`$web_vitals_${Vital}_value`, number>>>;
     }
   | {
       readonly event: "download_clicked";
@@ -173,6 +194,44 @@ function visibleBucket(ms: number): "under_10s" | "10_30s" | "30s_2m" | "2_10m" 
           : "over_10m";
 }
 
+/** `part` of `whole` from 0 to 1, in hundredths. A page that can't scroll is wholly seen. */
+const share = (part: number, whole: number): number =>
+  whole <= 1 ? 1 : Math.round(Math.min(Math.max(part / whole, 0), 1) * 100) / 100;
+
+/**
+ * Follows how far down the page is scrolled, as posthog-js measures it: after a scroll or
+ * resize, at most once a frame, until `signal` aborts. Nothing runs while the page sits still.
+ * The returned read measures once more and gives the deepest scroll and view so far.
+ */
+function followScrollDepth(signal: AbortSignal): () => { scroll: number; content: number } {
+  let deepest = 0;
+  let scrollable = 0;
+  let viewBottom = 0;
+  let height = 0;
+  let frame = 0;
+  const measure = (): void => {
+    frame = 0;
+    const { scrollHeight, clientHeight } = document.documentElement;
+    const top = Math.max(window.scrollY, 0);
+    deepest = Math.max(deepest, Math.ceil(top));
+    scrollable = Math.max(scrollable, Math.ceil(scrollHeight - clientHeight));
+    viewBottom = Math.max(viewBottom, Math.ceil(top + clientHeight));
+    height = Math.max(height, Math.ceil(scrollHeight));
+  };
+  const queue = (): void => {
+    frame ||= requestAnimationFrame(measure);
+  };
+  const options = { passive: true, signal };
+  addEventListener("scroll", queue, options);
+  addEventListener("resize", queue, options);
+  signal.addEventListener("abort", () => cancelAnimationFrame(frame), { once: true });
+  return () => {
+    cancelAnimationFrame(frame);
+    measure();
+    return { scroll: share(deepest, scrollable), content: share(viewBottom, height) };
+  };
+}
+
 /**
  * Starts the page's switches and, when analytics are on as the page opens, its events. Without a
  * build configuration the switches keep their static "off" text and nothing runs. Returns a stop
@@ -195,6 +254,8 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
   }>();
   const listeners = new AbortController();
   const on = { signal: listeners.signal };
+  /** Scroll depth's listeners and frame, stopped as the page is left or analytics turn off. */
+  const measuring = new AbortController();
   let observer: IntersectionObserver | undefined;
 
   const send = ({ event, properties }: SiteEvent): void => {
@@ -217,9 +278,11 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
       },
     });
     // A string body is text/plain, so the browser sends it without a preflight. Events that come
-    // as the page closes or follows a link need keepalive to arrive. Chromium doesn't cancel a
-    // keepalive request once sent, so every other event goes without it and the signal stops it.
+    // as the page is hidden, closes or follows a link need keepalive to arrive. Chromium doesn't
+    // cancel a keepalive request once sent, so every other event goes without it and the signal
+    // stops it.
     const keepalive =
+      document.visibilityState === "hidden" ||
       event === "$pageleave" ||
       event === "download_clicked" ||
       event === "github_link_clicked" ||
@@ -254,6 +317,7 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     }
     open.clear();
     observer?.disconnect();
+    measuring.abort();
   };
 
   const controls = [...document.querySelectorAll<HTMLElement>("[data-site-analytics]")].map(
@@ -290,14 +354,24 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     render();
   };
 
+  const reread = (): void => {
+    status = storedStatus();
+    if (status !== "on") stopSending();
+    render();
+  };
   // A choice made in another tab applies here at once.
   addEventListener(
     "storage",
     ({ key }) => {
-      if (status === "refused" || (key !== null && key !== CHOICE)) return;
-      status = storedStatus();
-      if (status !== "on") stopSending();
-      render();
+      if (status !== "refused" && (key === null || key === CHOICE)) reread();
+    },
+    on,
+  );
+  // So it does on a page restored from the back-forward cache, which can report vitals again.
+  addEventListener(
+    "pageshow",
+    ({ persisted }) => {
+      if (persisted && status !== "refused") reread();
     },
     on,
   );
@@ -310,6 +384,20 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
 
   send({ event: "$pageview", properties: { route } });
 
+  // Core Web Vitals as web-vitals reports them: LCP once it is final, CLS and INP as the page is
+  // hidden, and again at a later hide if they grew. A page without an interaction has no INP, and
+  // a browser that can't measure a vital reports none. web-vitals has no stop, so after turning
+  // off its reports go unsent.
+  const vital = ({ name, value }: CLSMetric | INPMetric | LCPMetric): void => {
+    const rounded = name === "CLS" ? Math.round(value * 1000) / 1000 : Math.round(value);
+    if (Number.isFinite(rounded) && rounded >= 0 && rounded < MAX_VITAL)
+      send({ event: "$web_vitals", properties: { [`$web_vitals_${name}_value`]: rounded } });
+  };
+  onLCP(vital);
+  onCLS(vital);
+  onINP(vital);
+
+  const scrollDepth = followScrollDepth(measuring.signal);
   let visibleMs = 0;
   let visibleSince = document.visibilityState === "visible" ? performance.now() : null;
   let left = false;
@@ -317,7 +405,18 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     if (left) return;
     left = true;
     if (visibleSince !== null) visibleMs += performance.now() - visibleSince;
-    send({ event: "$pageleave", properties: { route, visible: visibleBucket(visibleMs) } });
+    const { scroll, content } = scrollDepth();
+    measuring.abort();
+    send({
+      event: "$pageleave",
+      properties: {
+        route,
+        visible: visibleBucket(visibleMs),
+        $prev_pageview_pathname: route,
+        $prev_pageview_max_scroll_percentage: scroll,
+        $prev_pageview_max_content_percentage: content,
+      },
+    });
   };
   addEventListener("pagehide", leave, on);
   document.addEventListener(

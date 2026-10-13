@@ -86,8 +86,15 @@ export default defineConfig(({ command }) => {
 const config = (analytics: SiteCapture | null): UserConfig => ({
   appType: "custom",
   define: { __SITE_ANALYTICS__: JSON.stringify(analytics) },
+  esbuild: { legalComments: "inline" },
   build: {
-    rollupOptions: { input: [...PAGES.map(({ file }) => join(root, file)), join(root, MISSING)] },
+    rollupOptions: {
+      input: [...PAGES.map(({ file }) => join(root, file)), join(root, MISSING)],
+      output: {
+        banner:
+          "/*! web-vitals 6.2.3 | Copyright 2020 Google LLC | Apache-2.0 | /licenses/web-vitals.txt */",
+      },
+    },
   },
   plugins: [
     {

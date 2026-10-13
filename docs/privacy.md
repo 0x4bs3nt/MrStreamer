@@ -45,7 +45,7 @@ To link the newest installers, the home, download and about pages ask GitHub for
 
 Website analytics are on unless your browser sends Global Privacy Control or Do Not Track. Turn them off with **Site analytics** at the foot of any page of mrstreamer.app. Your browser keeps only that choice, in its local storage. There is no cookie, and your browser stores no identifier.
 
-While they're on, each page you open sends PostHog a few events: which of our pages it is, roughly how long it was in view, and which of these you used on it: a download link, with its system and file type, a link to a guide or to GitHub and whether it was in the header or footer, a section of a guide, a part of the home page, a question in the FAQ, or a release in the release notes. Each event names the page by its own address on mrstreamer.app, such as https://mrstreamer.app/faq, not the address in your browser.
+While they're on, each page you open sends PostHog a few events: which of our pages it is, roughly how long it was in view, and which of these you used on it: a download link, with its system and file type, a link to a guide or to GitHub and whether it was in the header or footer, a section of a guide, a part of the home page, a question in the FAQ, or a release in the release notes. It also sends how far down the page you scrolled, and three measures of its speed: how long its largest image or text took to show, how quickly it responded to your clicks, taps and keys, and how much its content shifted. These are numbers only, without the parts of the page involved. Each event names the page by its own address on mrstreamer.app, such as https://mrstreamer.app/faq, not the address in your browser.
 
 PostHog counts visitors and visits without a cookie. Each event carries your browser identification, and PostHog's servers combine it with your IP address, our site's name, our project and a random value that changes every day into a one-way code, a hash. PostHog then deletes the IP address and browser identification from the event and keeps the code. The code ties together the pages you open that day and splits them into visits, so it is pseudonymous, not anonymous. It changes the next day and isn't linked to the app. PostHog says it deletes each day's random value once that day's events are processed. People on the same network with the same browser can share a code.
 
@@ -60,7 +60,7 @@ Email to privacy@, hello@ or security@mrstreamer.app, and issues you open on Git
 ## How we use it
 
 - **Usage statistics**, to count which versions, builds, systems and features are in use, how much live TV and how many movies and series play, and how often playback, downloads, update checks and the app's window fail, so we know what to fix and support.
-- **Website analytics**, to count visits and see which pages, guides and questions people read and which downloads they pick.
+- **Website analytics**, to count visits, see which pages, guides and questions people read and which downloads they pick, and see how far pages are read and how quickly they load and respond.
 - **Messages**, to answer you and fix what you report.
 
 Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You can object at any time by email, or for statistics and website analytics by turning them off. We don't use any of it for advertising. App statistics and website analytics share a PostHog project but use separate events and identifiers, and we don't link them.

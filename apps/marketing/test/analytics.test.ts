@@ -8,7 +8,33 @@ import { CHOICE, DEADLINE_MS, MAX_EVENTS, startSiteAnalytics } from "../src/anal
 
 // Website analytics as a visitor meets them: the real pages' switches, and the requests that
 // leave the page. fetch is replaced, so each request's address, options and body are what a
-// browser would send.
+// browser would send. web-vitals is replaced too: happy-dom measures no vitals, so tests report
+// metrics shaped as web-vitals reports them, attribution and all.
+
+type Report = (metric: Record<string, unknown>) => void;
+const vitals = vi.hoisted(() => ({
+  LCP: [] as Report[],
+  CLS: [] as Report[],
+  INP: [] as Report[],
+}));
+vi.mock("web-vitals", () => ({
+  onLCP: (report: Report) => vitals.LCP.push(report),
+  onCLS: (report: Report) => vitals.CLS.push(report),
+  onINP: (report: Report) => vitals.INP.push(report),
+}));
+/** web-vitals reporting a metric to the page that started last. */
+const report = (name: "LCP" | "CLS" | "INP", value: number) =>
+  vitals[name].at(-1)?.({
+    name,
+    value,
+    delta: value,
+    rating: "poor",
+    id: "v5-1760000000000-1234567890123",
+    navigationType: "navigate",
+    navigationURL: "https://mrstreamer.app/?campaign=secret#hero",
+    entries: [{ name: "secret-entry" }],
+    attribution: { target: "#hero > a.secret", url: "https://mrstreamer.app/secret.webp" },
+  });
 
 const root = join(import.meta.dirname, "..");
 const home = readFileSync(join(root, "index.html"), "utf8");
@@ -62,6 +88,17 @@ const click = (selector: string) =>
   document
     .querySelector<HTMLElement>(selector)
     ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+/** A leave's scroll depth: its deepest scroll and view as shares of the page. */
+const depth = (route: string, scroll: number, content: number) => ({
+  $prev_pageview_pathname: route,
+  $prev_pageview_max_scroll_percentage: scroll,
+  $prev_pageview_max_content_percentage: content,
+});
+/** Hides the page as a browser does when it is switched away from or closed. */
+const hide = () => {
+  Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+};
 /** What every event carries besides its own properties, for a page at `route`. */
 const fixed = (route: string) => ({
   $current_url: `https://mrstreamer.app${route}`,
@@ -76,6 +113,7 @@ const fixed = (route: string) => ({
 
 beforeEach(() => {
   localStorage.clear();
+  for (const reports of Object.values(vitals)) reports.length = 0;
   fetchMock = vi.fn(pending);
   vi.stubGlobal("fetch", fetchMock);
   // Links stay on the page under test.
@@ -90,6 +128,10 @@ afterEach(() => {
   vi.restoreAllMocks();
   Reflect.deleteProperty(navigator, "globalPrivacyControl");
   Reflect.deleteProperty(navigator, "doNotTrack");
+  Reflect.deleteProperty(document, "visibilityState");
+  for (const name of ["scrollHeight", "clientHeight"])
+    Reflect.deleteProperty(document.documentElement, name);
+  Reflect.deleteProperty(window, "scrollY");
 });
 
 describe("website analytics", () => {
@@ -167,7 +209,7 @@ describe("website analytics", () => {
       ],
       ["github_link_clicked", { route: "/", link_location: "footer_source", ...fixed("/") }],
       ["github_link_clicked", { route: "/", link_location: "footer_bug", ...fixed("/") }],
-      ["$pageleave", { route: "/", visible: "30s_2m", ...fixed("/") }],
+      ["$pageleave", { route: "/", visible: "30s_2m", ...depth("/", 1, 1), ...fixed("/") }],
     ]);
     // Only what comes as the page closes or follows a link outlives the page.
     expect(sent().map(({ init }) => init.keepalive)).toEqual([
@@ -179,6 +221,92 @@ describe("website analytics", () => {
       true,
       true,
     ]);
+  });
+
+  it("send how far down the page was scrolled as it is left, measured once a frame after a scroll or resize", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    /** A page `height` tall seen through a view `view` tall, scrolled to `top`. */
+    const page = (height: number, view: number, top: number) => {
+      Object.defineProperty(document.documentElement, "scrollHeight", {
+        value: height,
+        configurable: true,
+      });
+      Object.defineProperty(document.documentElement, "clientHeight", {
+        value: view,
+        configurable: true,
+      });
+      Object.defineProperty(window, "scrollY", { value: top, configurable: true });
+    };
+    start(home);
+    page(3000, 1000, 0);
+    expect(frames).toHaveLength(0);
+    page(3000, 1000, 1000);
+    for (let wheel = 0; wheel < 5; wheel++) dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(1);
+    frames.shift()?.(0);
+    page(3000, 1000, 400);
+    dispatchEvent(new Event("resize"));
+    expect(frames).toHaveLength(1);
+    frames.shift()?.(0);
+    hide();
+    expect(events().at(-1)).toEqual([
+      "$pageleave",
+      { route: "/", visible: "under_10s", ...depth("/", 0.5, 0.67), ...fixed("/") },
+    ]);
+    // Left once, measured no more.
+    dispatchEvent(new Event("scroll"));
+    expect(frames).toHaveLength(0);
+    // A page shorter than its view counts as read to the foot.
+    start(home);
+    page(800, 1000, 0);
+    hide();
+    expect(events().at(-1)?.[1]).toMatchObject(depth("/", 1, 1));
+  });
+
+  it("send each Core Web Vital as a number alone, kept alive only as the page hides", () => {
+    start(home);
+    report("LCP", 1234.56);
+    hide();
+    report("CLS", 0.123456);
+    report("INP", 208);
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, -1, 15 * 60_000])
+      report("LCP", value);
+    const measured = sent().filter(({ body }) => body.event === "$web_vitals");
+    expect(measured.map(({ body }) => body.properties)).toEqual([
+      { $web_vitals_LCP_value: 1235, ...fixed("/") },
+      { $web_vitals_CLS_value: 0.123, ...fixed("/") },
+      { $web_vitals_INP_value: 208, ...fixed("/") },
+    ]);
+    expect(measured.map(({ init }) => init.keepalive)).toEqual([false, true, true]);
+    expect(
+      measured.every(
+        ({ init }) => !/secret|attribution|entries|rating|navigat|v5-/.test(String(init.body)),
+      ),
+    ).toBe(true);
+  });
+
+  it("stop measuring when turned off, here or in a restored page that missed the choice", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    start(home);
+    button()?.click();
+    report("LCP", 900);
+    dispatchEvent(new Event("scroll"));
+    hide();
+    report("CLS", 0.2);
+    expect(frames).toHaveLength(0);
+    expect(events().map(([event]) => event)).toEqual(["$pageview"]);
+    localStorage.clear();
+    start(home);
+    // Turned off in another tab while this page waited in the back-forward cache.
+    localStorage.setItem(CHOICE, "off");
+    dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    report("LCP", 120);
+    expect(footer()).toBe("Site analytics: off. Turn on What's counted");
+    expect(events().map(([event]) => event)).toEqual(["$pageview", "$pageview"]);
   });
 
   it("count links to the guides by guide and place, never their address", () => {
@@ -262,6 +390,7 @@ describe("website analytics", () => {
       expect(button()?.hidden).toBe(true);
       dispatchEvent(new Event("pagehide"));
       expect(fetchMock).not.toHaveBeenCalled();
+      expect(vitals.LCP).toHaveLength(0);
       expect(localStorage.setItem).not.toHaveBeenCalled();
     },
   );
@@ -276,6 +405,7 @@ describe("website analytics", () => {
     click('.hero a[data-installer="dmg"]');
     dispatchEvent(new Event("pagehide"));
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(vitals.LCP).toHaveLength(0);
     start(home);
     expect(events()).toEqual([["$pageview", { route: "/", ...fixed("/") }]]);
   });
@@ -311,6 +441,7 @@ describe("website analytics", () => {
     start(home);
     expect(footer()).toBe("Site analytics: off. What's counted");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(vitals.LCP).toHaveLength(0);
     vi.unstubAllGlobals();
     vi.stubGlobal("fetch", fetchMock);
     start(home);
