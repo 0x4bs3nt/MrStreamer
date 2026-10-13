@@ -73,7 +73,7 @@ describe("public document pages without JavaScript", () => {
     expect([...document.querySelectorAll("main h2")].map((heading) => heading.textContent)).toEqual(
       ["Getting started", "Watching", "Installing and updates", "Price and privacy"],
     );
-    expect(document.querySelectorAll(".faq-rows > div[id]")).toHaveLength(13);
+    expect(document.querySelectorAll(".faq-rows > div[id]")).toHaveLength(14);
     expect(document.querySelector("#download")?.textContent).toContain(
       "Download a movie or an episode",
     );

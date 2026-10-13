@@ -233,6 +233,18 @@ function releaseHistory(releases: readonly Release[] | null): string {
     .join("")}`;
 }
 
+/** The policy's own website analytics switch, under its heading. analytics.ts brings it to life. */
+function withAnalyticsSwitch(policy: string): string {
+  const heading = /<h\d id="website-analytics">.*?<\/h\d>\n/;
+  if (!heading.test(policy))
+    throw new Error("docs/privacy.md lacks its Website analytics heading.");
+  return policy.replace(
+    heading,
+    (found) =>
+      `${found}<p class="site-analytics" data-site-analytics="policy"><span data-site-analytics-status>Website analytics are off in this browser.</span></p>\n`,
+  );
+}
+
 /** Expands the shared privacy layout before Vite resolves its stylesheet and script. */
 export function renderPage(
   file: string,
@@ -254,6 +266,7 @@ export function renderPage(
         RELEASES +
         '/latest">Release notes</a>.</p><h2',
     );
+  if (page.address === "/privacy") content = withAnalyticsSwitch(content);
   if (page.address === "/docs") content = guideIndex();
   if (page.address === "/faq") content = readFileSync(join(root, "src/faq.html"), "utf8");
   if (page.address === "/download") content = readFileSync(join(root, "src/download.html"), "utf8");

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated 12 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 13 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
 
 Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
 
@@ -27,17 +27,29 @@ We can't see, copy or delete any of it. **Diagnostics…** in Settings > About s
 
 **Share basic usage statistics** is on by default, in new and existing profiles, without a prompt. From 0.0.12, while it's on, the app counts on your computer how often you open each part of the app, from a fixed list: Home, Live TV, Movies, Series, Watchlist, Downloads, Search, Settings, the player and title details. It counts how many playback requests, download runs and update checks started, succeeded, failed or were interrupted, with one of six fixed reasons for each failure, such as "network" or "disk". A playback request succeeds when the app gets the stream ready to play. It doesn't show whether picture or sound played. An update check succeeds when it gets an answer, even with no new version, and installing an update isn't counted. The app also counts how often its window started and how often it stopped unexpectedly. Closing the window or quitting doesn't count, and a crash of the whole app or a power cut can't be counted.
 
+From 0.0.12 the app also adds up, for each day, how many live channels and how many movies and episodes started playing, how many of those failed or stopped with an error, with one of the fixed reasons, and how many minutes of each played, rounded to whole minutes. These are totals for the day. They don't say what played, from which subscription, or at what time.
+
 Counting also runs with the window in the background, for example during downloads and update checks. The app queues statistics only while its main window is in the foreground: an observation the first time it observes this profile, at most one per UTC day after that, and, from 0.0.12, with it one summary of the most recent earlier day's counts. It sends each to PostHog straight away and tries up to three times in all, so a retry can happen with the window in the background, as you quit or after the next start. Up to eight wait on your computer. Beyond that the oldest are dropped, keeping the first observation. Only the most recent earlier day is kept, so counts for older days that were never queued are dropped. If the app version or update channel changes during a day, that day's counts start again from zero. Builds without our project configuration count and send nothing.
 
 Each observation and summary carries a random installation identifier, an event identifier, the time it was queued, the app version, build and update channel, operating system, processor type, whether the app came from the Microsoft Store or our download, and whether the profile looked new, upgraded or unknown when the app first observed it. A summary also has the UTC day it counts, with the version, channels and system it was counted under.
 
-Statistics never include what you watch, title or channel names, your provider or its address, stream addresses, logins, searches, file paths, logs or error messages. There is no autocapture, session replay, crash dump or log upload. The identifier doesn't name you but links your observations and summaries, so the data is pseudonymous, not anonymous. Person profiles and location lookup are off in PostHog, but PostHog still receives your IP address with each request.
+Statistics never include what you watch, title or channel names, your provider or its address, stream addresses, logins, searches, file paths, logs or error messages. There is no autocapture, session replay, crash dump or log upload. The identifier doesn't name you but links your observations and summaries, so the data is pseudonymous, not anonymous. Person profiles and location lookup are off in PostHog. PostHog receives your IP address with each request, as any server does, and our project is set not to store it.
 
 ### The website
 
-mrstreamer.app is hosted by Vercel. Vercel Web Analytics counts page views without cookies. It processes the page, referrer, approximate location, device and browser, and tells visits apart with a hash it discards after 24 hours. We see totals.
+mrstreamer.app is hosted by Vercel, which receives your IP address and browser identification with each request, as any web host does.
 
 To link the newest installers, the home, download and about pages ask GitHub for the public list of releases. GitHub gets your IP address and browser identification.
+
+### Website analytics
+
+Website analytics are on unless your browser sends Global Privacy Control or Do Not Track. Turn them off with **Site analytics** at the foot of any page of mrstreamer.app. Your browser keeps only that choice, in its local storage. There is no cookie and no stored identifier.
+
+While they're on, each page you open sends PostHog a few events: which of our pages it is, roughly how long it was in view, and which of these you used on it: a download link, with its system and file type, a link to a guide or to GitHub and whether it was in the header or footer, a section of a guide, a part of the home page, a question in the FAQ, or a release in the release notes. A random number, made when the page opens and forgotten when it closes, ties one page's events together. It isn't stored, so it can't connect one page to the next, a later visit, or the app.
+
+Website analytics never include the address you came from, anything after a ? or # in an address, what you type, your location, or details of your device or browser. There is no autocapture, session replay or person profile. PostHog receives your IP address and browser identification with each request, as any server does, and our project is set not to store the IP address.
+
+If your browser sends Global Privacy Control or Do Not Track, website analytics stay off and can't be turned on. Turning them off sends nothing more, and nothing is sent about the time they were off. Turning them on sends nothing about the page you're on. Counting starts on the next page you open. Without JavaScript nothing is sent.
 
 ### Messages you send
 
@@ -45,11 +57,11 @@ Email to privacy@, hello@ or security@mrstreamer.app, and issues you open on Git
 
 ## How we use it
 
-- **Usage statistics**, to count which versions, builds, systems and features are in use, and how often playback, downloads, update checks and the app's window fail, so we know what to fix and support.
-- **Website analytics**, to see which pages people read.
+- **Usage statistics**, to count which versions, builds, systems and features are in use, how much live TV and how many movies and series play, and how often playback, downloads, update checks and the app's window fail, so we know what to fix and support.
+- **Website analytics**, to see which pages, guides and questions people read and which downloads they pick.
 - **Messages**, to answer you and fix what you report.
 
-Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You can object at any time by email, or for statistics by turning the setting off. We don't use any of it for advertising, and we don't link website analytics to app statistics.
+Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You can object at any time by email, or for statistics and website analytics by turning them off. We don't use any of it for advertising. App statistics and website analytics share a PostHog project but use separate events and identifiers, and we don't link them.
 
 ## Who receives what
 
@@ -71,13 +83,14 @@ Your network operator and DNS provider can see which servers the app contacts.
 
 ### Services that work for us
 
-- **[PostHog](https://posthog.com/privacy)** stores app statistics in its EU Cloud.
-- **[Vercel](https://vercel.com/legal/privacy-notice)** hosts the website and runs its analytics ([details](https://vercel.com/docs/analytics/privacy-policy)).
+- **[PostHog](https://posthog.com/privacy)** stores app statistics and website analytics in its EU Cloud.
+- **[Vercel](https://vercel.com/legal/privacy-notice)** hosts the website.
 - **[Cloudflare](https://www.cloudflare.com/privacypolicy/)** handles delivery of messages sent to hello@, privacy@ and security@mrstreamer.app through [Email Routing](https://developers.cloudflare.com/email-service/get-started/route-emails/), to the mailbox provider where we read them.
 
 ## Your choices
 
 - **Statistics.** Turn off **Share basic usage statistics** in Settings > General > Privacy. Counting stops, statistics waiting to be sent and unsent counts are cleared, and it stays off after a restart. Turning it back on keeps the same identifier, starts counting from zero and sends nothing about the time it was off.
+- **Website analytics.** Turn off **Site analytics** at the foot of any page of mrstreamer.app. The choice applies to that browser only, and clearing the site's data from your browser turns them back on.
 - **Subtitle search** is off until you turn it on.
 - **Casting** happens only after you open the receiver list and pick a device.
 - **TMDB and update checks** have no off switch. Settings only lets you choose whose TMDB key the app uses.
@@ -93,18 +106,18 @@ Your network operator and DNS provider can see which servers the app contacts.
 
 - **On your computer:** until you delete it. Uninstalling keeps it, except for the Microsoft Store copy, which Windows deletes with the app.
 - **App statistics:** our PostHog project is on the free plan, which PostHog lists with one year of data retention, and says older data may be deleted. We haven't set up any deletion of our own, and we can't promise the exact day PostHog deletes.
-- **Website analytics:** Vercel discards the visit hash after 24 hours. We see totals.
+- **Website analytics:** the same PostHog project, plan and terms as app statistics.
 - **Messages:** as long as we need to answer and fix what you reported. GitHub issues stay public until deleted.
 
 ## Security
 
 Passwords, playlist links, guide addresses and subtitle-service logins are encrypted with a key your system keeps: the macOS Keychain, your Windows account, or GNOME Keyring or KWallet on Linux. On Linux without a keyring the key is fixed, so other programs running as you can read them. Server addresses, usernames and your own TMDB key aren't encrypted.
 
-An `https://` address never falls back to http, including through redirects. If https fails for an address you typed without one, the app asks before sending your login over http, where anyone between you and your provider can read it. Settings marks those logins "not encrypted". Statistics go to PostHog over https.
+An `https://` address never falls back to http, including through redirects. If https fails for an address you typed without one, the app asks before sending your login over http, where anyone between you and your provider can read it. Settings marks those logins "not encrypted". Statistics and website analytics go to PostHog over https.
 
 ## International transfers
 
-PostHog stores our statistics in Frankfurt. Its published data processing agreement says PostHog Inc. may also process them outside the EU, including in the US, under the EU-US Data Privacy Framework and Standard Contractual Clauses. Vercel and GitHub are US companies and rely on the same two mechanisms. Cloudflare is also a US company. Its privacy policy describes transfers under the EU-US Data Privacy Framework, with Standard Contractual Clauses for other transfers or if that certification lapses. Services you use through the app, such as TMDB, get data straight from your computer wherever they are.
+PostHog stores our statistics and website analytics in Frankfurt. Its published data processing agreement says PostHog Inc. may also process them outside the EU, including in the US, under the EU-US Data Privacy Framework and Standard Contractual Clauses. Vercel and GitHub are US companies and rely on the same two mechanisms. Cloudflare is also a US company. Its privacy policy describes transfers under the EU-US Data Privacy Framework, with Standard Contractual Clauses for other transfers or if that certification lapses. Services you use through the app, such as TMDB, get data straight from your computer wherever they are.
 
 ## Your rights
 

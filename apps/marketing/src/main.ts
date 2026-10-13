@@ -1,15 +1,18 @@
-// Every page counts its view. Home moves its window; home, download and about keep release links current:
+// Every page runs website analytics (analytics.ts). Home moves its window; home, download and
+// about keep release links current:
 // - Each part comes in once as it scrolls into view, and the hero's window tips upright as the
 //   page scrolls. The reader starts all of it, nothing runs while the page sits still, and nothing
 //   is hidden waiting for this script: without it the page is whole and the window upright.
 //   styles.css holds the keyframes and switches them off for reduced motion.
 // - One request for the update feed points the download links at a stable release published
 //   since the site was built (downloads.ts). Without an answer the built links stand.
-import { inject } from "@vercel/analytics";
+import { startSiteAnalytics, type SiteCapture } from "./analytics.ts";
 import { FEED, showFeedDownloads } from "./downloads.ts";
 
-// Local development does not load the analytics script.
-if (import.meta.env.PROD) inject({ mode: "production" });
+/** Written by vite.config.ts: null unless the build named a capture endpoint and key. */
+declare const __SITE_ANALYTICS__: SiteCapture | null;
+
+startSiteAnalytics(__SITE_ANALYTICS__);
 
 /** The full layout, for someone who hasn't asked for less motion. Either can change while open. */
 const tilting = matchMedia("(min-width: 70em) and (prefers-reduced-motion: no-preference)");

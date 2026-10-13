@@ -91,7 +91,7 @@ The helpers request `Browser.close` for their browser/app and SIGTERM for their 
 
 ## Helpers
 
-The public helper invocation is `pnpm verify:desktop <command>`. The website helper uses `pnpm verify:website`; its executable source is `scripts/website.ts`. Shared process ownership/cleanup lives in `scripts/session.ts`. The desktop source is also callable as `node .cursor/skills/verify-mrstreamer/scripts/control.ts <command>`. No global skill installation or additional daemon is needed.
+The public helper invocation is `pnpm verify:desktop <command>`. The website helper uses `pnpm verify:website`; its executable source is `scripts/website.ts`. Website analytics have their own scenario, `scripts/website-analytics.ts`, run as the website entry describes. Shared process ownership/cleanup lives in `scripts/session.ts`. The desktop source is also callable as `node .cursor/skills/verify-mrstreamer/scripts/control.ts <command>`. No global skill installation or additional daemon is needed.
 
 ## Maintenance
 

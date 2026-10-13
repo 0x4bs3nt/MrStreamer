@@ -38,6 +38,7 @@ interface Job {
     readonly with?: Record<string, unknown>;
     readonly uses?: string;
     readonly run?: string;
+    readonly env?: Record<string, string>;
   }[];
 }
 
@@ -84,6 +85,19 @@ describe("publishing the website", () => {
     expect(publish?.environment?.name).toBe("marketing-production");
     const uses = publish?.steps.flatMap((step) => step.uses ?? []) ?? [];
     expect(uses.some((action) => action.startsWith("actions/checkout@"))).toBe(false);
+  });
+
+  it("compiles website analytics only into the published build, from public variables", () => {
+    const step = others["build"]?.steps.find((step) =>
+      step.run?.includes("mrstreamer-marketing build"),
+    );
+    expect(step?.env).toEqual({
+      GH_TOKEN: "${{ github.token }}",
+      MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD: "1",
+      MR_STREAMER_SITE_ANALYTICS_HOST: "${{ vars.POSTHOG_HOST }}",
+      MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN: "${{ vars.POSTHOG_PROJECT_TOKEN }}",
+    });
+    expect(build.text).not.toContain("MR_STREAMER_SITE_ANALYTICS");
   });
 
   it("notifies only an actual successful production publication, without owner secrets or a checkout", () => {

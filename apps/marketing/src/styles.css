@@ -379,6 +379,18 @@ footer p {
   flex-basis: 100%;
 }
 
+/* The website analytics switch, in the footer and the policy: a button that reads as a link. */
+.site-analytics button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #fff;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
 /* A narrow phone: navigation wraps and the hero's button takes the width. */
 @media (max-width: 30em) {
   .actions .button {

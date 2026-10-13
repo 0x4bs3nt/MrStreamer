@@ -3,12 +3,14 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { defineConfig, type Connect } from "vite";
+import { defineConfig, type Connect, type UserConfig } from "vite";
+import type { SiteCapture } from "./src/analytics.ts";
 import { installers, verifiedDownloads, writeDownloads, type Downloads } from "./src/downloads.ts";
 import { systemOf } from "./src/system.ts";
 import { INDEXNOW_KEY, INDEXNOW_MARKER } from "./scripts/indexnow.ts";
 import { PAGES, SITE, renderPage } from "./scripts/pages.ts";
 import { newestStable, stableReleases, type Release } from "./scripts/releases.ts";
+import { siteAnalyticsConfiguration } from "./scripts/site-analytics.ts";
 
 const root = import.meta.dirname;
 const addresses = new Map(
@@ -69,8 +71,21 @@ function pages(read: (file: string) => string | Promise<string>): Connect.NextHa
   };
 }
 
-export default defineConfig({
+export default defineConfig(({ command }) => {
+  const analytics = siteAnalyticsConfiguration(process.env, command === "build");
+  // Names only the origin; the key is never printed.
+  if (analytics) console.log(`Website analytics: ${new URL(analytics.endpoint).origin}.`);
+  else if (command === "build" && process.env["MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD"] === "1")
+    console.warn(
+      "::warning::Website analytics: no valid EU host and public project key, so the site sends nothing.",
+    );
+  return config(analytics);
+});
+
+/** The site's build, with website analytics compiled in only as `analytics` names them. */
+const config = (analytics: SiteCapture | null): UserConfig => ({
   appType: "custom",
+  define: { __SITE_ANALYTICS__: JSON.stringify(analytics) },
   build: {
     rollupOptions: { input: [...PAGES.map(({ file }) => join(root, file)), join(root, MISSING)] },
   },

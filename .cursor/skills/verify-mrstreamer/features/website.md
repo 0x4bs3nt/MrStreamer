@@ -2,7 +2,7 @@
 
 ## Sub-features
 
-Home and system-specific download buttons, the full download page, seven user guides, the grouped FAQ, release history, About, Security and Privacy. Responsive layout and route/metadata correctness are part of the website contract.
+Home and system-specific download buttons, the full download page, seven user guides, the grouped FAQ, release history, About, Security and Privacy, and website analytics with its footer and policy switch. Responsive layout and route/metadata correctness are part of the website contract.
 
 ## How to get to it (user POV)
 
@@ -21,6 +21,21 @@ The existing `apps/marketing/test/` suites verify OS detection, link/feed fallba
 The baseline alone does not exercise Windows/Mac user-agent variants, all seven guides, About/Security, live feed refresh, no-script mode or Safari. Use the installed `mac-mini` skill's control tools for native Safari checks on the Mac mini, recording the real browser and viewport.
 
 Source: `apps/marketing/README.md`, `apps/marketing/scripts/pages.ts`, `apps/marketing/src/downloads.ts`, `apps/marketing/src/system.ts`, `apps/marketing/vite.config.ts` and `apps/marketing/test/`.
+
+## Website analytics
+
+Every page's footer reads **Site analytics: on.** with **Turn off** and **What's counted**; `/privacy#website-analytics` has the same switch. Global Privacy Control or Do Not Track shows the off reason with no button, blocked storage shows off with no button, and a build without capture shows static "Site analytics: off." The events, properties and build variables are in `apps/marketing/README.md#website-analytics`; `docs/privacy.md` must match them.
+
+Build with the EU host and a verification key, then run the scenario on headless Linux:
+
+```sh
+MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD=1 MR_STREAMER_SITE_ANALYTICS_HOST=https://eu.i.posthog.com MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN=phc_mrstreamer_verification pnpm build:marketing
+xvfb-run -a node .cursor/skills/verify-mrstreamer/scripts/website-analytics.ts
+```
+
+It serves that production-configured build and points its isolated browser's https through a loopback proxy that answers only `eu.i.posthog.com`, with a certificate the run makes and only that browser trusts, so no request reaches PostHog. Outside links are clicked but not followed. It drives a fresh profile from Home with a private query and fragment, a hero download, wheel scrolling and a footer GitHub click; holds a guide's requests and turns off from the footer, requiring each held request to be cancelled; restarts on the same profile; turns on and requires nothing until the next page; opens `/faq#free` and the policy switch at 390px and 1280px; clicks the header Guides link; holds a guide's requests past the 10-second deadline, requiring each to end; then GPC, DNT and blocked storage. The 64-request cap is covered by the unit contracts. Every captured body is checked against the allowlist, with no Referer, cookie, preflight, query or fragment. Proof, screenshots and the event list stay in `.local/verification/website-analytics-<unique>/`; the key is never written there. A page-leave event from the page before a refusal is expected. Chromium completes a keepalive leave or link-click request already sent. Unit contracts are in `apps/marketing/test/analytics.test.ts`. PostHog ingestion, dashboards and the project's IP setting are outside this proof; do not run it with a real key.
+
+The baseline `verify:website` blocks the production-configured build's PostHog requests along with every other external request.
 
 ## Screenshot assets
 

@@ -9,8 +9,9 @@
 #
 # - Only main publishes: no pull request event starts this workflow, so no fork's code runs near
 #   the token.
-# - The build job has no owner secrets. A read-only workflow token fetches release history.
-#   It builds main as it is when the job starts, checks the package
+# - The build job has no owner secrets. A read-only workflow token fetches release history, and
+#   website analytics take the PostHog host and public project key from repository variables,
+#   as the page carries that key anyway. It builds main as it is when the job starts, checks the package
 #   (apps/marketing/scripts/package-vercel.ts) and hands over only .vercel/output.
 # - The publish job checks out nothing: it holds that package and the token, and runs the pinned
 #   Vercel CLI on it.
@@ -125,6 +126,11 @@ jobs:
       - name: Build and check the package
         env:
           GH_TOKEN: ${{ github.token }}
+          # Website analytics: on only with PostHog's EU host and the public phc_ project key.
+          # Missing or other values build a site that sends nothing (scripts/site-analytics.ts).
+          MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD: "1"
+          MR_STREAMER_SITE_ANALYTICS_HOST: ${{ vars.POSTHOG_HOST }}
+          MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN: ${{ vars.POSTHOG_PROJECT_TOKEN }}
         run: pnpm --filter mrstreamer-marketing build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -209,10 +215,7 @@ jobs:
           node-version: 24
       # The project and account come from VERCEL_PROJECT_ID and VERCEL_ORG_ID. --prebuilt uploads
       # the package as it is, and Vercel runs nothing from the repository. --archive=tgz sends it
-      # as one file, which Vercel unpacks in its build step: the step that adds the Web Analytics
-      # routes under /_vercel/insights/. A package of static files sent without it skips that
-      # step, and the pages' analytics script answers 404. Only this step and the check hold the
-      # token.
+      # as one file. Only this step and the check hold the token.
       - name: Publish
         id: deployment
         if: steps.newest.outputs.superseded != 'true'

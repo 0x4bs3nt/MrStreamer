@@ -11,7 +11,9 @@ Static pages for `https://mrstreamer.app`, built with Vite from HTML, CSS, TypeS
 | `faq/`, `privacy/`, `docs/`, `about/`, `security/`, `download/`, `releases/` | HTML entry points, expanded by the build                                       |
 | `404.html`                                                                   | The page for a missing address                                                 |
 | `src/styles.css`                                                             | Layout, download button visibility and finite homepage motion                  |
-| `src/main.ts`                                                                | Page-view analytics, homepage motion and one download-feed refresh             |
+| `src/main.ts`                                                                | Starts website analytics, homepage motion and one download-feed refresh        |
+| `src/analytics.ts`                                                           | Website analytics: the footer and policy switch and the fixed events           |
+| `scripts/site-analytics.ts`                                                  | Which PostHog endpoint, if any, a build compiles in                            |
 | `src/system.ts`                                                              | Which system a visitor is on, for the hero's one download button               |
 | `src/downloads.ts`                                                           | Verified installer links, version metadata and the release's auxiliary links   |
 | `scripts/pages.ts`                                                           | Page registry, metadata and Markdown rendering with public documentation links |
@@ -57,8 +59,6 @@ Both local servers and Vercel answer the same addresses, with or without a query
 | Any other address, including HTML aliases such as `/404.html`                                                                 | The 404 page, with status 404                                         |
 
 Every document address also accepts a trailing slash. `scripts/pages.ts` is the address registry used by both local servers and Vercel packaging. Update `public/sitemap.xml` when adding a page; the build checks it against that registry.
-
-Vercel alone answers `/_vercel/insights/`, for [website analytics](#website-analytics).
 
 ## Change it
 
@@ -140,17 +140,34 @@ Keep the badge as Microsoft publishes it: no new colour, crop or redrawing, and 
 
 ## Website analytics
 
-The production build loads Vercel Web Analytics for page views. Local development does not load it. Enable Web Analytics in the Vercel project's Analytics tab before deploying; the project currently has it enabled. The desktop app’s separate 0.0.11 PostHog integration defaults on with a Settings opt-out, but unconfigured builds send no app statistics. Its recorded account setup uses EU Cloud and the free plan, with monthly usage and retention review and no additional automatic deletion. Live ingestion and installed-build acceptance remain pending. `docs/privacy.md` is the desktop and website privacy source, including the attributed retention terms rather than a guaranteed deletion deadline. The [privacy policy](../../docs/privacy.md#the-website) describes website data collection.
+`src/analytics.ts` sends a few fixed events per page to PostHog's EU Cloud, in the same project as the app's statistics, without an SDK. They are on by default. Global Privacy Control, Do Not Track, an explicit off and failing local storage keep them off, and GPC or DNT can't be overridden. The footer of every page and the policy's Website analytics section hold the switch. [The privacy policy](../../docs/privacy.md#website-analytics) is the promise the code keeps; change both together.
 
-The pages load the script from `/_vercel/insights/script.js` and send page views to `/_vercel/insights/view`. Vercel adds both to a deployment in its build step. A prebuilt package of static files skips that step unless it arrives as an archive, so every deployment here uses `--archive=tgz`. Without the flag the site looks the same, the script answers 404 and nothing is counted.
+| Event                     | Properties                                                                                                                                            | When                                                                                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `site_page_view`          | `route`: a `PAGES` address from the page's canonical link, or `404`                                                                                   | The page opens                                                                      |
+| `site_page_leave`         | `route`, `visible`: `under_10s`, `10_30s`, `30s_2m`, `2_10m` or `over_10m` of time in view                                                            | First `pagehide` or hidden `visibilitychange`                                       |
+| `site_download_click`     | `os`: `mac`, `windows`, `linux`. `kind`: `dmg`, `exe`, `appimage`, `deb`, `store`. `release_channel`: `stable`. `route`. `location`: `hero` or `page` | A click on an installer link or the Store: a download intent, not an installed copy |
+| `site_docs_click`         | `doc_section`: `index` for `/docs` or a guide's slug. `route`. `location`: `header`, `footer` or `page`                                               | A click on a link to `/docs` or a guide. Its fragment is never read                 |
+| `site_github_click`       | `route`, `location`: `footer_source`, `footer_bug`, `footer_license` or `page`                                                                        | A click on another link to this repository                                          |
+| `site_guide_section_view` | `guide`: the guide's slug. `section`: a heading id the build wrote                                                                                    | The heading enters view, once per page                                              |
+| `site_home_section_view`  | `section`: `live-tv`, `movies-and-series`, `sound-and-subtitles`, `what-you-need`, `questions` or `downloads`                                         | The section enters view, once per page                                              |
+| `site_faq_question_view`  | `question`: a row id in `src/faq.html`. `via`: `anchor` when the page opened on that id, else `scroll`                                                | The row enters view, once per page                                                  |
+| `site_release_view`       | `version`: a stable version on `/releases`                                                                                                            | The release enters view, once per page                                              |
 
-To check a deployment, ask for the script. It answers JavaScript, and the 404 page when the routes are missing:
+Every event also has `source: "website"`, `$process_person_profile: false` and `$geoip_disable: true`, and a `distinct_id` of `site_` and a random UUID made per page and never stored, so it can't meet the app's installation ids. Nothing else is sent: no URL, referrer, query, fragment, typed text, screen, language or user agent property. A page makes at most 64 requests, each aborted after 10 seconds, with no retry or queue. Requests use `fetch` with `credentials: "omit"` and `referrerPolicy: "no-referrer"`, and a text body that needs no preflight. Leave, link-click and guide-link events add `keepalive` so they arrive as the page closes. Turning off sends nothing more and aborts open requests. Chromium still completes a keepalive request already sent, whether turned off or past its deadline. Local storage holds only `mrstreamer.site-analytics`, set to `on` or `off` when the visitor chooses. The site links stable installers only, so nightly downloads show as GitHub clicks from `/download` or `/releases`.
 
-```sh
-curl -sI https://mrstreamer.app/_vercel/insights/script.js | grep -i content-type   # application/javascript
-```
+A build compiles analytics in from these variables only (`scripts/site-analytics.ts`):
 
-`pnpm preview:marketing` answers that address with the 404 page, as it is not Vercel.
+| Variable                                    | Value                                                                                                 |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD`  | `1`, set only by the publishing build in `marketing-deploy.yml`                                       |
+| `MR_STREAMER_SITE_ANALYTICS_HOST`           | `https://eu.i.posthog.com`, from the repository variable `POSTHOG_HOST`. Any other host sends nothing |
+| `MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN`  | The project's public `phc_` key, from the repository variable `POSTHOG_PROJECT_TOKEN`                 |
+| `MR_STREAMER_SITE_ANALYTICS_LOCAL_ENDPOINT` | A literal `http://127.0.0.1:<port>/i/v0/e/` for verification. It replaces production                  |
+
+The key is public: every page carries it, as the app does. It is the value of the release workflow's `POSTHOG_PROJECT_TOKEN` secret, kept as a variable so the build job holds no secrets. Never use a personal API key. Without the variables the publishing build warns and the site sends nothing. Development, previews and pull request builds send nothing, and their footer reads "Site analytics: off."
+
+The Vercel project's Web Analytics is no longer used and can be turned off in its Analytics tab.
 
 ## How it gets published
 
@@ -248,7 +265,6 @@ A project's first deployment is its production deployment. No domain is attached
 - `/privacy` and `/privacy/` both show the whole policy.
 - An address with no page, such as `/nothing/here`, shows Page not found.
 - `/robots.txt`, `/sitemap.xml` and `/generated/social.png` answer.
-- `/_vercel/insights/script.js` shows JavaScript, not Page not found.
 
 ### 6. Move the domain
 
@@ -269,7 +285,6 @@ curl -sI "https://www.mrstreamer.app/x?y=1" | grep -i location         # https:/
 curl -sI https://mrstreamer.app/privacy | head -1                      # 200
 curl -sI https://mrstreamer.app/privacy/ | head -1                     # 200
 curl -sI "https://mrstreamer.app/nothing/here?y=1" | head -1           # 404
-curl -sI https://mrstreamer.app/_vercel/insights/script.js | head -1   # 200
 ```
 
 Send a message to `hello@mrstreamer.app` and see it arrive. Open Settings > About in the app and follow its Website and Privacy links.

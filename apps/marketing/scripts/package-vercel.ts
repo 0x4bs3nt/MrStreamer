@@ -7,9 +7,6 @@
 // - config.json: each page answers its canonical address, with or without a trailing slash.
 //   An unknown address or an HTML alias answers 404.html with status 404. No builds.json: without one the CLI deploys to the target it is told,
 //   where a builds.json naming a preview would win.
-// - Nothing for analytics: Vercel adds /_vercel/insights/, where src/main.ts loads the script
-//   from, and answers it ahead of these routes. It adds that in its build step, which this
-//   package reaches only when deployed with --archive=tgz (README.md, Website analytics).
 //
 // Fails, listing every problem, when:
 // - a page names a file the package lacks, or has no script or styles

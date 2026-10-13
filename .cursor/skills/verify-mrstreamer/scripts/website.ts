@@ -312,7 +312,7 @@ app.on('window-all-closed', () => app.quit());
     await send("Page.navigate", { url: origin + "/faq" });
     await wait(() =>
       livePage.evaluate<boolean>(
-        "location.pathname === '/faq' && document.readyState === 'complete' && document.querySelectorAll('.faq-rows > div').length === 13",
+        "location.pathname === '/faq' && document.readyState === 'complete' && document.querySelectorAll('.faq-rows > div').length === 14",
       ),
     );
     actions.push({ action: "Read FAQ with page scripts disabled", at: new Date().toISOString() });
