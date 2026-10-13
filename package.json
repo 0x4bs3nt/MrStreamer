@@ -18,6 +18,7 @@
     "test": "vitest run",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "knip": "knip",
+    "actionlint": "node scripts/actionlint.ts",
     "fmt": "prettier --write .",
     "fmt:check": "prettier --check .",
     "dist:mac": "pnpm --filter mrstreamer dist:mac",

@@ -1,36 +1,38 @@
-// The Windows installed upgrade check, which `.github/workflows/windows-installed-upgrade.yml`
-// runs on a disposable GitHub-hosted runner. It installs the prior stable release, a published
-// nightly A over it, and a later release dry run B over that, each with the per-user NSIS setup
-// into the same folder, and starts each on one profile of its own:
+// The Windows installed upgrade check, which a stable release run makes before publishing and
+// `.github/workflows/upgrade-check.yml` makes by hand from main, on a disposable GitHub-hosted
+// runner. It installs the newest published stable release, then the published candidate nightly
+// over it with the per-user NSIS setup into the same folder, and starts the app three times on
+// one profile of its own:
 //
 // 1. stable: connect the fake provider, choose HD, Dutch sound and French subtitles, star two
-//    channels, save a movie to the watchlist and play part of it and an episode.
-// 2. A: those settings, favourites in order, watchlist and progress are all still there. Download
-//    two movies and an episode, then play the copies: skip, change sound track, show the movie's
-//    embedded French subtitles, leave and resume.
-// 3. B: what A left is all still there, copies, artwork and their progress included. Remove the
-//    subscription in Settings, stop the provider, TMDB and artwork, block outbound connections of
-//    the installed app and its bundled ffmpeg and ffprobe, see the block refuse them, and play the
-//    copies again from Connect's Downloads.
+//    channels, save a movie to the watchlist and play part of it and an episode, and save an
+//    online subtitle with its timing through the subtitle panel.
+// 2. candidate: those settings, favourites in order, watchlist, progress and the saved subtitle
+//    are all still there, with no new subtitle request. Download two movies and an episode, then
+//    play the copies: skip, change sound track, show the movie's embedded French subtitles, leave
+//    and resume.
+// 3. candidate-restart: the same installed files start again, and what the candidate left is all
+//    still there, copies, artwork and their progress included. Remove the subscription in
+//    Settings, stop the provider, TMDB, artwork and subtitle service, block outbound connections
+//    of the installed app and its bundled ffmpeg and ffprobe, see the block refuse them, and play
+//    the copies again from Connect's Downloads.
 //
 // Every change goes through the window with pointer and keys; the check reads state only through
 // the app's public, read-only calls. At each start it checks the process runs the installed
 // executable, the window shows the installed app.asar, and the app and Settings > About name the
 // expected version and commit. Before each setup and at the end, every process the app started has
-// ended. Evidence goes beside the profile, never in it: a proof.json and screenshots with their
-// text. On success the check uninstalls the app and removes the profile; on failure it keeps them
-// and their lock for the workflow to upload, and changes nothing more.
+// ended, each start by a graceful close. Evidence goes beside the profile, never in it: a
+// proof.json and screenshots with their text. On success the check uninstalls the app and removes
+// the profile; on failure it keeps them and their lock for the workflow to upload, and changes
+// nothing more.
 //
-//   node apps/desktop/test/e2e/installed-upgrade.ts resolve --a-tag <tag> --a-sha <commit> --b-run <id> --b-sha <commit> --out <folder>
-//   node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <folder under RUNNER_TEMP>
+//   node apps/desktop/test/e2e/installed-upgrade.ts resolve --candidate <nightly tag> [--sha <its commit>] --out <new folder>
+//   node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>
 //
-// `resolve` needs GH_TOKEN and GITHUB_REPOSITORY and runs anywhere; `run` only on that runner.
-// `resolve-published` and `run-published` use two explicitly pinned published releases instead:
-// stable -> candidate replacement -> restart of that same candidate, reusing the stages below.
+// `resolve` needs GH_TOKEN and GITHUB_REPOSITORY and runs anywhere; installed-upgrade-packages.ts
+// says what it checks. `run` runs only on that runner, from main.
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { type } from "arktype";
-import { parse } from "yaml";
 import { createServer, type Server } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -44,11 +46,6 @@ import type { Result } from "../../../../packages/contracts/src/errors.ts";
 import type { IpcArgs, IpcMethod, IpcOutput } from "../../../../packages/contracts/src/ipc.ts";
 import { installCatalogueWorkerProbe, type Evidence } from "./installed-catalogue-worker.ts";
 import { catalogueWorkerScripts } from "./installed-worker-scripts.ts";
-import {
-  compareVersions,
-  formatVersion,
-  parseVersion,
-} from "../../../../packages/contracts/src/version.ts";
 import { startFakeProvider, type FakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, launch, type Page } from "./app.ts";
@@ -64,14 +61,12 @@ import {
   subtitleRequests,
 } from "./installed-subtitles.ts";
 import {
-  readPins,
+  check,
+  readReceipt,
   resolvePackages,
   restGitHub,
   sha256,
   type Package,
-  type Receipt,
-  type Stage,
-  type GitHub,
 } from "./installed-upgrade-packages.ts";
 import {
   disposableRunner,
@@ -85,272 +80,9 @@ import {
   type Runner,
 } from "./installed-upgrade-windows.ts";
 
-const FullSha = type(/^[0-9a-f]{40}$/);
-const Digest = type(/^[0-9a-f]{64}$/);
-const PublishedPins = type({
-  stableTag: "string",
-  stableSha: FullSha,
-  candidateTag: "string",
-  candidateSha: FullSha,
-  "+": "reject",
-});
-export type PublishedPins = typeof PublishedPins.infer;
-const PublishedPackage = type({
-  stage: "'stable' | 'candidate'",
-  version: "string",
-  source: FullSha,
-  file: "string",
-  sha256: Digest,
-  bytes: "number.integer > 0",
-  provenance: {
-    tag: "string",
-    releaseKind: "'stable' | 'nightly'",
-    publishedAt: "string",
-    assetId: "number.integer > 0",
-    assetDigest: "string | null",
-    metadata: {
-      sha256sums: Digest,
-      latestYml: Digest,
-      sha512: "string",
-    },
-  },
-});
-const PublishedReceipt = type({
-  schemaVersion: "2",
-  mode: "'published-pair'",
-  repository: "string",
-  resolvedAt: "string",
-  pins: PublishedPins,
-  packages: [PublishedPackage, PublishedPackage],
-  defaultBranch: "'main'",
-  candidateAheadBy: "number.integer > 0",
-  limits: "string[]",
-});
-export type PublishedReceipt = typeof PublishedReceipt.infer;
-type RunStage = Stage | "candidate" | "candidate-restart";
-type RunPackage = Omit<Package, "stage"> & { readonly stage: RunStage };
-
-function requirePublished(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(`Refused: ${message}`);
-}
-
-/** Explicit published stable/nightly pins, with no moving default or dry-run inputs. */
-export function readPublishedPins(values: Record<string, string | undefined>): PublishedPins {
-  const allowed = ["stable-tag", "stable-sha", "candidate-tag", "candidate-sha", "out"];
-  requirePublished(
-    Object.keys(values).every((name) => allowed.includes(name)),
-    "Published-pair inputs cannot be mixed with legacy or unknown inputs.",
-  );
-  const pins = PublishedPins.assert({
-    stableTag: values["stable-tag"] ?? "",
-    stableSha: values["stable-sha"] ?? "",
-    candidateTag: values["candidate-tag"] ?? "",
-    candidateSha: values["candidate-sha"] ?? "",
-  });
-  const stable = parseVersion(pins.stableTag);
-  const candidate = parseVersion(pins.candidateTag);
-  requirePublished(
-    pins.stableTag.startsWith("v") && stable && !stable.nightly,
-    "stable-tag must be an explicit stable tag.",
-  );
-  requirePublished(
-    pins.candidateTag.startsWith("v") && candidate?.nightly,
-    "candidate-tag must be an explicit nightly tag.",
-  );
-  requirePublished(
-    formatVersion(stable) === pins.stableTag.slice(1) &&
-      formatVersion(candidate) === pins.candidateTag.slice(1),
-    "Published tags must use canonical release versions.",
-  );
-  requirePublished(
-    compareVersions(candidate, stable) > 0,
-    "The candidate version must strictly increase from stable.",
-  );
-  requirePublished(
-    pins.stableSha !== pins.candidateSha,
-    "The candidate must strictly descend from stable, with a different source commit.",
-  );
-  return pins;
-}
-
-/** Downloads real published setups through the same read-only GitHub boundary as legacy mode. */
-export async function resolvePublishedPair(
-  github: GitHub,
-  supplied: PublishedPins,
-  now = Date.now(),
-) {
-  PublishedPins.assert(supplied);
-  const pins = readPublishedPins({
-    "stable-tag": supplied.stableTag,
-    "stable-sha": supplied.stableSha,
-    "candidate-tag": supplied.candidateTag,
-    "candidate-sha": supplied.candidateSha,
-  });
-  const branch = type({ default_branch: "string" }).assert(await github.json("")).default_branch;
-  requirePublished(
-    branch === "main",
-    "Published-pair checks require this repository's main branch.",
-  );
-  const ancestry = type({
-    status: "string",
-    ahead_by: "number.integer",
-    behind_by: "number.integer",
-  });
-  for (const source of [pins.stableSha, pins.candidateSha]) {
-    const onMain = ancestry.assert(await github.json(`/compare/${source}...main?per_page=1`));
-    requirePublished(
-      (onMain.status === "ahead" || onMain.status === "identical") && onMain.behind_by === 0,
-      `main does not contain ${source}.`,
-    );
-  }
-  const diff = ancestry.assert(
-    await github.json(`/compare/${pins.stableSha}...${pins.candidateSha}?per_page=1`),
-  );
-  requirePublished(
-    diff.status === "ahead" && diff.ahead_by > 0 && diff.behind_by === 0,
-    "The candidate does not strictly descend from stable.",
-  );
-  const assetSchema = type({
-    id: "number.integer > 0",
-    name: "string",
-    size: "number.integer > 0",
-    "digest?": "string | null",
-  });
-  const releaseSchema = type({
-    tag_name: "string",
-    draft: "boolean",
-    prerelease: "boolean",
-    published_at: "string | null",
-    assets: assetSchema.array(),
-  });
-  const latestSchema = type({
-    version: "string",
-    path: "string",
-    sha512: "string",
-    files: type({ url: "string", sha512: "string", size: "number.integer > 0" }).array(),
-  });
-  const files = new Map<string, Uint8Array>();
-  const resolve = async (stage: "stable" | "candidate", tag: string, source: string) => {
-    const version = tag.slice(1);
-    const release = releaseSchema.assert(
-      await github.json(`/releases/tags/${encodeURIComponent(tag)}`),
-    );
-    requirePublished(
-      release.tag_name === tag &&
-        !release.draft &&
-        release.prerelease === (stage === "candidate") &&
-        release.published_at &&
-        Number.isFinite(Date.parse(release.published_at)),
-      `${tag} is not the pinned published ${stage === "stable" ? "stable release" : "nightly"}.`,
-    );
-    const commit = type({ sha: FullSha }).assert(
-      await github.json(`/commits/${encodeURIComponent(tag)}`),
-    );
-    requirePublished(commit.sha === source, `${tag} does not name ${source}.`);
-    const asset = async (name: string) => {
-      const found = release.assets.filter((each) => each.name === name);
-      requirePublished(found.length === 1, `${tag} has no single ${name}.`);
-      const item = found[0]!;
-      const bytes = await github.bytes(`/releases/assets/${item.id}`, "application/octet-stream");
-      requirePublished(bytes.length === item.size, `${name} does not match its asset size.`);
-      if (item.digest)
-        requirePublished(
-          item.digest === `sha256:${sha256(bytes)}`,
-          `${name} does not match its asset digest.`,
-        );
-      return { item, bytes };
-    };
-    const name = `Mr-Streamer-${version}-win-x64-setup.exe`;
-    const setup = await asset(name);
-    const sums = await asset("SHA256SUMS.txt");
-    const metadata = await asset("latest.yml");
-    const matches = new TextDecoder()
-      .decode(sums.bytes)
-      .split("\n")
-      .map((line) => /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim()))
-      .filter((match) => match?.[2] === name);
-    const hash = sha256(setup.bytes);
-    requirePublished(
-      matches.length === 1 && matches[0]![1] === hash,
-      `${name} does not match a single SHA256SUMS.txt entry.`,
-    );
-    const latest = latestSchema.assert(parse(new TextDecoder().decode(metadata.bytes)));
-    const sha512 = createHash("sha512").update(setup.bytes).digest("base64");
-    requirePublished(
-      latest.version === version &&
-        latest.path === name &&
-        latest.sha512 === sha512 &&
-        latest.files.length === 1 &&
-        latest.files[0]!.url === name &&
-        latest.files[0]!.sha512 === sha512 &&
-        latest.files[0]!.size === setup.bytes.length,
-      `latest.yml does not describe ${name}, its version, SHA-512 and size exactly.`,
-    );
-    const file = `${stage}-${name}`;
-    files.set(file, setup.bytes);
-    return PublishedPackage.assert({
-      stage,
-      version,
-      source,
-      file,
-      sha256: hash,
-      bytes: setup.bytes.length,
-      provenance: {
-        tag,
-        releaseKind: stage === "stable" ? "stable" : "nightly",
-        publishedAt: release.published_at,
-        assetId: setup.item.id,
-        assetDigest: setup.item.digest ?? null,
-        metadata: { sha256sums: sha256(sums.bytes), latestYml: sha256(metadata.bytes), sha512 },
-      },
-    });
-  };
-  const receipt: PublishedReceipt = {
-    schemaVersion: 2,
-    mode: "published-pair",
-    repository: github.repository,
-    resolvedAt: new Date(now).toISOString(),
-    pins,
-    packages: [
-      await resolve("stable", pins.stableTag, pins.stableSha),
-      await resolve("candidate", pins.candidateTag, pins.candidateSha),
-    ],
-    defaultBranch: "main",
-    candidateAheadBy: diff.ahead_by,
-    limits: [
-      "Published tag/source, SHA256SUMS.txt and latest.yml bind each setup. Release workflow/package receipts require separate inspection; no dry-run artifact is installed.",
-      "The last phase restarts the same candidate. It does not prove a second version upgrade.",
-    ],
-  };
-  return { receipt, files };
-}
-
-/** Refuses the wrong mode or inconsistent resolved identities before any native installation. */
-export function readPublishedReceipt(value: unknown): PublishedReceipt {
-  const receipt = PublishedReceipt.assert(value);
-  const pins = readPublishedPins({
-    "stable-tag": receipt.pins.stableTag,
-    "stable-sha": receipt.pins.stableSha,
-    "candidate-tag": receipt.pins.candidateTag,
-    "candidate-sha": receipt.pins.candidateSha,
-  });
-  for (const [index, stage, tag, source] of [
-    [0, "stable", pins.stableTag, pins.stableSha],
-    [1, "candidate", pins.candidateTag, pins.candidateSha],
-  ] as const) {
-    const pkg = receipt.packages[index];
-    requirePublished(
-      pkg.stage === stage &&
-        pkg.version === tag.slice(1) &&
-        pkg.source === source &&
-        pkg.file === `${stage}-Mr-Streamer-${pkg.version}-win-x64-setup.exe` &&
-        pkg.provenance.tag === tag &&
-        pkg.provenance.releaseKind === (stage === "stable" ? "stable" : "nightly"),
-      "The published receipt's package identity does not match its pins.",
-    );
-  }
-  return receipt;
-}
+/** The three starts: stable, the candidate installed over it, then that candidate again. */
+type Stage = Package["stage"] | "candidate-restart";
+type RunPackage = Omit<Package, "stage"> & { readonly stage: Stage };
 
 /** A public address the window reaches before the block and not after it. Its CSP allows it. */
 const OUTSIDE = "https://example.com/";
@@ -527,7 +259,7 @@ interface WindowRequest {
 }
 
 /** Pointer and key input to the window, screenshots, and the app's read-only calls. */
-export function driver(page: Page, evidence: string, stage: RunStage) {
+export function driver(page: Page, evidence: string, stage: Stage) {
   const actions: { at: string; action: string }[] = [];
   const requests: WindowRequest[] = [];
   page.on("Network.requestWillBeSent", (params) => {
@@ -784,15 +516,13 @@ function retained(before: State, now: State, what: string) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The three stages
+// The stages
 
-/** The prior stable release, from the Connect screen on. */
-export async function seedStable(
-  d: Driver,
-  services: Services,
-  titles: Fixtures,
-  savedSubtitles = false,
-) {
+/**
+ * The prior stable release, from the Connect screen on, including a saved online subtitle with
+ * its timing, chosen while the movie plays.
+ */
+export async function seedStable(d: Driver, services: Services, titles: Fixtures) {
   await d.wait(() => d.exists("document.querySelector('form input')"), 30_000, "the Connect form");
   for (const [index, text] of [services.url, "demo", "demo"].entries()) {
     await d.click(
@@ -812,7 +542,7 @@ export async function seedStable(
   await d.select("Quality", labelled("Quality"), "hd");
   await d.select("Audio in", labelled("Audio in"), "nl");
   await d.select("Subtitles", labelled("Subtitles"), "fr");
-  if (savedSubtitles) await configureSubtitleUi(d);
+  await configureSubtitleUi(d);
   await d.capture("settings");
   // Stable 0.0.11 keeps Escape in the focused subtitle opt-in checkbox.
   await d.click(
@@ -842,7 +572,7 @@ export async function seedStable(
   await d.click("Save the movie", button('[role="dialog"] button', "Save"));
   await d.click("Play the movie", button('[role="dialog"] button', "Play"));
   await playing(d);
-  const savedSubtitle = savedSubtitles ? await seedSubtitleUi(d) : undefined;
+  const savedSubtitle = await seedSubtitleUi(d);
   await d.key("ArrowRight", 39);
   await d.key("ArrowRight", 39);
   await d.wait(async () => (await d.video()).time > 20, 30_000, "the movie past 20 s");
@@ -892,11 +622,12 @@ function resumedNear(what: string, started: number, kept: number) {
 }
 
 /**
- * Plays the copies on the Downloads page: skip, other sound, embedded subtitles, resume, episode.
- * When an earlier version left the long movie's copy at `kept` seconds, it must start from there.
+ * Plays the copies on the Downloads page: skip, other sound, embedded subtitles, the saved online
+ * subtitle with its timing, resume, episode. When an earlier start left the long movie's copy at
+ * `kept` seconds, it must start from there.
  * Leaving it again must keep the time it was left at, and it must resume from that.
  */
-async function playCopies(d: Driver, titles: Fixtures, kept?: number, savedSubtitles = false) {
+async function playCopies(d: Driver, titles: Fixtures, kept?: number) {
   const copies = (await d.read("downloads.list")).items;
   const long = copies.find((each) => each.title.kind === "movie" && each.title.id === titles.long);
   const sound = copies.find((each) => each.title.kind === "movie" && each.title.id !== titles.long);
@@ -981,7 +712,7 @@ async function playCopies(d: Driver, titles: Fixtures, kept?: number, savedSubti
     "document.querySelector('[data-subtitle-text]').textContent.trim()",
   );
   await d.capture("copy-subtitles");
-  if (savedSubtitles) seen["savedSubtitle"] = await observeSavedSubtitle(d, "copy");
+  seen["savedSubtitle"] = await observeSavedSubtitle(d, "copy");
   const left = (await d.video()).time;
   await leaveTitle(d);
   // Main keeps where it was left, and the page shows it too: Watch offline goes from there.
@@ -1030,18 +761,14 @@ async function copiesShown(d: Driver, count: number) {
   );
 }
 
-/** The nightly A over the stable release: everything kept, then copies downloaded and played. */
-export async function upgradeToA(
-  d: Driver,
-  titles: Fixtures,
-  seeded: State,
-  operation = "Upgrading to A",
-  subtitleMode: "none" | "seed" | "retained" = "none",
-) {
-  const kept = retained(seeded, await state(d, titles), operation);
+/**
+ * The candidate nightly over the stable release: everything kept, the saved online subtitle and
+ * its timing included, then copies downloaded and played.
+ */
+export async function upgradeToCandidate(d: Driver, titles: Fixtures, seeded: State) {
+  const kept = retained(seeded, await state(d, titles), "Upgrading to candidate");
   await d.click("Open Settings", labelled("Settings"));
   await d.click("Open General", button("nav button", "General"));
-  if (subtitleMode === "seed") await configureSubtitleUi(d);
   await d.capture("settings");
   await d.key("Escape", 27);
   await d.click("Open Live TV", button("header button", "Live TV"));
@@ -1050,19 +777,15 @@ export async function upgradeToA(
   await openWatchlist(d);
   await d.capture("watchlist");
 
-  let savedSubtitle;
-  if (subtitleMode !== "none") {
-    await openMovie(d, "Long subtitles");
-    await d.click(
-      "Play or resume before downloading subtitles",
-      `[...document.querySelectorAll('[role="dialog"] button')].find(b => ['Play', 'Resume'].includes(b.textContent.trim()))`,
-    );
-    await playing(d);
-    savedSubtitle =
-      subtitleMode === "seed" ? await seedSubtitleUi(d) : await observeSavedSubtitle(d);
-    await leaveTitle(d);
-    await d.key("Escape", 27);
-  }
+  await openMovie(d, "Long subtitles");
+  await d.click(
+    "Play or resume before downloading subtitles",
+    `[...document.querySelectorAll('[role="dialog"] button')].find(b => ['Play', 'Resume'].includes(b.textContent.trim()))`,
+  );
+  await playing(d);
+  const savedSubtitle = await observeSavedSubtitle(d);
+  await leaveTitle(d);
+  await d.key("Escape", 27);
   for (const movie of ["Two sound tracks", "Long subtitles"]) {
     await openMovie(d, movie);
     await d.click(`Download ${movie}`, button('[role="dialog"] button', "Download"));
@@ -1086,7 +809,7 @@ export async function upgradeToA(
   );
   await copiesShown(d, 3);
   await d.capture("copies");
-  const played = await playCopies(d, titles, undefined, subtitleMode !== "none");
+  const played = await playCopies(d, titles);
   return {
     kept,
     savedSubtitle,
@@ -1095,7 +818,7 @@ export async function upgradeToA(
     after: await state(d, titles),
   };
 }
-export type AfterA = Awaited<ReturnType<typeof upgradeToA>>;
+export type AfterCandidate = Awaited<ReturnType<typeof upgradeToCandidate>>;
 
 /** What the offline part needs of the machine: the block, and what it refused. */
 export interface Offline {
@@ -1106,22 +829,22 @@ export interface Offline {
 }
 
 /**
- * The dry run B over A: everything kept, copies included. Then the subscription goes in Settings,
- * the network goes for the app, and the copies play from Connect's Downloads.
+ * The same candidate started again: everything the upgrade left kept, copies included. Then the
+ * subscription goes in Settings, the network goes for the app, and the copies play from Connect's
+ * Downloads.
  */
-export async function upgradeToB(
+export async function restartCandidate(
   d: Driver,
   titles: Fixtures,
-  a: AfterA,
+  upgraded: AfterCandidate,
   offline: Offline,
-  operation = "Upgrading to B",
-  savedSubtitles = false,
 ) {
-  const kept = retained(a.after, await state(d, titles), operation);
+  const operation = "Restarting candidate";
+  const kept = retained(upgraded.after, await state(d, titles), operation);
   await d.click("Open Downloads", button("header button", "Downloads"));
-  await copiesShown(d, a.copies.length);
+  await copiesShown(d, upgraded.copies.length);
   const copies = (await d.read("downloads.list")).items;
-  for (const prior of a.copies) {
+  for (const prior of upgraded.copies) {
     const now = copies.find((each) => each.id === prior.id);
     if (
       !now ||
@@ -1173,7 +896,7 @@ export async function upgradeToB(
 
   const cutOff = await offline.cutOff(d);
   await d.click("Open Downloads from Connect", button("button", "Downloads"));
-  await copiesShown(d, a.copies.length);
+  await copiesShown(d, upgraded.copies.length);
   await d.wait(
     async () =>
       (await d.page.evaluate<string>("document.body.innerText")).includes(
@@ -1187,11 +910,11 @@ export async function upgradeToB(
   await d.capture("copies-without-subscription");
   const from = new Date();
   const requestsFrom = d.requests.length;
-  const leftByA = a.copies.find(
+  const left = upgraded.copies.find(
     (each) => each.title.kind === "movie" && each.title.id === titles.long,
   )?.progress;
-  if (!leftByA) throw new Error("A left no progress on the long movie's copy.");
-  const played = await playCopies(d, titles, leftByA.position, savedSubtitles);
+  if (!left) throw new Error("The upgrade left no progress on the long movie's copy.");
+  const played = await playCopies(d, titles, left.position);
   const outside = d.requests
     .slice(requestsFrom)
     .filter(
@@ -1216,41 +939,25 @@ export async function upgradeToB(
 // Commands
 
 const usage = `Usage:
-  node apps/desktop/test/e2e/installed-upgrade.ts resolve --a-tag <tag> --a-sha <commit> --b-run <id> --b-sha <commit> --out <folder>
-  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>
-  node apps/desktop/test/e2e/installed-upgrade.ts resolve-published --stable-tag <tag> --stable-sha <commit> --candidate-tag <tag> --candidate-sha <commit> --out <folder>
-  node apps/desktop/test/e2e/installed-upgrade.ts run-published --packages <folder> --root <new folder under RUNNER_TEMP>`;
+  node apps/desktop/test/e2e/installed-upgrade.ts resolve --candidate <nightly tag> [--sha <its commit>] --out <new folder>
+  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>`;
 
-/** Resolves the selected mode's installers and writes them with receipt.json. */
-async function resolveCommand(args: string[], published = false) {
-  const { values } = published
-    ? parseArgs({
-        args,
-        options: {
-          "stable-tag": { type: "string" },
-          "stable-sha": { type: "string" },
-          "candidate-tag": { type: "string" },
-          "candidate-sha": { type: "string" },
-          out: { type: "string" },
-        },
-      })
-    : parseArgs({
-        args,
-        options: {
-          "a-tag": { type: "string" },
-          "a-sha": { type: "string" },
-          "b-run": { type: "string" },
-          "b-sha": { type: "string" },
-          out: { type: "string" },
-        },
-      });
+/**
+ * Resolves the newest published stable and the candidate nightly, and writes their setups with
+ * receipt.json into a new folder.
+ */
+async function resolveCommand(args: string[]) {
+  const { values } = parseArgs({
+    args,
+    options: { candidate: { type: "string" }, sha: { type: "string" }, out: { type: "string" } },
+  });
   const [token, repository] = [process.env["GH_TOKEN"], process.env["GITHUB_REPOSITORY"]];
   if (!token || !repository) throw new Error("Set GH_TOKEN and GITHUB_REPOSITORY.");
-  if (!values.out || !isAbsolute(values.out)) throw new Error(usage);
-  const github = restGitHub(repository, token);
-  const { receipt, files } = published
-    ? await resolvePublishedPair(github, readPublishedPins(values))
-    : await resolvePackages(github, readPins(values));
+  if (!values.candidate || !values.out || !isAbsolute(values.out)) throw new Error(usage);
+  const { receipt, files } = await resolvePackages(restGitHub(repository, token), {
+    tag: values.candidate,
+    sha: values.sha || undefined,
+  });
   await mkdir(values.out);
   for (const [name, bytes] of files) await writeFile(join(values.out, name), bytes);
   await writeFile(join(values.out, "receipt.json"), JSON.stringify(receipt, null, 2));
@@ -1260,14 +967,18 @@ async function resolveCommand(args: string[], published = false) {
     );
 }
 
-/** Launches the installed app on the profile and checks it is the installed build it should be. */
+/**
+ * Launches the installed app on the profile with main held at its first line, checks it is the
+ * installed build it should be, points SubDL at the fixture at `subtitleOrigin` and watches the
+ * catalogue worker start, then resumes it.
+ */
 async function start(
   runner: Runner,
   profile: string,
   evidence: string,
   pkg: RunPackage,
   tmdbApi: string,
-  subtitleOrigin?: string,
+  subtitleOrigin: string,
 ) {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const inspectPort = port + 20000;
@@ -1285,7 +996,7 @@ async function start(
       "--remote-debugging-address=127.0.0.1",
       "--enable-automation",
       "--lang=en-US",
-      ...(subtitleOrigin ? [`--inspect-brk=127.0.0.1:${inspectPort}`] : []),
+      `--inspect-brk=127.0.0.1:${inspectPort}`,
     ],
     { port, profile },
   );
@@ -1351,58 +1062,56 @@ async function start(
     };
   };
   try {
-    if (subtitleOrigin) {
-      main = await connect(inspectPort, "node");
-      const owner = await inspectorOwner(inspectPort, [app.pid]);
-      if (owner !== app.pid || app.exitCode !== null || app.signalCode !== null)
-        throw new Error("Inspector owner exited before initial pause");
-      const paused = await pauseMain(main);
-      const identity = await paused.evaluate<{
-        pid: number;
-        executable: string;
-        resources: string;
-        argv: string[];
-      }>(
-        `({pid:process.pid,executable:process.execPath,resources:process.resourcesPath,argv:process.argv})`,
-      );
-      tree.sample();
-      if (
-        identity.pid !== app.pid ||
-        identity.executable.toLowerCase() !== runner.executable.toLowerCase() ||
-        identity.resources.toLowerCase() !== join(runner.installRoot, "resources").toLowerCase() ||
-        !identity.argv.includes(`--user-data-dir=${profile}`)
-      )
-        throw new Error("Paused main is not the owned installed app");
-      if (
-        (await fileSha256(identity.executable)) !== beforeLaunch.executable ||
-        (await fileSha256(join(identity.resources, "app.asar"))) !== beforeLaunch.appAsar ||
-        (
-          await Promise.all(
-            runner.tools.map(async (tool) => (await fileSha256(tool)) === beforeLaunch.tools[tool]),
-          )
-        ).some((same) => !same)
-      )
-        throw new Error("Paused installed executable changed");
-      bootstrap = await bootstrapSubtitles(paused, subtitleOrigin);
-      if (bootstrap.pid !== app.pid) throw new Error("Subtitle bootstrap PID changed");
-      const provenance = await catalogueWorkerScripts(identity.resources, beforeLaunch.appAsar);
-      workerDiagnostics.provenance = provenance;
-      workers = installCatalogueWorkerProbe({
-        main,
-        expectedWorker: provenance.expectedWorker,
-        startupScriptURLs: provenance.startupScriptURLs,
-        verifiedMainPID: identity.pid,
-        evidence: (event) => {
-          workerDiagnostics.events.push(event);
-          return undefined;
-        },
-      });
-      const enabled = await workers.ready;
-      if (!enabled.ok) throw new Error(enabled.error);
-      // Join this control task after the UI stage, including Connect which creates the worker.
-      workerControl = workers.start(120_000);
-      await resumeMain(main);
-    }
+    main = await connect(inspectPort, "node");
+    const owner = await inspectorOwner(inspectPort, [app.pid]);
+    if (owner !== app.pid || app.exitCode !== null || app.signalCode !== null)
+      throw new Error("Inspector owner exited before initial pause");
+    const paused = await pauseMain(main);
+    const identity = await paused.evaluate<{
+      pid: number;
+      executable: string;
+      resources: string;
+      argv: string[];
+    }>(
+      `({pid:process.pid,executable:process.execPath,resources:process.resourcesPath,argv:process.argv})`,
+    );
+    tree.sample();
+    if (
+      identity.pid !== app.pid ||
+      identity.executable.toLowerCase() !== runner.executable.toLowerCase() ||
+      identity.resources.toLowerCase() !== join(runner.installRoot, "resources").toLowerCase() ||
+      !identity.argv.includes(`--user-data-dir=${profile}`)
+    )
+      throw new Error("Paused main is not the owned installed app");
+    if (
+      (await fileSha256(identity.executable)) !== beforeLaunch.executable ||
+      (await fileSha256(join(identity.resources, "app.asar"))) !== beforeLaunch.appAsar ||
+      (
+        await Promise.all(
+          runner.tools.map(async (tool) => (await fileSha256(tool)) === beforeLaunch.tools[tool]),
+        )
+      ).some((same) => !same)
+    )
+      throw new Error("Paused installed executable changed");
+    bootstrap = await bootstrapSubtitles(paused, subtitleOrigin);
+    if (bootstrap.pid !== app.pid) throw new Error("Subtitle bootstrap PID changed");
+    const provenance = await catalogueWorkerScripts(identity.resources, beforeLaunch.appAsar);
+    workerDiagnostics.provenance = provenance;
+    workers = installCatalogueWorkerProbe({
+      main,
+      expectedWorker: provenance.expectedWorker,
+      startupScriptURLs: provenance.startupScriptURLs,
+      verifiedMainPID: identity.pid,
+      evidence: (event) => {
+        workerDiagnostics.events.push(event);
+        return undefined;
+      },
+    });
+    const enabled = await workers.ready;
+    if (!enabled.ok) throw new Error(enabled.error);
+    // Join this control task after the UI stage, including Connect which creates the worker.
+    workerControl = workers.start(120_000);
+    await resumeMain(main);
     page = await connect(port);
     const d = driver(page, evidence, pkg.stage);
     const command = await page.send("Browser.getBrowserCommandLine");
@@ -1430,26 +1139,8 @@ async function start(
       throw new Error("Renderer listener is not the active owned app");
     tree.sample();
     verifiedPage = page;
-    // The bridge can appear before Connect mounts. Wait for the legacy form before reading it.
-    if (pkg.stage === "stable" && !subtitleOrigin)
-      await d.wait(
-        () =>
-          d.page.evaluate<boolean>(
-            "!!document.querySelector('form button[type=submit]')?.textContent.trim()",
-          ),
-        30_000,
-        "the legacy Connect form",
-      );
-    // Legacy mode observes English through the Connect label on its stable stage.
-    const language =
-      pkg.stage === "stable" && !subtitleOrigin
-        ? {
-            legacyConnect: await d.page.evaluate<string>(
-              "document.querySelector('form button[type=submit]')?.textContent.trim() ?? ''",
-            ),
-          }
-        : await d.read("language.get");
-    if ("locale" in language ? language.locale !== "en-US" : language.legacyConnect !== "Connect")
+    const language = await d.read("language.get");
+    if (language.locale !== "en-US")
       throw new Error(`The check requires English: ${JSON.stringify(language)}.`);
     await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     await page.send("Network.enable");
@@ -1523,19 +1214,16 @@ export async function installPublished(
     observationError = error;
   }
   const result = await pending;
-  requirePublished(
+  check(
     !observationError && observed.length === 1,
     "The setup cannot be identified as one installer child owned by this driver.",
   );
   const installer = observed[0]!;
-  requirePublished(
+  check(
     !processes().some((each) => each.pid === installer.pid && each.created === installer.created),
     "The owned installer is still running after setup completed.",
   );
-  requirePublished(
-    (await fileSha256(setup)) === setupSha256,
-    "The setup changed while the installer ran.",
-  );
+  check((await fileSha256(setup)) === setupSha256, "The setup changed while the installer ran.");
   return {
     ...result,
     installer: {
@@ -1594,8 +1282,12 @@ export async function cleanUp(failure: unknown, left: Leftovers) {
   return { failed, steps, kept };
 }
 
-/** The selected chain on the disposable runner, with its evidence and cleanup. */
-export async function runCommand(args: string[], published = false) {
+/**
+ * Stable, the candidate over it and the candidate's restart on the disposable runner, with their
+ * evidence and cleanup. Refuses before installing anything unless it runs from main in the
+ * receipt's repository and both setups still match the receipt.
+ */
+export async function runCommand(args: string[]) {
   const { values } = parseArgs({
     args,
     options: { packages: { type: "string" }, root: { type: "string" } },
@@ -1612,40 +1304,36 @@ export async function runCommand(args: string[], published = false) {
   )
     throw new Error(`${usage}\nThe root must be a new folder under RUNNER_TEMP.`);
   const raw: unknown = JSON.parse(await readFile(join(values.packages, "receipt.json"), "utf8"));
-  const receipt = published ? readPublishedReceipt(raw) : (raw as Receipt);
-  if (
-    !published &&
-    ("mode" in receipt || receipt.packages.map((each) => each.stage).join() !== "stable,a,b")
-  )
-    throw new Error("The receipt doesn't name stable, A and B in that order.");
-  if (receipt.schemaVersion === 2) {
-    FullSha.assert(process.env["GITHUB_SHA"]);
-    requirePublished(
-      process.env["GITHUB_REF"] === "refs/heads/main",
-      "Published-pair execution requires the main verification workflow.",
+  const receipt = readReceipt(raw);
+  check(
+    /^[0-9a-f]{40}$/.test(process.env["GITHUB_SHA"] ?? ""),
+    "GITHUB_SHA must name the verification workflow's commit.",
+  );
+  check(
+    process.env["GITHUB_REF"] === "refs/heads/main",
+    "The installed upgrade check runs only from main.",
+  );
+  check(
+    receipt.repository === process.env["GITHUB_REPOSITORY"],
+    "The receipt belongs to another repository.",
+  );
+  // Both packages must still match before the first setup starts.
+  for (const pkg of receipt.packages) {
+    const bytes = await readFile(join(values.packages, pkg.file));
+    check(
+      bytes.length === pkg.bytes && sha256(bytes) === pkg.sha256,
+      `${pkg.file} changed since resolution.`,
     );
-    requirePublished(
-      receipt.repository === process.env["GITHUB_REPOSITORY"],
-      "The receipt belongs to another repository.",
+    check(
+      (!pkg.provenance.assetDigest || pkg.provenance.assetDigest === `sha256:${pkg.sha256}`) &&
+        pkg.provenance.metadata.sha512 === createHash("sha512").update(bytes).digest("base64"),
+      `${pkg.file} no longer matches its resolved published metadata.`,
     );
-    // Both packages must still match before the first setup starts.
-    for (const pkg of receipt.packages) {
-      const bytes = await readFile(join(values.packages, pkg.file));
-      requirePublished(
-        bytes.length === pkg.bytes && sha256(bytes) === pkg.sha256,
-        `${pkg.file} changed since resolution.`,
-      );
-      requirePublished(
-        (!pkg.provenance.assetDigest || pkg.provenance.assetDigest === `sha256:${pkg.sha256}`) &&
-          pkg.provenance.metadata.sha512 === createHash("sha512").update(bytes).digest("base64"),
-        `${pkg.file} no longer matches its resolved published metadata.`,
-      );
-    }
   }
   const profile = join(root, "profile");
   const evidence = join(root, "evidence");
   const lock = join(root, "profile.lock");
-  await mkdir(root, { recursive: !published });
+  await mkdir(root);
   // Fresh folders only: an earlier attempt's profile is never reused or rewritten.
   await mkdir(profile);
   await mkdir(evidence);
@@ -1669,10 +1357,8 @@ export async function runCommand(args: string[], published = false) {
   process.env["MR_STREAMER_TMDB_KEY"] = "synthetic-installed-upgrade";
 
   /** What each stage did, by stage, for proof.json. */
-  type ByStage = Partial<Record<RunStage, unknown>>;
+  type ByStage = Partial<Record<Stage, unknown>>;
   const proof = {
-    schemaVersion: published ? 2 : 1,
-    mode: published ? "published-pair" : "legacy",
     runner: runner.id,
     verification: {
       workflowCommit: process.env["GITHUB_SHA"] ?? null,
@@ -1702,7 +1388,7 @@ export async function runCommand(args: string[], published = false) {
     cleanup: {} as Record<string, unknown>,
     limits: [] as string[],
   };
-  const record = (part: ByStage, stage: RunStage, value: unknown) => (part[stage] = value);
+  const record = (part: ByStage, stage: Stage, value: unknown) => (part[stage] = value);
   const services = await startServices();
   const titles = fixtures(services.titles);
   const subtitles = await startSubtitleFixture().catch(async (error) => {
@@ -1717,13 +1403,14 @@ export async function runCommand(args: string[], published = false) {
   let blocking = false;
   let failed: unknown;
   let seeded: State | undefined;
-  let afterA: AfterA | undefined;
+  let upgraded: AfterCandidate | undefined;
   try {
     let previous: string | null = null;
     let previousBinary: Awaited<ReturnType<typeof start>>["identity"]["binary"] | undefined;
-    const packages: readonly RunPackage[] = published
-      ? [...receipt.packages, { ...receipt.packages[1]!, stage: "candidate-restart" }]
-      : receipt.packages;
+    const packages: readonly RunPackage[] = [
+      ...receipt.packages,
+      { ...receipt.packages[1], stage: "candidate-restart" },
+    ];
     for (const pkg of packages) {
       const setup = join(values.packages, pkg.file);
       if (sha256(await readFile(setup)) !== pkg.sha256)
@@ -1732,9 +1419,7 @@ export async function runCommand(args: string[], published = false) {
         record(
           proof.installs,
           pkg.stage,
-          published
-            ? await installPublished(runner, setup, pkg.version, previous)
-            : await install(runner, setup, pkg.version, previous),
+          await installPublished(runner, setup, pkg.version, previous),
         );
       previous = pkg.version;
       const session = await start(
@@ -1743,7 +1428,7 @@ export async function runCommand(args: string[], published = false) {
         evidence,
         pkg,
         services.tmdbApi,
-        published || pkg.stage !== "stable" ? subtitles.origin : undefined,
+        subtitles.origin,
       );
       try {
         record(proof.starts, pkg.stage, session.identity);
@@ -1827,28 +1512,14 @@ export async function runCommand(args: string[], published = false) {
           refused: (since) => block.blocked(since),
         };
         session.tree.sample();
-        if (pkg.stage === "stable")
-          seeded = await seedStable(session.d, services, titles, published);
-        else if (pkg.stage === "a" || pkg.stage === "candidate")
-          afterA = await upgradeToA(
-            session.d,
-            titles,
-            seeded!,
-            pkg.stage === "candidate" ? "Upgrading to candidate" : "Upgrading to A",
-            published ? "retained" : "seed",
-          );
+        if (pkg.stage === "stable") seeded = await seedStable(session.d, services, titles);
+        else if (pkg.stage === "candidate")
+          upgraded = await upgradeToCandidate(session.d, titles, seeded!);
         else
           record(
             proof.stages,
             pkg.stage,
-            await upgradeToB(
-              session.d,
-              titles,
-              afterA!,
-              offline,
-              pkg.stage === "candidate-restart" ? "Restarting candidate" : "Upgrading to B",
-              true,
-            ),
+            await restartCandidate(session.d, titles, upgraded!, offline),
           );
         if (pkg.stage === "candidate" && (await session.subtitleRequests()).length !== 0)
           throw new Error(
@@ -1861,13 +1532,13 @@ export async function runCommand(args: string[], published = false) {
           throw new Error("Offline copies attempted new subtitle service requests");
         if (pkg.stage === "stable") await checkAbout();
         if (pkg.stage === "stable") record(proof.stages, "stable", seeded);
-        if (pkg.stage === "a" || pkg.stage === "candidate")
+        if (pkg.stage === "candidate")
           record(proof.stages, pkg.stage, {
-            kept: afterA!.kept,
-            savedSubtitle: afterA!.savedSubtitle,
-            played: afterA!.played,
-            copies: afterA!.copies,
-            after: afterA!.after,
+            kept: upgraded!.kept,
+            savedSubtitle: upgraded!.savedSubtitle,
+            played: upgraded!.played,
+            copies: upgraded!.copies,
+            after: upgraded!.after,
           });
         await session.verifyWorker();
         session.tree.sample();
@@ -1881,10 +1552,8 @@ export async function runCommand(args: string[], published = false) {
       try {
         const ended = await session.stop();
         record(proof.ends, pkg.stage, ended);
-        // Published stable/C acceptance requires a real clean shutdown before replacement.
-        // Keep the legacy check's explicitly recorded terminated gate for compatibility.
-        if (published && !ended.graceful)
-          failed ??= new Error("Published installed app required forced termination.");
+        // Each start must close cleanly before the next setup or restart.
+        if (!ended.graceful) failed ??= new Error("The installed app required forced termination.");
       } catch (error) {
         record(proof.ends, pkg.stage, `failed: ${String(error)}`);
         failed = failed
@@ -1932,9 +1601,7 @@ export async function runCommand(args: string[], published = false) {
       ...receipt.limits,
       "Decoded sound is not audible output; GPU, native menus and dialogs are not checked.",
       "The stable episode is a 12-second clip, recorded as finished: unfinished-episode resume is not shown. The movie's unfinished progress and its copy's resume are.",
-      published
-        ? "Saved online subtitles are seeded on stable through UI with a paused-main SubDL boundary, then checked on candidate and offline restart."
-        : "Legacy stable has no online subtitle requirement. A seeds the exact-file saved result before downloading; B checks subsequent upgrade persistence.",
+      "Saved online subtitles are seeded on stable through UI with a paused-main SubDL boundary, then checked on candidate and offline restart.",
       "Installs are by the silent setup, not by the in-app updater, and the direct setup alone, not the Microsoft Store package.",
     ];
     await writeFile(join(evidence, "proof.json"), JSON.stringify(proof, null, 2));
@@ -1957,8 +1624,6 @@ if (import.meta.main) {
   const [command, ...args] = process.argv.slice(2);
   if (command === "resolve") await resolveCommand(args);
   else if (command === "run") await runCommand(args);
-  else if (command === "resolve-published") await resolveCommand(args, true);
-  else if (command === "run-published") await runCommand(args, true);
   else {
     console.error(usage);
     process.exit(2);

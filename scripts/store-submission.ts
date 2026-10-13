@@ -91,7 +91,7 @@ const WORKING = [
   "PendingPublication",
 ];
 
-const RECOVER = "run the Microsoft Store workflow with submit";
+const RECOVER = "run the Publish workflow's store target with submit";
 
 /** A draft's fingerprint as a preflight prints it. */
 const FINGERPRINT = /^[0-9a-f]{64}$/;
@@ -1254,7 +1254,7 @@ function summary(markdown: string): void {
 const VERDICTS: Record<Stage, string> = {
   live: "Live: Microsoft has published it.",
   "in-progress":
-    "Not live yet: Microsoft is still checking or publishing it. Run the Microsoft Store workflow with status to see how it ends.",
+    "Not live yet: Microsoft is still checking or publishing it. Run the Publish workflow's store target with status to see how it ends.",
   draft: `Not submitted: the submission is a draft nobody committed. To commit it, ${RECOVER}, and with the draft and its fingerprint when a run named them.`,
   failed:
     "Not live: Microsoft refused or stopped the submission. Partner Center says why; docs/maintainers/microsoft-store.md#when-a-submission-fails says what to do.",

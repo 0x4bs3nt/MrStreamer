@@ -1,9 +1,11 @@
-// What the installed upgrade check's B stage accepts as a copy playing from where it was left.
-// The window is a stand-in that plays and keeps copies as `Player` says; the stage itself is the
+// What the installed upgrade check's candidate restart accepts as a copy playing from where it was
+// left. The window is a stand-in that plays and keeps copies as `Player` says, plays on while the
+// check waits, and shows the saved online subtitle at its saved timing; the stage itself is the
 // real one, read-only calls, clicks and checks included.
 import { describe, expect, it } from "vitest";
 import type { Download } from "../../../packages/contracts/src/downloads.ts";
-import { upgradeToB, type AfterA, type Driver } from "./e2e/installed-upgrade.ts";
+import { SUBTITLE_CUE, SUBTITLE_TIMING } from "./e2e/installed-subtitles.ts";
+import { restartCandidate, type AfterCandidate, type Driver } from "./e2e/installed-upgrade.ts";
 
 /** Where the stand-in starts a copy, and what it keeps when the viewer leaves it. */
 interface Player {
@@ -33,8 +35,14 @@ const copy = (id: string, kind: "movie" | "episode", position: number | null): D
   progress: position === null ? null : { position, duration: 150 },
 });
 
-/** B over an A that left the long movie's copy at 55 s, on a window that plays as `player`. */
-function runB(player: Player) {
+/** The saved cue's interval once its offset and speed apply. */
+const CUE = {
+  start: SUBTITLE_CUE.start * SUBTITLE_TIMING.speed + SUBTITLE_TIMING.offset,
+  end: SUBTITLE_CUE.end * SUBTITLE_TIMING.speed + SUBTITLE_TIMING.offset,
+};
+
+/** The restart after an upgrade that left the long movie's copy at 55 s, playing as `player`. */
+function restart(player: Player) {
   let copies = [
     copy("long", "movie", 55),
     copy("sound", "movie", null),
@@ -66,8 +74,13 @@ function runB(player: Player) {
     actions: [],
     requests: [],
     exists: () => Promise.resolve(true),
+    /** Playback goes on a second between checks, as it does while the real check waits. */
     async wait(check: () => Promise<boolean>, _timeout?: number, what?: string) {
-      if (!(await check())) throw new Error(`Timed out waiting for ${what}`);
+      for (let tries = 0; tries < 30; tries++) {
+        if (await check()) return;
+        if (playing !== null) time += 1;
+      }
+      throw new Error(`Timed out waiting for ${what}`);
     },
     async click(action: string, element: string) {
       if (action === "Confirm removal") {
@@ -82,6 +95,7 @@ function runB(player: Player) {
     },
     async key(name: string) {
       if (name === "ArrowRight") time += 10;
+      if (name === "ArrowLeft") time = Math.max(0, time - 10);
       if (name !== "Escape" || playing === null) return;
       const left = playing;
       copies = copies.map((each) =>
@@ -101,14 +115,17 @@ function runB(player: Player) {
           return "Remove it from this device? Subscription removed, copy kept";
         if (expression.includes("style.width"))
           return shownWidth(/data-download="([^"]+)"/.exec(expression)?.[1] ?? "");
-        if (expression.includes("data-subtitle-text")) return "Soixante";
+        if (expression.includes("subtitle-offset")) return SUBTITLE_TIMING;
+        const caption = time >= CUE.start && time < CUE.end ? SUBTITLE_CUE.text : "";
+        if (expression.includes("currentTime")) return { time, caption };
+        if (expression.includes("data-subtitle-text")) return caption;
         if (expression.includes(".map(")) return ["English 5.1", "Español Commentary"];
         return true;
       },
     },
   } as unknown as Driver;
-  const a = { after: state, copies } as unknown as AfterA;
-  return upgradeToB(d, { long: "long-title", formats: [] }, a, {
+  const upgraded = { after: state, copies } as unknown as AfterCandidate;
+  return restartCandidate(d, { long: "long-title", formats: [] }, upgraded, {
     cutOff: () => Promise.resolve({}),
     refused: () => [],
   });
@@ -116,26 +133,31 @@ function runB(player: Player) {
 
 describe("the installed upgrade check's resumed copy", () => {
   it("accepts a copy that goes back five seconds from where it was left", async () => {
-    const b = await runB(PLAYER);
+    const restarted = await restart(PLAYER);
 
-    expect(b.played["longStartedAt"]).toEqual({ started: 50.5, keptBefore: 55 });
-    expect(b.played["resume"]).toEqual({ left: 50.5, kept: 50.75, resumed: 46.25 });
+    expect(restarted.played["longStartedAt"]).toEqual({ started: 50.5, keptBefore: 55 });
+    // The saved subtitle check skips back to before its cue and plays to 43.5 s, where it leaves.
+    expect(restarted.played["resume"]).toEqual({ left: 43.5, kept: 43.75, resumed: 39.25 });
   });
 
   it.each<[string, Partial<Player>, RegExp]>([
-    ["starts 25 s past where A left it", { start: (kept) => kept + 25 }, /copy started at 80 s/],
+    [
+      "starts 25 s past where the upgrade left it",
+      { start: (kept) => kept + 25 },
+      /copy started at 80 s/,
+    ],
     ["starts over from the beginning", { start: () => 1 }, /copy started at 1 s/],
     [
       "resumes 25 s past where it was left",
       { start: (kept, play) => (play === 1 ? kept - 5 : kept + 25) },
-      /copy again started at 75\.25 s/,
+      /copy again started at 68\.25 s/,
     ],
     [
       "keeps 25 s past where it was left",
       { keep: (left) => left + 25 },
-      /left at 50\.5 s, but kept 75\.5 s/,
+      /left at 43\.5 s, but kept 68\.5 s/,
     ],
   ])("refuses a copy that %s", async (_, player, refusal) => {
-    await expect(runB({ ...PLAYER, ...player })).rejects.toThrow(refusal);
+    await expect(restart({ ...PLAYER, ...player })).rejects.toThrow(refusal);
   });
 });

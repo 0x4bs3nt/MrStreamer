@@ -1,0 +1,6 @@
+# actionlint's settings; `pnpm actionlint` runs it (scripts/actionlint.ts).
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      # GitHub's concurrency queues (queue: max) are newer than actionlint 1.7.12's schema.
+      - 'unexpected key "queue" for "concurrency" section'

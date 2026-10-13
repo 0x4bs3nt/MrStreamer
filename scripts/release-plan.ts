@@ -1,9 +1,10 @@
-// Plans releases for the release workflow: the commit a run builds, its version and tag, and
-// whether a scheduled nightly is due. After publishing, it writes the update feed the app reads.
+// Plans releases for the release workflow: whether a run is a dry run, the commit it builds, its
+// version and tag, and whether a scheduled nightly is due. Right before publishing it checks the
+// release is complete and still new, and after publishing it writes the update feed the app reads.
 // docs/maintainers/releasing.md describes the policy.
 //
-//   node scripts/release-plan.ts nightly --ref <ref> --sha <commit> --run <number> [--scheduled | --dry-run]
-//   node scripts/release-plan.ts stable --ref <ref> --sha <main's commit> --run <number> --nightly <tested nightly> [--version 0.1.0]
+//   node scripts/release-plan.ts plan --event <event> --ref <ref> --sha <commit> --run <number>
+//       [--channel nightly|stable] [--nightly <tested nightly>] [--version 0.1.0] [--dry-run]
 //   node scripts/release-plan.ts check --version <version> --dir <folder> --sources <names>   right before publishing
 //   node scripts/release-plan.ts notes --tag <tag> --sha <commit> [--previous-tag <tag>]
 //   node scripts/release-plan.ts record --version <version>  after a stable release, on main
@@ -14,9 +15,9 @@
 // counting from that package.json or the
 // newest stable release, whichever is newer, so a stable release that main has not recorded yet
 // never makes later nightlies sort below it. A stable release rebuilds the commit of the tested
-// nightly it is given, as the version that nightly previewed unless another is given. A nightly
-// from before the newest stable release qualifies only when it holds that release's commit, such
-// as the nightly a stable run publishes first, and needs a version given. When main
+// nightly it is given, as the version that nightly previewed unless another is given. The nightly
+// must sort above the newest stable release and strictly descend from its commit, the rule
+// packages/contracts/src/promotion.ts holds for the plan and the upgrade check alike. When main
 // has commits no published nightly holds, the stable run publishes a nightly of main first, so
 // Nightly users have every change before Stable users get any of it.
 //
@@ -35,6 +36,7 @@ import {
   type Channel,
   type Version,
 } from "../packages/contracts/src/version.ts";
+import { promotionProblem } from "../packages/contracts/src/promotion.ts";
 import { releaseFiles } from "../packages/contracts/src/release-files.ts";
 import {
   buildFeed,
@@ -47,8 +49,12 @@ import {
 /** The app's manifest, whose version records the newest stable release. */
 const MANIFEST = "apps/desktop/package.json";
 
-/** A scheduled nightly waits at least this long after the previous one. */
-export const NIGHTLY_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/**
+ * A scheduled nightly waits at least this long after the previous one: five hours, so the check
+ * every six hours finds a nightly that took an hour to publish due, and nightlies come about
+ * every six hours.
+ */
+export const NIGHTLY_INTERVAL_MS = 5 * 60 * 60 * 1000;
 
 const HISTORIES = ["ahead", "behind", "identical", "diverged"] as const;
 
@@ -139,6 +145,63 @@ export interface StablePlan extends Plan {
   readonly nightlyFirst: Plan | null;
 }
 
+/** What started a release run, as the plan job hands it over. */
+export interface RunRequest extends Omit<NightlyRequest, "scheduled" | "dryRun"> {
+  /** The event that started the run: schedule, workflow_dispatch or pull_request. */
+  readonly event: string;
+  /** Started by hand: nightly or stable. */
+  readonly channel?: string | undefined;
+  /** Started by hand: the stable version, as StableRequest takes it. */
+  readonly version?: string | undefined;
+  /** Started by hand: the tested nightly a stable release promotes. */
+  readonly nightly?: string | undefined;
+  /** Started by hand as a dry run. */
+  readonly dryRun: boolean;
+}
+
+/** A run's plan, and whether it is a dry run, which builds and tests and publishes nothing. */
+export interface RunPlan {
+  readonly dryRun: boolean;
+  readonly plan: Plan | StablePlan | Skip;
+  /** The tag of the tested nightly a stable release promotes, which its upgrade check installs. */
+  readonly promoted: string | null;
+}
+
+/**
+ * Plans a run of the release workflow from what started it. A pull request event is always a dry
+ * run of its head, whatever else it says: only the "release dry run" label starts one, and a fork's
+ * code never gets past that. A run by hand is a dry run when asked, and otherwise a nightly or a
+ * stable release; the schedule asks for a nightly only when one is due.
+ */
+export async function planRun(repo: Repository, request: RunRequest): Promise<RunPlan> {
+  const nightly = { ...request, scheduled: false, dryRun: false };
+  switch (request.event) {
+    case "pull_request":
+      return dryRun(await planNightly(repo, { ...nightly, dryRun: true }));
+    case "schedule":
+      return published(await planNightly(repo, { ...nightly, scheduled: true }));
+    case "workflow_dispatch":
+      if (request.dryRun) {
+        if (request.channel === "stable") {
+          throw new Error(
+            "A dry run builds the branch as a nightly. Leave the channel at nightly.",
+          );
+        }
+        return dryRun(await planNightly(repo, { ...nightly, dryRun: true }));
+      }
+      if (request.channel === "stable") {
+        const plan = await planStable(repo, { ...request, nightly: request.nightly ?? "" });
+        return { dryRun: false, plan, promoted: tagOf(parseVersion(request.nightly ?? "")!) };
+      }
+      return published(await planNightly(repo, nightly));
+    default:
+      throw new Error(`A release run doesn't start on ${request.event}.`);
+  }
+}
+
+const dryRun = (plan: Plan | Skip): RunPlan => ({ dryRun: true, plan, promoted: null });
+const published = (plan: Plan | Skip): RunPlan => ({ dryRun: false, plan, promoted: null });
+
 export async function planNightly(repo: Repository, request: NightlyRequest): Promise<Plan | Skip> {
   if (!request.dryRun) assertDefaultBranch(repo, request.ref, "nightly");
   if (request.scheduled) {
@@ -203,25 +266,16 @@ export async function planStable(repo: Repository, request: StableRequest): Prom
     })
     .sort(compareVersions)
     .at(-1);
-  // Nightlies count from the newest stable release, so one sorting before it was planned before
-  // that release was out and can hold older code than stable users have. The nightly a stable run
-  // publishes first sorts before that release too, yet holds its commit and more: what decides is
-  // whether the nightly's commit contains the stable release's.
-  if (previousStable && compareVersions(previewed, previousStable) < 0) {
+  // The upgrade check installs the newest stable release and upgrades it to this nightly, so the
+  // plan holds the nightly to the same rule before any release work starts.
+  if (previousStable) {
     const stableTag = tagOf(previousStable);
-    const holds = await repo.compare(stableTag, nightly.tag);
-    if (holds !== "ahead" && holds !== "identical") {
-      throw new Error(
-        `${nightly.tag} came before ${stableTag} and lacks its commit, so it can hold older code. Promote a nightly that contains ${stableTag}.`,
-      );
-    }
-    // The version it previewed is out already, or sorts before one that is.
-    if (!request.version) {
-      const next = { ...previousStable, patch: previousStable.patch + 1 };
-      throw new Error(
-        `${stableTag} is out already, so enter the version to release ${nightly.tag} as, such as ${formatVersion(next)}.`,
-      );
-    }
+    const problem = promotionProblem(
+      { tag: nightly.tag, version: previewed },
+      { tag: stableTag, version: previousStable },
+      await repo.compare(stableTag, nightly.tag),
+    );
+    if (problem) throw new Error(problem);
   }
 
   const version = request.version ? parseVersion(request.version) : { ...previewed, nightly: null };
@@ -252,7 +306,7 @@ export async function planStable(repo: Repository, request: StableRequest): Prom
 
 /**
  * The nightly a stable run publishes before the stable release, or null when the latest published
- * nightly holds `request.sha` already. Like a nightly started by hand, it skips the six hours.
+ * nightly holds `request.sha` already. Like a nightly started by hand, it skips the five hours.
  */
 async function nightlyBefore(repo: Repository, request: StableRequest): Promise<Plan | null> {
   const last = latestNightly(repo.releases);
@@ -361,7 +415,7 @@ async function nightlySkip(repo: Repository, sha: string, now: number): Promise<
   const last = latestNightly(repo.releases);
   if (!last) return null;
   if (now - Date.parse(last.publishedAt!) < NIGHTLY_INTERVAL_MS) {
-    return { skip: `${last.tag} was published less than six hours ago.`, warning: false };
+    return { skip: `${last.tag} was published less than five hours ago.`, warning: false };
   }
   switch (await repo.compare(last.tag, sha)) {
     case "ahead":
@@ -489,20 +543,25 @@ function summary(markdown: string): void {
   if (file) appendFileSync(file, `${markdown}\n`);
 }
 
-/** Prints the plan as outputs; a stable plan's nightly to publish first goes in the first-* ones. */
-function outputPlan(plan: Plan | StablePlan | Skip): void {
+/**
+ * Prints the run's plan as outputs; a stable plan's nightly to publish first goes in the first-*
+ * ones, and the nightly it promotes in promoted.
+ */
+function outputPlan({ dryRun, plan, promoted }: RunPlan): void {
   if ("skip" in plan) {
     console.log(`${plan.warning ? "::warning::" : ""}${plan.skip}`);
     summary(`No nightly: ${plan.skip}`);
-    output({ skip: "true" });
+    output({ skip: "true", "dry-run": String(dryRun) });
     return;
   }
   const first = "nightlyFirst" in plan ? plan.nightlyFirst : null;
   summary(
-    `${first ? `Nightly ${first.version} from \`${first.sha}\` first, then ` : ""}${plan.channel === "stable" ? "Stable" : "Nightly"} ${plan.version} from \`${plan.sha}\``,
+    `${dryRun ? "Dry run, publishing nothing: " : ""}${first ? `Nightly ${first.version} from \`${first.sha}\` first, then ` : ""}${plan.channel === "stable" ? "Stable" : "Nightly"} ${plan.version} from \`${plan.sha}\``,
   );
   output({
     skip: "false",
+    "dry-run": String(dryRun),
+    promoted: promoted ?? "",
     channel: plan.channel,
     version: plan.version,
     tag: plan.tag,
@@ -521,7 +580,10 @@ function outputPlan(plan: Plan | StablePlan | Skip): void {
  * Logs what a scheduled nightly and a stable release of the latest nightly would do right now, for
  * dry runs.
  */
-async function reportChannels(repo: Repository, request: NightlyRequest): Promise<void> {
+async function reportChannels(
+  repo: Repository,
+  request: Omit<NightlyRequest, "scheduled" | "dryRun">,
+): Promise<void> {
   const ref = `refs/heads/${repo.defaultBranch}`;
   const describe = (plan: Plan | StablePlan | Skip) => {
     if ("skip" in plan) return `skips. ${plan.skip}`;
@@ -612,7 +674,8 @@ async function main(): Promise<void> {
       out: { type: "string" },
       dir: { type: "string" },
       sources: { type: "string" },
-      scheduled: { type: "boolean", default: false },
+      event: { type: "string" },
+      channel: { type: "string" },
       "dry-run": { type: "boolean", default: false },
       "allow-regress": { type: "boolean", default: false },
     },
@@ -629,26 +692,21 @@ async function main(): Promise<void> {
   });
 
   switch (command) {
-    case "nightly": {
+    case "plan": {
       const repo = githubRepository();
-      const request: NightlyRequest = {
+      const request: RunRequest = {
         ...nightlyOf(),
-        scheduled: values.scheduled,
+        event: values.event ?? "",
+        channel: values.channel || undefined,
+        version: values.version || undefined,
+        nightly: values.nightly || undefined,
         dryRun: values["dry-run"],
       };
-      outputPlan(await planNightly(repo, request));
-      if (request.dryRun) await reportChannels(repo, request);
+      const planned = await planRun(repo, request);
+      outputPlan(planned);
+      if (planned.dryRun) await reportChannels(repo, request);
       return;
     }
-    case "stable":
-      outputPlan(
-        await planStable(githubRepository(), {
-          ...nightlyOf(),
-          version: values.version || undefined,
-          nightly: values.nightly ?? "",
-        }),
-      );
-      return;
     case "check": {
       if (!values.dir) throw new Error("Name the folder of the release's files with --dir.");
       const version = values.version ?? "";
@@ -695,9 +753,7 @@ async function main(): Promise<void> {
       return;
     }
     default:
-      throw new Error(
-        `Unknown command "${command}". Use nightly, stable, check, notes, record or feed.`,
-      );
+      throw new Error(`Unknown command "${command}". Use plan, check, notes, record or feed.`);
   }
 }
 

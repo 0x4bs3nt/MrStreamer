@@ -1,30 +1,26 @@
-# Plans and runs releases; docs/maintainers/releasing.md describes the process. build-release.yml
-# builds, checks and publishes each release the plan names.
+# Plans and runs releases; docs/maintainers/releasing.md describes the process and
+# docs/maintainers/ci.md how the workflows fit together. scripts/release-plan.ts plans each run,
+# package.yml builds and checks each release's files, and publish.yml publishes them.
 #
-# - Nightly: checked on every push to main and every 30 minutes, built when main has new commits
-#   and the last nightly is at least six hours old. GitHub starts scheduled runs far less often
-#   than asked, often hours apart, so a merge checks too. Started by hand, it builds main right away.
+# - Nightly: every six hours, a nightly when main has new commits and the last nightly is at least
+#   five hours old, so a nightly that took an hour to publish doesn't push the next one to twelve
+#   hours. Started by hand, it builds main right away.
 # - Stable: by hand, naming the tested nightly. When main has commits no published nightly holds,
 #   the run first publishes a nightly of main and updates the feed, so Nightly users have every
 #   change before Stable users get any. Then it rebuilds the tested nightly's commit with a stable
-#   version, publishes it as the latest release, and records the version on main.
+#   version, checks that the newest stable release upgrades to the tested nightly on Windows, and
+#   publishes the stable release as the latest.
 # - Dry run: labelling a pull request "release dry run" builds, signs and tests its head commit
-#   once, keeps the files as workflow artifacts and publishes nothing.
-# - Microsoft Store package: dry runs and stable releases also build the MSIX and test it installed.
-#   It stays a workflow artifact, outside the release and the update feed, and publishing doesn't
-#   wait for it. Nightlies never build it. Once a stable release is published, microsoft-store.yml
-#   sends its package to the Store, when the owner has turned that on.
-# - After publishing, update-feed.yml points the app's update feed at the new release.
+#   once, and so does a run by hand with dry-run ticked, on its branch. It keeps the files as
+#   workflow artifacts and publishes nothing.
 #
 # Every job checks out the commit the plan resolved, so main moving during a run changes nothing.
 name: Release
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Away from the top of the hour, when scheduled runs start late.
-    - cron: "8,38 * * * *"
+    - cron: "17 */6 * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -40,30 +36,35 @@ on:
         description: Required for stable. The tested nightly to promote, such as 0.0.2-nightly.20260930.30.
         type: string
         required: false
+      dry-run:
+        description: Build, sign and test this branch like a nightly, and publish nothing
+        type: boolean
+        default: false
   pull_request:
     types: [labeled]
 
 permissions:
   contents: read
 
-# Nightlies and stable releases share one queue, and each pull request's dry runs have their own. A
-# run waits for the one ahead of it and is never cancelled, so a requested stable release is never
-# dropped. Sharing the queue keeps a nightly from being planned while a stable release builds: it
-# would preview the same version as the stable release, from newer code, and sort before it. A
-# push or scheduled check decides whether a nightly is due once its turn comes. The nightly a
-# stable run publishes first is a job of that run, not a run of its own, so it never waits in the
-# queue behind the run that needs it.
+# Nightlies and stable releases share one queue, and each pull request's or branch's dry runs
+# have their own. A run waits for the one ahead of it and is never cancelled, so a requested
+# stable release is never dropped. Sharing the queue keeps a nightly from being planned while a
+# stable release builds: it would preview the same version as the stable release, from newer
+# code, and sort before it. A scheduled check decides whether a nightly is due once its turn
+# comes. The nightly a stable run publishes first is a job of that run, not a run of its own, so
+# it never waits in the queue behind the run that needs it.
 concurrency:
   group: >-
     release-${{ github.event_name == 'pull_request' && format('dry-run-{0}', github.event.pull_request.number)
-    || 'main' }}
+    || inputs.dry-run && format('dry-run-{0}', github.ref_name) || 'main' }}
   cancel-in-progress: false
   queue: max
 
 jobs:
   plan:
     name: Plan
-    # Dry runs only for branches of this repository: forks get no signing secrets.
+    # Dry runs of pull requests only for branches of this repository: forks get no signing
+    # secrets.
     if: >-
       github.event_name != 'pull_request' || (github.event.label.name == 'release dry run'
       && github.event.pull_request.head.repo.full_name == github.repository)
@@ -74,11 +75,14 @@ jobs:
       pull-requests: write
     outputs:
       skip: ${{ steps.plan.outputs.skip }}
+      dry-run: ${{ steps.plan.outputs.dry-run }}
       channel: ${{ steps.plan.outputs.channel }}
       version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
       sha: ${{ steps.plan.outputs.sha }}
       previous-tag: ${{ steps.plan.outputs.previous-tag }}
+      # The tested nightly a stable release promotes, which the upgrade check installs.
+      promoted: ${{ steps.plan.outputs.promoted }}
       # The nightly a stable run publishes first; empty when none is needed.
       first-version: ${{ steps.plan.outputs.first-version }}
       first-tag: ${{ steps.plan.outputs.first-tag }}
@@ -90,6 +94,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -97,25 +102,20 @@ jobs:
       - name: Take the label off
         if: github.event_name == 'pull_request'
         run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/release%20dry%20run" --silent || echo "The label was already off."
+      # A pull request event is always a dry run, whatever else it says.
       - id: plan
         env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN: ${{ github.run_number }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}
           NIGHTLY: ${{ inputs.nightly }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RUN: ${{ github.run_number }}
+          DRY_RUN: ${{ inputs.dry-run == true }}
         run: |
-          case "$GITHUB_EVENT_NAME/$CHANNEL" in
-            # A push to main asks the same as the schedule: a nightly only when one is due.
-            schedule/* | push/*)
-              node scripts/release-plan.ts nightly --ref "$GITHUB_REF" --sha "$GITHUB_SHA" --run "$RUN" --scheduled ;;
-            pull_request/*)
-              node scripts/release-plan.ts nightly --ref "$GITHUB_REF" --sha "$HEAD_SHA" --run "$RUN" --dry-run ;;
-            workflow_dispatch/stable)
-              node scripts/release-plan.ts stable --ref "$GITHUB_REF" --sha "$GITHUB_SHA" --run "$RUN" --version "$VERSION" --nightly "$NIGHTLY" ;;
-            workflow_dispatch/nightly)
-              node scripts/release-plan.ts nightly --ref "$GITHUB_REF" --sha "$GITHUB_SHA" --run "$RUN" ;;
-          esac
+          args=(--event "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" --sha "$SHA" --run "$RUN"
+            --channel "$CHANNEL" --version "$VERSION" --nightly "$NIGHTLY")
+          [ "$DRY_RUN" = true ] && args+=(--dry-run)
+          node scripts/release-plan.ts plan "${args[@]}"
 
   # A stable run's nightly of main, published and in the feed before the stable release builds.
   # Planned only for stable runs, never for dry runs.
@@ -123,13 +123,26 @@ jobs:
     name: Nightly first
     needs: plan
     if: needs.plan.outputs.first-tag != ''
-    uses: ./.github/workflows/build-release.yml
+    uses: ./.github/workflows/package.yml
+    with:
+      channel: nightly
+      version: ${{ needs.plan.outputs.first-version }}
+      sha: ${{ needs.plan.outputs.first-sha }}
+      dry-run: false
+    secrets: inherit
+
+  nightly-first-publish:
+    name: Publish the nightly first
+    needs: [plan, nightly-first]
+    if: needs.plan.outputs.dry-run == 'false'
+    uses: ./.github/workflows/publish.yml
     with:
       channel: nightly
       version: ${{ needs.plan.outputs.first-version }}
       tag: ${{ needs.plan.outputs.first-tag }}
       sha: ${{ needs.plan.outputs.first-sha }}
       previous-tag: ${{ needs.plan.outputs.first-previous-tag }}
+      sources: ${{ needs.nightly-first.outputs.sources }}
       feed-required: true
     secrets: inherit
     permissions:
@@ -137,24 +150,51 @@ jobs:
       pull-requests: read
       pages: write
       id-token: write
-      # The Store job reads the run's own package and the environment's branch rule.
       actions: read
 
-  # The release the run is for: a nightly, a dry run or a stable release. A stable release waits for
-  # the nightly first and builds only once that one is published and in the feed.
-  release:
-    name: Release
-    needs: [plan, nightly-first]
+  # The release the run is for: a nightly, a dry run or a stable release. A stable release waits
+  # for the nightly first and builds only once that one is published and in the feed.
+  package:
+    name: Package
+    needs: [plan, nightly-first, nightly-first-publish]
     if: >-
       !cancelled() && needs.plan.outputs.skip == 'false'
-      && (needs.nightly-first.result == 'success' || needs.nightly-first.result == 'skipped')
-    uses: ./.github/workflows/build-release.yml
+      && (needs.nightly-first.result == 'skipped' || needs.nightly-first-publish.result == 'success')
+    uses: ./.github/workflows/package.yml
+    with:
+      channel: ${{ needs.plan.outputs.channel }}
+      version: ${{ needs.plan.outputs.version }}
+      sha: ${{ needs.plan.outputs.sha }}
+      dry-run: ${{ needs.plan.outputs.dry-run == 'true' }}
+    secrets: inherit
+
+  # A stable release's installed upgrade on Windows: the newest stable release, then the tested
+  # nightly it promotes. It runs beside packaging; publishing waits for it.
+  upgrade-check:
+    name: Upgrade check
+    needs: plan
+    if: needs.plan.outputs.promoted != ''
+    uses: ./.github/workflows/upgrade-check.yml
+    with:
+      candidate: ${{ needs.plan.outputs.promoted }}
+      # The commit the release builds, so the check proves that source.
+      sha: ${{ needs.plan.outputs.sha }}
+
+  publish:
+    name: Publish
+    needs: [plan, package, upgrade-check]
+    if: >-
+      !cancelled() && needs.plan.outputs.dry-run == 'false' && needs.package.result == 'success'
+      && (needs.upgrade-check.result == 'success' || needs.upgrade-check.result == 'skipped')
+    uses: ./.github/workflows/publish.yml
     with:
       channel: ${{ needs.plan.outputs.channel }}
       version: ${{ needs.plan.outputs.version }}
       tag: ${{ needs.plan.outputs.tag }}
       sha: ${{ needs.plan.outputs.sha }}
       previous-tag: ${{ needs.plan.outputs.previous-tag }}
+      sources: ${{ needs.package.outputs.sources }}
+      msix-sha256: ${{ needs.package.outputs.msix-sha256 }}
     secrets: inherit
     permissions:
       contents: write

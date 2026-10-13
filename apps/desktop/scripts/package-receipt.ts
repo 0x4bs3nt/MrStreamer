@@ -6,6 +6,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type } from "arktype";
 import { unzipSync } from "fflate";
+import { PLATFORMS, platformFiles } from "@mrstreamer/contracts/release-files";
 import { packageVersion } from "./msix-version.ts";
 
 const Sha = type(/^[0-9a-f]{40}$/);
@@ -13,7 +14,7 @@ const Hash = type(/^[0-9a-f]{64}$/);
 const Id = type("number.integer > 0").narrow(Number.isSafeInteger);
 const FileName = type(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const AppVersion = type(/^\d+\.\d+\.\d+(?:-nightly\.\d{8}\.\d+)?$/);
-const Target = type("'mac-arm64' | 'linux-x64' | 'win-x64'");
+const Target = type.enumerated(...PLATFORMS);
 const Distribution = type("'direct' | 'store'");
 
 const Identity = type({
@@ -84,22 +85,10 @@ function receiptName(
 function requiredFiles(
   identity: Pick<PackageIdentity, "platform" | "distribution" | "appVersion">,
 ) {
+  if (identity.distribution === "direct")
+    return platformFiles(identity.appVersion, identity.platform);
   const base = `Mr-Streamer-${identity.appVersion}-${identity.platform}`;
-  if (identity.distribution === "store")
-    return [`${base}.msix`, `${base}.msix.json`, `${base}.wack.xml`];
-  switch (identity.platform) {
-    case "mac-arm64":
-      return [`${base}.dmg`, `${base}.zip`, `${base}.zip.blockmap`, "latest-mac.yml"];
-    case "linux-x64":
-      // electron-builder expands x64 to each Linux package format's architecture name.
-      return [
-        `Mr-Streamer-${identity.appVersion}-linux-x86_64.AppImage`,
-        `Mr-Streamer-${identity.appVersion}-linux-amd64.deb`,
-        "latest-linux.yml",
-      ];
-    case "win-x64":
-      return [`${base}-setup.exe`, `${base}-setup.exe.blockmap`, "latest.yml"];
-  }
+  return [`${base}.msix`, `${base}.msix.json`, `${base}.wack.xml`];
 }
 
 /** Validate downloaded JSON before trusting any field, including the success marker. */
@@ -249,8 +238,9 @@ export async function resolvePackageReceipt(
   };
 }
 
-// Workflow-only CLI. Load this script from the workflow commit, even when stable rebuilds an
-// older app commit. It runs after native verification and the successful package upload.
+// Workflow-only CLI, run by .github/actions/package-receipt from the release's own commit, the one
+// that names and builds these files. It runs after native verification and the successful
+// package upload.
 if (import.meta.main) {
   const env = process.env;
   const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();

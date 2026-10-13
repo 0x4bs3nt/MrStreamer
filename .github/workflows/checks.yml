@@ -1,6 +1,14 @@
-# Checks every pull request and push to main. The release workflow runs the same checks and tests
-# on the exact commit it releases, and builds it in a job of its own.
-name: CI
+# The app's and the website's checks, on every pull request and push to main;
+# docs/maintainers/ci.md shows how the workflows fit together.
+#
+# A release calls this with the commit it builds (`sha`). That call checks and tests the commit,
+# and leaves out what the release does elsewhere or what has no say in it: the production build
+# is the release's own bundle job, the workflows are main's and linted there, and a page that
+# doesn't build never holds back an app release. On main, publish.yml builds the website after
+# every change to what it is built from, so the website job runs on pull requests alone.
+#
+# No secrets, so pull requests from forks run all of it.
+name: Checks
 
 on:
   pull_request:
@@ -8,23 +16,25 @@ on:
     branches: [main]
   workflow_call:
     inputs:
-      ref:
-        description: Commit to check
+      sha:
+        description: The commit a release builds
         type: string
         required: true
       report-name:
         description: Names this call's test report apart from another call's in the same run
         type: string
-        default: ""
+        required: true
 
 permissions:
   contents: read
 
-# A new push to a pull request replaces its running checks. Release checks get a group of their
-# own, so they never wait for or cancel the checks of a pull request.
+# A new push to a pull request replaces its running checks. A release's checks get a group of
+# their own, so they never wait for or cancel the checks of a pull request.
 concurrency:
-  group: ci-${{ inputs.ref && format('release-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && !inputs.ref }}
+  group: >-
+    checks-${{ inputs.sha && format('release-{0}-{1}', github.run_id, inputs.sha)
+    || github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !inputs.sha }}
 
 jobs:
   check:
@@ -34,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.sha }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -49,9 +59,11 @@ jobs:
         run: pnpm fmt:check
       - name: Typecheck
         run: pnpm typecheck
-      # A release's own bundle job is its build.
+      - name: Workflows
+        if: inputs.sha == ''
+        run: pnpm actionlint
       - name: Build
-        if: inputs.ref == ''
+        if: inputs.sha == ''
         run: pnpm build
 
   test:
@@ -61,7 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.sha }}
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -97,3 +109,24 @@ jobs:
       - name: Require complete test results
         if: always()
         run: node scripts/ci-test-results.ts "$RUNNER_TEMP/test-results.json"
+
+  # The pictures from the captures, the page, and the package Vercel takes, which checks itself.
+  # It installs only what the website declares, as publishing does; a read-only workflow token
+  # fetches release history.
+  website:
+    name: Website
+    if: inputs.sha == '' && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter mrstreamer-marketing...
+      - name: Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm --filter mrstreamer-marketing build

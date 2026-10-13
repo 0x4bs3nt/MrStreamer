@@ -1,21 +1,18 @@
-# Builds, checks and publishes one release, then points the update feed at it. release.yml plans
-# the release and calls this, twice when a stable run publishes a nightly of main first;
-# docs/maintainers/releasing.md describes the process.
+# Builds and checks one release's files on every platform; release.yml calls it once for each
+# release a run makes, and docs/maintainers/releasing.md describes what each job checks. It
+# publishes nothing: publish.yml takes the release-* artifacts it leaves.
 #
-# The jobs that build check out the planned commit, which for a stable release is a nightly tested
-# earlier and can be older than this workflow. What judges a build rather than makes it comes from
-# the workflow commit: the Windows ffmpeg toolchain, the package receipt and the Store package
-# check. Publishing and the Store job run the workflow commit's scripts on the files the run built,
-# and the finalize job commits to the branch the run started from.
-# Pull requests are dry runs: they build, sign and test, prepare the source archives a release
-# attaches, keep the files as workflow artifacts and publish nothing, whatever the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
-# It has no concurrency group of its own: release.yml's queue already holds the whole run, and a
-# group here that a release run's own jobs shared could leave them waiting on that run.
+# The jobs that build check out the release's commit, which for a stable release is a nightly
+# tested earlier and can be older than this workflow. The tools that set up and judge a build come
+# from the workflow commit, in .workflow: the setup action, the Windows ffmpeg toolchain and the
+# Store package check. The product's own scripts, its build, its tests and its package receipts
+# come from the release's commit.
 #
-# Publishing waits for every platform, the checks and the sources. Windows packages in a job of its
-# own, so the Store package starts when the Windows build is ready and not when the slowest platform
-# is; the Store job waits for publishing and that package.
-name: Build and publish a release
+# A dry run builds, signs and tests like a release, also proves the release UI and builds the
+# Store package, and keeps every file 14 days. Artifact names carry the version, so the two
+# releases of a stable run never mix files. It has no concurrency group of its own:
+# release.yml's queue already holds the whole run.
+name: Package
 
 on:
   workflow_call:
@@ -27,32 +24,36 @@ on:
       version:
         type: string
         required: true
-      tag:
-        type: string
-        required: true
       sha:
         description: The commit every job checks out
         type: string
         required: true
-      previous-tag:
-        description: The notes list the changes since this release. Empty for a channel's first.
-        type: string
-        default: ""
-      feed-required:
-        description: Fail the run when the update feed doesn't name the release
+      dry-run:
+        description: Keep the files for testing, prove the release UI and build the Store package
         type: boolean
-        default: false
+        required: true
+    outputs:
+      sources:
+        description: The source archives the release attaches, by name
+        value: ${{ jobs.sources.outputs.files }}
+      msix-sha256:
+        description: The Store package's checksum. Empty unless a stable release built one that passed.
+        value: ${{ jobs.msix.outputs.sha256 }}
 
 permissions:
   contents: read
 
+env:
+  # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
+  KEEP_DAYS: ${{ inputs.dry-run && 14 || 3 }}
+
 jobs:
-  # CI's checks and tests on the planned commit. The bundle job below is its build.
+  # CI's checks and tests on the release's commit. The bundle job below is its build.
   checks:
     name: Checks
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/checks.yml
     with:
-      ref: ${{ inputs.sha }}
+      sha: ${{ inputs.sha }}
       # A stable run checks two releases, so each report takes its version.
       report-name: ${{ inputs.version }}
 
@@ -65,23 +66,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: npm pkg set version="${{ inputs.version }}"
-        working-directory: apps/desktop
+          ref: ${{ github.workflow_sha }}
+          path: .workflow
+          sparse-checkout: .github/actions
+          persist-credentials: false
+      - uses: ./.workflow/.github/actions/setup
+        with:
+          version: ${{ inputs.version }}
+          bundle: "false"
       - run: pnpm build
         env:
           # The app's TMDB key, built into the main bundle; see docs/maintainers/releasing.md.
           MR_STREAMER_TMDB_KEY: ${{ secrets.TMDB_API_KEY }}
           # Optional public write-only project token and approved region. Missing setup disables
-          # analytics. PR dry runs and normal CI/development builds never compile capture on.
-          MR_STREAMER_ANALYTICS_PROJECT_TOKEN: ${{ github.event_name != 'pull_request' && secrets.POSTHOG_PROJECT_TOKEN || '' }}
+          # analytics. Dry runs and normal CI/development builds never compile capture on.
+          MR_STREAMER_ANALYTICS_PROJECT_TOKEN: ${{ !inputs.dry-run && secrets.POSTHOG_PROJECT_TOKEN || '' }}
           MR_STREAMER_ANALYTICS_HOST: ${{ vars.POSTHOG_HOST }}
-          MR_STREAMER_ANALYTICS_RELEASE_BUILD: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+          MR_STREAMER_ANALYTICS_RELEASE_BUILD: ${{ !inputs.dry-run && '1' || '0' }}
       # The receipt travels with the exact JS bytes all packages and the UI job consume.
       - name: Record release UI bundle identity
         env:
@@ -95,12 +98,12 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Bounded Linux source-build proof on release dry runs only. Native installed checks below
-  # keep their own acceptance. No new job in the publication graph or ordinary PR CI.
+  # Bounded Linux source-build proof on dry runs only. The installed checks below keep their own
+  # acceptance.
   release-ui:
     name: Release UI proof
     needs: bundle
-    if: github.event_name == 'pull_request'
+    if: inputs.dry-run
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -110,20 +113,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          ref: ${{ github.workflow_sha }}
+          path: .workflow
+          sparse-checkout: .github/actions
+          persist-credentials: false
+      - uses: ./.workflow/.github/actions/setup
+        with:
+          version: ${{ inputs.version }}
       - run: pnpm --filter mrstreamer exec node node_modules/electron/install.js
       - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg xvfb
-      - run: npm pkg set version="$VERSION"
-        working-directory: apps/desktop
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bundle-${{ inputs.version }}
-          path: apps/desktop/out
       - name: Verify required release UI scenarios
         run: xvfb-run -a node scripts/release-ui.ts run "$SHA" "$VERSION" .local/release-ui
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -160,12 +160,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          ref: ${{ github.workflow_sha }}
+          path: .workflow
+          sparse-checkout: .github/actions
+          persist-credentials: false
+      - uses: ./.workflow/.github/actions/setup
+        with:
+          version: ${{ inputs.version }}
 
       # The bundled ffmpeg, rebuilt only when build-ffmpeg.sh changes.
       - id: ffmpeg
@@ -214,12 +217,6 @@ jobs:
       - name: Build the AirPlay helper
         if: runner.os == 'macOS' && steps.airplay.outputs.cache-hit != 'true'
         run: scripts/build-airplay-helper.sh mac-arm64
-
-      - run: npm pkg set version="$VERSION"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bundle-${{ inputs.version }}
-          path: apps/desktop/out
 
       # The build and the disk image's notarization print their phases, which the last command
       # times: the runner's own work apart from the waits on Apple, in the job summary.
@@ -306,35 +303,17 @@ jobs:
             apps/desktop/dist/*.deb
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
-          # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          retention-days: ${{ env.KEEP_DAYS }}
           if-no-files-found: error
-
-      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
-      # These non-product scripts load only after native checks and package upload succeed.
-      - name: Write successful package receipt
-        shell: bash
-        env:
-          PACKAGE_SOURCE: ${{ inputs.sha }}
-          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
-          PACKAGE_APP_VERSION: ${{ inputs.version }}
-          PACKAGE_VERSION: ${{ inputs.version }}
-          PACKAGE_PLATFORM: ${{ matrix.target }}
-          PACKAGE_DISTRIBUTION: direct
-          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
-          PACKAGE_ARTIFACT_NAME: release-${{ matrix.target }}-${{ inputs.version }}
-          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
-          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
-          node scripts/package-receipt.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.workflow/.github/actions/package-receipt
         with:
-          name: package-receipt-${{ matrix.target }}-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
-          path: apps/desktop/package-receipt.json
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
-          if-no-files-found: error
+          platform: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+          sha: ${{ inputs.sha }}
+          artifact-name: release-${{ matrix.target }}-${{ inputs.version }}
+          artifact-id: ${{ steps.package-artifact.outputs.artifact-id }}
+          artifact-digest: ${{ steps.package-artifact.outputs.artifact-digest }}
+          retention-days: ${{ env.KEEP_DAYS }}
 
   # The Windows installer, in a job of its own: the Store package needs the ffmpeg this job caches,
   # and waits for it and for no other platform.
@@ -356,37 +335,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # The toolchain action comes from the workflow commit, the source's build script from the
-      # planned commit. All callers use local reusable workflows, from the caller's workflow commit.
-      - name: Read the Windows FFmpeg toolchain
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
-          path: .ffmpeg-toolchain
-          sparse-checkout: apps/desktop/scripts/windows-ffmpeg-toolchain
+          path: .workflow
+          sparse-checkout: |
+            .github/actions
+            apps/desktop/scripts/windows-ffmpeg-toolchain
           persist-credentials: false
+      - uses: ./.workflow/.github/actions/setup
+        with:
+          version: ${{ inputs.version }}
 
-      # Hash the actual setup definition and the release source's pinned sources/build flags.
-      # No restore prefix: a UCRT64 build must never restore an old MINGW64 binary.
+      # The cache hashes the toolchain action, from the workflow commit, and the release's own
+      # build script. No restore prefix: a UCRT64 build must never restore an old MINGW64 binary.
       - id: ffmpeg-key
         run: |
-          test -f ../../.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml
+          test -f ../../.workflow/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml
           test -f scripts/build-ffmpeg.sh
-          echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml', 'apps/desktop/scripts/build-ffmpeg.sh') }}" >> "$GITHUB_OUTPUT"
+          echo "key=ffmpeg-win-x64-ucrt64-${{ hashFiles('.workflow/apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml', 'apps/desktop/scripts/build-ffmpeg.sh') }}" >> "$GITHUB_OUTPUT"
       - id: ffmpeg
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/ffmpeg/win-x64
           key: ${{ steps.ffmpeg-key.outputs.key }}
       - if: steps.ffmpeg.outputs.cache-hit != 'true'
-        uses: ./.ffmpeg-toolchain/apps/desktop/scripts/windows-ffmpeg-toolchain
+        uses: ./.workflow/apps/desktop/scripts/windows-ffmpeg-toolchain
       - name: Build ffmpeg on Windows
         if: steps.ffmpeg.outputs.cache-hit != 'true'
         shell: msys2 {0}
@@ -402,12 +376,6 @@ jobs:
         run: |
           muxers=$(vendor/ffmpeg/win-x64/ffmpeg -hide_banner -muxers)
           grep -qw segment <<<"$muxers"
-
-      - run: npm pkg set version="$VERSION"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bundle-${{ inputs.version }}
-          path: apps/desktop/out
 
       # Windows installers are unsigned for now. Signing belongs here, as its own step with its
       # own secrets, without touching the Mac certificate; docs/maintainers/signing.md.
@@ -442,54 +410,39 @@ jobs:
             apps/desktop/dist/*.exe
             apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest*.yml
-          # Dry runs keep their files for testing; a release keeps them on GitHub Releases.
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          retention-days: ${{ env.KEEP_DAYS }}
           if-no-files-found: error
-
-      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
-      # These non-product scripts load only after native checks and package upload succeed.
-      - name: Write successful package receipt
-        shell: bash
-        env:
-          PACKAGE_SOURCE: ${{ inputs.sha }}
-          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
-          PACKAGE_APP_VERSION: ${{ inputs.version }}
-          PACKAGE_VERSION: ${{ inputs.version }}
-          PACKAGE_PLATFORM: win-x64
-          PACKAGE_DISTRIBUTION: direct
-          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
-          PACKAGE_ARTIFACT_NAME: release-win-x64-${{ inputs.version }}
-          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
-          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
-          node scripts/package-receipt.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.workflow/.github/actions/package-receipt
         with:
-          name: package-receipt-win-x64-direct-${{ inputs.version }}-attempt-${{ github.run_attempt }}
-          path: apps/desktop/package-receipt.json
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
-          if-no-files-found: error
+          platform: win-x64
+          version: ${{ inputs.version }}
+          sha: ${{ inputs.sha }}
+          artifact-name: release-win-x64-${{ inputs.version }}
+          artifact-id: ${{ steps.package-artifact.outputs.artifact-id }}
+          artifact-digest: ${{ steps.package-artifact.outputs.artifact-digest }}
+          retention-days: ${{ env.KEEP_DAYS }}
 
   # The Microsoft Store package, an MSIX of the same app, for dry runs and stable releases: only
-  # stable releases go to the Store. It waits for the Windows installer and no other platform, and
-  # publishing doesn't wait for it, so it can't hold up a release. Its file stays a workflow
-  # artifact, apart from the release-* artifacts publish attaches: never on the release or in the
-  # update feed. The store job below sends a stable release's to the Store. The JS bundle it takes
-  # is there once the Windows installer is built, which took it too.
+  # stable releases go to the Store, through publish.yml. It waits for the Windows installer and
+  # no other platform. Outside a dry run its failure doesn't fail the release: publish.yml's Store
+  # job then has no checksum and says so, after the release is out. Its file stays a workflow
+  # artifact: never on the release or in the update feed.
   msix:
     name: Package Microsoft Store MSIX
     needs: package-windows
-    if: github.event_name == 'pull_request' || inputs.channel == 'stable'
+    if: inputs.dry-run || inputs.channel == 'stable'
+    continue-on-error: ${{ !inputs.dry-run }}
     runs-on: windows-2025
     timeout-minutes: 45
     outputs:
-      # The package's checksum, which the store job compares with the file it downloads.
+      # The package's checksum, which the Store job compares with the file it downloads.
       sha256: ${{ steps.check.outputs.sha256 }}
     env:
       VERSION: ${{ inputs.version }}
       SHA: ${{ inputs.sha }}
+      # A release's package is the one the Store gets, at once or in a later run, so it's kept
+      # longer.
+      MSIX_DAYS: ${{ inputs.dry-run && 14 || 90 }}
     defaults:
       run:
         shell: pwsh
@@ -498,32 +451,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # The Store's identity, which the package check holds the package to, is the workflow's.
-      - name: Read the Store package check
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The setup, and the Store's identity that the package check holds the package to.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.workflow_sha }}
           path: .workflow
           sparse-checkout: |
+            .github/actions
             scripts
             packages/contracts/src
           persist-credentials: false
+      - uses: ./.workflow/.github/actions/setup
+        with:
+          version: ${{ inputs.version }}
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/ffmpeg/win-x64
           key: ${{ needs.package-windows.outputs.ffmpeg-key }}
           fail-on-cache-miss: true
-      - run: npm pkg set version="$env:VERSION"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: js-bundle-${{ inputs.version }}
-          path: apps/desktop/out
       - name: Build the MSIX
         run: pnpm exec electron-builder --win appx --x64 --publish never
 
@@ -625,36 +570,19 @@ jobs:
             apps/desktop/dist/*.msix
             apps/desktop/dist/*.msix.json
             apps/desktop/dist/*.wack.xml
-          # A release's package is the one the Store gets, at once or in a later run, so it's
-          # kept longer.
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
+          retention-days: ${{ env.MSIX_DAYS }}
           if-no-files-found: error
-
-      # Receipt tooling belongs to the workflow commit, even when stable rebuilds older source.
-      # These non-product scripts load only after native checks and package upload succeed.
-      - name: Write successful package receipt
-        shell: bash
-        env:
-          PACKAGE_SOURCE: ${{ inputs.sha }}
-          PACKAGE_WORKFLOW_COMMIT: ${{ github.workflow_sha }}
-          PACKAGE_APP_VERSION: ${{ inputs.version }}
-          PACKAGE_VERSION: ${{ steps.check.outputs.package-version }}
-          PACKAGE_PLATFORM: win-x64
-          PACKAGE_DISTRIBUTION: store
-          PACKAGE_RUN_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          PACKAGE_ARTIFACT_ID: ${{ steps.package-artifact.outputs.artifact-id }}
-          PACKAGE_ARTIFACT_NAME: msix-${{ inputs.version }}
-          PACKAGE_ARTIFACT_SHA256: ${{ steps.package-artifact.outputs.artifact-digest }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$PACKAGE_WORKFLOW_COMMIT"
-          git show "$PACKAGE_WORKFLOW_COMMIT:apps/desktop/scripts/package-receipt.ts" > scripts/package-receipt.ts
-          node scripts/package-receipt.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: ./.workflow/.github/actions/package-receipt
         with:
-          name: package-receipt-win-x64-store-${{ inputs.version }}-attempt-${{ github.run_attempt }}
-          path: apps/desktop/package-receipt.json
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 90 }}
-          if-no-files-found: error
+          platform: win-x64
+          distribution: store
+          version: ${{ inputs.version }}
+          package-version: ${{ steps.check.outputs.package-version }}
+          sha: ${{ inputs.sha }}
+          artifact-name: msix-${{ inputs.version }}
+          artifact-id: ${{ steps.package-artifact.outputs.artifact-id }}
+          artifact-digest: ${{ steps.package-artifact.outputs.artifact-digest }}
+          retention-days: ${{ env.MSIX_DAYS }}
       # What a failed check left, to look at. Never submitted.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
@@ -686,162 +614,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.sha }}
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          ref: ${{ github.workflow_sha }}
+          path: .workflow
+          sparse-checkout: .github/actions
+          persist-credentials: false
       # The notices link the sources on the release of this version.
-      - run: npm pkg set version="${{ inputs.version }}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.workflow/.github/actions/setup
         with:
-          name: js-bundle-${{ inputs.version }}
-          path: apps/desktop/out
+          version: ${{ inputs.version }}
       - id: prepare
         run: node scripts/release-sources.ts "$RUNNER_TEMP/sources"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-sources-${{ inputs.version }}
           path: ${{ runner.temp }}/sources/
-          retention-days: ${{ github.event_name == 'pull_request' && 14 || 3 }}
+          retention-days: ${{ env.KEEP_DAYS }}
           if-no-files-found: error
-
-  publish:
-    name: Publish GitHub Release
-    needs: [checks, package, package-windows, sources]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: write
-      # The notes list the pull requests behind each commit.
-      pull-requests: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      CHANNEL: ${{ inputs.channel }}
-      VERSION: ${{ inputs.version }}
-      TAG: ${{ inputs.tag }}
-      SHA: ${{ inputs.sha }}
-      PREVIOUS_TAG: ${{ inputs.previous-tag }}
-      # The archives the sources job prepared, by name.
-      SOURCES: ${{ needs.sources.outputs.files }}
-    steps:
-      # The workflow's scripts. The release's files come from the jobs that built them.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.workflow_sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      # The installers of every platform, and the sources that go with them.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: release-*-${{ inputs.version }}
-          path: release
-          merge-multiple: true
-      - name: Write checksums and notes
-        run: |
-          (cd release && sha256sum -- * > SHA256SUMS.txt)
-          {
-            echo "**${CHANNEL^}** · built from \`${SHA::12}\`"
-            echo
-            echo "Download the DMG on Mac, the setup .exe on Windows, and the AppImage or .deb on Linux. SHA256SUMS.txt lists every file's checksum."
-            echo
-            node scripts/release-plan.ts notes --tag "$TAG" --sha "$SHA" --previous-tag "$PREVIOUS_TAG"
-          } > notes.md
-      # A failed or repeated attempt can leave a draft with this tag. Users never saw it.
-      - name: Remove an unfinished attempt
-        run: |
-          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" |
-            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
-      # Every platform's files (packages/contracts/src/release-files.ts) and every source are here,
-      # and the version still sorts after every release.
-      - name: Check the release is complete and still new
-        run: node scripts/release-plan.ts check --version "$VERSION" --dir release --sources "$SOURCES"
-      # Uploads into a draft, which the app can't see, and publishes once every file is in.
-      - name: Publish
-        run: |
-          nightly=$([ "$CHANNEL" = nightly ] && echo true || echo false)
-          gh release create "$TAG" release/* --draft --prerelease="$nightly" --target "$SHA" \
-            --title "Mr. Streamer $VERSION" --notes-file notes.md
-          if [ "$nightly" = true ]; then
-            gh release edit "$TAG" --draft=false --latest=false
-          else
-            gh release edit "$TAG" --draft=false --latest
-          fi
-
-  # Sends the stable release's package to the Microsoft Store, once the release is published and
-  # the package passed its checks. The plan makes stable releases only when started by hand from
-  # main, and a dry run never publishes, so a nightly, a dry run, a push or a tag never gets here.
-  # The release is out by then, and feed and finalize don't wait for this job, so a failure here
-  # shows on the run without holding up or undoing anything. It waits for Microsoft to take the
-  # upload, a few minutes, and not for certification, which can take days. Until the owner turns
-  # submissions on it says so and sends nothing; docs/maintainers/microsoft-store.md.
-  store:
-    name: Microsoft Store
-    needs: [publish, msix]
-    if: inputs.channel == 'stable'
-    uses: ./.github/workflows/microsoft-store.yml
-    with:
-      version: ${{ inputs.version }}
-      sha: ${{ inputs.sha }}
-      sha256: ${{ needs.msix.outputs.sha256 }}
-    # The called job reads its credential from the microsoft-store environment.
-    secrets: inherit
-    permissions:
-      contents: read
-      actions: read
-
-  # Points the app's update feed at the release. A job that calls a workflow can't take
-  # continue-on-error, so the input sets it on the called job: the release is out by now, and a
-  # failure there, such as before Pages is enabled, shows on that job without failing the run.
-  # A nightly that goes before a stable release is the exception: its failure stops the run, so
-  # the stable release waits until the feed names the nightly.
-  feed:
-    name: Update feed
-    needs: publish
-    uses: ./.github/workflows/update-feed.yml
-    with:
-      release: ${{ inputs.version }}
-      continue-on-error: ${{ !inputs.feed-required }}
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-
-  finalize:
-    # marketing-deploy.yml reads this job name to confirm a published stable release.
-    # Update its trigger query too if this name changes.
-    name: Record the stable version on main
-    needs: publish
-    if: inputs.channel == 'stable'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ inputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.ref_name }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      # Main may move while this runs: start again from its newest commit when a push is refused.
-      - name: Commit the version
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for attempt in 1 2 3; do
-            git fetch -q --depth 1 origin "$GITHUB_REF_NAME" && git reset -q --hard FETCH_HEAD
-            node scripts/release-plan.ts record --version "$VERSION"
-            git diff --quiet && exit 0
-            git commit -qam "chore(release): prepare v$VERSION"
-            git push -q origin "HEAD:$GITHUB_REF_NAME" && exit 0
-            sleep $((attempt * 5))
-          done
-          echo "::error::Main kept moving; run this job again."
-          exit 1

@@ -1,5 +1,5 @@
 // The GitHub side of a Microsoft Store submission: whether the package a release run built carries
-// the Store's identity, whether the Store workflow may run, which release it is for, and whether
+// the Store's identity, whether the Store jobs may run, which release it is for, and whether
 // the package a release run kept is that release's. scripts/store-submission.ts is the Microsoft
 // side; docs/maintainers/microsoft-store.md describes both.
 //
@@ -68,7 +68,7 @@ const RELEASE_WORKFLOW = ".github/workflows/release.yml";
 
 const ACTIONS = ["preflight", "status", "submit"] as const;
 
-/** What the Store workflow can do: the first two only read. */
+/** What the Store job can do: the first two only read. */
 export type StoreAction = (typeof ACTIONS)[number];
 
 /** A release as GitHub lists it under its tag. */
@@ -165,7 +165,7 @@ export function storeFilePrefix(release: Pick<StoreRelease, "version" | "commit"
 }
 
 /**
- * Whether the Store workflow may go on to the job that names the environment. Null when it may,
+ * Whether publish.yml's Store gate may go on to the job that names the environment. Null when it may,
  * and otherwise why a release's own run leaves the Store alone, which is no failure. Throws when
  * the setup is wrong or someone asked by hand for what is turned off.
  */
@@ -189,7 +189,7 @@ export async function storeGate(
     throw new Error(`${off} docs/maintainers/microsoft-store.md#setting-up turns them on.`);
   }
   if (request.ref !== `refs/heads/${github.defaultBranch}`) {
-    throw new Error(`Run the Store workflow from ${github.defaultBranch}, not ${request.ref}.`);
+    throw new Error(`Run the Store job from ${github.defaultBranch}, not ${request.ref}.`);
   }
   const branches = await github.environment(STORE_ENVIRONMENT);
   if (branches === null) {

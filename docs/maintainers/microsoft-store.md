@@ -67,7 +67,7 @@ To see the names Windows uses before any of that, sideload a dry run's package a
 ## How a release reaches the Store
 
 1. The stable release run builds the MSIX, tests it installed, and keeps it as the artifact `msix-<version>` with a record of its release, commit and SHA-256 ([releasing](releasing.md#microsoft-store-package)).
-2. Once the release is published and the package passed every check, the run's **Microsoft Store** job starts, from `.github/workflows/microsoft-store.yml`. Only a stable release started from `main` gets there: never a nightly, a dry run, a push or a tag. It's a job of the release run because GitHub starts no workflow for a release the workflow's own token created.
+2. Once the release is published and the package passed every check, the run's **Microsoft Store** job starts, in `.github/workflows/publish.yml`. Only a stable release started from `main` gets there: never a nightly, a dry run, a push or a tag. It's a job of the release run because GitHub starts no workflow for a release the workflow's own token created.
 3. `scripts/store-release.ts` checks, before anything signs in:
    - the release is published, neither a draft nor a pre-release, and its tag points at the commit the run built, which `main` contains
    - the package is that run's own artifact, and its checksum is the one the build job reported and the one in its record
@@ -110,7 +110,7 @@ Don't edit a draft the automation made in Partner Center. Once someone has, Micr
 
 ## Checking and repeating
 
-Run the **Microsoft Store** workflow on `main`, with one of three actions:
+Run the **Publish** workflow on `main` with target **store**, and one of three actions under **store-action**:
 
 - **preflight** signs in and lists what the account holds: the application, the published submission with its audience and publishing mode, its packages, listings and trailers, and any submission in progress. With a version it also checks that release's package and says what a submission would do. It reads only, and works before submissions are turned on.
 - **status**, with a version, says where that release stands in the Store. Run it a few days after a release to see whether certification passed. It finds a package uploaded by hand too, by its version, and says so. It reads only.
@@ -124,7 +124,7 @@ A draft someone made in Partner Center, to change the listing with the next rele
 
 1. Run **preflight** with the version and, under **draft**, the draft's submission ID. A plain preflight prints that ID as the submission in progress. The run reads only. It prints the fields in which the draft differs from the published submission, by their paths and never their contents, and the draft's fingerprint.
 2. Check that those are the fields someone edited.
-3. Run **submit** with the same version and draft, and the fingerprint under **draft_metadata_sha256**.
+3. Run **submit** with the same version and draft, and the fingerprint under **draft-metadata-sha256**.
 
 The fingerprint is the SHA-256 of everything Microsoft's API shows of the draft that a release leaves alone. That is all of it but the packages, each listing's "What's new", its title when the package carries the [Store name](#store-name), and Microsoft's own status and upload address. The order Microsoft sends fields in doesn't change it. The order of a list, such as the search terms, does. Two preflights of an untouched draft print the same one.
 
@@ -198,7 +198,7 @@ While a submission made by hand is in progress, the automation refuses to start 
 
 The API needs no seller ID.
 
-The environment must exist for `main` alone before any job names it: GitHub creates a missing environment, open to every branch, for the first job that does. So the workflow's first job reads the setup through GitHub's API and stops when the environment is missing or allows more than `main`. Only then does the Store job start. That job runs `main`'s scripts with node alone, installs no packages, never checks out the release's commit, and gives the key to its last step only.
+The environment must exist for `main` alone before any job names it: GitHub creates a missing environment, open to every branch, for the first job that does. So the **Check the Store setup** job reads the setup through GitHub's API and stops when the environment is missing or allows more than `main`. Only then does the Store job start. That job runs `main`'s scripts with node alone, installs no packages, never checks out the release's commit, and gives the key to its last step only.
 
 ### Renewing the key
 

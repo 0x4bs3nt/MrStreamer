@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installPublished, runCommand, type PublishedReceipt } from "./e2e/installed-upgrade.ts";
+import { installPublished, runCommand } from "./e2e/installed-upgrade.ts";
+import type { Receipt } from "./e2e/installed-upgrade-packages.ts";
 import { disposableRunner, install, processes } from "./e2e/installed-upgrade-windows.ts";
 
 vi.mock("./e2e/installed-upgrade-windows.ts", async (original) => ({
@@ -13,11 +14,11 @@ vi.mock("./e2e/installed-upgrade-windows.ts", async (original) => ({
   processes: vi.fn(),
 }));
 
-describe("published-pair native installation preflight", () => {
+describe("the installed upgrade run before and around native installation", () => {
   let temp: string;
   let packages: string;
   let root: string;
-  let receipt: PublishedReceipt;
+  let receipt: Receipt;
   const setup = new TextEncoder().encode("synthetic published setup");
   const sha256 = createHash("sha256").update(setup).digest("hex");
   const sha512 = createHash("sha512").update(setup).digest("base64");
@@ -51,11 +52,9 @@ describe("published-pair native installation preflight", () => {
       },
     });
     receipt = {
-      schemaVersion: 2,
-      mode: "published-pair",
       repository: "owner/player",
       resolvedAt: "2026-10-13T00:01:00Z",
-      pins: { stableTag, stableSha, candidateTag, candidateSha },
+      resolved: { stableTag, stableSha, candidateTag, candidateSha },
       packages: [pkg("stable", stableTag, stableSha), pkg("candidate", candidateTag, candidateSha)],
       defaultBranch: "main",
       candidateAheadBy: 8,
@@ -82,7 +81,7 @@ describe("published-pair native installation preflight", () => {
 
   it("checks candidate bytes before installing stable", async () => {
     await writeFile(join(packages, receipt.packages[1].file), "altered candidate");
-    await expect(runCommand(["--packages", packages, "--root", root], true)).rejects.toThrow(
+    await expect(runCommand(["--packages", packages, "--root", root])).rejects.toThrow(
       /changed since resolution/,
     );
     expect(install).not.toHaveBeenCalled();
@@ -91,31 +90,22 @@ describe("published-pair native installation preflight", () => {
   it("refuses a receipt for another repository and a reused root", async () => {
     receipt.repository = "different/player";
     await save();
-    await expect(runCommand(["--packages", packages, "--root", root], true)).rejects.toThrow(
+    await expect(runCommand(["--packages", packages, "--root", root])).rejects.toThrow(
       /another repository/,
     );
     expect(install).not.toHaveBeenCalled();
     receipt.repository = "owner/player";
     await save();
     await mkdir(root);
-    await expect(runCommand(["--packages", packages, "--root", root], true)).rejects.toThrow(
-      /EEXIST/,
-    );
+    await expect(runCommand(["--packages", packages, "--root", root])).rejects.toThrow(/EEXIST/);
     expect(install).not.toHaveBeenCalled();
   });
 
-  it("refuses a published receipt in the legacy run command", async () => {
-    await expect(runCommand(["--packages", packages, "--root", root])).rejects.toThrow(
-      /stable, A and B/,
-    );
-    expect(install).not.toHaveBeenCalled();
-  });
-
-  it("starts from the pinned stable on a fresh profile and retains an honest failure receipt", async () => {
+  it("starts from the resolved stable on a fresh profile and retains an honest failure receipt", async () => {
     vi.mocked(install).mockRejectedValue(
       new Error("Synthetic installer refused before native installation."),
     );
-    await expect(runCommand(["--packages", packages, "--root", root], true)).rejects.toThrow(
+    await expect(runCommand(["--packages", packages, "--root", root])).rejects.toThrow(
       /Synthetic installer refused/,
     );
     expect(install).toHaveBeenCalledOnce();
@@ -127,7 +117,6 @@ describe("published-pair native installation preflight", () => {
     );
     const proof: unknown = JSON.parse(await readFile(join(root, "evidence", "proof.json"), "utf8"));
     expect(proof).toMatchObject({
-      mode: "published-pair",
       status: "failed",
       installs: {},
       starts: {},

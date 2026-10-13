@@ -1,0 +1,582 @@
+# Everything that changes what people see or install: the GitHub release, the update feed, the
+# Microsoft Store and the website. docs/maintainers/ci.md shows when each job runs.
+#
+# - After a release's files are built: release.yml calls this with the release, never for a
+#   dry run. The GitHub release goes out first; the feed, the Store (stable only) and the version
+#   commit on main (stable only) follow it, and a stable release then publishes the website.
+# - After a push to main that changes what the website is built from: the website alone.
+# - By hand, from main: the feed (regenerate, or allow-regress after deleting a bad release), the
+#   Store (preflight, status, or submit a release's package) or the website.
+#
+# No pull request event starts this workflow, and the release job, which every other job of a
+# release's call waits for, also refuses one. Each public surface keeps its kill switch and
+# environment: the feed deploys through github-pages; the Store needs STORE_AUTOMATION_ENABLED and
+# the microsoft-store environment; the website needs MARKETING_DEPLOY_ENABLED and the
+# marketing-production environment. Jobs that hold a credential check out nothing they run, or
+# run only the workflow commit's dependency-free scripts. Each surface takes one publication at a
+# time and cancels none.
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: nightly or stable
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      tag:
+        type: string
+        required: true
+      sha:
+        description: The commit the release was built from
+        type: string
+        required: true
+      previous-tag:
+        description: The notes list the changes since this release. Empty for a channel's first.
+        type: string
+        default: ""
+      sources:
+        description: The source archives the release attaches, by name, from package.yml
+        type: string
+        required: true
+      msix-sha256:
+        description: The Store package's checksum, from package.yml. Empty when none passed.
+        type: string
+        default: ""
+      feed-required:
+        description: Fail the run when the update feed doesn't name the release, as the nightly a stable run publishes first must
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    # What the website is built from. The website-publish job compares main with its build over
+    # these too.
+    paths:
+      - apps/marketing/**
+      - docs/assets/**
+      - docs/privacy.md
+      - docs/about.md
+      - docs/security.md
+      - docs/user/**
+      - packages/contracts/src/update-feed.ts
+      - packages/contracts/src/release-files.ts
+      - packages/contracts/src/version.ts
+      - apps/desktop/assets/brand/mark.svg
+      - package.json
+      - pnpm-workspace.yaml
+      - pnpm-lock.yaml
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to publish
+        type: choice
+        options: [feed, store, website]
+      allow-regress:
+        description: Feed only. Let a channel move to a lower version, after deleting a bad release
+        type: boolean
+        default: false
+      store-action:
+        description: Store only. preflight and status only read; submit sends a release's package
+        type: choice
+        options: [preflight, status, submit]
+        default: preflight
+      version:
+        description: Store only. A published stable release, such as 0.0.5. Required for status and submit.
+        type: string
+        required: false
+      draft:
+        description: Store only. To put the release in a draft made in Partner Center, that draft's submission ID.
+        type: string
+        required: false
+      draft-metadata-sha256:
+        description: Store only. With a draft, the fingerprint that the first preflight with the draft printed.
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The GitHub release, published only once every platform's files and every source are here and
+  # the version still sorts after every release.
+  release:
+    name: GitHub release
+    if: inputs.tag != '' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      # The notes list the pull requests behind each commit.
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CHANNEL: ${{ inputs.channel }}
+      VERSION: ${{ inputs.version }}
+      TAG: ${{ inputs.tag }}
+      SHA: ${{ inputs.sha }}
+      PREVIOUS_TAG: ${{ inputs.previous-tag }}
+      SOURCES: ${{ inputs.sources }}
+    steps:
+      # The workflow's scripts. The release's files come from the jobs that built them.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # The installers of every platform, and the sources that go with them.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*-${{ inputs.version }}
+          path: release
+          merge-multiple: true
+      - name: Check the release is complete and still new
+        run: node scripts/release-plan.ts check --version "$VERSION" --dir release --sources "$SOURCES"
+      - name: Write checksums and notes
+        run: |
+          (cd release && sha256sum -- * > SHA256SUMS.txt)
+          {
+            echo "**${CHANNEL^}** · built from \`${SHA::12}\`"
+            echo
+            echo "Download the DMG on Mac, the setup .exe on Windows, and the AppImage or .deb on Linux. SHA256SUMS.txt lists every file's checksum."
+            echo
+            node scripts/release-plan.ts notes --tag "$TAG" --sha "$SHA" --previous-tag "$PREVIOUS_TAG"
+          } > notes.md
+      # A failed or repeated attempt can leave a draft with this tag. Users never saw it.
+      - name: Remove an unfinished attempt
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
+      # Uploads into a draft, which the app can't see, and publishes once every file is in.
+      - name: Publish
+        run: |
+          nightly=$([ "$CHANNEL" = nightly ] && echo true || echo false)
+          gh release create "$TAG" release/* --draft --prerelease="$nightly" --target "$SHA" \
+            --title "Mr. Streamer $VERSION" --notes-file notes.md
+          if [ "$nightly" = true ]; then
+            gh release edit "$TAG" --draft=false --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi
+
+  # The update feed, updates.json at the root of the GitHub Pages site, which names the newest
+  # release on each channel. It never moves a channel down unless allow-regress says so. The
+  # release is out by now, so a failure here shows on this job without failing the run, except
+  # for the nightly a stable run publishes first: the stable release waits until the feed names it.
+  # Pages must be enabled once, with source "GitHub Actions"; docs/maintainers/releasing.md.
+  feed:
+    name: Update feed
+    needs: release
+    if: >-
+      !cancelled() && (needs.release.result == 'success'
+      || (inputs.target == 'feed' && github.ref == 'refs/heads/main'))
+    continue-on-error: ${{ inputs.tag != '' && !inputs.feed-required }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    # Each publication reads the releases after the previous one deployed.
+    concurrency:
+      group: update-feed
+      cancel-in-progress: false
+      queue: max
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Write the feed
+        env:
+          ALLOW_REGRESS: ${{ inputs.allow-regress == true }}
+        run: |
+          # The site's address, custom domain or not. None before Pages is enabled; any other
+          # failure stops here, since without the deployed feed the releases could take a
+          # channel back.
+          if site=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url 2>"$RUNNER_TEMP/pages-error"); then
+            :
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/pages-error"; then
+            echo "::warning::No GitHub Pages site found, so deploying will fail. Enable Pages: docs/maintainers/releasing.md#enabling-pages"
+            site=""
+          else
+            echo "::error::Couldn't look up the GitHub Pages site: $(cat "$RUNNER_TEMP/pages-error"). Run this again."
+            exit 1
+          fi
+          args=(--out site/updates.json)
+          [ -n "$site" ] && args+=(--current "${site%/}/updates.json")
+          [ "$ALLOW_REGRESS" = true ] && args+=(--allow-regress)
+          mkdir -p site
+          touch site/.nojekyll
+          node scripts/release-plan.ts feed "${args[@]}"
+      # Named per release and per attempt: a run that publishes a nightly and then a stable release
+      # deploys each from its own artifact, and re-running this job never meets an earlier one.
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+          name: github-pages-${{ inputs.tag || 'regenerated' }}-${{ github.run_attempt }}
+          include-hidden-files: true
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          artifact_name: github-pages-${{ inputs.tag || 'regenerated' }}-${{ github.run_attempt }}
+
+  # Whether the Store job may run, read before any job names the microsoft-store environment:
+  # GitHub creates a missing environment, open to every branch, for the first job that does. A
+  # stable release's own call submits; while STORE_AUTOMATION_ENABLED isn't "true" it stops here
+  # with a notice and stays green. docs/maintainers/microsoft-store.md has the setup.
+  store-gate:
+    name: Check the Store setup
+    needs: release
+    if: >-
+      !cancelled() && ((needs.release.result == 'success' && inputs.channel == 'stable')
+      || inputs.target == 'store')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reads the environment's branch rule.
+      actions: read
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENABLED: ${{ vars.STORE_AUTOMATION_ENABLED }}
+          # A release's own call names no action: it submits.
+          ACTION: ${{ inputs.store-action || 'submit' }}
+          RELEASE_RUN: ${{ inputs.tag != '' }}
+        run: |
+          args=(--action "$ACTION" --ref "$GITHUB_REF" --enabled "$ENABLED")
+          [ "$RELEASE_RUN" = true ] && args+=(--release-run)
+          node scripts/store-release.ts gate "${args[@]}"
+
+  # Sends a stable release's Store package to Partner Center and reads back what the Store did
+  # with it: the package the release run built and tested, never built again. It waits for
+  # Microsoft to take the upload, a few minutes, and not for certification. The release is out by
+  # then, so a failure here changes nothing about it. main's dependency-free scripts run with
+  # node alone, and only the last step holds the credential.
+  store:
+    name: Microsoft Store
+    needs: store-gate
+    if: needs.store-gate.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: microsoft-store
+    concurrency:
+      group: microsoft-store
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      # Finds a release run's package when started by hand.
+      actions: read
+    env:
+      ACTION: ${{ inputs.store-action || 'submit' }}
+      VERSION: ${{ inputs.version }}
+      # Set by a release's own call alone: the commit it built.
+      SHA: ${{ inputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # A release's own call takes the package its run built. Started by hand, the script finds
+      # the release run that still holds it. status needs no package.
+      - name: Check the release
+        id: release
+        if: inputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--version "$VERSION" --out "$RUNNER_TEMP/store-release.json")
+          [ -n "$SHA" ] && args+=(--sha "$SHA" --run "$GITHUB_RUN_ID")
+          [ "$ACTION" != status ] && args+=(--package)
+          node scripts/store-release.ts release "${args[@]}"
+      # Another run's artifact needs the token; this run's own doesn't.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.release.outputs.run-id != ''
+        with:
+          name: msix-${{ inputs.version }}
+          path: ${{ runner.temp }}/msix
+          run-id: ${{ steps.release.outputs.run-id }}
+          github-token: ${{ steps.release.outputs.run-id != github.run_id && github.token || '' }}
+      - name: Check the package
+        if: steps.release.outputs.run-id != ''
+        env:
+          SHA256: ${{ inputs.msix-sha256 }}
+        run: |
+          args=(--release "$RUNNER_TEMP/store-release.json" --dir "$RUNNER_TEMP/msix")
+          [ -n "$SHA" ] && args+=(--sha256 "$SHA256")
+          node scripts/store-release.ts verify "${args[@]}"
+      # The only step that holds the credential.
+      - name: Microsoft Store
+        env:
+          STORE_TENANT_ID: ${{ vars.STORE_TENANT_ID }}
+          STORE_CLIENT_ID: ${{ vars.STORE_CLIENT_ID }}
+          STORE_CLIENT_SECRET: ${{ secrets.STORE_CLIENT_SECRET }}
+          STORE_CLIENT_SECRET_EXPIRES: ${{ vars.STORE_CLIENT_SECRET_EXPIRES }}
+          # Set by hand alone: a draft made in Partner Center, and its fingerprint for submit.
+          DRAFT: ${{ inputs.draft }}
+          DRAFT_METADATA_SHA256: ${{ inputs.draft-metadata-sha256 }}
+        run: |
+          args=()
+          [ -n "$VERSION" ] && args+=(--release "$RUNNER_TEMP/store-release.json")
+          [ -n "$DRAFT" ] && args+=(--draft "$DRAFT")
+          [ -n "$DRAFT_METADATA_SHA256" ] && args+=(--draft-metadata-sha256 "$DRAFT_METADATA_SHA256")
+          node scripts/store-submission.ts "$ACTION" "${args[@]}"
+
+  # Records a published stable release in apps/desktop/package.json on main, so later nightlies
+  # preview the patch after it.
+  finalize:
+    name: Record the stable version on main
+    needs: release
+    if: inputs.channel == 'stable'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # Main may move while this runs: start again from its newest commit when a push is refused.
+      - name: Commit the version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch -q --depth 1 origin "$GITHUB_REF_NAME" && git reset -q --hard FETCH_HEAD
+            node scripts/release-plan.ts record --version "$VERSION"
+            git diff --quiet && exit 0
+            git commit -qam "chore(release): prepare v$VERSION"
+            git push -q origin "HEAD:$GITHUB_REF_NAME" && exit 0
+            sleep $((attempt * 5))
+          done
+          echo "::error::Main kept moving; run this job again."
+          exit 1
+
+  # The website, apps/marketing, built from main as it is when the job starts: after a stable
+  # release is recorded, after a push that changes what it is built from, or by hand. It holds no
+  # owner secrets: a read-only token fetches release history, and analytics take the public
+  # PostHog host and key from repository variables. It checks the package Vercel takes
+  # (apps/marketing/scripts/package-vercel.ts) and hands over only .vercel/output.
+  website:
+    name: Build the website
+    needs: finalize
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && (needs.finalize.result == 'success'
+      || github.event_name == 'push' || inputs.target == 'website')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+      inputs: ${{ steps.inputs.outputs.paths }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Note the commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      # The push trigger's paths at this commit, which website-publish compares main over.
+      - name: Note what the website is built from
+        id: inputs
+        run: |
+          # shellcheck disable=SC2016 # The quoted script is JavaScript, for node to read.
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const workflow = readFileSync(".github/workflows/publish.yml", "utf8");
+            const list = /^    paths:\n((?:      - .+\n)+)/m.exec(workflow)?.[1];
+            if (!list) throw new Error("publish.yml names no push paths.");
+            const paths = list.trim().split("\n").map((line) => line.replace(/^\s*- /, ""));
+            console.log(`paths=${paths.join(" ")}`);
+          ' >> "$GITHUB_OUTPUT"
+      - run: pnpm install --frozen-lockfile --filter mrstreamer-marketing...
+      - name: Build and check the package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Website analytics: on only with PostHog's EU host and the public phc_ project key.
+          # Missing or other values build a site that sends nothing (scripts/site-analytics.ts).
+          MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD: "1"
+          MR_STREAMER_SITE_ANALYTICS_HOST: ${{ vars.POSTHOG_HOST }}
+          MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN: ${{ vars.POSTHOG_PROJECT_TOKEN }}
+        run: pnpm --filter mrstreamer-marketing build
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: marketing-output
+          path: apps/marketing/.vercel/output/
+          # The package sits in a folder whose name starts with a dot.
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
+      # Dependency-free notifier from the same checked build, never executed beside owner secrets.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: marketing-indexnow
+          path: apps/marketing/scripts/indexnow.ts
+          retention-days: 1
+          if-no-files-found: error
+      - name: Say that publishing is off
+        if: vars.MARKETING_DEPLOY_ENABLED != 'true'
+        run: |
+          {
+            echo "### Not published"
+            echo "The website built, and publishing is off: the repository variable \`MARKETING_DEPLOY_ENABLED\` isn't \`true\`."
+            echo "\`apps/marketing/README.md\` lists what to set up first."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Publishes the website's package to mrstreamer.app on Vercel. It checks out nothing: it holds
+  # the package and the token, and runs the pinned Vercel CLI on it. The Vercel project has no Git
+  # connection, so this is the only thing that publishes.
+  website-publish:
+    name: Publish the website
+    needs: website
+    if: vars.MARKETING_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      deployed: ${{ steps.deployment.outputs.deployed }}
+    environment:
+      name: marketing-production
+      url: https://mrstreamer.app
+    concurrency:
+      group: marketing-production
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: Check the setup
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+        run: |
+          missing=()
+          [ -n "$VERCEL_TOKEN" ] || missing+=("the secret VERCEL_TOKEN")
+          [ -n "$VERCEL_ORG_ID" ] || missing+=("the variable VERCEL_ORG_ID")
+          [ -n "$VERCEL_PROJECT_ID" ] || missing+=("the variable VERCEL_PROJECT_ID")
+          if [ ${#missing[@]} -gt 0 ]; then
+            printf -v list '%s, ' "${missing[@]}"
+            echo "::error::The marketing-production environment lacks ${list%, }."
+            exit 1
+          fi
+      # One publication at a time, but builds run side by side: a build that main has moved past
+      # leaves publishing to the run that move started, so an older page is never published over
+      # a newer one. git compares the whole of both commits; GitHub's comparison names 300
+      # changed files at most. The copy of main holds its history and no files, so there is still
+      # nothing from the repository here to run. A comparison that fails publishes nothing.
+      - name: Leave it to a newer run when main changed the website since the build
+        id: newest
+        env:
+          BUILT: ${{ needs.website.outputs.commit }}
+          INPUTS: ${{ needs.website.outputs.inputs }}
+        run: |
+          git clone --quiet --bare --filter=blob:none --single-branch --branch main \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$RUNNER_TEMP/main.git"
+          # The trigger's paths, as pathspecs that read ** as the trigger does.
+          read -ra paths <<<"$INPUTS"
+          [ ${#paths[@]} -gt 0 ] || { echo "::error::The build named no website inputs."; exit 1; }
+          changed=0
+          git --git-dir="$RUNNER_TEMP/main.git" diff --quiet --no-renames "$BUILT" main -- "${paths[@]/#/:(glob)}" || changed=$?
+          if [ "$changed" -eq 1 ]; then
+            echo "::notice::main changed the website after $BUILT was built. The run for that change publishes it."
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+          elif [ "$changed" -ne 0 ]; then
+            echo "::error::Couldn't compare $BUILT with main, so this run publishes nothing."
+            exit 1
+          fi
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.newest.outputs.superseded != 'true'
+        with:
+          name: marketing-output
+          path: apps/marketing/.vercel/output
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.newest.outputs.superseded != 'true'
+        with:
+          node-version: 24
+      # The project and account come from VERCEL_PROJECT_ID and VERCEL_ORG_ID. --prebuilt uploads
+      # the package as it is, and Vercel runs nothing from the repository. --archive=tgz sends it
+      # as one file. Only this step and the check hold the token.
+      - name: Publish
+        id: deployment
+        if: steps.newest.outputs.superseded != 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          BUILT: ${{ needs.website.outputs.commit }}
+        run: |
+          url=$(npx --yes vercel@62.2.0 deploy --prebuilt --archive=tgz --prod --cwd apps/marketing --token "$VERCEL_TOKEN")
+          {
+            echo "### Deployed"
+            echo "$BUILT is a production deployment at $url."
+            echo "Vercel points the project's domains at it, unless the project is rolled back: then they stay on the earlier deployment until Undo Rollback."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+
+  # Tells search engines what changed, once a publication actually went out, after checking the
+  # public site carries the build's marker. No owner secrets and no checkout.
+  indexnow:
+    name: Notify IndexNow after publication
+    needs: [website, website-publish]
+    if: needs.website-publish.outputs.deployed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: marketing-output
+          path: marketing-output
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: marketing-indexnow
+          path: marketing-indexnow
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Verify the public build and notify
+        env:
+          BUILT: ${{ needs.website.outputs.commit }}
+        run: node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"
+      - name: Report notification job failure
+        if: failure()
+        run: |
+          echo "::error::The website is already deployed. IndexNow notification failed; inspect this job before rerunning."
+          echo "The website is already deployed. IndexNow notification failed; no rollback was performed." >> "$GITHUB_STEP_SUMMARY"

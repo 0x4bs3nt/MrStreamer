@@ -1,0 +1,39 @@
+# What every job of package.yml starts with, after checking out the release's commit: Node, pnpm
+# and the commit's dependencies, the release version in the app's package.json, and the JS
+# bundle the bundle job built for it. Jobs load it from the workflow commit's tools in .workflow,
+# so a stable release of a nightly tested earlier sets up the way the workflow does.
+name: Set up a release job
+description: Install the release commit's dependencies, stamp the version and take the JS bundle
+
+inputs:
+  version:
+    description: The release version, such as 0.0.13 or 0.0.13-nightly.20261013.300
+    required: true
+  bundle:
+    description: Take the js-bundle-<version> artifact into apps/desktop/out
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # The workflow's tools sit beside the release's checkout in .workflow. Kept out of what git
+    # reports, the release UI receipt still finds the checkout holding nothing but the commit.
+    - run: echo ".workflow/" >> "$(git rev-parse --git-path info/exclude)"
+      shell: bash
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+    - run: npm pkg set version="$VERSION"
+      shell: bash
+      working-directory: apps/desktop
+      env:
+        VERSION: ${{ inputs.version }}
+    - if: inputs.bundle == 'true'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: js-bundle-${{ inputs.version }}
+        path: apps/desktop/out

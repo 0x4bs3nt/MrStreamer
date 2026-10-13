@@ -521,7 +521,7 @@ stage_key() {
     ask STORE_KEY_ENDS "That day, as YYYY-MM-DD:"
   done
   env_var STORE_CLIENT_SECRET_EXPIRES "$STORE_KEY_ENDS" || return 1
-  note "  The Store workflow warns from 30 days before that day. To renew, run $ME key,"
+  note "  The Store job warns from 30 days before that day. To renew, run $ME key,"
   note "  then $ME check, and only then select Remove beside the old key."
   note "  To revoke, select Remove beside a key, or Delete the application under User management:"
   note "  either ends its access at once."
@@ -532,8 +532,8 @@ stage_key() {
 stage_check() {
   say "A read-only run signs in with the key and reads the app and its published submission."
   say "It sends and changes nothing, and runs while submissions are still off."
-  if ! gh workflow view microsoft-store.yml --repo "$REPO" >/dev/null 2>&1; then
-    warn "$REPO has no Microsoft Store workflow on its default branch yet."
+  if ! gh workflow view publish.yml --repo "$REPO" >/dev/null 2>&1; then
+    warn "$REPO has no Publish workflow on its default branch yet."
     note "Run $ME check once it is merged."
     return 1
   fi
@@ -541,12 +541,12 @@ stage_check() {
     note "Run $ME check when you're ready."
     return 1
   fi
-  if ! gh workflow run microsoft-store.yml --repo "$REPO" --ref main -f action=preflight; then
+  if ! gh workflow run publish.yml --repo "$REPO" --ref main -f target=store -f store-action=preflight; then
     warn "GitHub didn't start the run."
     note "Run $ME check to try again."
     return 1
   fi
-  open_url "https://github.com/$REPO/actions/workflows/microsoft-store.yml"
+  open_url "https://github.com/$REPO/actions/workflows/publish.yml"
   step "Open the newest run and wait for it to finish. Its summary lists what it found:"
   note "  the application, the published submission with its audience and publishing mode, its"
   note "  packages, listings and trailers, and any submission in progress."

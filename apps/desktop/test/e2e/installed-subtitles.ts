@@ -87,7 +87,7 @@ export const SUBTITLE_CUE = {
   end: 60,
   text: "Saved online cue, retained across upgrade.",
 };
-const SUBTITLE_TIMING = { offset: 2, speed: 1.02 };
+export const SUBTITLE_TIMING = { offset: 2, speed: 1.02 };
 const key = "synthetic-installed-subdl";
 
 /** The same executable fetch boundary is tested with real HTTP and installed through inspector. */

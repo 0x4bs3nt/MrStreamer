@@ -103,7 +103,7 @@ The script knows the system and not the processor. An Intel Mac gets the Mac but
 1. **The build** reads the complete published stable release history from GitHub and uses the update feed's selection rule for the highest version with all three update manifests. A withdrawn release remains in the history with its sources but is not offered for download. If the history is unavailable, the validated [update feed](../../docs/maintainers/releasing.md#update-feed) is the fallback. A query string does not reliably bypass GitHub Pages' cache. It then asks GitHub for each of the four installers by its address, one HEAD request each. It writes the ones GitHub answers for into both pages, with a version beside known hero installers and in the download page's title and release line. The same verified version reaches the about page and homepage structured data. With no verified installer, all general version claims are omitted and the download title is versionless. The built pages link files without scripts.
 2. **The open page** requests the feed once, with no retry and no polling. The feed lists the installers its stable release carries. A feed generated before the build verified release eligibility is ignored when it names a different release, so a cached old feed cannot undo a publication or withdrawal. This also applies when no eligible stable release remains. A feed naming the selected release can fill installer links that failed their build-time check. Home, download and about show a current feed's release, including the download title, release notes, checksums and source links and homepage structured data. A stable release reaches visitors this way without a new build of the site, once the release workflow has published the feed and GitHub's ten-minute cache of it has passed.
 
-A recorded stable promotion on `main` starts **Marketing deploy** through `workflow_run`. Its gate reads GitHub's job records and requires the stable-only **Record the stable version on main** job to have succeeded. A later Store upload failure does not undo publication or prevent the rebuild. Scheduled runs, nightlies, dry runs, forks and non-main runs do not pass. This avoids relying on a release event that `GITHUB_TOKEN` does not trigger. Deployment still requires `MARKETING_DEPLOY_ENABLED`, the protected `marketing-production` environment and the existing main/revision checks. The workflow builds current `main`, with no checkout or artifact execution from the triggering run. A manual **Marketing deploy** from `main` also rebuilds the site.
+A stable release rebuilds the site in its own run: once **Record the stable version on main** has succeeded, `publish.yml`'s website jobs build current `main` and publish it. Nightlies and dry runs never get there, and a later Store upload failure does not undo publication or prevent the rebuild. Deployment still requires `MARKETING_DEPLOY_ENABLED`, the protected `marketing-production` environment and the main/revision checks. A manual **Publish** run from `main` with target **website** also rebuilds the site.
 
 | When                                                    | The page links                                                                                     |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -170,7 +170,7 @@ A build compiles analytics in from these variables only (`scripts/site-analytics
 
 | Variable                                    | Value                                                                                                 |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD`  | `1`, set only by the publishing build in `marketing-deploy.yml`                                       |
+| `MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD`  | `1`, set only by the publishing build in `publish.yml`                                                |
 | `MR_STREAMER_SITE_ANALYTICS_HOST`           | `https://eu.i.posthog.com`, from the repository variable `POSTHOG_HOST`. Any other host sends nothing |
 | `MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN`  | The project's public `phc_` key, from the repository variable `POSTHOG_PROJECT_TOKEN`                 |
 | `MR_STREAMER_SITE_ANALYTICS_LOCAL_ENDPOINT` | A literal `http://127.0.0.1:<port>/i/v0/e/` for verification. It replaces production                  |
@@ -181,17 +181,17 @@ The Vercel project's Web Analytics is no longer used and can be turned off in it
 
 ## How it gets published
 
-`.github/workflows/marketing-deploy.yml` publishes the page from GitHub Actions. Vercel only serves it.
+The website jobs of `.github/workflows/publish.yml` publish the page from GitHub Actions. Vercel only serves it.
 
-1. A push to `main` changing site inputs, a recorded stable promotion on `main`, or a manual run from `main` starts a build. The trigger gate rejects nightlies and dry runs.
+1. A push to `main` changing site inputs, a recorded stable release, or a manual run from `main` with target **website** starts a build. Nightlies and dry runs never do.
 2. The build job has no owner secrets. It uses the workflow's read-only GitHub token for release history, builds `main`, checks the package and hands over `.vercel/output` alone.
 3. The publish job holds the Vercel token. It checks out nothing and runs the pinned Vercel CLI on that package: `vercel deploy --prebuilt --archive=tgz --prod`.
 
 4. After the Publish step succeeds, IndexNow verifies the matching build on the public domain and notifies canonical pages in a separate job without owner secrets.
 
-Runs queue without replacing pending publications and none is cancelled halfway, using the same `queue: max` policy as the release workflow. This also prevents a nightly completion that the trigger gate rejects from displacing a pending site publication. A run that waited builds the newest `main`. Before it publishes, a run asks git whether `main` has changed the website since its build. If it has, the run leaves publishing to the run that change started. If git can't tell, the run fails and publishes nothing.
+Publications queue without replacing pending ones and none is cancelled halfway, using the same `queue: max` policy as the release workflow. Builds don't wait for each other: each builds `main` as it is when it starts. Before it publishes, a run asks git whether `main` has changed the website since its build, over the push trigger's paths. If it has, the run leaves publishing to the run that change started. If git can't tell, the run fails and publishes nothing.
 
-Publishing is off until you turn it on. Until then a run builds, says publishing is off, and stops. Every pull request also builds the page in `.github/workflows/marketing.yml`, without secrets.
+Publishing is off until you turn it on. Until then a run builds, says publishing is off, and stops. Every pull request also builds the page in the **Website** job of `.github/workflows/checks.yml`, without secrets.
 
 ## IndexNow notifications
 
@@ -303,20 +303,12 @@ Send a message to `hello@mrstreamer.app` and see it arrive. Open Settings > Abou
 
 ```sh
 gh variable set MARKETING_DEPLOY_ENABLED --repo Mr-Streamer-OSS/MrStreamer --body true
-gh workflow run marketing-deploy.yml --repo Mr-Streamer-OSS/MrStreamer --ref main
+gh workflow run publish.yml --repo Mr-Streamer-OSS/MrStreamer --ref main -f target=website
 ```
 
-Watch that run publish. From then on, a merge to `main` that changes any of these publishes the page:
+Watch that run publish. From then on, a merge to `main` that changes any of the paths under `on.push.paths` in `.github/workflows/publish.yml`, what the page is built from, publishes the page.
 
-- `apps/marketing/`
-- `docs/assets/`
-- `docs/privacy.md`, `docs/about.md`, `docs/security.md` and `docs/user/**`
-- `packages/contracts/src/update-feed.ts` and `packages/contracts/src/version.ts`
-- `apps/desktop/assets/brand/mark.svg`
-- `package.json`, `pnpm-workspace.yaml` or `pnpm-lock.yaml`
-- either marketing workflow
-
-Recorded stable promotions on `main` also start a publication through the guarded `workflow_run` trigger. The build always reads current `main` and never writes source files back to the repository.
+Recorded stable releases also publish it, from their own run. The build always reads current `main` and never writes source files back to the repository.
 
 ## Turn it off, or go back
 

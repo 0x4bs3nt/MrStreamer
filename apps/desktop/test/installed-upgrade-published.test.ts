@@ -1,29 +1,36 @@
+// The installers the Windows installed upgrade check accepts, from GitHub's answers: the newest
+// published stable release and the candidate nightly the caller names, each the build its tag
+// names, and nothing else. Answers come from fixtures shaped like GitHub's; a check that doubts
+// anything installs nothing.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
-  readPublishedPins,
-  readPublishedReceipt,
-  resolvePublishedPair,
-  type PublishedPins,
-} from "./e2e/installed-upgrade.ts";
-import type { GitHub } from "./e2e/installed-upgrade-packages.ts";
+  readReceipt,
+  resolvePackages,
+  type GitHub,
+  type Resolved,
+} from "./e2e/installed-upgrade-packages.ts";
 
-const PINS: PublishedPins = {
+const EXPECTED: Resolved = {
   stableTag: "v0.0.11",
   stableSha: "a".repeat(40),
   candidateTag: "v0.0.12-nightly.20261013.330",
   candidateSha: "b".repeat(40),
 };
-const INPUT = {
-  "stable-tag": PINS.stableTag,
-  "stable-sha": PINS.stableSha,
-  "candidate-tag": PINS.candidateTag,
-  "candidate-sha": PINS.candidateSha,
-};
 const bytes = (text: string) => new TextEncoder().encode(text);
 const digest = (data: Uint8Array, algorithm = "sha256", encoding: "hex" | "base64" = "hex") =>
   createHash(algorithm).update(data).digest(encoding);
+const listed = (tag_name: string, changes: { draft?: boolean; prerelease?: boolean } = {}) => ({
+  tag_name,
+  draft: false,
+  prerelease: tag_name.includes("-nightly."),
+  published_at: changes.draft ? null : "2026-10-01T00:00:00Z",
+  ...changes,
+});
 
 /** Published release API contracts, with real recomputed synthetic package hashes. */
 function published() {
@@ -63,29 +70,36 @@ function published() {
       },
     };
   };
-  const stable = release(PINS.stableTag, 1, false);
-  const candidate = release(PINS.candidateTag, 4, true);
+  const stable = release(EXPECTED.stableTag, 1, false);
+  const candidate = release(EXPECTED.candidateTag, 4, true);
+  // GitHub lists releases newest-created first; the newest stable is found by version.
+  const releases = [
+    listed(EXPECTED.candidateTag),
+    listed("v0.0.9"),
+    listed(EXPECTED.stableTag),
+    listed("v0.0.11-nightly.20261001.300"),
+    listed("v0.0.10"),
+  ];
   const diff = { status: "ahead", ahead_by: 8, behind_by: 0 };
   const onMain = { status: "ahead", ahead_by: 1, behind_by: 0 };
   const json: Record<string, unknown> = {
     "": { default_branch: "main" },
-    [`/releases/tags/${PINS.stableTag}`]: stable.value,
-    [`/releases/tags/${PINS.candidateTag}`]: candidate.value,
-    [`/commits/${PINS.stableTag}`]: { sha: PINS.stableSha },
-    [`/commits/${PINS.candidateTag}`]: { sha: PINS.candidateSha },
-    [`/compare/${PINS.stableSha}...main?per_page=1`]: onMain,
-    [`/compare/${PINS.candidateSha}...main?per_page=1`]: onMain,
-    [`/compare/${PINS.stableSha}...${PINS.candidateSha}?per_page=1`]: diff,
+    [`/releases/tags/${EXPECTED.stableTag}`]: stable.value,
+    [`/releases/tags/${EXPECTED.candidateTag}`]: candidate.value,
+    [`/commits/${EXPECTED.stableTag}`]: { sha: EXPECTED.stableSha },
+    [`/commits/${EXPECTED.candidateTag}`]: { sha: EXPECTED.candidateSha },
+    [`/compare/${EXPECTED.stableSha}...main?per_page=1`]: onMain,
+    [`/compare/${EXPECTED.candidateSha}...main?per_page=1`]: onMain,
+    [`/compare/${EXPECTED.stableSha}...${EXPECTED.candidateSha}?per_page=1`]: diff,
   };
   const api: GitHub = {
     repository: "owner/player",
-    json: vi.fn(async (path) => {
+    json: vi.fn(async (path: string) => {
+      const page = /^\/releases\?per_page=100&page=(\d+)$/.exec(path)?.[1];
+      if (page) return structuredClone(releases.slice((+page - 1) * 100, +page * 100));
       if (!(path in json)) throw new Error(`Unexpected API request ${path}`);
       return structuredClone(json[path]);
     }),
-    text: async () => {
-      throw new Error("Published resolution must not read dry-run logs.");
-    },
     bytes: async (path) => {
       const id = Number(path.split("/").at(-1));
       const data = assets.get(id);
@@ -105,33 +119,27 @@ function published() {
     api,
     json,
     assets,
+    releases,
     stable,
     candidate,
     diff,
     onMain,
     replace,
-    resolve: () => resolvePublishedPair(api, PINS),
+    resolve: (tag = EXPECTED.candidateTag, sha?: string) => resolvePackages(api, { tag, sha }),
   };
 }
 
-afterEach(() => vi.restoreAllMocks());
-
-describe("pinned published stable to nightly packages", () => {
-  it("accepts an explicit pair, checks both published sets and records a two-package receipt", async () => {
+describe("the newest published stable release", () => {
+  it("is derived with both tags' commits and recorded in a two-package receipt", async () => {
     const world = published();
     const { receipt, files } = await world.resolve();
-    expect(readPublishedPins(INPUT)).toEqual(PINS);
-    expect(readPublishedReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
+    expect(receipt.resolved).toEqual(EXPECTED);
+    expect(readReceipt(JSON.parse(JSON.stringify(receipt)))).toEqual(receipt);
     expect(receipt.packages.map(({ stage, version, source }) => [stage, version, source])).toEqual([
-      ["stable", PINS.stableTag.slice(1), PINS.stableSha],
-      ["candidate", PINS.candidateTag.slice(1), PINS.candidateSha],
+      ["stable", "0.0.11", EXPECTED.stableSha],
+      ["candidate", "0.0.12-nightly.20261013.330", EXPECTED.candidateSha],
     ]);
-    expect(receipt).toMatchObject({
-      schemaVersion: 2,
-      mode: "published-pair",
-      candidateAheadBy: 8,
-      pins: PINS,
-    });
+    expect(receipt.candidateAheadBy).toBe(8);
     for (const pkg of receipt.packages) {
       const data = files.get(pkg.file)!;
       expect(pkg.sha256).toBe(digest(data));
@@ -142,53 +150,131 @@ describe("pinned published stable to nightly packages", () => {
     expect(world.api.json).not.toHaveBeenCalledWith(expect.stringContaining("/actions/"));
   });
 
+  it("ignores drafts, prereleases, nightlies and tags that are not canonical stable versions", async () => {
+    const world = published();
+    world.releases.unshift(
+      listed("v0.0.14", { draft: true }),
+      listed("v0.0.13", { prerelease: true }),
+      listed("v0.0.15-nightly.20261020.400", { prerelease: false }),
+      listed("v0.0.016"),
+      listed("latest"),
+    );
+    expect((await world.resolve()).receipt.resolved.stableTag).toBe(EXPECTED.stableTag);
+  });
+
+  it("reads every page of the release list", async () => {
+    const world = published();
+    world.releases.unshift(
+      ...Array.from({ length: 100 }, (_, run) => listed(`v0.0.12-nightly.20261012.${run + 1}`)),
+    );
+    expect((await world.resolve()).receipt.resolved.stableTag).toBe(EXPECTED.stableTag);
+    expect(world.api.json).toHaveBeenCalledWith("/releases?per_page=100&page=2");
+  });
+
+  it("refuses when no published stable release exists", async () => {
+    const world = published();
+    world.releases.splice(
+      0,
+      Infinity,
+      listed(EXPECTED.candidateTag),
+      listed("v0.0.11", { draft: true }),
+    );
+    await expect(world.resolve()).rejects.toThrow(/no published stable release/);
+  });
+
+  // The release plan's rule (packages/contracts/src/promotion.ts), so a promotion the plan
+  // accepts is one this check accepts too.
+  it("refuses a candidate no newer than the newest stable, whatever it holds", async () => {
+    const world = published();
+    const newer = "c".repeat(40);
+    world.releases.unshift(listed("v0.0.12"));
+    world.json["/commits/v0.0.12"] = { sha: newer };
+    world.json[`/compare/${newer}...main?per_page=1`] = world.onMain;
+    world.json[`/compare/${newer}...${EXPECTED.candidateSha}?per_page=1`] = world.diff;
+    await expect(world.resolve()).rejects.toThrow(
+      `${EXPECTED.candidateTag} sorts below v0.0.12, the newest stable release, so the upgrade check can't install it over that release. A stable release needs a fresh tested nightly: test one published after v0.0.12.`,
+    );
+  });
+
+  it("refuses tags that name the same commit", async () => {
+    const world = published();
+    world.json[`/commits/${EXPECTED.candidateTag}`] = { sha: EXPECTED.stableSha };
+    world.json[`/compare/${EXPECTED.stableSha}...${EXPECTED.stableSha}?per_page=1`] = {
+      status: "identical",
+      ahead_by: 0,
+      behind_by: 0,
+    };
+    await expect(world.resolve()).rejects.toThrow(
+      `${EXPECTED.candidateTag} was built from the same commit as ${EXPECTED.stableTag}, so it holds nothing new.`,
+    );
+  });
+});
+
+describe("the candidate and both published packages", () => {
   it.each([
-    ["a nightly baseline", { "stable-tag": PINS.candidateTag }],
-    ["a stable candidate", { "candidate-tag": "v0.0.12" }],
-    ["a decreasing version", { "candidate-tag": "v0.0.11-nightly.20261013.330" }],
-    ["an unpinned stable", { "stable-sha": "" }],
-    ["an unpinned candidate", { "candidate-sha": "" }],
-    ["a short commit", { "candidate-sha": "b1234" }],
-    ["the same source", { "candidate-sha": PINS.stableSha }],
-    ["a moving ref", { "stable-tag": "latest" }],
-    ["a mixed mode", { "a-tag": PINS.candidateTag }],
-    ["an unknown input", { "stable-hash": "unrecognized" }],
-  ])("rejects %s before asking GitHub", (_name, changed) => {
-    expect(() => readPublishedPins({ ...INPUT, ...changed })).toThrow();
+    "v0.0.12",
+    "latest",
+    "0.0.12-nightly.20261013.330",
+    "v0.0.12-nightly.20261013.0330",
+    "",
+  ])("refuses the candidate %j before asking GitHub", async (tag) => {
+    const world = published();
+    await expect(world.resolve(tag)).rejects.toThrow(/canonical nightly tag/);
+    expect(world.api.json).not.toHaveBeenCalled();
+  });
+
+  it("is the commit a stable release planned, when the release names one, and its tag's otherwise", async () => {
+    const planned = await published().resolve(EXPECTED.candidateTag, EXPECTED.candidateSha);
+    expect(planned.receipt.resolved.candidateSha).toBe(EXPECTED.candidateSha);
+
+    const moved = published();
+    await expect(moved.resolve(EXPECTED.candidateTag, "f".repeat(40))).rejects.toThrow(
+      `${EXPECTED.candidateTag} names ${EXPECTED.candidateSha}, not ${"f".repeat(40)}, the commit the release planned.`,
+    );
+
+    const short = published();
+    await expect(short.resolve(EXPECTED.candidateTag, "abc123")).rejects.toThrow(
+      "abc123 is not a full commit SHA.",
+    );
+    expect(short.api.json).not.toHaveBeenCalled();
   });
 
   it.each(["stable", "candidate"] as const)(
-    "rejects the wrong published kind or moved tag for %s",
+    "rejects the wrong published kind for %s",
     async (stage) => {
       const world = published();
       world[stage].value.prerelease = !world[stage].value.prerelease;
-      await expect(world.resolve()).rejects.toThrow(/pinned published/);
-      world[stage].value.prerelease = stage === "candidate";
-      const tag = stage === "stable" ? PINS.stableTag : PINS.candidateTag;
-      world.json[`/commits/${tag}`] = { sha: "c".repeat(40) };
-      await expect(world.resolve()).rejects.toThrow(/does not name/);
+      await expect(world.resolve()).rejects.toThrow(/is not a published/);
     },
   );
 
   it("rejects a draft, wrong release tag or missing publication", async () => {
     const world = published();
     world.candidate.value.draft = true;
-    await expect(world.resolve()).rejects.toThrow(/pinned published/);
+    await expect(world.resolve()).rejects.toThrow(/is not a published nightly/);
     world.candidate.value.draft = false;
     world.candidate.value.tag_name = "v0.0.12-nightly.20261013.331";
-    await expect(world.resolve()).rejects.toThrow(/pinned published/);
-    world.candidate.value.tag_name = PINS.candidateTag;
-    world.json[`/releases/tags/${PINS.candidateTag}`] = {
+    await expect(world.resolve()).rejects.toThrow(/is not a published nightly/);
+    world.candidate.value.tag_name = EXPECTED.candidateTag;
+    world.json[`/releases/tags/${EXPECTED.candidateTag}`] = {
       ...world.candidate.value,
       published_at: null,
     };
-    await expect(world.resolve()).rejects.toThrow(/pinned published/);
+    await expect(world.resolve()).rejects.toThrow(/is not a published nightly/);
   });
 
   it("rejects non-descendants and sources absent from main", async () => {
     const world = published();
-    world.diff.status = "diverged";
+    for (const status of ["diverged", "behind"]) {
+      world.diff.status = status;
+      await expect(world.resolve()).rejects.toThrow(
+        `${EXPECTED.candidateTag} doesn't contain ${EXPECTED.stableTag}'s commit (${status})`,
+      );
+    }
+    world.diff.status = "ahead";
+    world.diff.ahead_by = 0;
     await expect(world.resolve()).rejects.toThrow(/strictly descend/);
+    world.diff.ahead_by = 8;
     world.diff.status = "ahead";
     world.onMain.status = "behind";
     await expect(world.resolve()).rejects.toThrow(/main does not contain/);
@@ -231,68 +317,48 @@ describe("pinned published stable to nightly packages", () => {
     await expect(world.resolve()).rejects.toThrow(/single SHA256SUMS/);
   });
 
-  it("refuses a legacy receipt and mismatched published package identities", async () => {
+  it("refuses a receipt of another shape and mismatched package identities", async () => {
     const { receipt } = await published().resolve();
-    expect(() => readPublishedReceipt({ ...receipt, schemaVersion: 1, mode: undefined })).toThrow();
+    const { resolved, ...rest } = receipt;
+    expect(() => readReceipt({ ...rest, pins: resolved })).toThrow();
     receipt.packages[1].source = "c".repeat(40);
-    expect(() => readPublishedReceipt(receipt)).toThrow(/identity does not match/);
+    expect(() => readReceipt(receipt)).toThrow(/identity does not match/);
   });
 });
 
-describe("the installed-upgrade public CLI", () => {
+// Each case starts Node on the script, which can take seconds while other suites run.
+describe("the installed-upgrade public CLI", { timeout: 30_000 }, () => {
+  const cli = (args: string[]) =>
+    spawnSync(process.execPath, ["apps/desktop/test/e2e/installed-upgrade.ts", ...args], {
+      encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: "synthetic-never-sent", GITHUB_REPOSITORY: "owner/player" },
+    });
+
   it.each([
-    ["resolve-published", ["--a-tag", PINS.candidateTag]],
-    ["resolve", ["--stable-tag", PINS.stableTag]],
-    ["resolve-published", ["--unknown", "value"]],
-    ["run-published", ["--b-run", "123"]],
-  ])("%s rejects unknown or mixed inputs", (command, args) => {
-    const result = spawnSync(
-      process.execPath,
-      ["apps/desktop/test/e2e/installed-upgrade.ts", command, ...args],
-      { encoding: "utf8" },
-    );
+    ["resolve", ["--stable-tag", EXPECTED.stableTag]],
+    ["run", ["--candidate", EXPECTED.candidateTag]],
+  ])("%s rejects unknown inputs", (command, args) => {
+    const result = cli([command, ...args]);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Unknown option");
   });
 
-  it("refuses missing pins before network access, without creating output", () => {
-    const result = spawnSync(
-      process.execPath,
-      [
-        "apps/desktop/test/e2e/installed-upgrade.ts",
-        "resolve-published",
-        "--out",
-        "/missing-published-pins",
-      ],
-      {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          GH_TOKEN: "synthetic-never-sent",
-          GITHUB_REPOSITORY: "owner/player",
-        },
-      },
-    );
+  it.each([
+    [[], "Usage"],
+    [["--candidate", "v0.0.12"], "canonical nightly tag"],
+  ])("resolve %j refuses before network access, without creating output", (args, message) => {
+    const out = join(tmpdir(), `installed-upgrade-never-${process.pid}`);
+    const result = cli(["resolve", ...args, "--out", out]);
     expect(result.status).not.toBe(0);
     expect(result.stderr).not.toMatch(/GitHub answered|fetch failed|synthetic-never-sent/);
-    expect(result.stderr).toContain("stableSha");
+    expect(result.stderr).toContain(message);
+    expect(existsSync(out)).toBe(false);
   });
 
   it.skipIf(process.platform === "win32")(
-    "run-published refuses native installs on this non-Windows host",
+    "run refuses native installs on this non-Windows host",
     () => {
-      const result = spawnSync(
-        process.execPath,
-        [
-          "apps/desktop/test/e2e/installed-upgrade.ts",
-          "run-published",
-          "--packages",
-          "/packages",
-          "--root",
-          "/root",
-        ],
-        { encoding: "utf8" },
-      );
+      const result = cli(["run", "--packages", "/packages", "--root", "/root"]);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Windows only");
     },

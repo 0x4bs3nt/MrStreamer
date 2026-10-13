@@ -26,6 +26,7 @@ Start with the [contribution policy](../CONTRIBUTING.md).
 
 ## Maintaining
 
+- [CI: what runs when](./maintainers/ci.md)
 - [Releasing](./maintainers/releasing.md)
 - [Signing](./maintainers/signing.md)
 - [Microsoft Store submissions](./maintainers/microsoft-store.md)
