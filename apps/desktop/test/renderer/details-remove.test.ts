@@ -5,7 +5,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
 import type { TitleProgress, Viewing } from "@mrstreamer/contracts/viewing";
 import { DetailsView } from "../../src/renderer/src/features/titles/DetailsView.tsx";
@@ -66,7 +66,8 @@ const viewing = (sequence: number, continueWatching: readonly TitleProgress[]): 
   sequence,
 });
 
-const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+/** Lets the sheet take in what just happened, on the fake clock. */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 const REMOVE = "Remove from Continue watching";
 
@@ -74,7 +75,13 @@ const button = (page: HTMLElement, label: string) =>
   [...page.querySelectorAll("button")].find((each) => each.textContent?.trim() === label);
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 /** The film's details, open with the film halfway and in Continue watching. */
 async function openDetails(): Promise<HTMLElement> {

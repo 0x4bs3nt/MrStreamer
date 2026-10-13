@@ -3,7 +3,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
 import { RelatedTitles } from "../../src/renderer/src/features/titles/RelatedTitles.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -42,10 +42,14 @@ const details = (id: string): MovieDetails => ({
   backdropUrl: null,
 });
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
   useUi.setState({ details: null });
+  vi.useRealTimers();
 });
 
 async function mount(opened = "opened", switching = false) {
@@ -72,11 +76,15 @@ async function mount(opened = "opened", switching = false) {
     container.remove();
   };
   await render(opened, switching);
+  // Lets the list's timers and answers run on the fake clock until `check` passes.
   const until = async (check: () => void) =>
-    vi.waitFor(async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
-      check();
-    });
+    vi.waitFor(
+      async () => {
+        await act(() => vi.advanceTimersByTimeAsync(10));
+        check();
+      },
+      { interval: 1 },
+    );
   return { container, render, until };
 }
 

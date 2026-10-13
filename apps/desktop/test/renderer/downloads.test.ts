@@ -69,11 +69,15 @@ const list = (items: readonly Download[], ended = 0): DownloadList => ({
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
-/** Waits, a little at a time, until the window shows what `ready` looks for. */
+/**
+ * Waits, a little at a time, until the window shows what `ready` looks for, and fails when it
+ * never does: a wait for what can't come would only make the test slow.
+ */
 async function until(ready: () => boolean): Promise<void> {
   for (let tries = 0; tries < 100 && !ready(); tries++) {
     await act(settle);
   }
+  if (!ready()) throw new Error("The window never showed what the test waited for.");
 }
 
 let unmount = () => {};
@@ -90,8 +94,11 @@ beforeEach(() => {
   useUi.setState(useUi.getInitialState(), true);
 });
 
-/** Renders `element` in the page with a fresh query client that hears `downloads.changed`. */
-async function show(element: ReactElement, ready: string): Promise<HTMLElement> {
+/**
+ * Renders `element` in the page with a fresh query client that hears `downloads.changed`, and
+ * waits until it shows what `ready` selects, when a test names something to wait for.
+ */
+async function show(element: ReactElement, ready?: string): Promise<HTMLElement> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   stopSync = syncDownloads(client);
   const container = document.createElement("div");
@@ -105,7 +112,7 @@ async function show(element: ReactElement, ready: string): Promise<HTMLElement> 
     act(() => root.unmount());
     container.remove();
   };
-  await until(() => container.querySelector(ready) !== null);
+  if (ready) await until(() => container.querySelector(ready) !== null);
   return container;
 }
 
@@ -275,7 +282,7 @@ describe("a copy playing offline", () => {
   it("plays from this computer with its own progress, and asks nobody online", async () => {
     ipc.emit("output.changed", offers);
     const opened = ipc.hold("playback.openCopy");
-    const watch = await show(createElement(TitleWatch), "body");
+    const watch = await show(createElement(TitleWatch));
     await act(async () => {
       useUi.setState({ playingTitle: true });
       // Left at 1200 s a moment ago: main kept it, the list the window holds still says 300 s.
@@ -327,7 +334,7 @@ describe("a copy playing offline", () => {
 
   it("starts over once main says it was watched to its end", async () => {
     const opened = ipc.hold("playback.openCopy");
-    await show(createElement(TitleWatch), "body");
+    await show(createElement(TitleWatch));
     await act(async () => {
       useUi.setState({ playingTitle: true });
       watchOffline(download({ progress: { position: 1200, duration: 6360 } }));
@@ -687,7 +694,10 @@ describe("the top bar's word on the downloads", () => {
       focused.focus();
 
       // Longer words fold it to its arrow; shorter ones, or more room, give them back.
-      await changed(list([failed]), () => notice(bar)?.textContent === "Download stopped");
+      await changed(
+        list([failed]),
+        () => notice(bar)?.getAttribute("aria-label") === "Downloads, Download stopped",
+      );
       await layout.resize();
       expect(notice(bar)?.textContent).toBe("");
       await changed(

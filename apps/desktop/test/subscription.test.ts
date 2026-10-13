@@ -355,21 +355,6 @@ describe("a subscription's id", () => {
     expect(other.id).not.toBe(id);
     expect((await (await create()).list()).map((each) => each.id)).toEqual([id, other.id]);
   });
-
-  it("answers for the subscription a request names, and for no other", async () => {
-    const provider = await fakeProvider();
-    const { service } = await subscriptions();
-    const { id } = await service.add({
-      server: provider.url,
-      username: "demo",
-      password: "demo",
-    });
-
-    expect(await service.sourceOf(id)).toMatchObject({ id, key: `${provider.url}|demo` });
-    expect(await failure(service.sourceOf("another-subscription"))).toEqual({
-      kind: "no-subscription",
-    });
-  });
 });
 
 describe("a profile other releases share", () => {

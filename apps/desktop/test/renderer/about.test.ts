@@ -5,16 +5,20 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DiagnosticsPreview } from "@mrstreamer/contracts/diagnostics";
 import type { Distribution, UpdateStatus } from "@mrstreamer/contracts/updates";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { SettingsPage } from "../../src/renderer/src/features/settings/SettingsPage.tsx";
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 async function about(distribution: Distribution = "direct") {
   ipc.reset();
@@ -54,7 +58,7 @@ function button(container: HTMLElement, name: string) {
 async function click(container: HTMLElement, name: string) {
   await act(async () => {
     button(container, name).click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.advanceTimersByTimeAsync(20);
   });
 }
 

@@ -135,12 +135,13 @@ describe("installed subtitle network boundary", () => {
       const reply = await response.json();
       const zip = await request(reply.subtitles[0].url);
       process.stdout.write(JSON.stringify({pid:process.pid,release:reply.subtitles[0].release_name,zipBytes:(await zip.arrayBuffer()).byteLength}) + '\\n');
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Stays up, for the test to read what it sent, until the test closes its input.
+      await new Promise(resolve => process.stdin.on('end', resolve).resume());
       })().catch(error => { console.error(error); process.exitCode = 1; });
     `,
     );
     const child = spawn(process.execPath, ["--inspect-brk=127.0.0.1:0", entry], {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, NODE_OPTIONS: "", ELECTRON_RUN_AS_NODE: "" },
     });
     let main: Awaited<ReturnType<typeof connect>> | undefined;
@@ -171,7 +172,7 @@ describe("installed subtitle network boundary", () => {
           reject(error);
         });
       });
-      main = await connect(port, "node");
+      main = await connect(port, "node", { pollMs: 10 });
       expect(await inspectorOwner(port, [child.pid!])).toBe(child.pid);
       await expect(inspectorOwner(port, [process.pid])).rejects.toThrow("not an owned launch");
       const paused = await pauseMain(main);
@@ -194,6 +195,7 @@ describe("installed subtitle network boundary", () => {
         expect.objectContaining({ host: "dl.subdl.com", path: "/installed-upgrade.zip" }),
       ]);
       main.close();
+      child.stdin.end();
       expect(await ended).toEqual({ code: 0, signal: null });
     } finally {
       main?.close();

@@ -3,7 +3,7 @@ import { ipc, SAVED } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlaylistGroupPage } from "@mrstreamer/contracts/playlist";
 import { syncLibraryUpdates, syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
 import {
@@ -33,9 +33,13 @@ const groups: PlaylistGroupPage = {
   ],
 };
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
+  vi.useRealTimers();
 });
 async function render(element: ReturnType<typeof createElement>) {
   const client = new QueryClient({
@@ -46,10 +50,8 @@ async function render(element: ReturnType<typeof createElement>) {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => root.render(createElement(QueryClientProvider, { client }, element)));
-  const settle = () =>
-    act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
+  // Lets Settings take in what just happened, on the fake clock.
+  const settle = () => act(() => vi.advanceTimersByTimeAsync(30));
   await settle();
   cleanup = () => {
     act(() => root.unmount());
@@ -159,12 +161,13 @@ describe("playlist mapping in Settings", () => {
     await act(async () => {
       await app.client.invalidateQueries({ queryKey: ["playlist", subscription.id, "omissions"] });
     });
-    await expect
-      .poll(async () => {
+    await vi.waitFor(
+      async () => {
         await app.settle();
-        return app.container.textContent;
-      })
-      .toContain("1–40 of 40");
+        expect(app.container.textContent).toContain("1–40 of 40");
+      },
+      { interval: 1 },
+    );
     expect(ipc.argsOf("playlist.omissions").at(-1)).toMatchObject({ offset: 0, limit: 50 });
     expect(app.container.textContent).not.toContain("51–40");
   });

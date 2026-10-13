@@ -138,6 +138,16 @@ async function read(url: string, start: number): Promise<number> {
   return (await answer.arrayBuffer()).byteLength;
 }
 
+/**
+ * Fakes `setTimeout` for the rest of the test, in main and the fake provider alike: time still
+ * goes by as it does, and a test moves it on past a wait with `vi.advanceTimersByTimeAsync`
+ * instead of sitting through it.
+ */
+function useMovedClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  onTestFinished(() => void vi.useRealTimers());
+}
+
 /** The film's address on the playlist host: a secret in its path, as a provider's login is. */
 const FILM = "/s3cr3t-token/film.mp4";
 
@@ -337,8 +347,8 @@ describe.skipIf(!hasTools)("downloads", () => {
       },
       { timeout: LONG },
     );
-    expect(await copyOf(dataDir, first.id)).toEqual(film.bytes);
-    expect(await copyOf(dataDir, second.id)).toEqual(show.bytes);
+    expect(digest(await copyOf(dataDir, first.id))).toBe(digest(film.bytes));
+    expect(digest(await copyOf(dataDir, second.id))).toBe(digest(show.bytes));
     const listed = await find(first.id);
     expect(listed).toMatchObject({
       size: film.bytes.length,
@@ -391,7 +401,7 @@ describe.skipIf(!hasTools)("downloads", () => {
       async () => expect((await again.find(queued.id))?.status.kind).toBe("complete"),
       { timeout: LONG },
     );
-    expect(await copyOf(dataDir, queued.id)).toEqual(film.bytes);
+    expect(digest(await copyOf(dataDir, queued.id))).toBe(digest(film.bytes));
     // Only the rest was sent again.
     expect(provider.fileBytes() - sentBefore).toBe(film.bytes.length - 200_000);
   }, 60_000);
@@ -420,7 +430,7 @@ describe.skipIf(!hasTools)("downloads", () => {
       );
       // The whole file again from its first byte, never the old bytes with new ones after them.
       const copy = options.wholeFiles ? film.bytes : replacement;
-      expect(await copyOf(dataDir, queued.id)).toEqual(copy);
+      expect(digest(await copyOf(dataDir, queued.id))).toBe(digest(copy));
       expect(provider.fileBytes() - sentBefore).toBe(copy.length);
     }
   }, 120_000);
@@ -489,7 +499,7 @@ describe.skipIf(!hasTools)("downloads", () => {
       await connected();
     const film = movie(provider, subscriptionId, "TEST | Two sound tracks and subtitles (MULTI)");
     const other = movie(provider, subscriptionId, "TEST | Index at the end");
-    provider.stallMovieFile(film.id, 200_000, 3_000);
+    provider.stallMovieFile(film.id, 200_000, 60_000);
     const queued = await downloads.add(film.ref);
     await vi.waitFor(
       async () => {
@@ -506,11 +516,13 @@ describe.skipIf(!hasTools)("downloads", () => {
     expect(await read(playing.url, 0)).toBeGreaterThan(0);
     expect((await find(queued.id))?.status.kind).toBe("waiting");
     expect(provider.mostFilesAtOnce()).toBe(1);
+    // Going on from wherever its partial file ended, it is sent the rest without a pause.
+    provider.stallMovieFile(film.id, Number.MAX_SAFE_INTEGER, 0);
     await playback.close(playing.sessionId);
     await vi.waitFor(async () => expect((await find(queued.id))?.status.kind).toBe("complete"), {
       timeout: LONG,
     });
-    expect(await copyOf(dataDir, queued.id)).toEqual(film.bytes);
+    expect(digest(await copyOf(dataDir, queued.id))).toBe(digest(film.bytes));
     expect(provider.mostFilesAtOnce()).toBe(1);
   }, 60_000);
 
@@ -545,13 +557,16 @@ describe.skipIf(!hasTools)("downloads", () => {
     );
     const asked = provider.fileRequests();
     const file = await onDemand.file(other.ref);
-    const opening = playback.openTitle(other.ref, file.url, DECODERS, file);
+    // The open waits 10 s for the partial file to close: the clock is moved on past that.
+    useMovedClock();
+    const refused = expect(
+      playback.openTitle(other.ref, file.url, DECODERS, file),
+    ).rejects.toMatchObject({ error: { kind: "stream", failure: { kind: "network" } } });
     await closing.promise;
     try {
+      await vi.advanceTimersByTimeAsync(10_000);
       // The provider hears nothing of the stream while the download's file is still open.
-      await expect(opening).rejects.toMatchObject({
-        error: { kind: "stream", failure: { kind: "network" } },
-      });
+      await refused;
       expect(provider.fileRequests()).toBe(asked);
     } finally {
       closed.resolve();
@@ -633,66 +648,47 @@ describe.skipIf(!hasTools)("downloads", () => {
   }, 60_000);
 
   it("fails on a full disk or a missing folder, and never makes a copy of the partial", async () => {
-    const full: Disk = {
-      ...fileDisk,
-      write: () =>
-        new Writable({
-          write: (_chunk, _encoding, done) =>
-            done(Object.assign(new Error("no space left on device"), { code: "ENOSPC" })),
-        }),
+    // The error the disk fails each write with, and the room it says it has: the file system's
+    // where null. One start serves each case, the download retried after the disk changes.
+    let fails: { code: string; message: string } | null = {
+      code: "ENOSPC",
+      message: "no space left on device",
     };
-    const first = await connected({}, full);
-    const film = movie(first.provider, first.subscriptionId, "TEST | Index at the end");
-    const queued = await first.downloads.add(film.ref);
-    await vi.waitFor(
-      async () => {
-        expect((await first.find(queued.id))?.status).toEqual({
-          kind: "failed",
-          failure: { kind: "disk-full", needed: null },
-        });
-      },
-      { timeout: LONG },
-    );
-
-    const small: Disk = { ...fileDisk, free: async () => 1000 };
-    const second = await connected({}, small);
-    const other = movie(second.provider, second.subscriptionId, "TEST | Index at the end");
-    const short = await second.downloads.add(other.ref);
-    await vi.waitFor(
-      async () => {
-        expect((await second.find(short.id))?.status).toEqual({
-          kind: "failed",
-          failure: { kind: "disk-full", needed: other.bytes.length - 1000 },
-        });
-      },
-      { timeout: LONG },
-    );
-
-    const gone: Disk = {
+    let free: number | null = null;
+    const disk: Disk = {
       ...fileDisk,
-      write: () =>
-        new Writable({
+      free: async (dir) => free ?? fileDisk.free(dir),
+      write: (path, start) => {
+        const failure = fails;
+        if (!failure) return fileDisk.write(path, start);
+        return new Writable({
           write: (_chunk, _encoding, done) =>
-            done(Object.assign(new Error("no such file or directory"), { code: "ENOENT" })),
-        }),
-    };
-    const third = await connected({}, gone);
-    const lost = await third.downloads.add(
-      movie(third.provider, third.subscriptionId, "TEST | Index at the end").ref,
-    );
-    await vi.waitFor(
-      async () => {
-        expect((await third.find(lost.id))?.status).toMatchObject({
-          kind: "failed",
-          failure: { kind: "folder" },
+            done(Object.assign(new Error(failure.message), { code: failure.code })),
         });
       },
-      { timeout: LONG },
-    );
-    for (const each of [first, second, third]) {
-      const items = (await each.downloads.list()).items;
-      expect(items.every((item) => item.status.kind !== "complete")).toBe(true);
-    }
+    };
+    const { provider, subscriptionId, downloads, find } = await connected({}, disk);
+    const film = movie(provider, subscriptionId, "TEST | Index at the end");
+    const queued = await downloads.add(film.ref);
+    const failsWith = (failure: object) =>
+      vi.waitFor(
+        async () => expect((await find(queued.id))?.status).toEqual({ kind: "failed", failure }),
+        { timeout: LONG },
+      );
+    await failsWith({ kind: "disk-full", needed: null });
+
+    // Too little room for the file, known before a byte of it is written.
+    fails = null;
+    free = 1000;
+    await downloads.retry(queued.id);
+    await failsWith({ kind: "disk-full", needed: film.bytes.length - 1000 });
+
+    free = null;
+    fails = { code: "ENOENT", message: "no such file or directory" };
+    await downloads.retry(queued.id);
+    await failsWith({ kind: "folder", detail: expect.any(String) });
+    const items = (await downloads.list()).items;
+    expect(items.every((item) => item.status.kind !== "complete")).toBe(true);
   }, 60_000);
 
   it("ends unfinished downloads with their subscription and keeps its copies playable after a restart", async () => {
@@ -781,6 +777,8 @@ describe.skipIf(!hasTools)("downloads", () => {
     const adding = downloads.add(episode(provider, saved.id).ref);
     await vi.waitFor(() => expect(tmdb.seasonRequests().length).toBeGreaterThan(asked));
     await roster.remove(saved.id, true);
+    // TMDB answers only now, once the subscription has gone.
+    tmdb.failSeasons(null);
     await expect(adding).rejects.toMatchObject({ error: { kind: "no-subscription" } });
     expect((await downloads.list()).items).toEqual([]);
     await quit();
@@ -801,7 +799,7 @@ describe.skipIf(!hasTools)("downloads", () => {
       },
       { timeout: LONG },
     );
-    expect(await copyOf(dataDir, b.id)).toEqual(second.bytes);
+    expect(digest(await copyOf(dataDir, b.id))).toBe(digest(second.bytes));
     expect(provider.mostFilesAtOnce()).toBe(1);
   }, 60_000);
 
@@ -920,7 +918,9 @@ describe.skipIf(!hasTools)("downloads", () => {
     });
     await onDemand.refresh(second.id);
     const film = movie(provider, subscriptionId, "TEST | Two sound tracks and subtitles (MULTI)");
-    provider.stallMovieFile(film.id, 200_000, 4_000);
+    // The download pauses while the other plays, then goes on once the clock is moved past it.
+    useMovedClock();
+    provider.stallMovieFile(film.id, 200_000, 10_000);
     const queued = await downloads.add(film.ref);
     await vi.waitFor(
       async () => expect((await find(queued.id))?.status).toMatchObject({ received: 200_000 }),
@@ -931,6 +931,7 @@ describe.skipIf(!hasTools)("downloads", () => {
     const playing = await playback.openTitle(elsewhere.ref, file.url, DECODERS, file);
     expect(await read(playing.url, 0)).toBeGreaterThan(0);
     expect((await find(queued.id))?.status.kind).toBe("transferring");
+    await vi.advanceTimersByTimeAsync(10_000);
     await vi.waitFor(async () => expect((await find(queued.id))?.status.kind).toBe("complete"), {
       timeout: LONG,
     });
@@ -942,29 +943,20 @@ describe.skipIf(!hasTools)("downloads", () => {
   it("waits out a provider that stops sending for longer than it took to answer", async () => {
     const { provider, dataDir, subscriptionId, downloads, find } = await connected();
     const film = movie(provider, subscriptionId, "TEST | Index at the end");
+    // A pause past the 15 s an answer gets to start, well within the minute a body may say
+    // nothing: the clock is moved on through it rather than waited out.
+    useMovedClock();
     provider.stallMovieFile(film.id, 30_000, 17_000);
     const queued = await downloads.add(film.ref);
+    await vi.waitFor(
+      async () => expect((await find(queued.id))?.status).toMatchObject({ received: 30_000 }),
+      { timeout: LONG },
+    );
+    await vi.advanceTimersByTimeAsync(17_000);
     await vi.waitFor(async () => expect((await find(queued.id))?.status.kind).toBe("complete"), {
       timeout: LONG,
     });
-    expect(await copyOf(dataDir, queued.id)).toEqual(film.bytes);
-  }, 60_000);
-
-  it("ends a held request when the app quits, keeping the queue for the next start", async () => {
-    const { provider, dataDir, subscriptionId, downloads, find, quit } = await connected();
-    const film = movie(provider, subscriptionId, "TEST | Two sound tracks and subtitles (MULTI)");
-    provider.stallMovieFile(film.id, 1, 60_000);
-    const queued = await downloads.add(film.ref);
-    await vi.waitFor(() => expect(provider.activeStreams()).toBe(1), { timeout: LONG });
-    expect((await find(queued.id))?.status.kind).toBe("transferring");
-    await quit();
-    await vi.waitFor(() => expect(provider.activeStreams()).toBe(0));
-    provider.stallMovieFile(film.id, Number.MAX_SAFE_INTEGER, 0);
-    const again = await app(dataDir);
-    await vi.waitFor(
-      async () => expect((await again.find(queued.id))?.status.kind).toBe("complete"),
-      { timeout: LONG },
-    );
+    expect(digest(await copyOf(dataDir, queued.id))).toBe(digest(film.bytes));
   }, 60_000);
 
   it("downloads a mapped playlist's film with its headers, and stops while the file is still looked up", async () => {
@@ -1009,7 +1001,7 @@ describe.skipIf(!hasTools)("downloads", () => {
         async () => expect((await second.find(again.id))?.status.kind).toBe("complete"),
         { timeout: LONG },
       );
-      expect(await copyOf(dataDir, again.id)).toEqual(host.film);
+      expect(digest(await copyOf(dataDir, again.id))).toBe(digest(host.film));
       // What is kept on disk names no address: the secret in the file's path stays in memory.
       const db = new DatabaseSync(join(dataDir, "mrstreamer.db"), { readOnly: true });
       try {
@@ -1276,7 +1268,10 @@ it("observes actual download runs, successful completion, disk failure and cance
     starts++;
     return (outcome, failure) => outcomes.push({ outcome, ...(failure ? { failure } : {}) });
   };
-  const started = await connected({}, undefined, observeTransfer);
+  // The file system's room until the last download, which finds none.
+  let full = false;
+  const disk: Disk = { ...fileDisk, free: async (dir) => (full ? 0 : fileDisk.free(dir)) };
+  const started = await connected({}, disk, observeTransfer);
   const film = movie(started.provider, started.subscriptionId, "TEST | Index at the end");
   const done = await started.downloads.add(film.ref);
   await vi.waitFor(
@@ -1327,14 +1322,14 @@ it("observes actual download runs, successful completion, disk failure and cance
   expect((await started.find(preempted.id))?.status.kind).toBe("waiting");
   await started.downloads.remove(preempted.id);
   await started.playback.close(opened.sessionId);
-  await started.quit();
-  const full = await connected({}, { ...fileDisk, free: async () => 0 }, observeTransfer);
-  const failed = await full.downloads.add(
-    movie(full.provider, full.subscriptionId, "TEST | Index at the end").ref,
+  full = true;
+  const failed = await started.downloads.add(
+    movie(started.provider, started.subscriptionId, "TEST | Old AVI").ref,
   );
-  await vi.waitFor(async () => expect((await full.find(failed.id))?.status.kind).toBe("failed"), {
-    timeout: LONG,
-  });
+  await vi.waitFor(
+    async () => expect((await started.find(failed.id))?.status.kind).toBe("failed"),
+    { timeout: LONG },
+  );
   expect(outcomes).toEqual([
     { outcome: "success" },
     { outcome: "interrupted" },

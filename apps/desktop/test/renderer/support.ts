@@ -89,10 +89,20 @@ export const ipc = {
   },
 };
 
+/** Each method's input check, built once as the main process builds it, not again per call. */
+const checks = new Map<IpcMethod, (data: unknown) => unknown>();
+const checkOf = (method: IpcMethod) => {
+  const known = checks.get(method);
+  if (known) return known;
+  const schema: () => (data: unknown) => unknown = ipcInputs[method];
+  const check = schema();
+  checks.set(method, check);
+  return check;
+};
+
 const bridge = {
   invoke(method: IpcMethod, args?: unknown): Promise<Result<unknown>> {
-    const schema: () => (data: unknown) => unknown = ipcInputs[method];
-    const input = schema()(args);
+    const input = checkOf(method)(args);
     if (input instanceof type.errors) {
       return Promise.resolve({
         ok: false,

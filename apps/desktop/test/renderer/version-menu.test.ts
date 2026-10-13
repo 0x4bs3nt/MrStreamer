@@ -3,7 +3,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { VersionMenu } from "../../src/renderer/src/features/titles/VersionMenu.tsx";
 
@@ -51,8 +51,14 @@ const film: Title = {
   ],
 };
 let unmount = () => {};
-afterEach(() => unmount());
-const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 const radios = () => [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
 
 async function mount(title = film) {

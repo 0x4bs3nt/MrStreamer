@@ -125,12 +125,17 @@ function nextStream(): () => Promise<void> {
     });
 }
 
-/** The picture moves for `seconds`, as that of a stream that plays. */
+/**
+ * The picture moves for `seconds`, as that of a stream that plays. The screen is drawn once at the
+ * end: the player watches the picture each second, and Watch only shows what it concluded.
+ */
 async function plays(seconds: number): Promise<void> {
-  for (let second = 0; second < seconds; second++) {
-    player.element.currentTime += 1;
-    await wait(1000);
-  }
+  await act(async () => {
+    for (let second = 0; second < seconds; second++) {
+      player.element.currentTime += 1;
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+  });
 }
 
 /**
@@ -142,8 +147,6 @@ async function stops(why: StreamFailure | null, session: LivePlaying | null = nu
   const playing = ipc.hold("playback.playing");
   await act(async () => {
     player.element.dispatchEvent(new Event("error"));
-  });
-  await act(async () => {
     failure.resolve(why);
     playing.resolve(session);
   });
@@ -257,13 +260,17 @@ describe("a channel that breaks off", () => {
     expect(text()).toContain("attempt 2 of 4");
   });
 
-  it("says it lost the stream when it played and four reconnects brought nothing", async () => {
+  it("says it lost the stream when it played and four reconnects brought nothing, and tells a screen reader once, without the attempts or their seconds", async () => {
     await playing(40);
+    expect(announced()).toBe("");
 
+    const reconnecting = "Reconnecting. VRT 1's stream isn't arriving.";
     for (const delay of WAITS) {
       const starts = nextStream();
       await stops(DROPPED);
+      expect(announced()).toBe(reconnecting);
       await wait(delay);
+      expect(announced()).toBe(reconnecting);
       await starts();
     }
     await stops(DROPPED);
@@ -272,6 +279,9 @@ describe("a channel that breaks off", () => {
     expect(text()).toContain("VRT 1 stopped arriving and reconnecting didn't bring it back.");
     expect(text()).toContain("4 reconnects");
     expect(offered()).toEqual(["Retry", "Quality", "Channels"]);
+    expect(announced()).toBe(
+      "Lost the stream. VRT 1 stopped arriving and reconnecting didn't bring it back.",
+    );
   });
 });
 
@@ -465,27 +475,6 @@ describe("what a failure shows", () => {
       settings: "subscriptions",
       subscription: { id: SUBSCRIPTION, show: "edit" },
     });
-  });
-
-  it("tells a screen reader the trouble once, without the attempts or their seconds", async () => {
-    await playing(5);
-    expect(announced()).toBe("");
-
-    let starts = nextStream();
-    await stops(DROPPED);
-    const first = announced();
-    expect(first).toBe("Reconnecting. VRT 1's stream isn't arriving.");
-    for (const delay of WAITS) {
-      await wait(delay);
-      expect(announced()).toBe(first);
-      await starts();
-      starts = nextStream();
-      await stops(DROPPED);
-    }
-
-    expect(announced()).toBe(
-      "Lost the stream. VRT 1 stopped arriving and reconnecting didn't bring it back.",
-    );
   });
 
   it("says it waits for data once the picture stood still for three seconds", async () => {

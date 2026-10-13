@@ -6,7 +6,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InterfaceLanguage } from "@mrstreamer/contracts/language";
 import { setLanguage } from "@mrstreamer/core/i18n";
 import { GeneralSection } from "../../src/renderer/src/features/settings/GeneralSection.tsx";
@@ -26,11 +26,18 @@ const german: InterfaceLanguage = {
 };
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   setLanguage(english);
   document.documentElement.lang = "en";
+  vi.useRealTimers();
 });
+
+/** Lets React Query tell the section what a query or mutation answered. */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 /** General as the window shows it, under a root that renders again with the language. */
 async function render() {
@@ -45,7 +52,7 @@ async function render() {
     return createElement(QueryClientProvider, { client }, createElement(GeneralSection));
   }
   await act(async () => root.render(createElement(Root)));
-  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await settle();
   unmount = () => act(() => root.unmount());
   const select = () => container.querySelector<HTMLSelectElement>("section select");
   const values = () =>
@@ -88,7 +95,7 @@ describe("Interface language", () => {
     });
     expect(ipc.argsOf("language.set")).toEqual([{ choice: "de-DE" }]);
     await act(async () => saving.resolve(german));
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    await settle();
 
     expect(document.documentElement.lang).toBe("de-DE");
     expect(select()?.getAttribute("aria-label")).toBe("Sprache der Oberfläche");

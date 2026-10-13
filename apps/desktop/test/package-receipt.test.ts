@@ -1,6 +1,7 @@
 // Synthetic package bytes prove the producer/resolver contract. Native packaging stays separate.
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -190,9 +191,16 @@ describe("successful package receipts", () => {
     ).toThrow(/packageVersion/);
   });
 
-  it("refuses a producer with a missing package or extra installer", () => {
+  it("refuses a producer with an empty, missing or extra installer", () => {
     const world = fixture();
-    world.files.delete(`Mr-Streamer-${VERSION}-win-x64-setup.exe`);
+    const installer = `Mr-Streamer-${VERSION}-win-x64-setup.exe`;
+    expect(() =>
+      producePackageReceipt(
+        world.identity,
+        new Map([...world.files, [installer, new Uint8Array()]]),
+      ),
+    ).toThrow(/bytes/);
+    world.files.delete(installer);
     expect(() => producePackageReceipt(world.identity, world.files)).toThrow(/expected exactly/);
     world.files.set("other.exe", strToU8("Other setup"));
     expect(() => producePackageReceipt(world.identity, world.files)).toThrow(/expected exactly/);
@@ -391,65 +399,16 @@ describe("successful package receipts", () => {
     ).rejects.toThrow(/incomplete artifact listing/);
   });
 
-  it.each([builds[1]!, builds[2]!])(
-    "the workflow CLI binds $platform installers and updater metadata, leaving no success on failure",
+  it.concurrent.each([builds[1]!, builds[2]!])(
+    "the workflow CLI binds $platform installers and updater metadata, leaving out unfinished files",
     async (build) => {
-      const dir = await mkdtemp(join(tmpdir(), "package-receipt-cli-"));
       const world = fixture(build);
-      const git = (...args: string[]) => {
-        const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
-        if (result.status !== 0) throw new Error(result.stderr);
-        return result.stdout.trim();
-      };
+      const { dir, env, run } = await checkout(world);
       try {
-        git("init", "-q");
-        await writeFile(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
-        git("add", "package.json");
-        git(
-          "-c",
-          "user.name=Receipt test",
-          "-c",
-          "user.email=receipt@example.com",
-          "commit",
-          "-qm",
-          "Synthetic source",
-        );
-        await mkdir(join(dir, "dist"));
-        for (const [name, bytes] of world.files) await writeFile(join(dir, "dist", name), bytes);
-        const env = {
-          PATH: process.env["PATH"],
-          GITHUB_REPOSITORY: world.identity.repository,
-          GITHUB_RUN_ID: "900",
-          GITHUB_RUN_ATTEMPT: "2",
-          PACKAGE_SOURCE: git("rev-parse", "HEAD"),
-          PACKAGE_WORKFLOW_COMMIT: world.identity.workflowCommit,
-          PACKAGE_APP_VERSION: VERSION,
-          PACKAGE_VERSION: VERSION,
-          PACKAGE_PLATFORM: build.platform,
-          PACKAGE_DISTRIBUTION: "direct",
-          PACKAGE_RUN_HEAD: world.identity.run.headCommit,
-          PACKAGE_ARTIFACT_ID: "30",
-          PACKAGE_ARTIFACT_NAME: world.identity.artifact.name,
-          PACKAGE_ARTIFACT_SHA256: world.identity.artifact.sha256,
-        };
-        const run = (overrides = {}) =>
-          spawnSync(process.execPath, [resolve("apps/desktop/scripts/package-receipt.ts")], {
-            cwd: dir,
-            encoding: "utf8",
-            env: { ...env, ...overrides },
-          });
-        const wrongSource = run({ PACKAGE_SOURCE: "e".repeat(40) });
-        expect(wrongSource.status).toBe(1);
-        expect(wrongSource.stderr).toMatch(/checkout is not/);
-        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
-        const wrongVersion = run({ PACKAGE_APP_VERSION: "0.0.11" });
-        expect(wrongVersion.status).toBe(1);
-        expect(wrongVersion.stderr).toMatch(/package.json is not/);
-        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
         // Unfinished files are not uploaded, so they must not appear in a success receipt.
         const installer = [...world.files.keys()][0]!;
         await writeFile(join(dir, "dist", `${installer}.part`), "unfinished download");
-        const successful = run();
+        const successful = await run();
         expect(successful.status, successful.stderr).toBe(0);
         const receipt = JSON.parse(await readFile(join(dir, "package-receipt.json"), "utf8"));
         expect(receipt).toMatchObject({
@@ -479,29 +438,90 @@ describe("successful package receipts", () => {
             })),
           });
         }
-        await rm(join(dir, "package-receipt.json"));
-        for (const [name, bytes] of world.files) {
-          await rm(join(dir, "dist", name));
-          const incomplete = run();
-          expect(incomplete.status).toBe(1);
-          expect(incomplete.stderr).toMatch(/exact uploaded package set/);
-          await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
-          await writeFile(join(dir, "dist", name), bytes);
-        }
-        await writeFile(join(dir, "dist", installer), "");
-        expect(run().status).toBe(1);
-        await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
-        await writeFile(join(dir, "dist", installer), world.files.get(installer)!);
-        const extra = build.platform === "linux-x64" ? "other.deb" : "other.exe";
-        await writeFile(join(dir, "dist", extra), "extra installer");
-        const ambiguous = run();
-        expect(ambiguous.status).toBe(1);
-        expect(ambiguous.stderr).toMatch(/exact uploaded package set/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    // Each runs git and the receipt CLI as processes, which a busy suite can hold up.
+    20_000,
+  );
+
+  it.concurrent.each([
+    ["another source commit", { PACKAGE_SOURCE: "e".repeat(40) }, null, /checkout is not/],
+    ["another app version", { PACKAGE_APP_VERSION: "0.0.11" }, null, /package.json is not/],
+    ["a missing installer", {}, "missing", /exact uploaded package set/],
+    ["an extra installer", {}, "extra", /exact uploaded package set/],
+  ] as const)(
+    "the workflow CLI writes no receipt for %s",
+    async (_, overrides, change, message) => {
+      const world = fixture();
+      const { dir, run } = await checkout(world);
+      try {
+        if (change === "missing") await rm(join(dir, "dist", [...world.files.keys()][0]!));
+        if (change === "extra") await writeFile(join(dir, "dist", "other.exe"), "extra installer");
+        const failed = await run(overrides);
+        expect(failed.status).toBe(1);
+        expect(failed.stderr).toMatch(message);
         await expect(readFile(join(dir, "package-receipt.json"))).rejects.toThrow();
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
     },
-    15_000,
+    20_000,
   );
 });
+
+/**
+ * A committed checkout with `world`'s package files in dist, and `run`, which runs the receipt CLI
+ * in it as the workflow does, with `overrides` on the workflow's environment.
+ */
+async function checkout(world: ReturnType<typeof fixture>) {
+  const dir = await mkdtemp(join(tmpdir(), "package-receipt-cli-"));
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  };
+  git("init", "-q");
+  await writeFile(join(dir, "package.json"), JSON.stringify({ version: VERSION }));
+  git("add", "package.json");
+  git(
+    "-c",
+    "user.name=Receipt test",
+    "-c",
+    "user.email=receipt@example.com",
+    "commit",
+    "-qm",
+    "Synthetic source",
+  );
+  await mkdir(join(dir, "dist"));
+  for (const [name, bytes] of world.files) await writeFile(join(dir, "dist", name), bytes);
+  const env = {
+    PATH: process.env["PATH"],
+    GITHUB_REPOSITORY: world.identity.repository,
+    GITHUB_RUN_ID: "900",
+    GITHUB_RUN_ATTEMPT: "2",
+    PACKAGE_SOURCE: git("rev-parse", "HEAD"),
+    PACKAGE_WORKFLOW_COMMIT: world.identity.workflowCommit,
+    PACKAGE_APP_VERSION: VERSION,
+    PACKAGE_VERSION: VERSION,
+    PACKAGE_PLATFORM: world.identity.platform,
+    PACKAGE_DISTRIBUTION: "direct",
+    PACKAGE_RUN_HEAD: world.identity.run.headCommit,
+    PACKAGE_ARTIFACT_ID: "30",
+    PACKAGE_ARTIFACT_NAME: world.identity.artifact.name,
+    PACKAGE_ARTIFACT_SHA256: world.identity.artifact.sha256,
+  };
+  const run = async (overrides: Partial<Record<keyof typeof env, string>> = {}) => {
+    const child = spawn(process.execPath, [resolve("apps/desktop/scripts/package-receipt.ts")], {
+      cwd: dir,
+      env: { ...env, ...overrides },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    const [status] = (await once(child, "close")) as [number | null];
+    return { status, stderr };
+  };
+  return { dir, env, run };
+}

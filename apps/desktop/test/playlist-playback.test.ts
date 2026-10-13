@@ -129,7 +129,8 @@ describe.skipIf(!hasTools)("mapped playlist file playback", () => {
     const sessions = [];
     for (const ref of refs) {
       const file = await app.titles.file(ref);
-      const session = await app.playback.openTitle(ref, file.url, ["h264", "aac"], file);
+      // E-AC-3 too, so the second version's sound plays as it is.
+      const session = await app.playback.openTitle(ref, file.url, ["h264", "aac", "eac3"], file);
       sessions.push(session);
       expect(session.url).not.toContain("same.mp4");
       const answer = await fetch(`${session.url}?start=1`);

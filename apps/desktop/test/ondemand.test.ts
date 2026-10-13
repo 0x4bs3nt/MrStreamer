@@ -91,29 +91,23 @@ describe("movies and series", { timeout: 20_000 }, () => {
     expect((await onDemand.search("adult film")).movies).toEqual([]);
   });
 
-  it("lists titles for adults on their own, once the viewer asks for them", async () => {
+  it("lists titles for adults on their own once the viewer asks, and series marked so whatever their category", async () => {
     const { onDemand, settings } = await onDemandApp();
     const adult = () => onDemand.collection({ kind: "movie", id: "adult", offset: 0, limit: 100 });
+    const series = (id: "all" | "adult") =>
+      onDemand.collection({ kind: "series", id, sort: "title", offset: 0, limit: 1000 });
     expect((await adult()).total).toBe(0);
+    expect((await series("all")).titles.map((title) => title.title)).not.toContain("After Dark");
+    expect((await onDemand.search("after dark")).series).toEqual([]);
 
     await settings.update({ adultTitles: true });
     const listed = await adult();
     expect(listed.total).toBeGreaterThan(0);
     expect(listed.titles.every((title) => title.adult)).toBe(true);
+    expect((await series("adult")).titles.map((title) => title.title)).toEqual(["After Dark"]);
     // Still nowhere else.
     expect((await onDemand.search("adult film")).movies).toEqual([]);
-  });
-
-  it("keeps series marked for adults out of everything else, whatever their category", async () => {
-    const { onDemand, settings } = await onDemandApp();
-    const series = (id: "all" | "adult") =>
-      onDemand.collection({ kind: "series", id, sort: "title", offset: 0, limit: 1000 });
-
-    expect((await series("all")).titles.map((title) => title.title)).not.toContain("After Dark");
     expect((await onDemand.search("after dark")).series).toEqual([]);
-
-    await settings.update({ adultTitles: true });
-    expect((await series("adult")).titles.map((title) => title.title)).toEqual(["After Dark"]);
   });
 
   it("keeps titles only their category marks for adults out when the categories come back empty", async () => {
@@ -159,21 +153,16 @@ describe("movies and series", { timeout: 20_000 }, () => {
     ]);
   });
 
-  it("searches movies and series by any words of their names", async () => {
-    const { onDemand } = await onDemandApp();
+  it("searches movies and series by any words of their names, and one kind for its page: the best matches, and how many match in all", async () => {
+    const { onDemand } = await onDemandApp({ titles: 1000 });
 
     const found = await onDemand.search("sound test");
-
     expect(found.movies.map((title) => title.title)).toEqual([
       "TEST | Two sound tracks and subtitles",
     ]);
     expect((await onDemand.search("formats")).series.map((title) => title.title)).toEqual([
       "TEST | Formats",
     ]);
-  });
-
-  it("searches one kind for its page: the best matches, and how many match in all", async () => {
-    const { onDemand } = await onDemandApp({ titles: 1000 });
 
     const stories = await onDemand.searchKind("movie", "story");
     expect(stories.titles).toHaveLength(300);
@@ -208,13 +197,13 @@ describe("movies and series", { timeout: 20_000 }, () => {
     expect(provider.detailRequests()).toBe(1);
   });
 
-  it("builds a series' seasons from its episodes when the provider lists fewer seasons", async () => {
+  it("builds a series' seasons from its episodes, one row for an episode the provider lists twice, and still plays the other file", async () => {
     const { onDemand, own } = await onDemandApp();
 
     const details = await onDemand.details("series", own("80000"));
 
-    expect(details.kind).toBe("series");
-    if (details.kind !== "series") return;
+    if (details.kind !== "series") throw new Error("Not a series.");
+    // The provider lists fewer seasons than its episodes have.
     expect(details.seasons.map((season) => [season.name, season.episodes.length])).toEqual([
       ["Seizoen 1", 3],
       ["Season 2", 2],
@@ -227,14 +216,6 @@ describe("movies and series", { timeout: 20_000 }, () => {
       title: "Part 1",
       duration: 2700,
     });
-  });
-
-  it("shows one row for an episode the provider lists twice, and still plays the other file", async () => {
-    const { onDemand, own } = await onDemandApp();
-
-    const details = await onDemand.details("series", own("80000"));
-
-    if (details.kind !== "series") throw new Error("Not a series.");
     expect(details.seasons[0]?.episodes.map((episode) => [episode.id, episode.number])).toEqual([
       ["81000", 1],
       ["81001", 2],
@@ -444,7 +425,7 @@ describe("the movies and series of several subscriptions", { timeout: 30_000 }, 
     return keys;
   }
 
-  it("shows a film both list once, with the versions of each, and counts what is left once", async () => {
+  it("shows a film both list once, with the versions of each, joined by their film alone, and counts what is left once", async () => {
     const app = await two();
     const { service, first, second, a, b } = app;
 
@@ -464,10 +445,8 @@ describe("the movies and series of several subscriptions", { timeout: 30_000 }, 
         { subscriptionId: b, movies: second.titles.movies.length, failure: null },
       ],
     });
-  });
 
-  it("joins versions by their film alone: not by an id two providers share, nor by a name", async () => {
-    const { service, a, b } = await two();
+    // Versions join by their film alone: not by an id two providers share, nor by a name.
     const titled = async (version: ReturnType<typeof of>) => {
       const [title] = await service.titles("movie", [version]);
       return title;
@@ -659,18 +638,14 @@ describe("the movies and series of several subscriptions", { timeout: 30_000 }, 
   });
 
   it("has no movies or series for a playlist beside a subscription that has them", async () => {
-    const { service, subscriptions, a } = await two();
+    const { service, subscriptions, subscriptionId: a } = await onDemandApp();
     const playlist = await startFakePlaylist();
     try {
       await subscriptions.add({ server: playlist.link, username: "", password: "" });
 
-      expect((await subscriptions.list()).map((each) => each.kind)).toEqual([
-        "xtream",
-        "xtream",
-        "m3u",
-      ]);
+      expect((await subscriptions.list()).map((each) => each.kind)).toEqual(["xtream", "m3u"]);
       // A playlist has live TV only: it adds no lists, and none are asked of it.
-      expect((await service.status()).lists).toHaveLength(2);
+      expect((await service.status()).lists).toHaveLength(1);
       const listed = await all(service, "movie");
       expect(listed.titles.some((title) => title.subscriptionId === a)).toBe(true);
     } finally {

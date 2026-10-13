@@ -3,7 +3,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SavedSubtitle } from "@mrstreamer/contracts/online-subtitles";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -52,7 +52,8 @@ const english: SubtitleTrack = {
 };
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+/** Lets the panel, the player and React Query catch up, on the fake clock every test runs on. */
+const settle = () => vi.advanceTimersByTimeAsync(20);
 function offered(text: string) {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (each) => each.textContent?.includes(text) || each.getAttribute("aria-label") === text,
@@ -126,6 +127,9 @@ async function render(node: ReturnType<typeof createElement>) {
     await settle();
   });
 }
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(async () => {
   await act(async () => root?.unmount());
   root = null;
@@ -136,6 +140,7 @@ afterEach(async () => {
   setSubtitleDelay(player.element, 0);
   useUi.setState({ settings: null, onlineSubtitles: false });
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 describe("subtitle choices while the picture plays", () => {
   it("does not search on open, shows complete results, keeps the panel after choosing and cancels a pending request on close", async () => {

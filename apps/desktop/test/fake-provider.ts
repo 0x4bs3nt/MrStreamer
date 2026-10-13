@@ -183,6 +183,12 @@ export interface FakeProvider {
    * reads a run.
    */
   slowFileParts(ms: number): void;
+  /**
+   * Holds every request for a part of a file that names where it ends, as `slowFileParts` slows
+   * them, until the function it answers is called: then they, and any asked for later, are
+   * answered at once. A held request that closes meanwhile is never answered.
+   */
+  holdFileParts(): () => void;
   /** Hold an episode transfer at a byte boundary for UI queue/progress proof. */
   stallEpisodeFile(episodeId: number, at: number, ms: number): void;
   /** Replace an episode file, including an empty answer to exercise failure and retry. */
@@ -291,6 +297,8 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
   const unsettled = new Set<FakeTitle>();
   const stalls = new Map<FakeTitle, Stall>();
   let partsWait = 0;
+  /** Settles when held parts may be answered; null when none are held. */
+  let partsHeld: Promise<void> | null = null;
   let fileTurn = 0;
   let fileBytesSent = 0;
   let filesOpen = 0;
@@ -660,7 +668,8 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       response.on("close", () => pieces.destroy());
       pieces.pipe(response);
     };
-    if (range?.[2] && partsWait > 0) setTimeout(answer, partsWait);
+    if (range?.[2] && partsHeld) void partsHeld.then(answer);
+    else if (range?.[2] && partsWait > 0) setTimeout(answer, partsWait);
     else answer();
   }
 
@@ -703,6 +712,14 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     },
     slowFileParts(ms) {
       partsWait = ms;
+    },
+    holdFileParts() {
+      const held = Promise.withResolvers<void>();
+      partsHeld = held.promise;
+      return () => {
+        partsHeld = null;
+        held.resolve();
+      };
     },
     detailRequests: () => detailCount,
     titleListRequests: () => titleListCount,

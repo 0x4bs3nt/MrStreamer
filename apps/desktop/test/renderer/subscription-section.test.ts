@@ -10,7 +10,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GuideStatus } from "@mrstreamer/contracts/guide";
 import type { CatalogueStatus, LiveChannel } from "@mrstreamer/contracts/library";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
@@ -93,8 +93,24 @@ const catalogueOf = (
   ...status,
 });
 
-/** Lets the screen take in what was just answered. */
-const settled = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+/**
+ * Lets the screen take in what was just answered: on the test's clock where a test runs on one,
+ * else in real time, as the Guide rows' tests still do.
+ */
+const settled = () =>
+  act(async () => {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(20);
+    else await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  });
+/** Runs the tests of a describe block on a fake clock, so settling waits for no real time. */
+const onTestClock = () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+};
 
 /** The section for the saved `subscriptions`, with their lists as the main process last said. */
 async function section(
@@ -202,6 +218,7 @@ async function section(
 const focused = () => document.activeElement?.closest("label")?.firstChild?.firstChild?.textContent;
 
 describe("the list of subscriptions", () => {
+  onTestClock();
   it("lists each with its kind and how it stands, and opens none of several", async () => {
     const locked = { ...playlist, needsSecret: true };
     const { rows, row, container } = await section([northline, holiday, locked]);
@@ -302,7 +319,7 @@ describe("the list of subscriptions", () => {
     const answer = ipc.hold("library.refresh");
     await click(button("Retry", row("Holiday house").element));
     answer.resolve(catalogueOf(holiday));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(ipc.argsOf("library.refresh")).toEqual([{ subscriptionId: holiday.id }]);
     expect(row("Holiday house")).toMatchObject({ buttons: ["Edit"], failure: null });
@@ -310,6 +327,7 @@ describe("the list of subscriptions", () => {
 });
 
 describe("adding a subscription", () => {
+  onTestClock();
   it("checks the login and puts it beside the others, under the name given", async () => {
     const { row, rows, button, click, type, submit, container } = await section([northline]);
 
@@ -331,7 +349,7 @@ describe("adding a subscription", () => {
       },
     ]);
     await act(async () => answer.resolve(holiday));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     // Back at the list, with the new row in its place and the form gone.
     expect(rows()).toHaveLength(2);
@@ -348,7 +366,7 @@ describe("adding a subscription", () => {
     await act(async () =>
       answer.reject({ kind: "unencrypted-only", server: "https://tv.sunhouse.example:8080" }),
     );
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(container.textContent).toContain("tv.sunhouse.example has no encrypted connection.");
     // No name given: none is sent, and its host stands for it.
@@ -450,6 +468,7 @@ describe("adding a subscription", () => {
 });
 
 describe("editing a subscription", () => {
+  onTestClock();
   it("renames it, and leaves its password alone unless one is typed", async () => {
     const { row, button, click, type, submit, container } = await section([northline, holiday]);
 
@@ -472,7 +491,7 @@ describe("editing a subscription", () => {
       { subscriptionId: northline.id, name: "North" },
     ]);
     await act(async () => answer.resolve({ ...northline, name: "North" }));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
     expect(row("North").line).toBe(`North · Xtream · ${expiry}`);
     expect(container.querySelector("form")).toBeNull();
 
@@ -498,7 +517,7 @@ describe("editing a subscription", () => {
     expect(button("Cancel")?.disabled).toBe(true);
 
     await act(async () => answer.reject({ kind: "invalid-login" }));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(container.querySelector("form")?.textContent).toContain(
       "The provider rejected this username or password.",
@@ -509,6 +528,7 @@ describe("editing a subscription", () => {
 });
 
 describe("a form the viewer left while its answer was on the way", () => {
+  onTestClock();
   it("keeps the form opened since when a change to another row is saved after all", async () => {
     const { row, button, click, type, submit, container } = await section([northline, holiday]);
     await click(button("Edit", row("Northline").element));
@@ -552,6 +572,7 @@ describe("a form the viewer left while its answer was on the way", () => {
 });
 
 describe("a subscription whose keychain lost its secret", () => {
+  onTestClock();
   it("asks for a playlist's link again on its row, naming only the host it came from", async () => {
     const locked = { ...playlist, needsSecret: true };
     const { row, button, click, type, submit, container } = await section([northline, locked]);
@@ -578,7 +599,7 @@ describe("a subscription whose keychain lost its secret", () => {
     // With the provider, the link can't be called back.
     expect(button("Cancel", row("lists.openlist.example").element)?.disabled).toBe(true);
     await act(async () => answer.resolve(playlist));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
     expect(row("lists.openlist.example")).toMatchObject({
       line: "lists.openlist.example · M3U",
       buttons: ["Edit"],

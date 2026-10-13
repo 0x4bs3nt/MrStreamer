@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Socket } from "node:net";
+import { connect, Socket } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AppError } from "@mrstreamer/contracts/errors";
@@ -179,57 +179,71 @@ describe("credential protection", () => {
     expect(connected).toMatchObject({ server: provider.url });
   });
 
-  it(
-    "asks within seconds when the https port leaves the connection unanswered",
-    { timeout: 15_000 },
-    async () => {
-      // Behind a firewall that drops https, the name resolves and nothing accepts or refuses.
-      const unanswered: TcpConnect = () => {
-        const socket = new Socket();
-        setImmediate(() => socket.emit("lookup", null, "192.0.2.1", 4, "panel.test"));
-        return socket;
-      };
-      // Fetch waits there until the login's time is up.
-      const asked: string[] = [];
-      const waiting: typeof fetch = (input, init) => {
-        asked.push(String(input));
-        return new Promise((_, reject) =>
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
-        );
-      };
-      const { subscriptions } = await app(waiting, unanswered);
+  it("asks within seconds when the https port leaves the connection unanswered", async () => {
+    // Behind a firewall that drops https, the name resolves and nothing accepts or refuses.
+    const resolved = Promise.withResolvers<void>();
+    const unanswered: TcpConnect = () => {
+      const socket = new Socket();
+      setImmediate(() => {
+        socket.emit("lookup", null, "192.0.2.1", 4, "panel.test");
+        resolved.resolve();
+      });
+      return socket;
+    };
+    // Fetch waits there until the login's time is up.
+    const asked: string[] = [];
+    const waiting: typeof fetch = (input, init) => {
+      asked.push(String(input));
+      return new Promise((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+    };
+    const { subscriptions } = await app(waiting, unanswered);
+    // The seconds pass on a fake clock; the app's own work goes on as it does.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let answered = false;
+      const error = failure(subscriptions.add({ server: "panel.test", ...LOGIN })).finally(() => {
+        answered = true;
+      });
+      await resolved.promise;
 
-      const started = performance.now();
-      const error = await failure(subscriptions.add({ server: "panel.test", ...LOGIN }));
-      const waited = performance.now() - started;
-
-      expect(error).toEqual({ kind: "unencrypted-only", server: "https://panel.test" });
       // Time for a lost packet to be sent again, and far less than the 15 seconds a login gets.
-      expect(waited).toBeGreaterThan(2_000);
-      expect(waited).toBeLessThan(8_000);
-      expect(asked.filter((each) => each.startsWith("http:"))).toEqual([]);
-      expect(await subscriptions.list()).toEqual([]);
-    },
-  );
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(answered).toBe(false);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(await error).toEqual({ kind: "unencrypted-only", server: "https://panel.test" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(asked.filter((each) => each.startsWith("http:"))).toEqual([]);
+    expect(await subscriptions.list()).toEqual([]);
+  });
 
-  it(
-    "keeps waiting for a slow login once the https port accepted the connection",
-    { timeout: 15_000 },
-    async () => {
-      const provider = await fakeProvider(LOGIN);
-      const address = provider.url.replace("http://", "");
-      // As if the fake provider were behind https, and answered later than a port gets to accept.
-      const slow: typeof fetch = async (input, init) => {
-        await new Promise((resolve) => setTimeout(resolve, 4_000));
-        return fetch(String(input).replace("https:", "http:"), init);
-      };
-      const { subscriptions } = await app(slow);
+  it("keeps waiting for a slow login once the https port accepted the connection", async () => {
+    const provider = await fakeProvider(LOGIN);
+    const address = provider.url.replace("http://", "");
+    // As if the fake provider were behind https, and answered later than a port gets to accept.
+    const slow: typeof fetch = async (input, init) => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      return fetch(String(input).replace("https:", "http:"), init);
+    };
+    const accepted = Promise.withResolvers<void>();
+    const connecting: TcpConnect = (options) =>
+      connect(options).once("connect", () => accepted.resolve());
+    const { subscriptions } = await app(slow, connecting);
+    // The login's seconds pass on a fake clock, once the port has accepted the connection.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const adding = subscriptions.add({ server: address, ...LOGIN });
+      await accepted.promise;
+      await vi.advanceTimersByTimeAsync(4_000);
 
-      const connected = await subscriptions.add({ server: address, ...LOGIN });
-
-      expect(connected).toMatchObject({ server: `https://${address}` });
-    },
-  );
+      expect(await adding).toMatchObject({ server: `https://${address}` });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("doesn't ask when https isn't what failed", async () => {
     const provider = await fakeProvider(LOGIN);

@@ -7,7 +7,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogueStatus, LiveChannel } from "@mrstreamer/contracts/library";
 import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
@@ -41,10 +41,16 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
 });
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
-/** Lets the page take in what was just answered. */
-const settled = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+/** Lets the page take in what was just answered, on the test's clock. */
+const settled = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 const channel = (owner: SubscriptionSummary, id: string, title: string): LiveChannel => ({
   subscriptionId: owner.id,

@@ -38,14 +38,15 @@ async function fixture(override?: (req: IncomingMessage, res: ServerResponse) =>
     contentType: string | undefined;
   }[] = [];
   const server = createServer(async (req, res) => {
-    let body = "";
-    for await (const chunk of req) body += String(chunk);
-    requests.push({
+    // Counted as it arrives, so a request its sender gave up on while its body came still counts.
+    const request = {
       method: req.method,
       path: req.url,
-      body,
+      body: "",
       contentType: req.headers["content-type"],
-    });
+    };
+    requests.push(request);
+    for await (const chunk of req) request.body += String(chunk);
     if (override?.(req, res)) return;
     if (req.url === `/${INDEXNOW_KEY}.txt`) res.end(INDEXNOW_KEY);
     else if (req.url === `/${INDEXNOW_MARKER}`)
@@ -230,9 +231,12 @@ describe("IndexNow production notification HTTP contract", () => {
         if (failure === "disconnect") res.destroy();
         return true;
       });
+      // Each request gets long enough to reach the fixture under a busy suite before its deadline
+      // ends it, and the public reads, tried six times, stay quick. A disconnect ends at once.
+      const requestTimeoutMs = failure === "disconnect" ? 2000 : failure === "api" ? 500 : 100;
       const started = Date.now();
       await expect(
-        notifyIndexNow(f.folder, revision, { ...f.options, requestTimeoutMs: 30 }),
+        notifyIndexNow(f.folder, revision, { ...f.options, requestTimeoutMs }),
       ).rejects.toThrow();
       expect(Date.now() - started).toBeLessThan(3000);
       expect(f.requests.filter(({ method }) => method === "POST")).toHaveLength(
@@ -320,49 +324,23 @@ describe("IndexNow notification CLI", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("website is already deployed");
     expect(f.requests).toHaveLength(1);
-    const evidence = process.env["INDEXNOW_TEST_EVIDENCE"];
-    if (evidence) {
-      writeFileSync(join(evidence, "cli-cancellation.stdout"), result.stdout);
-      writeFileSync(join(evidence, "cli-cancellation.stderr"), result.stderr);
-      writeFileSync(join(evidence, "cli-cancellation.exit"), `${result.code}\n`);
-      writeFileSync(
-        join(evidence, "cli-cancellation.requests.json"),
-        JSON.stringify(f.requests, null, 2),
-      );
-    }
   });
-  it.each([200, 202, 403, 429, 500])(
-    "retains the real exit and summary for HTTP %s",
-    async (status) => {
-      const f = await fixture((req, res) => {
-        if (req.url !== "/api") return false;
-        res.statusCode = status;
-        res.end();
-        return true;
-      });
-      const result = await runCLI(f.folder, f.origin);
-      const evidence = process.env["INDEXNOW_TEST_EVIDENCE"];
-      if (evidence) {
-        writeFileSync(join(evidence, `cli-http-${status}.stdout`), result.stdout);
-        writeFileSync(join(evidence, `cli-http-${status}.stderr`), result.stderr);
-        writeFileSync(join(evidence, `cli-http-${status}.exit`), `${result.code}\n`);
-        writeFileSync(
-          join(evidence, `cli-http-${status}.summary`),
-          readFileSync(join(f.folder, "summary.md")),
-        );
-        writeFileSync(
-          join(evidence, `cli-http-${status}.requests.json`),
-          JSON.stringify(f.requests, null, 2),
-        );
-      }
-      expect(result.code).toBe(status === 200 || status === 202 ? 0 : 1);
-      const summary = readFileSync(join(f.folder, "summary.md"), "utf8");
-      expect(summary).toContain(`HTTP ${status}`);
-      if (status > 202) {
-        expect(result.stderr).toContain("website is already deployed");
-        expect(summary).toContain("website is already deployed");
-      }
-      expect(f.requests.filter(({ method }) => method === "POST")).toHaveLength(1);
-    },
-  );
+  // One accepted and one refused submission: how each status reads is the library's, above.
+  it.each([200, 429])("retains the real exit and summary for HTTP %s", async (status) => {
+    const f = await fixture((req, res) => {
+      if (req.url !== "/api") return false;
+      res.statusCode = status;
+      res.end();
+      return true;
+    });
+    const result = await runCLI(f.folder, f.origin);
+    expect(result.code).toBe(status === 200 ? 0 : 1);
+    const summary = readFileSync(join(f.folder, "summary.md"), "utf8");
+    expect(summary).toContain(`HTTP ${status}`);
+    if (status > 202) {
+      expect(result.stderr).toContain("website is already deployed");
+      expect(summary).toContain("website is already deployed");
+    }
+    expect(f.requests.filter(({ method }) => method === "POST")).toHaveLength(1);
+  });
 });

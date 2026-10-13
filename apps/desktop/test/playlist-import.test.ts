@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import { ViewingRecord } from "@mrstreamer/core/viewing/service";
 import { continuation } from "@mrstreamer/core/viewing/episodes";
 import { seriesEpisodeOrder, seriesEpisodeSeasons } from "@mrstreamer/core/ondemand/details";
@@ -66,8 +68,14 @@ async function host() {
     },
   };
 }
-async function started(dir: string) {
-  const runtime = runtimeFor(mainLayer(testConfig(dir)));
+/** The app's services on `dir`, as a start of the app has them, on a test clock if asked. */
+async function started(dir: string, { testClock = false } = {}) {
+  const services = mainLayer(testConfig(dir));
+  const runtime = runtimeFor(
+    testClock
+      ? services.pipe(Layer.provideMerge(TestClock.layer({ warningDelay: "1 day" })))
+      : services,
+  );
   return {
     runtime,
     subscriptions: await promised(runtime, Subscriptions),
@@ -78,69 +86,72 @@ async function started(dir: string) {
     watchlist: await promised(runtime, Watchlist),
   };
 }
+/** Moves the app's test clock on a second at a time until `pending` settles. */
+async function passTime(
+  runtime: Awaited<ReturnType<typeof started>>["runtime"],
+  pending: Promise<unknown>,
+): Promise<void> {
+  let settled = false;
+  const done = pending.finally(() => {
+    settled = true;
+  });
+  while (!settled) {
+    await runtime.runPromise(TestClock.adjust("1 second"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await done;
+}
 const login = (link: string) => ({ server: link, username: "", password: "" });
 const films = playlistGroupId("Films");
 
 describe("saved M3U movie mapping", () => {
-  it.each(["entries", "bytes", "groups"] as const)(
-    "rejects the first mapping of an oversized %s source without saving a choice or losing Live after restart",
-    async (limit) => {
-      const provider = await host();
-      const row = `#EXTINF:-1 tvg-id="news" group-title="News",News\n${provider.origin}/live.ts\n`;
-      let body = `#EXTM3U\n${row}`;
-      if (limit === "entries") {
-        body += Array.from(
-          { length: 100_000 },
-          (_, at) => `#EXTINF:-1 group-title="Films",Film ${at}\nrtmp://example.test/${at}\n`,
-        ).join("");
-      } else if (limit === "bytes") {
-        const comment = "#" + "x".repeat(1022) + "\n";
-        body += comment.repeat(64 * 1024) + "\n";
-      } else {
-        const names = Array.from({ length: 10_000 }, (_, at) => `Group ${at}`).join(";");
-        body += `#EXTINF:-1 group-title="${names}",Other\n${provider.origin}/other.ts\n`;
-      }
-      provider.set(body);
-      const dir = await tempDir();
-      const app = await started(dir);
-      const saved = await app.subscriptions.add(login(provider.link));
-      const before = (await app.subscriptions.sources())[0]!;
-      const detail =
-        limit === "entries" ? "100,000" : limit === "bytes" ? "64 MiB" : "10,000 groups";
-      const failure = { error: { kind: "unexpected", detail: expect.stringContaining(detail) } };
-      // A first pick is checked even without opening the mapping report or loading Live first.
-      await expect(
-        app.subscriptions.mapPlaylist(saved.id, playlistGroupId("News"), "movie"),
-      ).rejects.toMatchObject(failure);
-      await app.roster.refreshPlaylist(saved.id);
-      const channels = await app.library.channels({});
-      expect(channels.some((channel) => channel.id === "news")).toBe(true);
-      await expect(app.subscriptions.playlistGroups(saved.id, "", 0, 20)).rejects.toMatchObject(
-        failure,
-      );
-      await expect(
-        app.subscriptions.mapPlaylist(saved.id, playlistGroupId("News"), "movie"),
-      ).rejects.toMatchObject(failure);
-      expect((await app.subscriptions.list())[0]?.playlistMapped).toBe(false);
-      expect(JSON.parse(await readFile(join(dir, "subscription.json"), "utf8"))).not.toHaveProperty(
-        "mapping",
-      );
-      expect(await app.subscriptions.stands(before)).toBe(true);
-      expect(
-        await (await app.subscriptions.sourceOf(saved.id)).provider.liveStream("news"),
-      ).toMatchObject({ url: `${provider.origin}/live.ts` });
-      await app.runtime.dispose();
-      const restarted = await started(dir);
-      expect((await restarted.subscriptions.list())[0]?.playlistMapped).toBe(false);
-      expect(await restarted.library.channels({})).toEqual(channels);
-      expect(
-        await (await restarted.subscriptions.sourceOf(saved.id)).provider.liveStream("news"),
-      ).toMatchObject({ url: `${provider.origin}/live.ts` });
-      await restarted.roster.refreshPlaylist(saved.id);
-      expect(await restarted.library.channels({})).toEqual(channels);
-    },
-    30_000,
-  );
+  // Each limit a source can pass, entries, bytes and groups, is the provider's: see
+  // playlist-limits.test.ts. Here, one source over a limit stands for all of them.
+  it("rejects the first mapping of an oversized source without saving a choice or losing Live after restart", async () => {
+    const provider = await host();
+    const row = `#EXTINF:-1 tvg-id="news" group-title="News",News\n${provider.origin}/live.ts\n`;
+    const names = Array.from({ length: 10_000 }, (_, at) => `Group ${at}`).join(";");
+    provider.set(
+      `#EXTM3U\n${row}#EXTINF:-1 group-title="${names}",Other\n${provider.origin}/other.ts\n`,
+    );
+    const dir = await tempDir();
+    const app = await started(dir);
+    const saved = await app.subscriptions.add(login(provider.link));
+    const before = (await app.subscriptions.sources())[0]!;
+    const failure = {
+      error: { kind: "unexpected", detail: expect.stringContaining("10,000 groups") },
+    };
+    // A first pick is checked even without opening the mapping report or loading Live first.
+    await expect(
+      app.subscriptions.mapPlaylist(saved.id, playlistGroupId("News"), "movie"),
+    ).rejects.toMatchObject(failure);
+    await app.roster.refreshPlaylist(saved.id);
+    const channels = await app.library.channels({});
+    expect(channels.some((channel) => channel.id === "news")).toBe(true);
+    await expect(app.subscriptions.playlistGroups(saved.id, "", 0, 20)).rejects.toMatchObject(
+      failure,
+    );
+    await expect(
+      app.subscriptions.mapPlaylist(saved.id, playlistGroupId("News"), "movie"),
+    ).rejects.toMatchObject(failure);
+    expect((await app.subscriptions.list())[0]?.playlistMapped).toBe(false);
+    expect(JSON.parse(await readFile(join(dir, "subscription.json"), "utf8"))).not.toHaveProperty(
+      "mapping",
+    );
+    expect(await app.subscriptions.stands(before)).toBe(true);
+    expect(
+      await (await app.subscriptions.sourceOf(saved.id)).provider.liveStream("news"),
+    ).toMatchObject({ url: `${provider.origin}/live.ts` });
+    await app.runtime.dispose();
+    const restarted = await started(dir);
+    expect((await restarted.subscriptions.list())[0]?.playlistMapped).toBe(false);
+    expect(await restarted.library.channels({})).toEqual(channels);
+    expect(
+      await (await restarted.subscriptions.sourceOf(saved.id)).provider.liveStream("news"),
+    ).toMatchObject({ url: `${provider.origin}/live.ts` });
+    await restarted.roster.refreshPlaylist(saved.id);
+    expect(await restarted.library.channels({})).toEqual(channels);
+  }, 15_000);
 
   it.each(["independent", "combined"] as const)(
     "keeps unmapped Live lists after an empty or unconfirmed short %s refresh",
@@ -152,7 +163,8 @@ describe("saved M3U movie mapping", () => {
       );
       const full = `#EXTM3U\n${rows.join("\n")}\n`;
       provider.set(full);
-      const app = await started(await tempDir());
+      // The seconds before a short list is fetched again to confirm it pass on a test clock.
+      const app = await started(await tempDir(), { testClock: true });
       const saved = await app.subscriptions.add(login(provider.link));
       const refresh = () =>
         mode === "combined" ? app.roster.refreshPlaylist(saved.id) : app.library.refresh(saved.id);
@@ -172,7 +184,7 @@ describe("saved M3U movie mapping", () => {
       await held.arrived;
       provider.set(full);
       held.release();
-      await rejected;
+      await passTime(app.runtime, rejected);
       expect(await app.library.channels({})).toHaveLength(20);
       expect((await app.library.status())[0]?.failure?.kind).toBe("incomplete-catalogue");
       expect((await app.subscriptions.list())[0]?.playlistMapped).toBe(false);

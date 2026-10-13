@@ -3,7 +3,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
 import { ownedId, ownedKey, type SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
@@ -86,12 +86,16 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
   },
 });
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   act(() => player.reset());
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
-const settled = (ms = 30) => act(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+const settled = (ms = 30) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 async function page(
   kind: "guide" | "palette",
@@ -363,13 +367,18 @@ describe("real search components with two subscriptions", () => {
     expect(p.watch).toHaveBeenLastCalledWith(expect.objectContaining(ownedId(blue[2]!)));
   });
 
-  it("keeps a retried search filtered after the first catalogue decision failed", async () => {
+  it("falls back to current singletons when the first stamp read fails, and keeps a retried search filtered", async () => {
     const p = await page("guide");
     const groups = ipc.hold("library.searchGroups");
     await p.search("Canvas");
     groups.reject({ kind: "unexpected", detail: "Unavailable" });
     await settled();
     expect(p.rows()).toHaveLength(4);
+    expect(p.rows().every((row) => row.getAttribute("aria-label")?.startsWith("VRT Canvas,"))).toBe(
+      true,
+    );
+    expect(p.button("Show copies")).toBeUndefined();
+    expect(p.scope().textContent).toContain("4 channels · 4 streams");
     await p.type("");
     await settled();
     expect(p.rows()).toHaveLength(8);
@@ -539,20 +548,6 @@ describe("real search components with two subscriptions", () => {
     expect(p.field().value).toBe("Canvas");
     expect(p.rows()).toHaveLength(1);
     expect(p.rows()[0]!.getAttribute("aria-label")).toMatch(/^VRT Canvas,/);
-  });
-
-  it("falls back to current singletons when the first stamp read fails", async () => {
-    const p = await page("guide");
-    const groups = ipc.hold("library.searchGroups");
-    await p.search("Canvas");
-    groups.reject({ kind: "unexpected", detail: "Unavailable" });
-    await settled();
-    expect(p.rows()).toHaveLength(4);
-    expect(p.rows().every((row) => row.getAttribute("aria-label")?.startsWith("VRT Canvas,"))).toBe(
-      true,
-    );
-    expect(p.button("Show copies")).toBeUndefined();
-    expect(p.scope().textContent).toContain("4 channels · 4 streams");
   });
 
   it("clears immediately while stamps are held and ignores their late arrival", async () => {

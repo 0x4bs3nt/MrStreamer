@@ -132,7 +132,7 @@ try {
   // First run: log in, let the catalogue and guide arrive, then tune, switch and browse.
   let port = randomPort();
   app = launch(executable, rest, { port, profile });
-  let page = await connect(port, "page", 5);
+  let page = await connect(port, "page", { pollMs: 5, app });
   activePage = page;
   electron = electronVersion(executable);
   await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -224,7 +224,7 @@ try {
     port = randomPort();
     const started = performance.now();
     app = launch(executable, rest, { port, profile });
-    page = await connect(port, "page", 5);
+    page = await connect(port, "page", { pollMs: 5, app });
     activePage = page;
     const loaded = await observeAcrossLoad(
       page,

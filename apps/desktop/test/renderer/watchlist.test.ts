@@ -9,7 +9,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OnDemandStatus, Title } from "@mrstreamer/contracts/ondemand";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
@@ -105,7 +105,8 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
   get: () => 900,
 });
 
-const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+/** Lets the window take in what just happened, on the fake clock. */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 const buttons = () => [...document.body.querySelectorAll("button")];
 const button = (label: string) =>
@@ -126,7 +127,13 @@ const key = (name: string, modifiers: KeyboardEventInit = {}) =>
 const sheet = () => document.body.querySelector('[role="dialog"]');
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 /** Draws `view` in the page, with the watchlist kept current as the app keeps it. */
 async function shown(view: ReactElement): Promise<void> {

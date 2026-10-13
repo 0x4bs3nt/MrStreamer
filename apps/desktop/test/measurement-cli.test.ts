@@ -34,17 +34,17 @@ it.skipIf(process.platform === "win32")(
         {
           encoding: "utf8",
           env: { ...process.env, MR_STREAMER_FIXTURE_ARGUMENTS: receipt },
-          timeout: 36_000,
+          timeout: 15_000,
         },
       );
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(1);
-      expect(result.stderr).toContain("The app opened no window within 30 s.");
+      expect(result.stderr).toContain("The app exited (SIGTERM) before opening a window.");
       expect(result.stderr).not.toContain("unsettled top-level await");
       expect(result.stdout).toContain(`Retained comparison: ${output}`);
       expect(JSON.parse(readFileSync(join(output, "comparison.json"), "utf8"))).toMatchObject({
         status: "invalid-instrumentation",
-        error: "Error: The app opened no window within 30 s.",
+        error: "Error: The app exited (SIGTERM) before opening a window.",
       });
       const [pid, ...args] = readFileSync(receipt, "utf8").trim().split("\n");
       const profile = args.find((arg) => arg.startsWith("--user-data-dir="))!.split("=")[1]!;
@@ -54,7 +54,7 @@ it.skipIf(process.platform === "win32")(
       rmSync(directory, { recursive: true, force: true });
     }
   },
-  40_000,
+  20_000,
 );
 
 it.skipIf(process.platform === "win32")(

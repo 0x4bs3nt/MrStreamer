@@ -32,17 +32,18 @@ const RECEIVER: readonly Codec[] = ["h264", "aac"];
 const CLOCK_START = 10;
 
 /**
- * Playback for a receiver on a connected fake provider that allows one connection. The receiver
- * is this test, asking over loopback as a TV asks over the local network. `own` names a channel
- * or title of the connected subscription by the provider's id, and `fetchImpl` is what the
- * subscription asks its provider with.
+ * Playback for a receiver on a connected fake provider that allows one connection and frees it as
+ * soon as a request closes, unless `options` say otherwise. The receiver is this test, asking over
+ * loopback as a TV asks over the local network. `own` names a channel or title of the connected
+ * subscription by the provider's id, and `fetchImpl` is what the subscription asks its provider
+ * with.
  */
 async function receiver(
   deps: Partial<PlaybackDeps> = {},
   options: FakeProviderOptions = {},
   fetchImpl: typeof fetch = fetch,
 ) {
-  const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 50, ...options });
+  const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 0, ...options });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: FFMPEG, ffprobe: FFPROBE, ...deps }).pipe(
       Layer.provide(PlaybackCoordination.layer),
@@ -203,6 +204,16 @@ async function segmentOf(response: Response) {
   };
 }
 
+/**
+ * Asks for a segment as a receiver does and reads it to its end, without ffprobe: for a segment a
+ * test only needs made, with no subtitles read after it.
+ */
+async function fetched(url: string): Promise<number> {
+  const response = await fetch(url);
+  await response.arrayBuffer();
+  return response.status;
+}
+
 /** A segment's subtitles as a receiver reads them: each line with its times in title seconds. */
 async function cues(url: string) {
   const response = await fetch(url);
@@ -302,7 +313,9 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
   });
 
   it("starts anywhere the receiver skips to, near the end and backwards, one request at a time", async () => {
-    const { provider, load } = await receiver();
+    // A provider that frees its connection a moment after a request closes, as real panels do:
+    // a skip's next request can be refused, and is asked again.
+    const { provider, load } = await receiver({}, { slotReleaseMs: 50 });
     const { video } = await load(MATROSKA, "title-receiver.mkv");
     const at = (index: number) => video.segments[index]!;
 
@@ -320,7 +333,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
   });
 
   it("serves a segment away from the start from a provider that knows no byte ranges", async () => {
-    const { provider, load } = await receiver({}, { wholeFiles: true, slotReleaseMs: 0 });
+    const { provider, load } = await receiver({}, { wholeFiles: true });
     const { video } = await load(MATROSKA, "title-receiver.mkv");
     const asked = video.segments.find((each) => each.at >= 30)!;
     const before = { requests: provider.fileRequests(), bytes: provider.fileBytes() };
@@ -504,10 +517,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
   });
 
   it("keeps the line on screen where the receiver skips to from what a run read, on a provider that knows no byte ranges", async () => {
-    const { provider, playback, open, failed } = await receiver(
-      {},
-      { wholeFiles: true, slotReleaseMs: 0 },
-    );
+    const { provider, playback, open, failed } = await receiver({}, { wholeFiles: true });
     const opened = await open(MATROSKA, "title-receiver.mkv");
     const english = opened.subtitles.find((track) => track.language === "en");
     const loaded = await playback.loadReceiverTitle(opened.sessionId, {
@@ -583,7 +593,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
   it("ends what a receiver was sent when the provider puts another file behind the title", async () => {
     const { provider, load, open, movie, failed } = await receiver();
     const { video, loaded } = await load(MATROSKA, "title-receiver.mkv");
-    expect((await segment(video.segments[0]!.url)).status).toBe(200);
+    expect(await fetched(video.segments[0]!.url)).toBe(200);
 
     provider.replaceMovieFile(movie(MATROSKA).id, "title-h264-eac3-subs.mkv");
     // The playlist the receiver holds is of the file that is gone: nothing more is made of it.
@@ -601,7 +611,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
   it("ends it too when the other file is as long to the byte, and reads that one when opened again", async () => {
     const { provider, playback, load, open, movie, failed } = await receiver();
     const { video, loaded } = await load(MATROSKA, "title-receiver.mkv");
-    expect((await segment(video.segments[0]!.url)).status).toBe(200);
+    expect(await fetched(video.segments[0]!.url)).toBe(200);
 
     // The same file but for one line of its subtitles, which its server marks as another.
     const other = fixture("title-receiver.mkv");
@@ -765,7 +775,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
     await vi.waitFor(() => expect(provider.activeStreams()).toBe(1));
 
     const { opened, video } = await load(MATROSKA, "title-receiver.mkv");
-    expect((await segment(video.segments[0]!.url)).status).toBe(200);
+    expect(await fetched(video.segments[0]!.url)).toBe(200);
     expect((await fetch(local.url)).status).toBe(410);
 
     // A title opened for this computer takes the receiver's place.
@@ -799,7 +809,7 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
 
     // The receiver's session never closed: it still gets what it asks for.
     expect(closed).toEqual([]);
-    expect((await segment(video.segments[0]!.url)).status).toBe(200);
+    expect(await fetched(video.segments[0]!.url)).toBe(200);
   });
 
   it("opens nothing once the viewer asked for something else while its index was read", async () => {

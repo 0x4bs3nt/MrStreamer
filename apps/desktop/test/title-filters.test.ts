@@ -76,12 +76,24 @@ describe("current movie and series filters", { timeout: 20000 }, () => {
         files: 1,
       };
       expect(await titles.filterOptions("movie")).toEqual(observed);
+      // Hints of titles for adults only once the viewer shows them, and they filter that row.
+      const listedBefore = [provider.titleListRequests(), provider.detailRequests()];
       await settings.update({ adultTitles: true });
       expect(await titles.filterOptions("movie")).toEqual({
         ...observed,
         qualities: ["4k", "full-hd", "hd", "sd", "unknown"],
         languages: ["de", "en", "fr", "nl", "pl", "unknown"],
       });
+      expect(
+        await titles.collection({
+          kind: "movie",
+          id: "adult",
+          offset: 0,
+          limit: 20,
+          filters: { quality: "sd", language: "pl" },
+        }),
+      ).toMatchObject({ total: 1, titles: [{ id: "70011" }] });
+      expect([provider.titleListRequests(), provider.detailRequests()]).toEqual(listedBefore);
       await settings.update({ adultTitles: false });
       expect(await titles.filterOptions("movie")).toEqual(observed);
       expect(
@@ -301,61 +313,6 @@ describe("current movie and series filters", { timeout: 20000 }, () => {
     ]).toEqual(before);
   });
 
-  it("offers adult-only hints only after the viewer enables that catalogue, without fetching to filter", async () => {
-    const provider = await fakeProvider({ titles: 2 });
-    const seed = provider.titles.movies[0]!;
-    provider.serveTitles((all) => ({
-      ...all,
-      series: [],
-      movies: [
-        { ...seed, id: 80001, name: "Public sample 4K (NL)", tmdb: "", adult: false },
-        { ...seed, id: 80003, name: "Adult sample SD (PL)", tmdb: "", adult: true },
-      ],
-    }));
-    const runtime = runtimeFor(mainLayer(testConfig(await tempDir())));
-    const subscriptions = await promised(runtime, Subscriptions);
-    const titles = await promised(runtime, OnDemand);
-    const settings = await promised(runtime, Settings);
-    const saved = await subscriptions.add({
-      server: provider.url,
-      username: "demo",
-      password: "demo",
-    });
-    await titles.refresh(saved.id);
-    const before = [
-      provider.titleListRequests(),
-      provider.detailRequests(),
-      provider.fileRequests(),
-    ];
-    expect(await titles.filterOptions("movie")).toMatchObject({
-      qualities: ["4k"],
-      languages: ["nl"],
-    });
-    await settings.update({ adultTitles: true });
-    expect(await titles.filterOptions("movie")).toMatchObject({
-      qualities: ["4k", "sd"],
-      languages: ["nl", "pl"],
-    });
-    expect(
-      await titles.collection({
-        kind: "movie",
-        id: "adult",
-        offset: 0,
-        limit: 20,
-        filters: { quality: "sd", language: "pl" },
-      }),
-    ).toMatchObject({ total: 1, titles: [{ id: "80003" }] });
-    await settings.update({ adultTitles: false });
-    expect(await titles.filterOptions("movie")).toMatchObject({
-      qualities: ["4k"],
-      languages: ["nl"],
-    });
-    expect([
-      provider.titleListRequests(),
-      provider.detailRequests(),
-      provider.fileRequests(),
-    ]).toEqual(before);
-  });
   it("filters one actual version, remembers read tracks across restart and rejects removed files without fetching", async () => {
     const dir = await tempDir();
     const provider = await fakeProvider({ titles: 2 });

@@ -3,24 +3,34 @@
 // room in it, puts the window back, and only where the platform keeps a window on top. A window
 // that was full screen is back once it fills the screen again.
 import { fullScreen, ipc } from "./support.ts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** The app's modules with the main process answering whether windows can stay on top. */
-async function loaded(available: boolean) {
-  ipc.reset();
-  fullScreen.reset();
+/**
+ * The app's modules with the main process answering that windows can stay on top. Loaded as the
+ * file is collected, so their transform is not timed as the first test.
+ */
+async function loaded() {
   const answer = ipc.hold("window.miniPlayerAvailable");
-  const { miniPlayer } = await import("../../src/renderer/src/app/mini-player.ts");
-  const { closeWatch, openWatch, useUi } = await import("../../src/renderer/src/app/ui-store.ts");
-  answer.resolve(available);
+  const [{ miniPlayer }, { closeWatch, openWatch, useUi }] = await Promise.all([
+    import("../../src/renderer/src/app/mini-player.ts"),
+    import("../../src/renderer/src/app/ui-store.ts"),
+  ]);
+  answer.resolve(true);
   await settle();
   return { miniPlayer, closeWatch, openWatch, useUi };
 }
 
+const app = await loaded();
+
 /** The window positions asked of the main process so far. */
 const asked = () => ipc.argsOf("window.setMiniPlayer");
+
+beforeEach(() => {
+  ipc.reset();
+  fullScreen.reset();
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -29,7 +39,7 @@ afterEach(() => {
 
 describe("the mini player", () => {
   it("puts the window back when Watch closes or Settings opens", async () => {
-    const { miniPlayer, closeWatch, openWatch, useUi } = await loaded(true);
+    const { miniPlayer, closeWatch, openWatch, useUi } = app;
     openWatch();
     ipc.hold("window.setMiniPlayer").resolve(null);
     await miniPlayer.enter();
@@ -46,7 +56,7 @@ describe("the mini player", () => {
   });
 
   it("puts the window back again when it shrank on its way back, and waits for that way back", async () => {
-    const { miniPlayer, openWatch } = await loaded(true);
+    const { miniPlayer, openWatch } = app;
     openWatch();
     ipc.hold("window.setMiniPlayer").resolve(null);
     await miniPlayer.enter();
@@ -74,7 +84,7 @@ describe("the mini player", () => {
   });
 
   it("asks for full screen again on the way back that stays, not on one it shrank on", async () => {
-    const { miniPlayer, openWatch } = await loaded(true);
+    const { miniPlayer, openWatch } = app;
     openWatch();
     fullScreen.on = true;
     ipc.hold("window.setMiniPlayer").resolve(null);
@@ -104,7 +114,7 @@ describe("the mini player", () => {
   ])(
     "shrinks a window on its way back into full screen only once it is there: $how",
     async ({ granted }) => {
-      const { miniPlayer, closeWatch, openWatch } = await loaded(true);
+      const { miniPlayer, closeWatch, openWatch } = app;
       openWatch();
       fullScreen.on = true;
       ipc.hold("window.setMiniPlayer").resolve(null);
@@ -143,7 +153,7 @@ describe("the mini player", () => {
     { how: "after two seconds without the window's word", says: false, answered: true },
     { how: "after two seconds when its request gets no answer", says: false, answered: false },
   ])("is back from a mini player that was full screen $how", async ({ says, answered }) => {
-    const { miniPlayer, openWatch } = await loaded(true);
+    const { miniPlayer, openWatch } = app;
     openWatch();
     fullScreen.on = true;
     ipc.hold("window.setMiniPlayer").resolve(null);

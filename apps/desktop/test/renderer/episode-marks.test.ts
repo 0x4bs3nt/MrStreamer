@@ -7,7 +7,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import type { Episode, SeriesDetails, Title } from "@mrstreamer/contracts/ondemand";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
@@ -122,14 +122,20 @@ const before: SeriesViewing = {
 const after: SeriesViewing = { ...before, marks: [marked(1, 2, true, 10)], undoable: 10 };
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 const text = () => document.body.textContent ?? "";
-/** Waits until `check` passes, letting React Query pass the answers on meanwhile. */
+/** Waits until `check` passes, moving the fake clock so React Query passes the answers on. */
 const until = (check: () => void) =>
   vi.waitFor(
     async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      await act(() => vi.advanceTimersByTimeAsync(10));
       check();
     },
     { timeout: 5000 },
@@ -229,13 +235,17 @@ describe("an episode's row", () => {
     expect(ipc.methods()).not.toContain("playback.openTitle");
   });
 
-  it.each([
-    ["watched", "S1 E1", [false, true]],
-    ["neither played nor marked", "S1 E3", [true, false]],
-  ])("offers an episode that is %s only the mark that would change it", async (_, label, marks) => {
+  it("offers an episode that is watched, or neither played nor marked, only the mark that would change it", async () => {
     await sheet(before);
 
-    expect(await offered(label)).toEqual(marks);
+    expect(await offered("S1 E1")).toEqual([false, true]);
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    await until(() => expect(items()).toHaveLength(0));
+    expect(await offered("S1 E3")).toEqual([true, false]);
   });
 });
 
@@ -425,7 +435,7 @@ describe("a record that can't be read", () => {
     expect(dots("S1 E2")).toBeNull();
     // It isn't asked again and again meanwhile.
     const asked = ipc.argsOf("viewing.episodes").length;
-    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    await act(() => vi.advanceTimersByTimeAsync(100));
     expect(ipc.argsOf("viewing.episodes")).toHaveLength(asked);
 
     ipc.always("viewing.episodes", before);
@@ -544,10 +554,10 @@ describe("Continue watching with a marked series", () => {
   });
 });
 
+// Each version resumes from its own play; a mark unwatched starts whichever is picked from 0.
 it.each([
   { label: "HD", id: "1-2", reset: false, position: 995 },
   { label: "4K", id: "alternate", reset: false, position: 495 },
-  { label: "HD", id: "1-2", reset: true, position: 0 },
   { label: "4K", id: "alternate", reset: true, position: 0 },
 ])(
   "plays exact episode version $label with progress reset=$reset",

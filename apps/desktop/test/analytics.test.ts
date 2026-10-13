@@ -543,11 +543,24 @@ describe("analytics delivery and deadlines", () => {
   });
 
   it("retries a failing local HTTP endpoint with identical event identity, then delivers the activity", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     let requests = 0;
     const capture = await captureServer(() => (++requests === 1 ? 503 : 200));
-    const { owner, dataDir } = await start({ transport: localCapture(capture.endpoint) });
+    const local = localCapture(capture.endpoint)!;
+    let answered = 0;
+    const { owner, dataDir } = await start({
+      transport: {
+        async send(event, signal) {
+          const result = await local.send(event, signal);
+          answered++;
+          return result;
+        },
+      },
+    });
     owner.setForeground(true);
-    await until(() => capture.payloads.length === 1);
+    await until(() => capture.payloads.length === 1 && answered === 1);
+    // The retry waits out its backoff on the fake clock, once the refusal is in.
+    await vi.advanceTimersByTimeAsync(2000);
     await until(
       async () => capture.payloads.length === 3 && (await saved(dataDir)).pending.length === 0,
     );
@@ -655,28 +668,6 @@ describe("analytics delivery and deadlines", () => {
     await closing;
     expect(signal?.aborted).toBe(true);
     expect(await store.load()).toEqual(kept);
-  });
-
-  it("bounds quit and aborts a hung transport without losing its durable retry identity", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    let signal: AbortSignal | undefined;
-    const { owner, dataDir } = await start({
-      transport: {
-        send(_event, owned) {
-          signal = owned;
-          return new Promise(() => {});
-        },
-      },
-    });
-    owner.setForeground(true);
-    await until(() => signal !== undefined);
-    const before = await saved(dataDir);
-    const closing = owner.close();
-    await vi.advanceTimersByTimeAsync(500);
-    await closing;
-    expect(signal?.aborted).toBe(true);
-    const after = await saved(dataDir);
-    expect(after.pending[0]?.event).toEqual(before.pending[0]?.event);
   });
 
   it("bounds startup state reads and preference writes when storage never settles", async () => {

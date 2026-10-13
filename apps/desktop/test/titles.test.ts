@@ -37,15 +37,16 @@ const hasTools =
   spawnSync(FFMPEG, ["-version"]).status === 0 && spawnSync(FFPROBE, ["-version"]).status === 0;
 
 /**
- * Title playback on a connected fake provider that allows one connection. `fetchImpl` is what
- * the subscription asks its provider with.
+ * Title playback on a connected fake provider that allows one connection and frees it as soon as
+ * a request closes, unless `options` say otherwise. `fetchImpl` is what the subscription asks its
+ * provider with.
  */
 async function titles(
   deps: Partial<PlaybackDeps> = {},
   options: FakeProviderOptions = {},
   fetchImpl: typeof fetch = fetch,
 ) {
-  const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 50, ...options });
+  const provider = await fakeProvider({ maxConnections: 1, slotReleaseMs: 0, ...options });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: FFMPEG, ffprobe: FFPROBE, ...deps }).pipe(
       Layer.provide(PlaybackCoordination.layer),
@@ -86,11 +87,20 @@ async function titles(
   return { provider, playback, open, repair, runtime, dispose: () => runtime.dispose() };
 }
 
-/** Plays a run to its end and reads what the player would get. */
+/**
+ * Plays a run to its end and reads what the player would get. ffprobe reads its `streams` only
+ * when a test asks for them.
+ */
 async function play(url: string) {
   const response = await fetch(url);
   const body = Buffer.from(await response.arrayBuffer());
-  return { response, body, streams: streamsOf(body) };
+  return {
+    response,
+    body,
+    get streams() {
+      return streamsOf(body);
+    },
+  };
 }
 
 /**
@@ -855,11 +865,8 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("never takes a replaced file's subtitles for the new one's when two servers take turns", async () => {
-    // A provider that frees its connection at once, so the two servers answer strictly in turn.
-    const { open, provider, playback, dispose } = await titles(
-      {},
-      { fileHosts: 2, slotReleaseMs: 0 },
-    );
+    // The provider frees its connection at once, so the two servers answer strictly in turn.
+    const { open, provider, playback, dispose } = await titles({}, { fileHosts: 2 });
     const session = await open("TEST | Long subtitles");
     const first = await subtitles(session.url, 137, 4);
     expect(linesAt(first.before.lines, 137)).toEqual(["Longue ligne"]);
@@ -881,9 +888,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("takes every file a provider puts in place of one of the same size for another", async () => {
-    // Each copy is read some ten times, which a provider that frees its connection at once
-    // keeps short.
-    const { open, provider, playback, dispose } = await titles({}, { slotReleaseMs: 0 });
+    const { open, provider, playback, dispose } = await titles();
     const session = await open("TEST | Long subtitles");
     const movie = provider.titles.movies.find((each) => each.name.startsWith("TEST | Long sub"));
     const first = await subtitles(session.url, 137, 4);
@@ -986,13 +991,15 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   it("starts the picture while the subtitles before its position are slow to come", async () => {
     const { open, provider, playback, dispose } = await titles();
     const session = await open("TEST | Long subtitles");
-    provider.slowFileParts(700);
+    // What the reading asks of the file comes only once the run has played to its end.
+    const release = provider.holdFileParts();
 
     // Asked together, as the player does: the run plays to its end before the feed is ready.
     let played = false;
     const waiting = subtitles(session.url, 137, 2).then((feed) => ({ feed, after: played }));
     const run = await play(`${session.url}?start=137&subtitle=2`);
     played = true;
+    release();
     const { feed, after } = await waiting;
 
     expect(run.response.status).toBe(200);
@@ -1010,7 +1017,8 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     const { open, provider, dispose } = await titles();
     const session = await open("TEST | Long subtitles");
     await play(`${session.url}?start=137&subtitle=4`);
-    provider.slowFileParts(1500);
+    // What the reading asks of the file comes only once the new run has played.
+    const release = provider.holdFileParts();
     const asked = provider.fileRequests();
     const waiting = subtitles(session.url, 137, 4);
     // Recovery has asked the provider, so this feed joined before the new picture request.
@@ -1018,6 +1026,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
       timeout: 10_000,
     });
     await play(`${session.url}?start=137&subtitle=4`);
+    release();
     const feed = await waiting;
     expect(feed.lines.filter(([, , text]) => text === "Apres")).toHaveLength(1);
     expect(linesAt(feed.lines, 137)).toEqual(["Longue ligne"]);
@@ -1143,7 +1152,8 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   it("sends upcoming text while recovery waits for the provider, then recovers earlier lines once", async () => {
     const { open, provider, dispose } = await titles();
     const session = await open("TEST | Long subtitles");
-    provider.slowFileParts(1500);
+    // What recovery asks of the file waits until the run's own text has come.
+    const release = provider.holdFileParts();
     const leaving = new AbortController();
     const response = await fetch(`${session.url}?only=subtitles&start=137&subtitle=4`, {
       signal: leaving.signal,
@@ -1171,6 +1181,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
         timeout: 10_000,
       });
       expect(ready).toBe(false);
+      release();
       await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10_000 });
       expect(linesAt(lines, 137)).toEqual(["Longue ligne"]);
       expect(lines.map(([, , text]) => text).sort()).toEqual(["Apres", "Longue ligne"]);
@@ -1220,7 +1231,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     async ({ fetchImpl }) => {
       const { open, provider, playback, dispose } = await titles(
         {},
-        { wholeFiles: true, slotReleaseMs: 0 },
+        { wholeFiles: true },
         fetchImpl,
       );
       const session = await open("TEST | Long subtitles");
@@ -1245,10 +1256,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   );
 
   it("says a provider that knows no byte ranges can't give the lines before a position no run read from the start, and asks it for nothing", async () => {
-    const { open, provider, playback, dispose } = await titles(
-      {},
-      { wholeFiles: true, slotReleaseMs: 0 },
-    );
+    const { open, provider, playback, dispose } = await titles({}, { wholeFiles: true });
     const session = await open("TEST | Long subtitles");
     const counts = () => ({ requests: provider.fileRequests(), bytes: provider.fileBytes() });
     const opened = counts();
@@ -1274,10 +1282,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("forgets what a run read once a provider that knows no byte ranges puts another file in its place", async () => {
-    const { open, provider, playback, runtime, dispose } = await titles(
-      {},
-      { wholeFiles: true, slotReleaseMs: 0 },
-    );
+    const { open, provider, playback, runtime, dispose } = await titles({}, { wholeFiles: true });
     const session = await open("TEST | Long subtitles");
     const replaced = await collect(runtime, playback.fileReplaced);
     const counts = () => ({ requests: provider.fileRequests(), bytes: provider.fileBytes() });
@@ -1321,11 +1326,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
       headers.delete("content-length");
       return new Response(answer.body, { status: answer.status, headers });
     };
-    const { open, provider, playback, dispose } = await titles(
-      {},
-      { wholeFiles: true, slotReleaseMs: 0 },
-      fetchImpl,
-    );
+    const { open, provider, playback, dispose } = await titles({}, { wholeFiles: true }, fetchImpl);
     try {
       // Opened again, the title has what ffprobe read: no answer has said what its file is yet.
       await open("TEST | Long subtitles");
@@ -1395,7 +1396,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     };
     const { open, provider, playback, dispose } = await titles(
       {},
-      { wholeFiles: true, fileHosts: 2, slotReleaseMs: 0 },
+      { wholeFiles: true, fileHosts: 2 },
       fetchImpl,
     );
     try {
@@ -1446,10 +1447,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("uses nothing a run read from a provider that knows no byte ranges when answers carry only the time they were sent", async () => {
-    const { open, provider, dispose } = await titles(
-      {},
-      { wholeFiles: true, fileDates: true, slotReleaseMs: 0 },
-    );
+    const { open, provider, dispose } = await titles({}, { wholeFiles: true, fileDates: true });
     const session = await open("TEST | Long subtitles");
     const counts = () => ({ requests: provider.fileRequests(), bytes: provider.fileBytes() });
     const first = await subtitles(session.url, 0, 4);
@@ -1501,7 +1499,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   it("resumes and skips outside the buffer as on a ranged provider with whole-file answers", async () => {
     const reference: { start: number; decoded: number }[] = [];
     for (const wholeFiles of [false, true]) {
-      const { open, provider, dispose } = await titles({}, { wholeFiles, slotReleaseMs: 0 });
+      const { open, provider, dispose } = await titles({}, { wholeFiles });
       const movie = provider.titles.movies.find((each) =>
         each.name.startsWith("TEST | Long subtitles"),
       );
@@ -1532,7 +1530,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("answers the asked source range and refuses positions at or past the whole file end at once", async () => {
-    const { open, provider, dispose } = await titles({}, { wholeFiles: true, slotReleaseMs: 0 });
+    const { open, provider, dispose } = await titles({}, { wholeFiles: true });
     const session = await open("TEST | Long subtitles");
     const size = fixture("title-long-subs.mkv").length;
     const source = session.url.replace("/title/", "/source/").replace(/\.mp4$/, "");
@@ -1571,7 +1569,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
       headers.set("content-range", (headers.get("content-range") ?? "").replace(/\/\d+$/, "/*"));
       return new Response(answer.body, { status: answer.status, headers });
     };
-    const { open, dispose } = await titles({}, { slotReleaseMs: 0 }, fetchImpl);
+    const { open, dispose } = await titles({}, {}, fetchImpl);
     try {
       const session = await open("TEST | Long subtitles");
       changeHeaders = true;
@@ -1608,11 +1606,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
           { status: answer.status, headers: answer.headers },
         );
       };
-      const { open, playback, runtime, dispose } = await titles(
-        {},
-        { wholeFiles, slotReleaseMs: 0 },
-        fetchImpl,
-      );
+      const { open, playback, runtime, dispose } = await titles({}, { wholeFiles }, fetchImpl);
       try {
         const notices = await collect(runtime, playback.readingAhead);
         const session = await open("TEST | Long subtitles");
@@ -1627,10 +1621,13 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
           }),
         );
         const { controller, bytes } = await arrived.promise;
+        // The proxy spaces its notices by performance.now(), whose clock the test moves on.
+        vi.useFakeTimers({ toFake: ["performance"] });
         controller.enqueue(bytes.subarray(0, 8192));
         if (wholeFiles) await vi.waitFor(() => expect(notices).toEqual([session.sessionId]));
-        // A timer alone sends no notices while the prefix is held, even after the throttle period.
-        await new Promise((resolve) => setTimeout(resolve, 3100));
+        // Time alone sends no notices while the prefix is held, even after the throttle period.
+        vi.advanceTimersByTime(3100);
+        await new Promise((resolve) => setTimeout(resolve, 50));
         expect(notices).toEqual(wholeFiles ? [session.sessionId] : []);
         controller.enqueue(bytes.subarray(8192, 16384));
         if (wholeFiles) await vi.waitFor(() => expect(notices).toHaveLength(2));
@@ -1638,7 +1635,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
         const dropped = [...notices];
         // All subsequent bytes belong to the answer, so another throttle period yields no notice.
-        await new Promise((resolve) => setTimeout(resolve, 3100));
+        vi.advanceTimersByTime(3100);
         controller.enqueue(bytes.subarray(32768));
         controller.close();
         const answer = await reading;
@@ -1646,6 +1643,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
         expect(answer.bytes).toEqual(fixture("title-long-subs.mkv").subarray(position));
         expect(notices).toEqual(dropped);
       } finally {
+        vi.useRealTimers();
         await dispose();
       }
     },
@@ -1678,7 +1676,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     const timeout = 500;
     const { open, provider, dispose } = await titles(
       { runStartMs: timeout },
-      { wholeFiles: true, slotReleaseMs: 0 },
+      { wholeFiles: true },
       fetchImpl,
     );
     try {
@@ -1702,10 +1700,7 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
 
   it("fails a whole-file read-forward that stops advancing for the start deadline", async () => {
     const timeout = 500;
-    const { open, provider, dispose } = await titles(
-      { runStartMs: timeout },
-      { wholeFiles: true, slotReleaseMs: 0 },
-    );
+    const { open, provider, dispose } = await titles({ runStartMs: timeout }, { wholeFiles: true });
     try {
       const movie = provider.titles.movies.find((each) =>
         each.name.startsWith("TEST | Long subtitles"),
@@ -1769,17 +1764,6 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     await dispose();
   });
 
-  it("reads an MP4 whose index sits at the end, by asking for byte ranges", async () => {
-    const { open, dispose } = await titles();
-    const session = await open("TEST | Index at the end");
-
-    const run = await play(`${session.url}?start=4`);
-
-    expect(session.subtitles.map((track) => track.label)).toEqual(["English"]);
-    expect(run.streams.map((stream) => stream.codec_name)).toEqual(["h264", "aac"]);
-    await dispose();
-  });
-
   it("keeps earlier MP4 text samples when a new run starts before the previous one", async () => {
     const { open, provider, dispose } = await titles();
     const movie = provider.titles.movies.find((each) =>
@@ -1799,13 +1783,16 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
 
   it("leaves an MP4's text subtitles to the run, which starts them at their own line", async () => {
     const { open, dispose } = await titles();
+    // Its index sits at the end, which is read by asking for byte ranges.
     const session = await open("TEST | Index at the end");
+    expect(session.subtitles.map((track) => track.label)).toEqual(["English"]);
 
     const feed = await subtitles(session.url, 5, 2);
     // An MP4 lists each track's own samples: nothing to read before the run.
     expect(feed.before.lines).toEqual([]);
     const run = await feed.run();
 
+    expect(run.streams.map((stream) => stream.codec_name)).toEqual(["h264", "aac"]);
     expect(Number(run.response.headers.get("x-start"))).toBeGreaterThan(3.8);
     expect(Number(run.response.headers.get("x-start"))).toBeLessThanOrEqual(4);
     await vi.waitFor(() => expect(feed.lines).toContainEqual([2, 4, "First line"]));
@@ -1834,7 +1821,9 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
   });
 
   it("holds one provider connection while skipping, and none once closed", async () => {
-    const { provider, open, playback, dispose } = await titles();
+    // A provider that frees its connection a moment after a request closes, as real panels do:
+    // a skip's next request can be refused, and is asked again.
+    const { provider, open, playback, dispose } = await titles({}, { slotReleaseMs: 50 });
     const session = await open("TEST | Long subtitles");
 
     const leaving = new AbortController();

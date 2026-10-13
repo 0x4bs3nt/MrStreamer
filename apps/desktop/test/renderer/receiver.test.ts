@@ -382,8 +382,8 @@ describe("a movie with a receiver connected", () => {
     await act(async () => playTitle(movieNow(movie, null), 120));
     await act(async () => first.resolve({ ...here, sessionId: "s1" }));
 
-    // A minute in, it moves to the TV: saved here first, then opened there.
-    await wait(60_000);
+    // A second in, it moves to the TV: saved here first, then opened there.
+    await wait(1000);
     const opened = ipc.hold("output.openTitle");
     const loaded = ipc.hold("output.playTitle");
     await emit(connected());
@@ -391,8 +391,8 @@ describe("a movie with a receiver connected", () => {
     await act(async () => loaded.resolve(said(1, movieItem, "loading", 120, 3600)));
     await emit(connected(said(1, movieItem, "playing", 120, 3600)));
 
-    // Another TV takes it over a minute later.
-    await wait(60_000);
+    // Another TV takes it over a second later.
+    await wait(1000);
     const other = ipc.hold("output.openTitle");
     const there = ipc.hold("output.playTitle");
     await emit(reaching(bedroom));
@@ -401,15 +401,15 @@ describe("a movie with a receiver connected", () => {
     await act(async () => there.resolve(said(2, movieItem, "loading", 180, 3600)));
     await emit(connected(said(2, movieItem, "playing", 180, 3600), null, bedroom));
 
-    // And back here another minute later, where a skip saves how far it got again.
-    await wait(60_000);
+    // And back here another second later, where a skip saves how far it got again.
+    await wait(1000);
     const back = ipc.hold("playback.openTitle");
     await press("Play here");
     await emit(HERE);
     await act(async () => back.resolve({ ...here, sessionId: "s2" }));
     await act(async () => titlePlayer.skip(30));
 
-    expect(Date.now() - began).toBe(180_000);
+    expect(Date.now() - began).toBe(3000);
     expect(ipc.argsOf("output.openTitle")).toEqual([
       {
         title: movieRef,
@@ -1013,7 +1013,8 @@ describe("a channel with a receiver connected", () => {
     }
 
     expect(text()).toContain("No answer from the provider");
-    await wait(60_000);
+    // Longer than the longest wait before a reconnect.
+    await wait(10_000);
     expect(ipc.argsOf("output.playChannel")).toHaveLength(5);
     expect(ipc.argsOf("viewing.recordWatch")).toEqual([]);
   });
@@ -1034,7 +1035,7 @@ describe("a channel with a receiver connected", () => {
 
     expect(text()).toContain("Keeps dropping");
     expect(text()).toContain("Play here");
-    await wait(60_000);
+    await wait(10_000);
     expect(ipc.argsOf("output.playChannel")).toHaveLength(5);
   });
 
@@ -1073,7 +1074,7 @@ describe("a channel with a receiver connected", () => {
     expect(text()).toContain("HTTP 403");
     expect(text()).toContain("Play here");
     // A refusal isn't tried again by itself: Retry asks the receiver for the same channel.
-    await wait(60_000);
+    await wait(10_000);
     expect(ipc.argsOf("output.playChannel")).toHaveLength(1);
     await press("Retry");
     expect(ipc.argsOf("output.playChannel").at(-1)).toMatchObject({
@@ -1081,31 +1082,27 @@ describe("a channel with a receiver connected", () => {
     });
   });
 
-  it.each(["Enter", " "])(
-    "closes a TV's refusal to connect with %j on its cross, and opens no channel list",
-    async (name) => {
-      document.body.append(container);
-      await playing();
-      await emit(HERE);
-      useUi.setState({ watching: true });
-      await show(WatchScreen);
-      const refusal = ipc.hold("output.connect");
-      await act(async () => outputs.connect("tv"));
-      await act(async () => refusal.reject({ kind: "output", failure: { kind: "unreachable" } }));
-      const close = container.querySelector<HTMLButtonElement>('[aria-label="Close message"]')!;
-      expect(close.closest("[data-playback-state]")).toBeNull();
-      close.focus();
-      const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true });
-      await act(async () => close.dispatchEvent(event));
-      // Not taken as a shortcut, so the focused button presses itself.
-      expect(event.defaultPrevented).toBe(false);
-      expect(useUi.getState().channelsOpen).toBe(false);
-      await act(async () => close.click());
-      expect(container.querySelector('[aria-label="Close message"]')).toBeNull();
-      expect(ipc.argsOf("output.connect")).toHaveLength(1);
-      container.remove();
-    },
-  );
+  // Space on a message's cross is covered by the retry of a lost TV below.
+  it("closes a TV's refusal to connect with Enter on its cross, and opens no channel list", async () => {
+    document.body.append(container);
+    await playing();
+    await emit(HERE);
+    useUi.setState({ watching: true });
+    await show(WatchScreen);
+    const refusal = ipc.hold("output.connect");
+    await act(async () => outputs.connect("tv"));
+    await act(async () => refusal.reject({ kind: "output", failure: { kind: "unreachable" } }));
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close message"]')!;
+    expect(close.closest("[data-playback-state]")).toBeNull();
+    close.focus();
+    // Not taken as a shortcut, so the focused button presses itself.
+    expect(await key("Enter", close)).toBe(false);
+    expect(useUi.getState().channelsOpen).toBe(false);
+    await act(async () => close.click());
+    expect(container.querySelector('[aria-label="Close message"]')).toBeNull();
+    expect(ipc.argsOf("output.connect")).toHaveLength(1);
+    container.remove();
+  });
 
   it("keeps the lost TV's name while Try again reaches it, and loads there once it answers", async () => {
     await playing();

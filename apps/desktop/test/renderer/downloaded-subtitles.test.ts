@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SavedSubtitle } from "@mrstreamer/contracts/online-subtitles";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { player } from "../../src/renderer/src/player/player.ts";
@@ -19,7 +19,8 @@ const saved: SavedSubtitle = {
     ],
   },
 };
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+/** Lets the player and main's answers catch up, on the fake clock every test runs on. */
+const settle = () => vi.advanceTimersByTimeAsync(20);
 const english: SubtitleTrack = {
   id: 3,
   page: null,
@@ -72,9 +73,13 @@ async function open(
   await settle();
   return { pictureCalls, restore };
 }
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   titlePlayer.close();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 describe("a downloaded subtitle on the movie picture", () => {
   it("starts the picture while local restore waits, then applies drift and offset without another picture request", async () => {

@@ -12,7 +12,10 @@ export interface FakeTmdb {
   aboutRequests(): number;
   /** Season requests so far, in order, by series, season and language: "90000/1/nl". */
   seasonRequests(): readonly string[];
-  /** Makes season requests answer with this HTTP status, or never, or restores them with null. */
+  /**
+   * Makes season requests answer with this HTTP status, or not until another answer is set, or
+   * restores them with null. Those held are answered as the next setting says.
+   */
   failSeasons(answer: number | "hold" | null): void;
   /** Holds the answers to titles' details as they open, or sends those held and stops holding. */
   holdAbout(hold: boolean): void;
@@ -62,6 +65,8 @@ export async function startFakeTmdb(): Promise<FakeTmdb> {
   let refused = false;
   const seasons: string[] = [];
   let seasonFailure: number | "hold" | null = null;
+  /** Season requests waiting while their answers are held. */
+  const heldSeasons: (() => void)[] = [];
   let aboutHeld = false;
   /** Answers to a title's details as it opens, waiting while they are held. */
   const held: (() => void)[] = [];
@@ -79,37 +84,40 @@ export async function startFakeTmdb(): Promise<FakeTmdb> {
       const id = Number(season[1]);
       const number = Number(season[2]);
       seasons.push(`${id}/${number}/${language}`);
-      if (seasonFailure === "hold") return;
-      if (seasonFailure !== null) return json(response, { status_code: 11 }, seasonFailure);
-      const count = SEASON_EPISODES[number - 1];
-      if (count === undefined) return json(response, { status_code: 34 }, 404);
-      return json(response, {
-        season_number: number,
-        episodes: Array.from({ length: count }, (_, index) => {
-          const episode = index + 1;
-          const name = tmdbEpisodeName(id, number, episode, language);
-          return {
-            episode_number: episode,
-            season_number: number,
-            name,
-            overview: name.startsWith("Episode") ? "" : `TMDB's story of ${name}.`,
-            still_path: `/still-${id}-${number}-${episode}.jpg`,
-            air_date: `2020-0${number}-0${episode}`,
-            runtime: 50,
-            vote_average: 8.2,
-            // Too few votes on the third for a rating that says much.
-            vote_count: episode === 3 ? 4 : 12,
-            crew: [
-              { name: "Dora Director", job: "Director" },
-              { name: "Wim Writer", job: "Writer" },
-              { name: "Cas Camera", job: "Director of Photography" },
-            ],
-            guest_stars: [
-              { name: "Gus Guest", character: "The Visitor", profile_path: "/gus.jpg" },
-            ],
-          };
-        }),
-      });
+      const answer = (): void => {
+        if (seasonFailure === "hold") return void heldSeasons.push(answer);
+        if (seasonFailure !== null) return void json(response, { status_code: 11 }, seasonFailure);
+        const count = SEASON_EPISODES[number - 1];
+        if (count === undefined) return void json(response, { status_code: 34 }, 404);
+        json(response, {
+          season_number: number,
+          episodes: Array.from({ length: count }, (_, index) => {
+            const episode = index + 1;
+            const name = tmdbEpisodeName(id, number, episode, language);
+            return {
+              episode_number: episode,
+              season_number: number,
+              name,
+              overview: name.startsWith("Episode") ? "" : `TMDB's story of ${name}.`,
+              still_path: `/still-${id}-${number}-${episode}.jpg`,
+              air_date: `2020-0${number}-0${episode}`,
+              runtime: 50,
+              vote_average: 8.2,
+              // Too few votes on the third for a rating that says much.
+              vote_count: episode === 3 ? 4 : 12,
+              crew: [
+                { name: "Dora Director", job: "Director" },
+                { name: "Wim Writer", job: "Writer" },
+                { name: "Cas Camera", job: "Director of Photography" },
+              ],
+              guest_stars: [
+                { name: "Gus Guest", character: "The Visitor", profile_path: "/gus.jpg" },
+              ],
+            };
+          }),
+        });
+      };
+      return answer();
     }
     const title = /^\/3\/(movie|tv)\/(\d+)$/.exec(url.pathname);
     if (title) {
@@ -178,6 +186,7 @@ export async function startFakeTmdb(): Promise<FakeTmdb> {
     seasonRequests: () => [...seasons],
     failSeasons: (answer) => {
       seasonFailure = answer;
+      if (answer !== "hold") for (const held of heldSeasons.splice(0)) held();
     },
     holdAbout: (hold) => {
       aboutHeld = hold;

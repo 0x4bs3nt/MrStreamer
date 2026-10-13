@@ -29,13 +29,23 @@ export type Page = Awaited<ReturnType<typeof connect>>;
 
 /**
  * A minimal DevTools protocol client for the app's window, or for its main process ("node") when
- * the app was started with `--inspect=<port>`.
+ * the app was started with `--inspect=<port>`. Polls every `pollMs` for up to 30 s. Given the
+ * launched `app`, it gives up as soon as that process has exited, since it can no longer open one.
  */
-export async function connect(port: number, kind: "page" | "node" = "page", pollMs = 200) {
+export async function connect(
+  port: number,
+  kind: "page" | "node" = "page",
+  { pollMs = 200, app }: { pollMs?: number; app?: ChildProcess } = {},
+) {
+  const target = kind === "page" ? "window" : "inspector";
   let url: string | undefined;
   const until = performance.now() + 30000;
   while (performance.now() < until && !url) {
     await delay(pollMs);
+    if (app && (app.exitCode !== null || app.signalCode !== null))
+      throw new Error(
+        `The app exited (${app.signalCode ?? `code ${app.exitCode}`}) before opening a ${target}.`,
+      );
     try {
       const targets = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()) as {
         type: string;
@@ -51,8 +61,7 @@ export async function connect(port: number, kind: "page" | "node" = "page", poll
       )?.webSocketDebuggerUrl;
     } catch {}
   }
-  if (!url)
-    throw new Error(`The app opened no ${kind === "page" ? "window" : "inspector"} within 30 s.`);
+  if (!url) throw new Error(`The app opened no ${target} within 30 s.`);
   const socket = new WebSocket(url);
   await new Promise((resolve, reject) => {
     socket.addEventListener("open", resolve, { once: true });

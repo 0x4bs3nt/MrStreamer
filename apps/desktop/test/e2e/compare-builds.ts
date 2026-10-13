@@ -172,7 +172,7 @@ async function warmUp(executable: string) {
   const started = performance.now();
   const app = launch(executable, appArgs, { port, profile });
   try {
-    const page = await connect(port);
+    const page = await connect(port, "page", { app });
     try {
       return await observeAcrossLoad(
         page,

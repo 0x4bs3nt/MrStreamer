@@ -6,7 +6,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import {
   ownedKey,
@@ -60,10 +60,19 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
 });
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
-/** Lets the page take in what just happened, and a search's pause in typing pass. */
-const settled = (ms = 20) => act(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+/**
+ * Lets the page take in what just happened, and a search's pause in typing pass, on the fake
+ * clock.
+ */
+const settled = (ms = 20) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 const titles = (ids: readonly string[]) => ids.map((id) => `Channel ${id}`);
 

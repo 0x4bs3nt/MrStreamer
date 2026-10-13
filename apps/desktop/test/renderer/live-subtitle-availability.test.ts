@@ -102,7 +102,11 @@ const working = packets[0]!.payload;
 const filler = working.slice();
 filler[7] = 0x57;
 filler[8] = 0x57;
-const settle = () => new Promise((resolve) => setTimeout(resolve));
+/** Lets the player's answers and the next timer through, on the fake clock when a test has one. */
+const settle = async () => {
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+  else await new Promise((resolve) => setTimeout(resolve));
+};
 let unmount = () => {};
 async function open(id = "one", listed = tracks) {
   ipc.always("playback.tracks", listed);
@@ -487,6 +491,7 @@ it("C chooses a current track when the previous stream's PID is absent", async (
 });
 
 it("announces availability only once even when page data keeps arriving", async () => {
+  vi.useFakeTimers();
   const stream = await open();
   const controls = await mount();
   stream.elapsed = 11_000;
@@ -495,9 +500,7 @@ it("announces availability only once even when page data keeps arriving", async 
     await settle();
   });
   expect(controls.textContent).toContain("Subtitles available · C");
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 1600));
-  });
+  await act(() => vi.advanceTimersByTimeAsync(1600));
   expect(controls.textContent).not.toContain("Subtitles available");
   await act(async () => {
     stream.packet(0x300, working, 13);

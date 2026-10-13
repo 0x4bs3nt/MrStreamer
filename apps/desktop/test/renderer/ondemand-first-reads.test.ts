@@ -3,7 +3,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { HomeScreen } from "../../src/renderer/src/features/home/HomeScreen.tsx";
 import { TitlesPage } from "../../src/renderer/src/features/titles/TitlesPage.tsx";
@@ -39,16 +39,24 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
 });
 
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
+  vi.useRealTimers();
 });
 
+/** Lets the page's timers and answers run on the fake clock until `check` passes. */
 const until = (check: () => void) =>
-  vi.waitFor(async () => {
-    await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
-    check();
-  });
+  vi.waitFor(
+    async () => {
+      await act(() => vi.advanceTimersByTimeAsync(10));
+      check();
+    },
+    { interval: 1 },
+  );
 
 async function mount(home: boolean) {
   const subscription = home ? { ...SAVED, kind: "m3u" as const, playlistMapped: true } : SAVED;

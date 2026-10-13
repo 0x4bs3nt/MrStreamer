@@ -3,7 +3,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { SubtitleFormat, SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { LiveMore, type LiveMenu } from "../../src/renderer/src/features/watch/LiveMore.tsx";
@@ -15,6 +15,9 @@ import { player } from "../../src/renderer/src/player/player.ts";
 import { WatchScreen } from "../../src/renderer/src/features/watch/WatchScreen.tsx";
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   act(() => {
@@ -22,8 +25,13 @@ afterEach(() => {
     player.reset();
   });
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+/**
+ * Moves the fake clock on 30 ms, past the player's short timers and the animation frame in which
+ * a menu takes focus. Called after the act that rendered, so that frame is already asked for.
+ */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(30));
 const channel: LiveChannel = {
   subscriptionId: SUBSCRIPTION,
   id: "one",
@@ -74,8 +82,8 @@ it("keeps mouse actions, page focus and discovery tied to More as tracks and out
   };
   await act(async () => {
     root.render(createElement(Controls));
-    await settle();
   });
+  await settle();
   function button(name: string) {
     const found = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
       (each) => each.getAttribute("aria-label") === name || each.textContent === name,
@@ -86,16 +94,16 @@ it("keeps mouse actions, page focus and discovery tied to More as tracks and out
   async function click(name: string) {
     await act(async () => {
       button(name).dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
-      await settle();
     });
+    await settle();
   }
   async function key(name: string) {
     await act(async () => {
       document.activeElement?.dispatchEvent(
         new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }),
       );
-      await settle();
     });
+    await settle();
   }
   await click("More");
   expect(button("Channel up").hasAttribute("aria-pressed")).toBe(false);
@@ -127,8 +135,8 @@ it("keeps mouse actions, page focus and discovery tied to More as tracks and out
   expect(document.activeElement?.textContent).toBe("Dutch");
   await act(async () => {
     removeSound();
-    await settle();
   });
+  await settle();
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Channel up");
   expect(document.body.textContent).not.toContain("Dutch");
   await key("Escape");
@@ -144,24 +152,24 @@ it("keeps mouse actions, page focus and discovery tied to More as tracks and out
   };
   await act(async () => {
     ipc.emit("output.changed", local);
-    await settle();
   });
+  await settle();
   await click("More");
   await click("Play on");
   expect(ipc.argsOf("output.scan")).toEqual([{ on: true }]);
   // A receiver refresh does not restart discovery or close the page.
   await act(async () => {
     ipc.emit("output.changed", { ...local, offers: ["cast"], scanning: true });
-    await settle();
   });
+  await settle();
   expect(ipc.argsOf("output.scan")).toEqual([{ on: true }]);
   await click("Back to More");
   expect(ipc.argsOf("output.scan")).toEqual([{ on: true }, { on: false }]);
   await click("Play on");
   await act(async () => {
     ipc.emit("output.changed", { ...local, offers: [] });
-    await settle();
   });
+  await settle();
   expect(document.activeElement?.getAttribute("aria-label")).toBe("Channel up");
   expect(ipc.argsOf("output.scan").at(-1)).toEqual({ on: false });
 });
@@ -209,8 +217,8 @@ async function watch() {
         createElement(WatchScreen),
       ),
     );
-    await settle();
   });
+  await settle();
   return container;
 }
 
@@ -229,8 +237,8 @@ async function pressKey(key: string) {
     // happy-dom does not perform a button's native Enter activation.
     if (key === "Enter" && !event.defaultPrevented && target instanceof HTMLButtonElement)
       target.click();
-    await settle();
   });
+  await settle();
 }
 
 it("Q and O open on usable choices, support immediate Back keys and dismiss on a channel change", async () => {
@@ -273,13 +281,13 @@ it("Q and O open on usable choices, support immediate Back keys and dismiss on a
 
   await act(async () => {
     named("More").click();
-    await settle();
   });
+  await settle();
   expect(named("More").getAttribute("aria-expanded")).toBe("true");
   await act(async () => {
     player.play(nextChannel);
-    await settle();
   });
+  await settle();
   expect(named("More").getAttribute("aria-expanded")).toBe("false");
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
@@ -293,14 +301,14 @@ it("More keeps the active receiver visible and labels its Play on destination", 
       receivers: [receiver],
       output: { kind: "receiver", receiver, volume: null, media: null, failure: null },
     });
-    await settle();
   });
+  await settle();
   expect(named("More").getAttribute("aria-pressed")).toBe("true");
   expect(named("More").getAttribute("aria-description")).toBe("Playing on Living Room TV");
   await act(async () => {
     named("More").click();
-    await settle();
   });
+  await settle();
   expect(named("Play on").textContent).toContain("Living Room TV");
   expect(named("Play on").getAttribute("aria-description")).toBe("Living Room TV");
   expect(named("Play on").hasAttribute("aria-pressed")).toBe(false);
@@ -316,16 +324,14 @@ it("wheel over the Live picture zaps once per gesture and leaves menu, list, dia
       target?.dispatchEvent(
         new WheelEvent("wheel", { deltaY, deltaX, bubbles: true, cancelable: true }),
       );
-      await settle();
     });
+    await settle();
   };
   const initial = ipc.argsOf("playback.open").length;
   await roll(10);
   expect(ipc.argsOf("playback.open")).toHaveLength(initial);
   await roll(70);
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  });
+  await act(() => vi.advanceTimersByTimeAsync(400));
   expect(ipc.argsOf("playback.open").at(-1)?.channel.id).toBe("two");
   const once = ipc.argsOf("playback.open").length;
   for (let i = 0; i < 8; i++) {
@@ -335,15 +341,13 @@ it("wheel over the Live picture zaps once per gesture and leaves menu, list, dia
   expect(ipc.argsOf("playback.open")).toHaveLength(once);
   now += 800;
   await roll(-120);
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  });
+  await act(() => vi.advanceTimersByTimeAsync(400));
   expect(ipc.argsOf("playback.open").at(-1)?.channel.id).toBe("one");
   const twice = ipc.argsOf("playback.open").length;
   await act(async () => {
     named("More").click();
-    await settle();
   });
+  await settle();
   now += 800;
   await roll(120);
   expect(ipc.argsOf("playback.open")).toHaveLength(twice);
@@ -384,14 +388,16 @@ it("a pointer Quality open on a failed channel starts Down on the chosen quality
     ipc.always("playback.failure", { kind: "unsupported", detail: "Unsupported fixture" });
     ipc.always("playback.playing", null);
     player.retry();
-    await settle();
-    player.element.dispatchEvent(new Event("error"));
-    await settle();
   });
+  await settle();
+  await act(async () => {
+    player.element.dispatchEvent(new Event("error"));
+  });
+  await settle();
   await act(async () => {
     named("Quality").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
-    await settle();
   });
+  await settle();
   expect(document.activeElement?.getAttribute("role")).toBe("dialog");
   expect(document.activeElement?.getAttribute("aria-pressed")).toBeNull();
   await pressKey("ArrowDown");
@@ -454,8 +460,8 @@ it("sets a channel's subtitle timing and look under CC, and lists them greyed wh
   };
   await act(async () => {
     root.render(createElement(Controls));
-    await settle();
   });
+  await settle();
   const named = (name: string) =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(
       (each) => each.getAttribute("aria-label") === name || each.textContent === name,
@@ -463,8 +469,8 @@ it("sets a channel's subtitle timing and look under CC, and lists them greyed wh
   const click = async (name: string) => {
     await act(async () => {
       named(name)!.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
-      await settle();
     });
+    await settle();
   };
 
   // Off: nothing to time, and the look of what the channel could show.

@@ -3,16 +3,20 @@ import { ipc, SAVED } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { HomeScreen } from "../../src/renderer/src/features/home/HomeScreen.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { queries, syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
 
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
+  vi.useRealTimers();
 });
 
 it("shows a mapped series' current exact progress, then drops its bar when that file is replaced", async () => {
@@ -93,7 +97,7 @@ it("shows a mapped series' current exact progress, then drops its bar when that 
   );
   const until = (check: () => void) =>
     vi.waitFor(async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      await act(() => vi.advanceTimersByTimeAsync(10));
       check();
     });
   await until(() => expect(container.textContent).toContain("S2 E3"));
@@ -167,7 +171,7 @@ it("shows mapped titles without live channels or invented added dates, and opens
     ),
   );
   await vi.waitFor(async () => {
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    await act(() => vi.advanceTimersByTimeAsync(20));
     expect(container.textContent).toContain("Playlist film");
   });
   expect(container.textContent).not.toContain("No live channels");

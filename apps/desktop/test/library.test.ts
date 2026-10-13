@@ -196,11 +196,10 @@ describe("live library", () => {
   });
 
   it("ranks names that start with the query first and ignores case and punctuation", async () => {
-    const { library } = await connectedLibrary(4000);
+    const { library } = await connectedLibrary();
 
     const results = await library.channels({ query: "arena" });
 
-    expect(results.length).toBeGreaterThan(0);
     expect(results.every((channel) => channel.name.toLowerCase().includes("arena"))).toBe(true);
     const firstLater = results.findIndex(
       (channel) => !channel.name.toLowerCase().startsWith("arena"),
@@ -208,7 +207,9 @@ describe("live library", () => {
     const lastStart = results.findLastIndex((channel) =>
       channel.name.toLowerCase().startsWith("arena"),
     );
-    if (firstLater !== -1) expect(lastStart).toBeLessThan(firstLater);
+    // The fake provider names some channels "ARENA…" and others "UK: ARENA…".
+    expect(lastStart).toBeGreaterThanOrEqual(0);
+    expect(firstLater).toBeGreaterThan(lastStart);
 
     expect(await library.channels({ query: "test h 264 ac 3" })).toMatchObject([
       { name: "TEST | H.264 + AC-3" },
@@ -435,7 +436,7 @@ describe("live library", () => {
       { id: first.id, title: "Renamed One" },
     ]);
     await expect(library.channel(second)).rejects.toMatchObject({
-      error: { kind: "channel-not-found" },
+      error: { kind: "channel-not-found", channelId: second.id },
     });
   });
 
@@ -465,14 +466,6 @@ describe("live library", () => {
     expect((await guideChannels()).channelsOf("afterhours.adult")).toHaveLength(1);
     expect(await library.channels({ query: "night club" })).toEqual([]);
     expect(await library.channels({ query: "after hours" })).toEqual([]);
-  });
-
-  it("reports a missing channel", async () => {
-    const { library, own } = await connectedLibrary();
-
-    await expect(library.channel(own("does-not-exist"))).rejects.toMatchObject({
-      error: { kind: "channel-not-found", channelId: "does-not-exist" },
-    });
   });
 });
 

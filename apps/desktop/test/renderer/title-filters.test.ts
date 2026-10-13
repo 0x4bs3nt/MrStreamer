@@ -3,7 +3,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FilterOptions } from "@mrstreamer/contracts/title-filters";
 import type { Title, TitleKind, MovieDetails } from "@mrstreamer/contracts/ondemand";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
@@ -44,10 +44,14 @@ const film: Title = {
 };
 
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
   useUi.setState({ details: null, searchOpen: false });
+  vi.useRealTimers();
 });
 
 async function mount() {
@@ -85,11 +89,15 @@ async function mount() {
     client.clear();
     container.remove();
   };
+  // Lets the page's timers and answers run on the fake clock until `check` passes.
   const until = (check: () => void) =>
-    vi.waitFor(async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
-      check();
-    });
+    vi.waitFor(
+      async () => {
+        await act(() => vi.advanceTimersByTimeAsync(10));
+        check();
+      },
+      { interval: 1 },
+    );
   const group = (label: string) =>
     container.querySelector<HTMLElement>(`[role=group][aria-label="${label}"]`)!;
   const click = async (label: string, inGroup?: string) => {
@@ -104,8 +112,12 @@ async function mount() {
     );
     expect(button).toBeDefined();
     await act(async () => button!.click());
-    // After choosing with the pointer, leave the menu before handing keys to the grid.
-    if (inGroup) await act(async () => (document.activeElement as HTMLElement)?.blur());
+    // After choosing with the pointer, let the menu close, then leave it before handing keys to
+    // the grid.
+    if (inGroup) {
+      await act(() => vi.advanceTimersByTimeAsync(10));
+      await act(async () => (document.activeElement as HTMLElement)?.blur());
+    }
   };
   await render("movie");
   await click("All movies");

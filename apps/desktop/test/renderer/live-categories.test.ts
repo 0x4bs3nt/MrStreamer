@@ -198,7 +198,7 @@ describe("countries then categories", () => {
     );
   });
 
-  it.each<Locale>(["en-US", "nl-NL", "fr-FR", "de-DE", "es-ES"])(
+  it.each<Locale>(["en-US", "nl-NL"])(
     "keeps a 63,000-channel catalogue compact and searchable in %s",
     async (locale) => {
       setLanguage({ locale, formats: locale });

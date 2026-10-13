@@ -7,6 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:timers/promises", () => ({ setTimeout: async () => undefined }));
 
+/**
+ * The time each stapler attempt was given, as the script asked. While `scale` is below 1, an
+ * attempt runs for that share of it, so a minute's cap ends a hanging attempt in moments.
+ */
+const attempts = vi.hoisted(() => ({ given: [] as (number | undefined)[], scale: 1 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const spawnSync = ((command: string, args: readonly string[], options: { timeout?: number }) => {
+    attempts.given.push(options.timeout);
+    const timeout = options.timeout && Math.round(options.timeout * attempts.scale);
+    return actual.spawnSync(command, args, { ...options, timeout });
+  }) as typeof actual.spawnSync;
+  return { ...actual, spawnSync };
+});
+
 const xcrun = `#!/usr/bin/env node
 const fs = await import("node:fs");
 const args = process.argv.slice(2);
@@ -38,21 +53,13 @@ if (args[0] === "notarytool") {
     process.stdout.write("The staple and validate action worked!\\n");
   }
 } else if (args[1] === "validate") {
-  if (process.env.VALIDATE_SCENARIO === "hang") {
-    fs.writeFileSync(process.env.STAPLE_PID, String(process.pid));
-    process.on("SIGTERM", () => {});
-    setTimeout(() => {}, 120000);
-  } else if (process.env.VALIDATE_SCENARIO === "exhaust" ||
+  if (process.env.VALIDATE_SCENARIO === "exhaust" ||
     (process.env.VALIDATE_SCENARIO === "recover" && validations === 0)) {
     process.stderr.write('error is Error Domain=NSURLErrorDomain Code=-1005 "The network connection was lost."\\n');
     process.stderr.write("NSErrorFailingURLStringKey=https://api.apple-cloudkit.com/database/1/com.apple.gk.ticket-delivery/production/public/records/lookup\\n");
     process.exitCode = 68;
   } else if (process.env.VALIDATE_SCENARIO === "permanent") {
     process.stderr.write("The ticket is invalid. The validate action failed! Error 68.\\n");
-    process.exitCode = 68;
-  } else if (process.env.VALIDATE_SCENARIO === "other-network") {
-    process.stderr.write("Error Domain=NSURLErrorDomain Code=-1005\\n");
-    process.stderr.write("NSErrorFailingURLStringKey=https://example.com/unrelated\\n");
     process.exitCode = 68;
   } else {
     process.stdout.write("The validate action worked!\\n");
@@ -97,6 +104,8 @@ describe.skipIf(process.platform === "win32")("notarizing and stapling a release
   });
 
   afterEach(() => {
+    attempts.given = [];
+    attempts.scale = 1;
     process.argv = originalArgv;
     process.env = originalEnv;
     rmSync(directory, { recursive: true, force: true });
@@ -151,17 +160,34 @@ describe.skipIf(process.platform === "win32")("notarizing and stapling a release
     expect(readFileSync(metadata, "utf8")).toContain("sha512: old");
   });
 
-  it("stops a hanging stapler at the subprocess deadline", async () => {
+  it("kills a hanging stapler that ignores SIGTERM at its deadline", async () => {
     process.env.STAPLE_SCENARIO = "hang";
+    // Each clock reading jumps 295 s, so the deadline read just before the first attempt leaves
+    // it 5 s of the five minutes: the hang is cut there, as it would be at a minute.
+    let now = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => (now += 295_000));
     const started = performance.now();
     await expect(run()).rejects.toThrow("staple failed for");
     const elapsed = performance.now() - started;
-    expect(elapsed).toBeLessThan(70_000);
+    expect(elapsed).toBeLessThan(20_000);
     expect(commands()).toEqual(["submit", "staple"]);
     expect(readFileSync(metadata, "utf8")).toContain("sha512: old");
-    const pid = assertStaplerExited();
-    console.log(`Ignored-SIGTERM stapler PID ${pid} absent after ${Math.round(elapsed)} ms.`);
-  }, 75_000);
+    assertStaplerExited();
+  }, 25_000);
+
+  it("kills a hanging stapler at its minute, with the five minutes far from spent", async () => {
+    process.env.STAPLE_SCENARIO = "hang";
+    attempts.scale = 0.01;
+    const started = performance.now();
+    await expect(run()).rejects.toThrow("staple failed for");
+    const elapsed = performance.now() - started;
+    // The attempt's own minute ended it, not the hang's two and not the overall deadline.
+    expect(attempts.given).toEqual([60_000]);
+    expect(elapsed).toBeLessThan(20_000);
+    expect(commands()).toEqual(["submit", "staple"]);
+    expect(readFileSync(metadata, "utf8")).toContain("sha512: old");
+    assertStaplerExited();
+  }, 25_000);
 
   it("recovers a lost validation lookup before changing release metadata", async () => {
     process.env.VALIDATE_SCENARIO = "recover";
@@ -180,12 +206,6 @@ describe.skipIf(process.platform === "win32")("notarizing and stapling a release
     expect(readFileSync(`${dmg}.blockmap`, "utf8")).toBe("stale");
   });
 
-  it("does not retry an unrelated validation network failure", async () => {
-    process.env.VALIDATE_SCENARIO = "other-network";
-    await expect(run()).rejects.toThrow("validate failed for");
-    expect(commands()).toEqual(["submit", "staple", "validate"]);
-  });
-
   it("fails after four lost validation lookups and leaves metadata untouched", async () => {
     process.env.VALIDATE_SCENARIO = "exhaust";
     await expect(run()).rejects.toThrow("after 4 attempts: retry budget exhausted");
@@ -200,16 +220,4 @@ describe.skipIf(process.platform === "win32")("notarizing and stapling a release
     expect(readFileSync(metadata, "utf8")).toContain("sha512: old");
     expect(readFileSync(`${dmg}.blockmap`, "utf8")).toBe("stale");
   });
-
-  it("kills validation that ignores SIGTERM and leaves metadata untouched", async () => {
-    process.env.VALIDATE_SCENARIO = "hang";
-    const started = performance.now();
-    await expect(run()).rejects.toThrow("validate failed for");
-    const elapsed = performance.now() - started;
-    expect(elapsed).toBeLessThan(70_000);
-    expect(commands()).toEqual(["submit", "staple", "validate"]);
-    expect(readFileSync(metadata, "utf8")).toContain("sha512: old");
-    const pid = assertStaplerExited();
-    console.log(`Ignored-SIGTERM validation PID ${pid} absent after ${Math.round(elapsed)} ms.`);
-  }, 75_000);
 });

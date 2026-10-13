@@ -358,9 +358,16 @@ describe("viewing record", () => {
   });
 });
 
-/** Lets the clock move on, so a play begun now began after what came before. */
-function later(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 5));
+/**
+ * Moves the clock a minute on, so a play begun now began after what came before. From the first
+ * call the clock stands still between calls, until the test ends.
+ */
+function later(): void {
+  if (!vi.isFakeTimers()) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+  }
+  vi.setSystemTime(Date.now() + 60_000);
 }
 
 describe("channels with several streams", () => {
@@ -867,7 +874,7 @@ describe("how far movies and episodes got", () => {
     // How far they got stays, for the details' Resume.
     expect(await restarted.progress({ movieIds: ["m1-4k"] })).toMatchObject([{ position: 900 }]);
 
-    await later();
+    later();
     const again = await restarted.played(episode("e2", "s1-nl", 1, 2), 700, 2700);
     expect(again.continueWatching.map((entry) => entry.title)).toEqual([
       episode("e2", "s1-nl", 1, 2),
@@ -890,7 +897,7 @@ describe("how far movies and episodes got", () => {
     expect(going.continueWatching).toEqual([]);
     expect(await viewing.progress({ movieIds: ["m1"] })).toMatchObject([{ position: 660 }]);
 
-    await later();
+    later();
     const resumed = await viewing.played(movie("m1"), 700, 6000);
     expect(resumed.continueWatching.map((entry) => entry.title)).toEqual([movie("m1")]);
   });
@@ -914,7 +921,7 @@ describe("how far movies and episodes got", () => {
     expect((await restarted.state()).continueWatching.map((entry) => entry.title)).toEqual([
       movie("m1"),
     ]);
-    await later();
+    later();
     const again = await restarted.played(episode("nl1", "s1-nl", 1, 1), 700, 2700);
     expect(again.continueWatching.map((entry) => entry.title)).toEqual([
       episode("nl1", "s1-nl", 1, 1),
@@ -941,7 +948,7 @@ describe("how far movies and episodes got", () => {
     expect((await restarted.state()).continueWatching.map((entry) => entry.title)).toEqual([
       movie("m2"),
     ]);
-    await later();
+    later();
     const again = await restarted.played(movie("m1"), 700, 6000);
     expect(again.continueWatching.map((entry) => entry.title)).toEqual([movie("m1"), movie("m2")]);
   });

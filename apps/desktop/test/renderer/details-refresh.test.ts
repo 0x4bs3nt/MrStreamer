@@ -4,7 +4,7 @@
 // updates the status and reads no list again.
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { MovieDetails } from "@mrstreamer/contracts/ondemand";
 import { queries, syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
 
@@ -70,6 +70,10 @@ describe("TMDB's progress", () => {
   const statusKey = queries.onDemandStatus().queryKey;
 
   it("updates only the progress of the status, and reads no list again", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     ipc.reset();
     ipc.always("ondemand.collection", { name: "All", total: 0, titles: [] });
     const client = new QueryClient();
@@ -87,7 +91,8 @@ describe("TMDB's progress", () => {
     const later = { ...metadata, known: 6 };
     ipc.emit("ondemand.progress", later);
     expect(client.getQueryData(statusKey)).toEqual({ lists, metadata: later });
-    await new Promise((done) => setTimeout(done, 20));
+    // Long enough for a read that anything asked for to start.
+    await vi.advanceTimersByTimeAsync(20);
     expect(ipc.argsOf("ondemand.collection")).toHaveLength(1);
     expect(ipc.methods()).not.toContain("ondemand.status");
 

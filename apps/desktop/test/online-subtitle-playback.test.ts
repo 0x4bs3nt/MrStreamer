@@ -9,6 +9,8 @@ import { OnlineSubtitles } from "../src/main/services/online-subtitles.ts";
 import { collect, fakeProvider, promised, runtimeFor, tempDir, testConfig } from "./support.ts";
 const hasTools =
   spawnSync("ffmpeg", ["-version"]).status === 0 && spawnSync("ffprobe", ["-version"]).status === 0;
+/** What the window decodes: the movie's FLAC sound plays as it is, with nothing to convert. */
+const DECODERS = ["h264", "aac", "flac"] as const;
 
 /** Answers SubDL at main's `fetch` with one English result for whatever is asked, and counts. */
 function serveSubdl() {
@@ -106,7 +108,7 @@ function secondEpisode({
     }));
   const open = async () => {
     const file = await titles.file(ref);
-    return playback.openTitle(ref, file.url, ["h264", "aac"], file);
+    return playback.openTitle(ref, file.url, DECODERS, file);
   };
   return { open, relist };
 }
@@ -123,7 +125,7 @@ describe.skipIf(!hasTools)("saved subtitles of the actual playback session", () 
       const ref = { kind: "movie" as const, subscriptionId, id: String(movie.id) };
       const open = async () => {
         const file = await titles.file(ref);
-        return playback.openTitle(ref, file.url, ["h264", "aac"], file);
+        return playback.openTitle(ref, file.url, DECODERS, file);
       };
       const first = await open();
       expect(await subtitles.saved(first.sessionId)).toBeNull();
@@ -260,10 +262,12 @@ describe.skipIf(!hasTools)("saved subtitles of the actual playback session", () 
     const { provider, service, runtime, titles, playback, subtitles, subscriptionId } = all;
     const { open, relist } = secondEpisode(all);
     /** As many other details as are kept at once: the series' own are kept no longer. */
-    const readOthers = async () => {
-      for (const movie of provider.titles.movies.slice(0, 200))
-        await titles.details("movie", { subscriptionId, id: String(movie.id) });
-    };
+    const readOthers = () =>
+      Promise.all(
+        provider.titles.movies
+          .slice(0, 200)
+          .map((movie) => titles.details("movie", { subscriptionId, id: String(movie.id) })),
+      );
     try {
       const playing = await open();
       const found = await subtitles.search(playing.sessionId);

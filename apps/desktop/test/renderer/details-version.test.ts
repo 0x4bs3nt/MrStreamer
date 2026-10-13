@@ -6,7 +6,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
 import type { TitleProgress } from "@mrstreamer/contracts/viewing";
@@ -39,7 +39,26 @@ const film: Title = {
 };
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
+
+/** Lets the sheet's timers and answers run on the fake clock. */
+const settled = (ms = 10) => act(() => vi.advanceTimersByTimeAsync(ms));
+
+/** Runs the fake clock on until `check` passes. */
+const until = (check: () => void) =>
+  vi.waitFor(
+    async () => {
+      await settled();
+      check();
+    },
+    { interval: 1 },
+  );
 
 /**
  * Opens the details on version `id`, with `picks` as what the viewer left its subscription at,
@@ -84,18 +103,8 @@ async function opened(
   await act(async () => listed.resolve([title]));
   await act(async () => progress.resolve(played));
   // Wait for the public request and rendered answer, rather than guessing React Query's timing.
-  await expect
-    .poll(async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
-      return ipc.argsOf("ondemand.details").at(-1);
-    })
-    .toBeDefined();
-  await expect
-    .poll(async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
-      return document.body.textContent?.includes("Loading…");
-    })
-    .toBe(false);
+  await until(() => expect(ipc.argsOf("ondemand.details").at(-1)).toBeDefined());
+  await until(() => expect(document.body.textContent).not.toContain("Loading…"));
   const requested = ipc.argsOf("ondemand.details").at(-1);
   // Asked of the subscription that lists the film, and of no other.
   expect(requested?.version.subscriptionId ?? SUBSCRIPTION).toBe(SUBSCRIPTION);
@@ -141,11 +150,11 @@ describe("a film's details", () => {
     await act(async () =>
       document.querySelector<HTMLButtonElement>('[aria-label="Versions"]')?.click(),
     );
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    await settled(20);
     await act(async () =>
       document.querySelector<HTMLElement>('[role="menuitem"][aria-expanded]')?.click(),
     );
-    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    await settled(20);
     const newer = [...document.querySelectorAll('[role="menuitemradio"]')].find((row) =>
       row.textContent?.includes("second release"),
     );

@@ -3,7 +3,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Download, DownloadList, DownloadStatus } from "@mrstreamer/contracts/downloads";
 import type { Episode, SeriesDetails } from "@mrstreamer/contracts/ondemand";
 import type { EpisodeMark, TitleProgress } from "@mrstreamer/contracts/viewing";
@@ -90,17 +90,22 @@ const list = (items: readonly Download[]): DownloadList => ({
   ended: 0,
 });
 let cleanup = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   cleanup();
   ipc.reset();
+  vi.useRealTimers();
 });
+/** Lets the menu's timers and answers run on the fake clock until `check` passes. */
 const until = (check: () => void) =>
   vi.waitFor(
     async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      await act(() => vi.advanceTimersByTimeAsync(10));
       check();
     },
-    { timeout: 5000 },
+    { timeout: 5000, interval: 1 },
   );
 
 async function mount(

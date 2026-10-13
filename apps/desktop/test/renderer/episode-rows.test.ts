@@ -6,7 +6,7 @@ import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Episode, SeriesDetails, Title } from "@mrstreamer/contracts/ondemand";
 import { DetailsView } from "../../src/renderer/src/features/titles/DetailsView.tsx";
 import { syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
@@ -69,14 +69,20 @@ const details: SeriesDetails = {
 };
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 const text = () => document.body.textContent ?? "";
-/** Waits until `check` passes, letting React Query pass the answers on meanwhile. */
+/** Waits until `check` passes, moving the fake clock so React Query passes the answers on. */
 const until = (check: () => void) =>
   vi.waitFor(
     async () => {
-      await act(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      await act(() => vi.advanceTimersByTimeAsync(10));
       check();
     },
     // A busy suite can take a while; a stuck sheet still fails.

@@ -7,7 +7,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Download } from "@mrstreamer/contracts/downloads";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
@@ -17,12 +17,19 @@ import { player } from "../../src/renderer/src/player/player.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   titlePlayer.close();
   player.reset();
   useUi.setState({ details: null, settings: null, watching: false });
+  vi.useRealTimers();
 });
+
+/** Lets the section take in what was just answered, on the test's clock. */
+const settled = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 const subscription = (id: string, name: string): SubscriptionSummary => ({
   kind: "xtream",
@@ -66,7 +73,7 @@ function reads() {
       guides.resolve([]);
       titles.resolve({ lists: [], metadata: null });
     });
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
   };
 }
 
@@ -93,7 +100,7 @@ async function removing(
     [...container.querySelectorAll("button")].find((each) => each.textContent?.trim() === text);
   const click = async (element: Element | undefined | null) => {
     await act(async () => (element as HTMLElement | undefined | null)?.click());
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
   };
   const row = [...container.querySelectorAll("li")].find((each) =>
     each.textContent?.startsWith(removed.name ?? ""),
@@ -171,7 +178,7 @@ describe("removing a subscription", () => {
     await click(button("Remove"));
     expect(player.current()).toBeNull();
     await act(async () => answer.resolve(null));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     // The others are still listed, and what was open of another subscription stays open.
     expect(client.getQueryData(["subscriptions"])).toEqual([holiday, openlist]);
@@ -238,7 +245,7 @@ describe("removing a subscription", () => {
     const answer = ipc.hold("subscription.remove");
     await click(button("Remove"));
     await act(async () => answer.resolve(null));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(player.current()).toEqual(playing);
     // The one left is alone now, and shows its details as a single subscription does.
@@ -291,7 +298,7 @@ describe("removing a subscription", () => {
     await click(button("Remove"));
     await act(async () => player.preview(kept));
     await act(async () => answer.reject({ kind: "unexpected", detail: "The disk is full." }));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(container.textContent).toContain("Something went wrong: The disk is full.");
     expect(player.current()).toEqual(kept);
@@ -322,7 +329,7 @@ describe("removing a subscription", () => {
     expect(box()?.getAttribute("aria-checked")).toBe("false");
 
     await act(async () => answer.reject({ kind: "unexpected", detail: "The disk is full." }));
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+    await settled();
 
     expect(container.textContent).toContain("Something went wrong: The disk is full.");
     await click(box()?.closest("label"));

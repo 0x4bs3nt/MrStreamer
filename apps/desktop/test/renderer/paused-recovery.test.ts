@@ -5,7 +5,7 @@
 // lets go of the provider after five minutes, however it came to be paused, and saves no
 // progress meanwhile.
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EngineError } from "../../src/renderer/src/player/engine.ts";
 import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
@@ -63,7 +63,8 @@ vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
   },
 }));
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** Lets the player's answers through and moves the fake clock a millisecond. */
+const settle = () => vi.advanceTimersByTimeAsync(1);
 
 /** Opens a movie with two sound tracks, plays it from `from` seconds, then pauses it. */
 async function pausedMovie(from = 0): Promise<void> {
@@ -99,7 +100,13 @@ async function pausedMovie(from = 0): Promise<void> {
   await settle();
 }
 
-afterEach(() => titlePlayer.close());
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+});
+afterEach(() => {
+  titlePlayer.close();
+  vi.useRealTimers();
+});
 
 describe("a paused movie changing its sound", () => {
   it.each([
@@ -114,7 +121,7 @@ describe("a paused movie changing its sound", () => {
     const failed = ipc.hold("playback.failure");
     runs.at(-1)!.fail(error);
     failed.resolve(null);
-    await new Promise((resolve) => setTimeout(resolve, retryAfter + 20));
+    await vi.advanceTimersByTimeAsync(retryAfter + 20);
 
     const again = runs.at(-1)!;
     expect(runs).toHaveLength(3);
@@ -136,45 +143,25 @@ describe("a paused movie", () => {
   });
 
   it("lets go of the provider after five minutes, also when a skip made the run", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    try {
-      await pausedMovieWithFakeTimers();
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-      expect(runs.at(-1)!.destroyed).toBe(true);
+    await pausedMovie(30);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(runs.at(-1)!.destroyed).toBe(true);
 
-      // Still paused, the viewer skips: the new run holds its picture, and the connection.
-      titlePlayer.seek(100);
-      const skipped = runs.at(-1)!;
-      skipped.start();
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    // Still paused, the viewer skips: the new run holds its picture, and the connection.
+    titlePlayer.seek(100);
+    const skipped = runs.at(-1)!;
+    skipped.start();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
 
-      expect(skipped.run.paused).toBe(true);
-      expect(skipped.destroyed).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(skipped.run.paused).toBe(true);
+    expect(skipped.destroyed).toBe(true);
   });
 
   it("saves no progress while it stays paused", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-    try {
-      await pausedMovieWithFakeTimers();
-      const saved = ipc.argsOf("viewing.recordProgress").length;
-      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    await pausedMovie(30);
+    const saved = ipc.argsOf("viewing.recordProgress").length;
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
 
-      expect(ipc.argsOf("viewing.recordProgress")).toHaveLength(saved);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(ipc.argsOf("viewing.recordProgress")).toHaveLength(saved);
   });
 });
-
-/** As `pausedMovie`, 30 seconds in, while the test moves the clock. */
-async function pausedMovieWithFakeTimers(): Promise<void> {
-  let done = false;
-  const paused = pausedMovie(30).then(() => {
-    done = true;
-  });
-  while (!done) await vi.advanceTimersByTimeAsync(1);
-  await paused;
-}

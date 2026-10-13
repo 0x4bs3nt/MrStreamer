@@ -6,7 +6,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListingMatch, Programme } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
@@ -56,12 +56,19 @@ Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
 });
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   player.reset();
+  vi.useRealTimers();
 });
 
-/** Flushes React while waiting for an IPC call or the rows it renders. */
+/**
+ * Flushes React while waiting for an IPC call or the rows it renders. The fake clock moves on
+ * 10 ms between tries, past the search's pause after typing.
+ */
 const ready = (check: () => void) =>
   vi.waitFor(
     async () => {

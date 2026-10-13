@@ -13,7 +13,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
 import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
@@ -56,8 +56,11 @@ vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
 /** The scrubber's width here: one pixel a second of the ten-minute movie. */
 const WIDTH = 600;
 
-/** Long enough for a frame, in which the thumb is focused, and for the player to follow. */
-const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+/**
+ * Long enough for a frame, in which the thumb is focused, and for the player to follow, on the
+ * fake clock every test runs on.
+ */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 
 let container: HTMLDivElement;
 let unmount = () => {};
@@ -166,12 +169,17 @@ const key = (name: string) =>
     );
   });
 
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
 afterEach(() => {
   act(() => titlePlayer.close());
   unmount();
   unmount = () => {};
   container.remove();
   useUi.setState({ playingTitle: false });
+  vi.useRealTimers();
 });
 
 describe("the title player's keys after a press on the scrubber", () => {

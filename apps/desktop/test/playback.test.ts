@@ -30,14 +30,15 @@ const FFMPEG = process.env["MR_STREAMER_FFMPEG"] ?? "ffmpeg";
 const hasFfmpeg = spawnSync(FFMPEG, ["-version"]).status === 0;
 
 /**
- * Playback on a connected fake provider. `open` takes a channel of the connected subscription by
- * the provider's id; `service` is playback itself, and `tracksChanged` the session ids it said
- * that of so far. `dispose` ends it, as quitting the app does.
+ * Playback on a connected fake provider that allows one connection and frees it as soon as a
+ * stream closes, unless `slotReleaseMs` says otherwise. `open` takes a channel of the connected
+ * subscription by the provider's id; `service` is playback itself, and `tracksChanged` the
+ * session ids it said that of so far. `dispose` ends it, as quitting the app does.
  */
 async function connectedPlayback(options: { slotReleaseMs?: number; ffmpeg?: boolean } = {}) {
   const provider = await fakeProvider({
     maxConnections: 1,
-    slotReleaseMs: options.slotReleaseMs ?? 300,
+    slotReleaseMs: options.slotReleaseMs ?? 0,
   });
   const runtime = runtimeFor(
     Playback.layer({ userAgent, ffmpeg: options.ffmpeg ? FFMPEG : null }).pipe(
@@ -205,7 +206,7 @@ describe("playback", () => {
   });
 
   it("releases the provider connection when the app quits", async () => {
-    const { provider, playback } = await connectedPlayback({ slotReleaseMs: 0 });
+    const { provider, playback } = await connectedPlayback();
 
     const session = await playback.open(liveChannels(provider)[0] ?? "", LINUX);
     const stream = await firstBytes(session.url);
@@ -225,22 +226,6 @@ describe("playback", () => {
 
     expect(stream.status).toBe(404);
     expect(await playback.failure(session.sessionId)).toEqual({ kind: "unavailable", status: 404 });
-    await playback.dispose();
-  });
-
-  it("reports a refusal when the connection limit stays in use", async () => {
-    const { provider, playback } = await connectedPlayback();
-    const [one = "", two = ""] = liveChannels(provider);
-    // Someone else is watching on the only connection.
-    const elsewhere = await firstBytes(`${provider.url}/live/demo/demo/${two}.ts`);
-    expect(elsewhere.status).toBe(200);
-
-    const session = await playback.open(one, LINUX);
-    const stream = await firstBytes(session.url);
-
-    expect(stream.status).toBe(403);
-    expect(await playback.failure(session.sessionId)).toEqual({ kind: "refused", status: 403 });
-    elsewhere.stop();
     await playback.dispose();
   });
 
@@ -281,7 +266,7 @@ describe("playback", () => {
       await playback.dispose();
     });
 
-    it("tries no other stream after a refusal, which would refuse it too", async () => {
+    it("reports a refusal when the connection limit stays in use, and tries no other stream, which would refuse it too", async () => {
       const { provider, playback } = await connectedPlayback();
       const [one = "", two = "", three = ""] = liveChannels(provider);
       // Someone else is watching on the only connection.
@@ -293,6 +278,7 @@ describe("playback", () => {
       const stream = await firstBytes(session.url);
 
       expect(stream.status).toBe(403);
+      expect(await playback.failure(session.sessionId)).toEqual({ kind: "refused", status: 403 });
       expect(await playback.playing(session.sessionId)).toEqual({
         variantId: null,
         failed: [{ variantId: one, failure: { kind: "refused", status: 403 } }],

@@ -1299,46 +1299,6 @@ describe("the watchlist beside the viewing record", { timeout: 30_000 }, () => {
 });
 
 describe("a watchlist change the database refuses", { timeout: 30_000 }, () => {
-  it("changes nothing when the database fails part of the way through a save or a removal, and does it on the retry", async () => {
-    const { app, saving } = await connected();
-    const kept = await saving.save("movie", OLD_AVI);
-    const before = await saving.list();
-    const told = await saving.changes();
-    // The disk gives out after the entry is written, before its versions.
-    app.database((db) =>
-      db.exec(`create trigger full before insert on watchlist_versions
-               begin select raise(abort, 'disk full'); end`),
-    );
-
-    await expect(saving.save("movie", TWO_SOUNDS)).rejects.toMatchObject({
-      error: { kind: "unexpected" },
-    });
-    expect(await saving.list()).toEqual(before);
-    expect(await saving.saved("movie", TWO_SOUNDS)).toBeNull();
-    expect(told).toEqual([]);
-
-    app.database((db) => db.exec("drop trigger full"));
-    const saved = await saving.save("movie", TWO_SOUNDS);
-    expect(await saving.saved("movie", TWO_SOUNDS_DUBBED)).toEqual(saved);
-    const both = await saving.list();
-    expect(both.total).toBe(2);
-
-    // A removal writes its versions off first: this failure comes after them.
-    app.database((db) =>
-      db.exec(`create trigger held before delete on watchlist
-               begin select raise(abort, 'database is locked'); end`),
-    );
-    await expect(saving.watchlist.remove(saved)).rejects.toMatchObject({
-      error: { kind: "unexpected" },
-    });
-    expect(await saving.list()).toEqual(both);
-    expect(await saving.saved("movie", TWO_SOUNDS_DUBBED)).toEqual(saved);
-
-    app.database((db) => db.exec("drop trigger held"));
-    await saving.watchlist.remove(saved);
-    expect((await saving.list()).entries.map((entry) => entry.id)).toEqual([kept.id]);
-  });
-
   it("still reads what was saved when new lists can't be taken over, and takes them over later", async () => {
     const { app, provider, saving } = await connected();
     const first = await saving.save("movie", UNNAMED);

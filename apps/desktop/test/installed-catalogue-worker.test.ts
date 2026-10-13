@@ -365,7 +365,7 @@ it.each([false, true])(
           reject(error);
         });
       });
-      main = await connect(port, "node");
+      main = await connect(port, "node", { pollMs: 10 });
       const paused = await pauseMain(main);
       expect(await paused.evaluate("process.pid")).toBe(child.pid);
       worker = installCatalogueWorkerProbe({

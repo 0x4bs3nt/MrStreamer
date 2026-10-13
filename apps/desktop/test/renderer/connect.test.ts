@@ -6,11 +6,17 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectScreen } from "../../src/renderer/src/features/connect/ConnectScreen.tsx";
 
 let unmount = () => {};
-afterEach(() => unmount());
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 /**
  * Does `step`, then waits for what it set off: React Query tells the screen about a mutation's
@@ -19,7 +25,7 @@ afterEach(() => unmount());
 async function settled(step: () => unknown): Promise<void> {
   await act(async () => {
     step();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.advanceTimersByTimeAsync(20);
   });
 }
 

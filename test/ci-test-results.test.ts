@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -37,10 +38,10 @@ const replace = (entry: Entry): Entry[] =>
  * Runs the CLI in a repository holding `files`, on `report`: entries, or the report's text. Answers
  * its exit status and what it printed.
  */
-function check(
+async function check(
   report: string | readonly Entry[],
   files: readonly string[] = testFiles,
-): { status: number | null; output: string } {
+): Promise<{ status: number | null; output: string }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "mrstreamer-ci-results-")));
   try {
     for (const file of files) {
@@ -62,22 +63,22 @@ function check(
             })),
           });
     writeFileSync(join(root, "report.json"), text);
-    const run = spawnSync(process.execPath, [cli, "report.json"], {
-      cwd: root,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    expect(run.error).toBeUndefined();
-    return { status: run.status, output: run.stdout + run.stderr };
+    const run = spawn(process.execPath, [cli, "report.json"], { cwd: root, timeout: 10_000 });
+    let output = "";
+    run.stdout.setEncoding("utf8").on("data", (text: string) => (output += text));
+    run.stderr.setEncoding("utf8").on("data", (text: string) => (output += text));
+    const [status] = (await once(run, "close")) as [number | null];
+    return { status, output };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-describe("CI's test report", () => {
-  it("passes when every test file is in it, each test passed", () => {
+// Each check runs the CLI apart, in a repository of its own, so they run side by side.
+describe("CI's test report", { concurrent: true }, () => {
+  it("passes when every test file is in it, each test passed", async () => {
     // Helpers beside the tests and files outside the test folders are no test files.
-    const run = check(complete, [
+    const run = await check(complete, [
       ...testFiles,
       "apps/desktop/test/fake-provider.ts",
       "docs/notes.test.ts",
@@ -87,8 +88,8 @@ describe("CI's test report", () => {
     expect(run.status).toBe(0);
   });
 
-  it("requires a new test file as soon as it exists, with no list to add it to", () => {
-    const run = check(complete, [...testFiles, "apps/desktop/test/recordings.test.ts"]);
+  it("requires a new test file as soon as it exists, with no list to add it to", async () => {
+    const run = await check(complete, [...testFiles, "apps/desktop/test/recordings.test.ts"]);
 
     expect(run.output).toContain("apps/desktop/test/recordings.test.ts: not in the report.");
     expect(run.status).toBe(1);
@@ -98,15 +99,15 @@ describe("CI's test report", () => {
     const hidden = ["test/.hidden.test.ts", "apps/desktop/test/.cases/nested.test.ts"];
     const files = [...testFiles, ...hidden];
 
-    it("passes when they are in it", () => {
-      const run = check([...complete, ...hidden.map((file) => ({ file }))], files);
+    it("passes when they are in it", async () => {
+      const run = await check([...complete, ...hidden.map((file) => ({ file }))], files);
 
       expect(run.output).toContain("All 7 test files are in the report: 7 tests passed.");
       expect(run.status).toBe(0);
     });
 
-    it("fails when they are left out", () => {
-      const run = check(complete, files);
+    it("fails when they are left out", async () => {
+      const run = await check(complete, files);
 
       for (const file of hidden) expect(run.output).toContain(`${file}: not in the report.`);
       expect(run.status).toBe(1);
@@ -154,15 +155,15 @@ describe("CI's test report", () => {
       report: [...complete, { file: downloads }],
       says: "in the report 2 times",
     },
-  ])("fails when a file's tests are $name", ({ report, says }) => {
-    const run = check(report);
+  ])("fails when a file's tests are $name", async ({ report, says }) => {
+    const run = await check(report);
 
     expect(run.output).toContain(`${downloads}: ${says}`);
     expect(run.status).toBe(1);
   });
 
-  it("lets the macOS-only file skip elsewhere, and no other", () => {
-    const run = check(replace({ file: airplayKey, tests: ["skipped"] }));
+  it("lets the macOS-only file skip elsewhere, and no other", async () => {
+    const run = await check(replace({ file: airplayKey, tests: ["skipped"] }));
 
     expect(run.status).toBe(process.platform === "darwin" ? 1 : 0);
     if (process.platform !== "darwin")
@@ -185,15 +186,15 @@ describe("CI's test report", () => {
       report: replace({ file: airplayKey, tests: ["failed"] }),
       says: "case 1 (failed)",
     },
-  ])("still fails when the macOS-only file is $name", ({ report, says }) => {
-    const run = check(report);
+  ])("still fails when the macOS-only file is $name", async ({ report, says }) => {
+    const run = await check(report);
 
     expect(run.output).toContain(`${airplayKey}: ${says}`);
     expect(run.status).toBe(1);
   });
 
-  it("fails for a file it doesn't have, as from another checkout", () => {
-    const run = check([...complete, { file: "apps/desktop/test/elsewhere.test.ts" }]);
+  it("fails for a file it doesn't have, as from another checkout", async () => {
+    const run = await check([...complete, { file: "apps/desktop/test/elsewhere.test.ts" }]);
 
     expect(run.output).toContain(
       "apps/desktop/test/elsewhere.test.ts: in the report, but no test file here.",
@@ -208,15 +209,15 @@ describe("CI's test report", () => {
       report: '{"testResults":[{"name":1}]}',
       says: "report.json is no Vitest JSON report",
     },
-  ])("fails for a report that is $name", ({ report, says }) => {
-    const run = check(report);
+  ])("fails for a report that is $name", async ({ report, says }) => {
+    const run = await check(report);
 
     expect(run.output).toContain(says);
     expect(run.status).toBe(1);
   });
 
-  it("fails where it finds no test files", () => {
-    const run = check([], []);
+  it("fails where it finds no test files", async () => {
+    const run = await check([], []);
 
     expect(run.output).toContain("No test files under");
     expect(run.status).toBe(1);

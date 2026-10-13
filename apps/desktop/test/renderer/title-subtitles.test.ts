@@ -13,7 +13,7 @@ import { pesReader } from "@mrstreamer/core/subtitles/transport";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
 import { nudgeSubtitles } from "../../src/renderer/src/features/watch/SubtitleSettings.tsx";
@@ -121,7 +121,8 @@ function shown(): string[] {
     .reverse();
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+/** Lets the feed, the player and React catch up, on the fake clock every test runs on. */
+const settle = () => vi.advanceTimersByTimeAsync(20);
 
 let unmount = () => {};
 let view = document.createElement("div");
@@ -148,6 +149,10 @@ async function chosenInPanel(): Promise<string | null> {
   }
   return panel()?.querySelector('[aria-pressed="true"]')?.textContent ?? null;
 }
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 
 afterEach(() => {
   act(() => titlePlayer.close());
@@ -279,7 +284,6 @@ describe("subtitles on a playing movie", () => {
       const runs = serveRuns(false, codec);
       await opened(0, [track, dutch]);
       const note = await watching();
-      vi.useFakeTimers();
       await act(async () => titlePlayer.setSubtitle(track));
       runs.send(sent);
       await act(async () => vi.advanceTimersByTimeAsync(50));
@@ -306,7 +310,7 @@ describe("subtitles on a playing movie", () => {
     },
   );
 
-  it.each(["waiting", "ready"])("holds packet output until ready, %s", async (state) => {
+  it("holds packet output until ready", async () => {
     const runs = serveRuns(false, "teletext");
     await opened(0, [teletext, dutch]);
     await act(async () => titlePlayer.setSubtitle(teletext));
@@ -314,18 +318,15 @@ describe("subtitles on a playing movie", () => {
     runs.send(packetLine);
     await act(settle);
     expect(shown()).toEqual([]);
-    if (state === "ready") {
-      runs.send('{"ready":true}\n');
-      await act(settle);
-      expect(shown()).toEqual(["TELETEKST 888"]);
-    }
+    runs.send('{"ready":true}\n');
+    await act(settle);
+    expect(shown()).toEqual(["TELETEKST 888"]);
   });
 
   it.each(["ready", "off"])("cancels the loading deadline once the track is %s", async (state) => {
     const runs = serveRuns(false);
     await opened(0);
     const note = await watching();
-    vi.useFakeTimers();
     await act(async () => titlePlayer.setSubtitle(english));
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
     if (state === "ready") {
@@ -346,7 +347,6 @@ describe("subtitles on a playing movie", () => {
     const runs = serveRuns(false);
     await opened(0);
     const note = await watching();
-    vi.useFakeTimers();
     await act(async () => titlePlayer.setSubtitle(english));
     await act(async () => vi.advanceTimersByTimeAsync(20_000));
     await act(async () => titlePlayer.setSubtitle(dutch));
@@ -479,7 +479,6 @@ describe("subtitles on a playing movie", () => {
     expect(player.element.paused).toBe(true);
     expect(note()).toBe("Subtitles loading");
 
-    vi.useFakeTimers();
     // G: earlier, the line is due where the picture stands.
     await act(async () => nudgeSubtitles(english, -1));
     expect(shown()).toEqual(["Who goes there?"]);
@@ -499,7 +498,6 @@ describe("subtitles on a playing movie", () => {
     const runs = serveRuns(false);
     await opened(0);
     const note = await watching();
-    vi.useFakeTimers();
     await act(async () => titlePlayer.setSubtitle(english));
     runs.send(line(5, "We sail at first light.", 9));
     await act(async () => vi.advanceTimersByTimeAsync(35_050));

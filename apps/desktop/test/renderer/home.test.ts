@@ -3,7 +3,7 @@ import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SettingsPage } from "../../src/renderer/src/features/settings/SettingsPage.tsx";
 import { WindowBar } from "../../src/renderer/src/components/WindowBar.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -11,6 +11,9 @@ import { CustomizeHome } from "../../src/renderer/src/features/home/CustomizeHom
 import { TooltipProvider } from "../../src/renderer/src/components/ui/tooltip.tsx";
 
 let unmount = () => {};
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
   unmount();
   useUi.setState({
@@ -21,8 +24,10 @@ afterEach(() => {
     savedEntry: null,
     updateDialog: null,
   });
+  vi.useRealTimers();
 });
-const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+/** Lets the page take in what just happened, on the fake clock. */
+const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 const labels = () =>
   [...document.querySelectorAll("li label")].map((label) => label.textContent?.trim());
 const button = (name: string) =>
@@ -75,6 +80,7 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
     move.click();
     move.click();
   });
+  await settle();
   expect(ipc.argsOf("preferences.update")).toHaveLength(1);
   expect(document.querySelector("section[aria-busy=true]")).not.toBeNull();
   expect(document.querySelector('[role="status"]')?.textContent).toBe("Saving…");
@@ -158,6 +164,7 @@ it("blocks a move during save notification and preserves the settled visibility 
   await showReopenable();
   const hide = ipc.hold("preferences.update");
   await act(async () => checkbox("Watchlist").click());
+  await settle();
   const hidden = ipc.argsOf("preferences.update")[0]!;
   hide.resolve({ volume: 1, muted: false, ...hidden });
   // Let the IPC promise finish before React receives the scheduled observer notification.
