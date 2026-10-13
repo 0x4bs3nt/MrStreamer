@@ -25,9 +25,13 @@ The field at the end of the tabs searches movies on Movies and series on Series.
 
 ## Filtering the current list
 
-From 0.0.9, **Quality** and **Language** filter an open movie or series grid and its search results. They are hints from the provider's names. **Unknown** means no hint, and **MULTI** means a mark for several languages. **More…** offers the other languages. The count shows matches out of the current list; **Reset** clears the filters. Switching between Movies and Series clears them too. ⌘K's search stays unfiltered.
+From 0.0.9, **Quality** and **Language** filter an open movie or series grid and its search results. From 0.0.12 they are compact menus on one line with **Verified**, after **Sort** where a list has one. Each menu lists every choice, with the current one checked, and **Any** clears that filter. Long menus scroll, and Escape closes an open menu before it leaves the list.
 
-**Verified** appears after a file has been read on this computer. It filters by sound or subtitle languages found in that exact file, without opening or probing any files to filter. Its **Unknown** means a track was found but its language is unknown. Unread files and absent tracks do not match. Quality, language and verified choices must match one file together. A series matches when one of its known episodes has such a file; this does not promise the same tracks on every episode. After a restart or a list refresh, reopen a series' details before its saved episode observations count again. Only recently opened details stay available for filtering; reopen older series if their observations no longer count.
+Quality and Language are hints from the provider's names. **Unknown** means no hint, and **MULTI** means a mark for several languages. The count shows matches out of the current list, beside a collection's name; **Reset** clears every filter. Switching between Movies and Series clears them too. ⌘K's search stays unfiltered.
+
+**Sort** orders **All movies**, **All series** and a collection opened from a row, a genre or a service. A collection's order lasts until you leave it.
+
+**Verified** filters by sound or subtitle languages found in files read on this computer, without opening or probing any files to filter. Its menu says how many current files were read, and offers only **Any** until one is. Its **Unknown** means a track was found but its language is unknown. Unread files and absent tracks do not match. Quality, language and verified choices must match one file together. A series matches when one of its known episodes has such a file; this does not promise the same tracks on every episode. After a restart or a list refresh, reopen a series' details before its saved episode observations count again. Only recently opened details stay available for filtering; reopen older series if their observations no longer count.
 
 Opening a filtered poster picks the matching version. The arrow beside **Play** still lets you choose another.
 

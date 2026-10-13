@@ -87,13 +87,22 @@ export async function connect(port: number, kind: "page" | "node" = "page", poll
         pending.delete(id);
         resolve(message);
       });
-      socket.send(JSON.stringify({ id, method, params }));
+      try {
+        socket.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(id);
+        resolve({ error: String(error) });
+      }
     });
   return {
     send,
     /** Calls `listener` with each event of this name, as `Fetch.requestPaused`. */
-    on(method: string, listener: (params: unknown) => void): void {
+    on(method: string, listener: (params: unknown) => void): () => void {
       listeners.set(method, listener);
+      return () => {
+        if (listeners.get(method) === listener) listeners.delete(method);
+      };
     },
     async evaluate<T>(expression: string, timeoutMs = 10_000): Promise<T> {
       const reply = await send(

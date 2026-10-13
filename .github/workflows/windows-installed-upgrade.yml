@@ -7,27 +7,53 @@
 # By hand from main only, with all four pins: nothing is looked up as "latest". It reads releases,
 # runs and artifacts and publishes nothing: no release, feed, Store or tag, and it holds no secret.
 # The run's evidence is kept 14 days; a failed run's profile 7.
+# Published-pair mode instead installs an explicitly pinned stable and published nightly, then
+# restarts that same nightly for retained-copy/offline checks. Mode-specific pins never mix.
 name: Windows installed upgrade
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Legacy three-build chain or published stable to exact nightly with a restart
+        type: choice
+        options:
+          - legacy
+          - published-pair
+        default: legacy
+        required: true
       a-tag:
         description: Published nightly A, such as v0.0.10-nightly.20261010.282
         type: string
-        required: true
+        required: false
       a-sha:
         description: The full commit A's tag names
         type: string
-        required: true
+        required: false
       b-run:
         description: Run id of a successful release dry run of a pull request, made after A
         type: string
-        required: true
+        required: false
       b-sha:
         description: The full commit that dry run built
         type: string
-        required: true
+        required: false
+      stable-tag:
+        description: Published-pair only. Exact stable tag, including v
+        type: string
+        required: false
+      stable-sha:
+        description: Published-pair only. Full lowercase commit the stable tag names
+        type: string
+        required: false
+      candidate-tag:
+        description: Published-pair only. Exact published nightly tag, including v
+        type: string
+        required: false
+      candidate-sha:
+        description: Published-pair only. Full lowercase commit the candidate tag names
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -70,13 +96,47 @@ jobs:
           A_SHA: ${{ inputs.a-sha }}
           B_RUN: ${{ inputs.b-run }}
           B_SHA: ${{ inputs.b-sha }}
-        run: >-
-          node apps/desktop/test/e2e/installed-upgrade.ts resolve --a-tag "$A_TAG" --a-sha "$A_SHA"
-          --b-run "$B_RUN" --b-sha "$B_SHA" --out "$RUNNER_TEMP/installed-upgrade-packages"
-      - name: Install, upgrade twice and check
-        run: >-
-          node apps/desktop/test/e2e/installed-upgrade.ts run
-          --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/installed-upgrade"
+          MODE: ${{ inputs.mode || 'legacy' }}
+          STABLE_TAG: ${{ inputs.stable-tag }}
+          STABLE_SHA: ${{ inputs.stable-sha }}
+          CANDIDATE_TAG: ${{ inputs.candidate-tag }}
+          CANDIDATE_SHA: ${{ inputs.candidate-sha }}
+        run: |
+          case "$MODE" in
+            legacy)
+              for name in A_TAG A_SHA B_RUN B_SHA; do
+                test -n "${!name}" || { echo "Missing legacy pin: $name" >&2; exit 2; }
+              done
+              for name in STABLE_TAG STABLE_SHA CANDIDATE_TAG CANDIDATE_SHA; do
+                test -z "${!name}" || { echo "Mixed mode input: $name" >&2; exit 2; }
+              done
+              node apps/desktop/test/e2e/installed-upgrade.ts resolve --a-tag "$A_TAG" --a-sha "$A_SHA" \
+                --b-run "$B_RUN" --b-sha "$B_SHA" --out "$RUNNER_TEMP/installed-upgrade-packages"
+              ;;
+            published-pair)
+              for name in STABLE_TAG STABLE_SHA CANDIDATE_TAG CANDIDATE_SHA; do
+                test -n "${!name}" || { echo "Missing published-pair pin: $name" >&2; exit 2; }
+              done
+              for name in A_TAG A_SHA B_RUN B_SHA; do
+                test -z "${!name}" || { echo "Mixed mode input: $name" >&2; exit 2; }
+              done
+              node apps/desktop/test/e2e/installed-upgrade.ts resolve-published --stable-tag "$STABLE_TAG" \
+                --stable-sha "$STABLE_SHA" --candidate-tag "$CANDIDATE_TAG" --candidate-sha "$CANDIDATE_SHA" \
+                --out "$RUNNER_TEMP/installed-upgrade-packages"
+              ;;
+            *) echo "Unknown installed-upgrade mode" >&2; exit 2 ;;
+          esac
+      - name: Install, retain state and check offline copies
+        env:
+          MODE: ${{ inputs.mode || 'legacy' }}
+        run: |
+          case "$MODE" in
+            legacy) command=run ;;
+            published-pair) command=run-published ;;
+            *) echo "Unknown installed-upgrade mode" >&2; exit 2 ;;
+          esac
+          node apps/desktop/test/e2e/installed-upgrade.ts "$command" \
+            --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/installed-upgrade"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

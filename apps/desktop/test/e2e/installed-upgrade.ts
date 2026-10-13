@@ -25,7 +25,12 @@
 //   node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <folder under RUNNER_TEMP>
 //
 // `resolve` needs GH_TOKEN and GITHUB_REPOSITORY and runs anywhere; `run` only on that runner.
+// `resolve-published` and `run-published` use two explicitly pinned published releases instead:
+// stable -> candidate replacement -> restart of that same candidate, reusing the stages below.
 import { once } from "node:events";
+import { createHash } from "node:crypto";
+import { type } from "arktype";
+import { parse } from "yaml";
 import { createServer, type Server } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -37,9 +42,27 @@ import { crc32, deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import type { Result } from "../../../../packages/contracts/src/errors.ts";
 import type { IpcArgs, IpcMethod, IpcOutput } from "../../../../packages/contracts/src/ipc.ts";
+import { installCatalogueWorkerProbe, type Evidence } from "./installed-catalogue-worker.ts";
+import { catalogueWorkerScripts } from "./installed-worker-scripts.ts";
+import {
+  compareVersions,
+  formatVersion,
+  parseVersion,
+} from "../../../../packages/contracts/src/version.ts";
 import { startFakeProvider, type FakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, launch, type Page } from "./app.ts";
+import {
+  bootstrapSubtitles,
+  pauseMain,
+  inspectorOwner,
+  resumeMain,
+  startSubtitleFixture,
+  configureSubtitleUi,
+  seedSubtitleUi,
+  observeSavedSubtitle,
+  subtitleRequests,
+} from "./installed-subtitles.ts";
 import {
   readPins,
   resolvePackages,
@@ -48,16 +71,286 @@ import {
   type Package,
   type Receipt,
   type Stage,
+  type GitHub,
 } from "./installed-upgrade-packages.ts";
 import {
   disposableRunner,
+  fileSha256,
   install,
   outboundBlock,
   ownedTree,
+  processes,
   toolProbe,
   uninstall,
   type Runner,
 } from "./installed-upgrade-windows.ts";
+
+const FullSha = type(/^[0-9a-f]{40}$/);
+const Digest = type(/^[0-9a-f]{64}$/);
+const PublishedPins = type({
+  stableTag: "string",
+  stableSha: FullSha,
+  candidateTag: "string",
+  candidateSha: FullSha,
+  "+": "reject",
+});
+export type PublishedPins = typeof PublishedPins.infer;
+const PublishedPackage = type({
+  stage: "'stable' | 'candidate'",
+  version: "string",
+  source: FullSha,
+  file: "string",
+  sha256: Digest,
+  bytes: "number.integer > 0",
+  provenance: {
+    tag: "string",
+    releaseKind: "'stable' | 'nightly'",
+    publishedAt: "string",
+    assetId: "number.integer > 0",
+    assetDigest: "string | null",
+    metadata: {
+      sha256sums: Digest,
+      latestYml: Digest,
+      sha512: "string",
+    },
+  },
+});
+const PublishedReceipt = type({
+  schemaVersion: "2",
+  mode: "'published-pair'",
+  repository: "string",
+  resolvedAt: "string",
+  pins: PublishedPins,
+  packages: [PublishedPackage, PublishedPackage],
+  defaultBranch: "'main'",
+  candidateAheadBy: "number.integer > 0",
+  limits: "string[]",
+});
+export type PublishedReceipt = typeof PublishedReceipt.infer;
+type RunStage = Stage | "candidate" | "candidate-restart";
+type RunPackage = Omit<Package, "stage"> & { readonly stage: RunStage };
+
+function requirePublished(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(`Refused: ${message}`);
+}
+
+/** Explicit published stable/nightly pins, with no moving default or dry-run inputs. */
+export function readPublishedPins(values: Record<string, string | undefined>): PublishedPins {
+  const allowed = ["stable-tag", "stable-sha", "candidate-tag", "candidate-sha", "out"];
+  requirePublished(
+    Object.keys(values).every((name) => allowed.includes(name)),
+    "Published-pair inputs cannot be mixed with legacy or unknown inputs.",
+  );
+  const pins = PublishedPins.assert({
+    stableTag: values["stable-tag"] ?? "",
+    stableSha: values["stable-sha"] ?? "",
+    candidateTag: values["candidate-tag"] ?? "",
+    candidateSha: values["candidate-sha"] ?? "",
+  });
+  const stable = parseVersion(pins.stableTag);
+  const candidate = parseVersion(pins.candidateTag);
+  requirePublished(
+    pins.stableTag.startsWith("v") && stable && !stable.nightly,
+    "stable-tag must be an explicit stable tag.",
+  );
+  requirePublished(
+    pins.candidateTag.startsWith("v") && candidate?.nightly,
+    "candidate-tag must be an explicit nightly tag.",
+  );
+  requirePublished(
+    formatVersion(stable) === pins.stableTag.slice(1) &&
+      formatVersion(candidate) === pins.candidateTag.slice(1),
+    "Published tags must use canonical release versions.",
+  );
+  requirePublished(
+    compareVersions(candidate, stable) > 0,
+    "The candidate version must strictly increase from stable.",
+  );
+  requirePublished(
+    pins.stableSha !== pins.candidateSha,
+    "The candidate must strictly descend from stable, with a different source commit.",
+  );
+  return pins;
+}
+
+/** Downloads real published setups through the same read-only GitHub boundary as legacy mode. */
+export async function resolvePublishedPair(
+  github: GitHub,
+  supplied: PublishedPins,
+  now = Date.now(),
+) {
+  PublishedPins.assert(supplied);
+  const pins = readPublishedPins({
+    "stable-tag": supplied.stableTag,
+    "stable-sha": supplied.stableSha,
+    "candidate-tag": supplied.candidateTag,
+    "candidate-sha": supplied.candidateSha,
+  });
+  const branch = type({ default_branch: "string" }).assert(await github.json("")).default_branch;
+  requirePublished(
+    branch === "main",
+    "Published-pair checks require this repository's main branch.",
+  );
+  const ancestry = type({
+    status: "string",
+    ahead_by: "number.integer",
+    behind_by: "number.integer",
+  });
+  for (const source of [pins.stableSha, pins.candidateSha]) {
+    const onMain = ancestry.assert(await github.json(`/compare/${source}...main?per_page=1`));
+    requirePublished(
+      (onMain.status === "ahead" || onMain.status === "identical") && onMain.behind_by === 0,
+      `main does not contain ${source}.`,
+    );
+  }
+  const diff = ancestry.assert(
+    await github.json(`/compare/${pins.stableSha}...${pins.candidateSha}?per_page=1`),
+  );
+  requirePublished(
+    diff.status === "ahead" && diff.ahead_by > 0 && diff.behind_by === 0,
+    "The candidate does not strictly descend from stable.",
+  );
+  const assetSchema = type({
+    id: "number.integer > 0",
+    name: "string",
+    size: "number.integer > 0",
+    "digest?": "string | null",
+  });
+  const releaseSchema = type({
+    tag_name: "string",
+    draft: "boolean",
+    prerelease: "boolean",
+    published_at: "string | null",
+    assets: assetSchema.array(),
+  });
+  const latestSchema = type({
+    version: "string",
+    path: "string",
+    sha512: "string",
+    files: type({ url: "string", sha512: "string", size: "number.integer > 0" }).array(),
+  });
+  const files = new Map<string, Uint8Array>();
+  const resolve = async (stage: "stable" | "candidate", tag: string, source: string) => {
+    const version = tag.slice(1);
+    const release = releaseSchema.assert(
+      await github.json(`/releases/tags/${encodeURIComponent(tag)}`),
+    );
+    requirePublished(
+      release.tag_name === tag &&
+        !release.draft &&
+        release.prerelease === (stage === "candidate") &&
+        release.published_at &&
+        Number.isFinite(Date.parse(release.published_at)),
+      `${tag} is not the pinned published ${stage === "stable" ? "stable release" : "nightly"}.`,
+    );
+    const commit = type({ sha: FullSha }).assert(
+      await github.json(`/commits/${encodeURIComponent(tag)}`),
+    );
+    requirePublished(commit.sha === source, `${tag} does not name ${source}.`);
+    const asset = async (name: string) => {
+      const found = release.assets.filter((each) => each.name === name);
+      requirePublished(found.length === 1, `${tag} has no single ${name}.`);
+      const item = found[0]!;
+      const bytes = await github.bytes(`/releases/assets/${item.id}`, "application/octet-stream");
+      requirePublished(bytes.length === item.size, `${name} does not match its asset size.`);
+      if (item.digest)
+        requirePublished(
+          item.digest === `sha256:${sha256(bytes)}`,
+          `${name} does not match its asset digest.`,
+        );
+      return { item, bytes };
+    };
+    const name = `Mr-Streamer-${version}-win-x64-setup.exe`;
+    const setup = await asset(name);
+    const sums = await asset("SHA256SUMS.txt");
+    const metadata = await asset("latest.yml");
+    const matches = new TextDecoder()
+      .decode(sums.bytes)
+      .split("\n")
+      .map((line) => /^([0-9a-f]{64})\s+\*?(.+)$/.exec(line.trim()))
+      .filter((match) => match?.[2] === name);
+    const hash = sha256(setup.bytes);
+    requirePublished(
+      matches.length === 1 && matches[0]![1] === hash,
+      `${name} does not match a single SHA256SUMS.txt entry.`,
+    );
+    const latest = latestSchema.assert(parse(new TextDecoder().decode(metadata.bytes)));
+    const sha512 = createHash("sha512").update(setup.bytes).digest("base64");
+    requirePublished(
+      latest.version === version &&
+        latest.path === name &&
+        latest.sha512 === sha512 &&
+        latest.files.length === 1 &&
+        latest.files[0]!.url === name &&
+        latest.files[0]!.sha512 === sha512 &&
+        latest.files[0]!.size === setup.bytes.length,
+      `latest.yml does not describe ${name}, its version, SHA-512 and size exactly.`,
+    );
+    const file = `${stage}-${name}`;
+    files.set(file, setup.bytes);
+    return PublishedPackage.assert({
+      stage,
+      version,
+      source,
+      file,
+      sha256: hash,
+      bytes: setup.bytes.length,
+      provenance: {
+        tag,
+        releaseKind: stage === "stable" ? "stable" : "nightly",
+        publishedAt: release.published_at,
+        assetId: setup.item.id,
+        assetDigest: setup.item.digest ?? null,
+        metadata: { sha256sums: sha256(sums.bytes), latestYml: sha256(metadata.bytes), sha512 },
+      },
+    });
+  };
+  const receipt: PublishedReceipt = {
+    schemaVersion: 2,
+    mode: "published-pair",
+    repository: github.repository,
+    resolvedAt: new Date(now).toISOString(),
+    pins,
+    packages: [
+      await resolve("stable", pins.stableTag, pins.stableSha),
+      await resolve("candidate", pins.candidateTag, pins.candidateSha),
+    ],
+    defaultBranch: "main",
+    candidateAheadBy: diff.ahead_by,
+    limits: [
+      "Published tag/source, SHA256SUMS.txt and latest.yml bind each setup. Release workflow/package receipts require separate inspection; no dry-run artifact is installed.",
+      "The last phase restarts the same candidate. It does not prove a second version upgrade.",
+    ],
+  };
+  return { receipt, files };
+}
+
+/** Refuses the wrong mode or inconsistent resolved identities before any native installation. */
+export function readPublishedReceipt(value: unknown): PublishedReceipt {
+  const receipt = PublishedReceipt.assert(value);
+  const pins = readPublishedPins({
+    "stable-tag": receipt.pins.stableTag,
+    "stable-sha": receipt.pins.stableSha,
+    "candidate-tag": receipt.pins.candidateTag,
+    "candidate-sha": receipt.pins.candidateSha,
+  });
+  for (const [index, stage, tag, source] of [
+    [0, "stable", pins.stableTag, pins.stableSha],
+    [1, "candidate", pins.candidateTag, pins.candidateSha],
+  ] as const) {
+    const pkg = receipt.packages[index];
+    requirePublished(
+      pkg.stage === stage &&
+        pkg.version === tag.slice(1) &&
+        pkg.source === source &&
+        pkg.file === `${stage}-Mr-Streamer-${pkg.version}-win-x64-setup.exe` &&
+        pkg.provenance.tag === tag &&
+        pkg.provenance.releaseKind === (stage === "stable" ? "stable" : "nightly"),
+      "The published receipt's package identity does not match its pins.",
+    );
+  }
+  return receipt;
+}
 
 /** A public address the window reaches before the block and not after it. Its CSP allows it. */
 const OUTSIDE = "https://example.com/";
@@ -69,7 +362,7 @@ const TOOLS_OUTSIDE = "http://example.com/";
 
 /**
  * The fake provider and TMDB behind one loopback address that stays the same through all three
- * installs, so the subscription saved by the stable release keeps working. Their artwork links
+ * starts, so the subscription saved by the stable release keeps working. Their artwork links
  * point at that address too, and TMDB's own picture paths are left out, so no picture is fetched
  * from anywhere else.
  */
@@ -77,6 +370,13 @@ export async function startServices() {
   const provider = await startFakeProvider({ channels: 20, titles: 10 });
   const tmdb = await startFakeTmdb();
   const picture = greyPicture(60, 90);
+  const catalogueRequests: {
+    action: string;
+    startedAt: string;
+    finishedAt?: string;
+    status?: number;
+    rows?: number;
+  }[] = [];
   let origin = "";
   const front: Server = createServer((request, response) => {
     void (async () => {
@@ -85,6 +385,16 @@ export async function startServices() {
         return;
       }
       const toTmdb = request.url?.startsWith("/3/") ?? false;
+      const action = new URL(request.url ?? "/", "http://fixture.local").searchParams.get("action");
+      const catalogue: (typeof catalogueRequests)[number] | undefined =
+        !toTmdb &&
+        action &&
+        ["get_vod_categories", "get_vod_streams", "get_series_categories", "get_series"].includes(
+          action,
+        )
+          ? { action, startedAt: new Date().toISOString() }
+          : undefined;
+      if (catalogue) catalogueRequests.push(catalogue);
       const headers = new Headers();
       for (const name of ["range", "if-range", "if-none-match", "if-modified-since"]) {
         const value = request.headers[name];
@@ -95,6 +405,14 @@ export async function startServices() {
         { method: request.method ?? "GET", headers, redirect: "manual" },
       );
       let body = Buffer.from(await upstream.arrayBuffer());
+      if (catalogue) {
+        const rows: unknown = upstream.headers.get("content-type")?.includes("json")
+          ? JSON.parse(body.toString())
+          : null;
+        catalogue.finishedAt = new Date().toISOString();
+        catalogue.status = upstream.status;
+        if (Array.isArray(rows)) catalogue.rows = rows.length;
+      }
       if (upstream.headers.get("content-type")?.includes("json")) {
         const text = JSON.stringify(
           JSON.parse(body.toString(), (key: string, value: unknown) =>
@@ -123,6 +441,8 @@ export async function startServices() {
     url: origin,
     tmdbApi: `${origin}/3`,
     titles: provider.titles,
+    // Action/count evidence only. Never retain provider login query strings.
+    catalogueRequests,
     /** Stops all three and checks nothing answers on their ports any more. */
     async stop() {
       if (stopped) return { ports, refused: true };
@@ -197,7 +517,8 @@ type Read =
   | "viewing.progress"
   | "watchlist.list"
   | "downloads.list"
-  | "subscription.list";
+  | "subscription.list"
+  | "subtitles.settings";
 
 /** A request the window made, without its query, which can hold the fake login. */
 interface WindowRequest {
@@ -206,7 +527,7 @@ interface WindowRequest {
 }
 
 /** Pointer and key input to the window, screenshots, and the app's read-only calls. */
-export function driver(page: Page, evidence: string, stage: Stage) {
+export function driver(page: Page, evidence: string, stage: RunStage) {
   const actions: { at: string; action: string }[] = [];
   const requests: WindowRequest[] = [];
   page.on("Network.requestWillBeSent", (params) => {
@@ -259,6 +580,41 @@ export function driver(page: Page, evidence: string, stage: Stage) {
           code: name,
           windowsVirtualKeyCode: code,
         });
+    },
+    /** Uses the closed select's type-ahead instead of a platform-specific native popup. */
+    async select(action: string, element: string, value: string): Promise<void> {
+      await wait(() => exists(element), 30_000, action);
+      const label = await page.evaluate<string | null>(`(() => {
+        const select = (${element});
+        const options = [...(select?.options ?? [])].filter(o => o.value === ${JSON.stringify(value)} && !o.disabled);
+        if (options.length !== 1) return null;
+        const label = options[0].label.trim();
+        return [...select.options].filter(o => !o.disabled && o.label.trim() === label).length === 1 ? label : null;
+      })()`);
+      if (!label) throw new Error(`${action} offers no unique enabled ${value}.`);
+      did(`Focus ${action}`);
+      // Focusing changes no value and leaves the OS menu closed, as in the language verifier.
+      await page.evaluate(`(${element}).focus()`);
+      await wait(
+        () => page.evaluate<boolean>(`document.activeElement === (${element})`),
+        10_000,
+        `${action} focus`,
+      );
+      for (const character of label) {
+        did(`Type ${action}: ${character}`);
+        await page.send("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: character,
+          text: character,
+        });
+        await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: character });
+      }
+      await d.key("Tab", 9);
+      await wait(
+        () => page.evaluate<boolean>(`(${element})?.value === ${JSON.stringify(value)}`),
+        10_000,
+        `${action} ${value}`,
+      );
     },
     async type(action: string, text: string) {
       did(action);
@@ -333,6 +689,14 @@ const openSeries = async (d: Driver) => {
   await d.click("Open Series", button("header button", "Series"));
   await d.click("Open All series", button("nav button", "All series"));
   await d.click("Open the Formats series", poster("Formats"));
+};
+
+/** Stable 0.0.11 opens Watchlist on Home; earlier and newer builds have a top-bar button. */
+const openWatchlist = async (d: Driver) => {
+  if (!(await d.exists(button("header button", "Watchlist")))) {
+    await d.click("Open Home", button("header button", "Home"));
+    await d.click("Open Watchlist on Home", button("button", "Watchlist"));
+  } else await d.click("Open Watchlist", button("header button", "Watchlist"));
 };
 
 /** Settings > About's version line and the commit its source link names. */
@@ -419,28 +783,16 @@ function retained(before: State, now: State, what: string) {
   };
 }
 
-/** Picks `value` in a native select by keys, as a viewer would. */
-async function pick(d: Driver, label: string, value: string) {
-  const select = labelled(label);
-  await d.click(`Focus ${label}`, select);
-  const options = await d.page.evaluate<string[]>(`[...(${select}).options].map(o => o.value)`);
-  const index = options.indexOf(value);
-  if (index < 0) throw new Error(`${label} offers no ${value}.`);
-  await d.key("Home", 36);
-  for (let i = 0; i < index; i++) await d.key("ArrowDown", 40);
-  await d.key("Enter", 13);
-  await d.wait(
-    () => d.page.evaluate<boolean>(`(${select})?.value === ${JSON.stringify(value)}`),
-    10_000,
-    `${label} ${value}`,
-  );
-}
-
 // ---------------------------------------------------------------------------------------------
 // The three stages
 
 /** The prior stable release, from the Connect screen on. */
-export async function seedStable(d: Driver, services: Services, titles: Fixtures) {
+export async function seedStable(
+  d: Driver,
+  services: Services,
+  titles: Fixtures,
+  savedSubtitles = false,
+) {
   await d.wait(() => d.exists("document.querySelector('form input')"), 30_000, "the Connect form");
   for (const [index, text] of [services.url, "demo", "demo"].entries()) {
     await d.click(
@@ -457,11 +809,16 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
   );
   await d.click("Open Settings", labelled("Settings"));
   await d.click("Open General", button("nav button", "General"));
-  await pick(d, "Quality", "hd");
-  await pick(d, "Audio in", "nl");
-  await pick(d, "Subtitles", "fr");
+  await d.select("Quality", labelled("Quality"), "hd");
+  await d.select("Audio in", labelled("Audio in"), "nl");
+  await d.select("Subtitles", labelled("Subtitles"), "fr");
+  if (savedSubtitles) await configureSubtitleUi(d);
   await d.capture("settings");
-  await d.key("Escape", 27);
+  // Stable 0.0.11 keeps Escape in the focused subtitle opt-in checkbox.
+  await d.click(
+    "Leave Settings",
+    `[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')`,
+  );
   await d.click("Open Live TV", button("header button", "Live TV"));
   await d.click("Open All channels", listEntry("All channels"));
   for (let i = 1; i <= 2; i++) {
@@ -485,6 +842,7 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
   await d.click("Save the movie", button('[role="dialog"] button', "Save"));
   await d.click("Play the movie", button('[role="dialog"] button', "Play"));
   await playing(d);
+  const savedSubtitle = savedSubtitles ? await seedSubtitleUi(d) : undefined;
   await d.key("ArrowRight", 39);
   await d.key("ArrowRight", 39);
   await d.wait(async () => (await d.video()).time > 20, 30_000, "the movie past 20 s");
@@ -498,7 +856,7 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
   await playing(d);
   await leaveTitle(d);
   await d.key("Escape", 27);
-  await d.click("Open Watchlist", button("header button", "Watchlist"));
+  await openWatchlist(d);
   await d.capture("watchlist");
   await d.wait(
     async () => (await state(d, titles)).progress.length >= 2,
@@ -519,7 +877,7 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
     !seeded.progress.some((each) => each.title.kind === "episode")
   )
     throw new Error(`The stable release didn't keep what was set: ${JSON.stringify(seeded)}`);
-  return seeded;
+  return { ...seeded, savedSubtitle };
 }
 
 /**
@@ -538,7 +896,7 @@ function resumedNear(what: string, started: number, kept: number) {
  * When an earlier version left the long movie's copy at `kept` seconds, it must start from there.
  * Leaving it again must keep the time it was left at, and it must resume from that.
  */
-async function playCopies(d: Driver, titles: Fixtures, kept?: number) {
+async function playCopies(d: Driver, titles: Fixtures, kept?: number, savedSubtitles = false) {
   const copies = (await d.read("downloads.list")).items;
   const long = copies.find((each) => each.title.kind === "movie" && each.title.id === titles.long);
   const sound = copies.find((each) => each.title.kind === "movie" && each.title.id !== titles.long);
@@ -623,6 +981,7 @@ async function playCopies(d: Driver, titles: Fixtures, kept?: number) {
     "document.querySelector('[data-subtitle-text]').textContent.trim()",
   );
   await d.capture("copy-subtitles");
+  if (savedSubtitles) seen["savedSubtitle"] = await observeSavedSubtitle(d, "copy");
   const left = (await d.video()).time;
   await leaveTitle(d);
   // Main keeps where it was left, and the page shows it too: Watch offline goes from there.
@@ -672,18 +1031,38 @@ async function copiesShown(d: Driver, count: number) {
 }
 
 /** The nightly A over the stable release: everything kept, then copies downloaded and played. */
-export async function upgradeToA(d: Driver, titles: Fixtures, seeded: State) {
-  const kept = retained(seeded, await state(d, titles), "Upgrading to A");
+export async function upgradeToA(
+  d: Driver,
+  titles: Fixtures,
+  seeded: State,
+  operation = "Upgrading to A",
+  subtitleMode: "none" | "seed" | "retained" = "none",
+) {
+  const kept = retained(seeded, await state(d, titles), operation);
   await d.click("Open Settings", labelled("Settings"));
   await d.click("Open General", button("nav button", "General"));
+  if (subtitleMode === "seed") await configureSubtitleUi(d);
   await d.capture("settings");
   await d.key("Escape", 27);
   await d.click("Open Live TV", button("header button", "Live TV"));
   await d.click("Open Favourites", listEntry("Favourites"));
   await d.capture("favourites");
-  await d.click("Open Watchlist", button("header button", "Watchlist"));
+  await openWatchlist(d);
   await d.capture("watchlist");
 
+  let savedSubtitle;
+  if (subtitleMode !== "none") {
+    await openMovie(d, "Long subtitles");
+    await d.click(
+      "Play or resume before downloading subtitles",
+      `[...document.querySelectorAll('[role="dialog"] button')].find(b => ['Play', 'Resume'].includes(b.textContent.trim()))`,
+    );
+    await playing(d);
+    savedSubtitle =
+      subtitleMode === "seed" ? await seedSubtitleUi(d) : await observeSavedSubtitle(d);
+    await leaveTitle(d);
+    await d.key("Escape", 27);
+  }
   for (const movie of ["Two sound tracks", "Long subtitles"]) {
     await openMovie(d, movie);
     await d.click(`Download ${movie}`, button('[role="dialog"] button', "Download"));
@@ -707,9 +1086,10 @@ export async function upgradeToA(d: Driver, titles: Fixtures, seeded: State) {
   );
   await copiesShown(d, 3);
   await d.capture("copies");
-  const played = await playCopies(d, titles);
+  const played = await playCopies(d, titles, undefined, subtitleMode !== "none");
   return {
     kept,
+    savedSubtitle,
     played,
     copies: (await d.read("downloads.list")).items,
     after: await state(d, titles),
@@ -729,8 +1109,15 @@ export interface Offline {
  * The dry run B over A: everything kept, copies included. Then the subscription goes in Settings,
  * the network goes for the app, and the copies play from Connect's Downloads.
  */
-export async function upgradeToB(d: Driver, titles: Fixtures, a: AfterA, offline: Offline) {
-  const kept = retained(a.after, await state(d, titles), "Upgrading to B");
+export async function upgradeToB(
+  d: Driver,
+  titles: Fixtures,
+  a: AfterA,
+  offline: Offline,
+  operation = "Upgrading to B",
+  savedSubtitles = false,
+) {
+  const kept = retained(a.after, await state(d, titles), operation);
   await d.click("Open Downloads", button("header button", "Downloads"));
   await copiesShown(d, a.copies.length);
   const copies = (await d.read("downloads.list")).items;
@@ -743,7 +1130,7 @@ export async function upgradeToB(d: Driver, titles: Fixtures, a: AfterA, offline
       now.posterUrl !== prior.posterUrl ||
       Math.abs((now.progress?.position ?? 0) - (prior.progress?.position ?? 0)) >= 2
     )
-      throw new Error(`Upgrading to B changed the copy ${prior.id}: ${JSON.stringify(now)}`);
+      throw new Error(`${operation} changed the copy ${prior.id}: ${JSON.stringify(now)}`);
   }
   await d.capture("copies-kept");
 
@@ -804,7 +1191,7 @@ export async function upgradeToB(d: Driver, titles: Fixtures, a: AfterA, offline
     (each) => each.title.kind === "movie" && each.title.id === titles.long,
   )?.progress;
   if (!leftByA) throw new Error("A left no progress on the long movie's copy.");
-  const played = await playCopies(d, titles, leftByA.position);
+  const played = await playCopies(d, titles, leftByA.position, savedSubtitles);
   const outside = d.requests
     .slice(requestsFrom)
     .filter(
@@ -830,25 +1217,40 @@ export async function upgradeToB(d: Driver, titles: Fixtures, a: AfterA, offline
 
 const usage = `Usage:
   node apps/desktop/test/e2e/installed-upgrade.ts resolve --a-tag <tag> --a-sha <commit> --b-run <id> --b-sha <commit> --out <folder>
-  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>`;
+  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>
+  node apps/desktop/test/e2e/installed-upgrade.ts resolve-published --stable-tag <tag> --stable-sha <commit> --candidate-tag <tag> --candidate-sha <commit> --out <folder>
+  node apps/desktop/test/e2e/installed-upgrade.ts run-published --packages <folder> --root <new folder under RUNNER_TEMP>`;
 
-/** Resolves, checks and downloads the three installers, and writes them with receipt.json. */
-async function resolveCommand(args: string[]) {
-  const { values } = parseArgs({
-    args,
-    options: {
-      "a-tag": { type: "string" },
-      "a-sha": { type: "string" },
-      "b-run": { type: "string" },
-      "b-sha": { type: "string" },
-      out: { type: "string" },
-    },
-  });
+/** Resolves the selected mode's installers and writes them with receipt.json. */
+async function resolveCommand(args: string[], published = false) {
+  const { values } = published
+    ? parseArgs({
+        args,
+        options: {
+          "stable-tag": { type: "string" },
+          "stable-sha": { type: "string" },
+          "candidate-tag": { type: "string" },
+          "candidate-sha": { type: "string" },
+          out: { type: "string" },
+        },
+      })
+    : parseArgs({
+        args,
+        options: {
+          "a-tag": { type: "string" },
+          "a-sha": { type: "string" },
+          "b-run": { type: "string" },
+          "b-sha": { type: "string" },
+          out: { type: "string" },
+        },
+      });
   const [token, repository] = [process.env["GH_TOKEN"], process.env["GITHUB_REPOSITORY"]];
   if (!token || !repository) throw new Error("Set GH_TOKEN and GITHUB_REPOSITORY.");
   if (!values.out || !isAbsolute(values.out)) throw new Error(usage);
-  const pins = readPins(values);
-  const { receipt, files } = await resolvePackages(restGitHub(repository, token), pins);
+  const github = restGitHub(repository, token);
+  const { receipt, files } = published
+    ? await resolvePublishedPair(github, readPublishedPins(values))
+    : await resolvePackages(github, readPins(values));
   await mkdir(values.out);
   for (const [name, bytes] of files) await writeFile(join(values.out, name), bytes);
   await writeFile(join(values.out, "receipt.json"), JSON.stringify(receipt, null, 2));
@@ -863,24 +1265,146 @@ async function start(
   runner: Runner,
   profile: string,
   evidence: string,
-  pkg: Package,
+  pkg: RunPackage,
   tmdbApi: string,
+  subtitleOrigin?: string,
 ) {
   const port = 20000 + Math.floor(Math.random() * 20000);
+  const inspectPort = port + 20000;
   process.env["MR_STREAMER_TMDB_API"] = tmdbApi;
+  const beforeLaunch = {
+    executable: await fileSha256(runner.executable),
+    appAsar: await fileSha256(join(runner.installRoot, "resources", "app.asar")),
+    tools: Object.fromEntries(
+      await Promise.all(runner.tools.map(async (tool) => [tool, await fileSha256(tool)])),
+    ),
+  };
   const app = launch(
     runner.executable,
-    ["--remote-debugging-address=127.0.0.1", "--enable-automation"],
+    [
+      "--remote-debugging-address=127.0.0.1",
+      "--enable-automation",
+      "--lang=en-US",
+      ...(subtitleOrigin ? [`--inspect-brk=127.0.0.1:${inspectPort}`] : []),
+    ],
     { port, profile },
   );
   if (app.pid === undefined) throw new Error(`${runner.executable} didn't start.`);
   const tree = ownedTree(runner, app);
   let page: Page | undefined;
+  let verifiedPage: Page | undefined;
+  let main: Page | undefined;
+  let bootstrap: Awaited<ReturnType<typeof bootstrapSubtitles>> | undefined;
+  let workers: ReturnType<typeof installCatalogueWorkerProbe> | undefined;
+  let workerControl:
+    ReturnType<ReturnType<typeof installCatalogueWorkerProbe>["start"]> | undefined;
+  const workerDiagnostics: {
+    provenance?: Awaited<ReturnType<typeof catalogueWorkerScripts>>;
+    events: Evidence[];
+    startup?: Awaited<NonNullable<typeof workerControl>>;
+    cleanup?: Awaited<ReturnType<ReturnType<typeof installCatalogueWorkerProbe>["close"]>>;
+  } = { events: [] };
+  const closeWorkers = async () => {
+    if (!workers) return;
+    workerDiagnostics.cleanup = await workers.close();
+    if (workerControl) workerDiagnostics.startup = await workerControl;
+    if (workerDiagnostics.cleanup.errors.length)
+      throw new Error(`Catalogue worker cleanup: ${workerDiagnostics.cleanup.errors.join("; ")}`);
+  };
+  const stop = async () => {
+    let workerError: unknown;
+    try {
+      await closeWorkers();
+    } catch (error) {
+      workerError = error;
+    }
+    const exitedBeforeClose = app.exitCode !== null || app.signalCode !== null;
+    main?.close();
+    const ended = await tree
+      .stop(() => verifiedPage?.send("Browser.close") ?? Promise.resolve())
+      .catch((error: unknown) => {
+        if (workerError)
+          throw new AggregateError(
+            [workerError, error],
+            "Worker and installed process cleanup failed",
+          );
+        throw error;
+      });
+    const exit = { code: app.exitCode, signal: app.signalCode };
+    if (
+      exitedBeforeClose ||
+      (exit.code !== null && exit.code !== 0) ||
+      (ended.forced.length === 0 && (exit.code !== 0 || exit.signal !== null)) ||
+      (ended.forced.length > 0 && exit.signal !== null && exit.signal !== "SIGKILL")
+    ) {
+      const error = new Error(`The installed app exited unexpectedly: ${JSON.stringify(exit)}.`);
+      throw workerError
+        ? new AggregateError([workerError, error], "Worker cleanup and installed exit failed")
+        : error;
+    }
+    if (workerError) throw workerError;
+    return {
+      ...ended,
+      exit,
+      graceful: ended.graceful && exit.code === 0 && exit.signal === null,
+      gate: ended.forced.length === 0 ? "graceful" : "forced-terminated",
+    };
+  };
   try {
+    if (subtitleOrigin) {
+      main = await connect(inspectPort, "node");
+      const owner = await inspectorOwner(inspectPort, [app.pid]);
+      if (owner !== app.pid || app.exitCode !== null || app.signalCode !== null)
+        throw new Error("Inspector owner exited before initial pause");
+      const paused = await pauseMain(main);
+      const identity = await paused.evaluate<{
+        pid: number;
+        executable: string;
+        resources: string;
+        argv: string[];
+      }>(
+        `({pid:process.pid,executable:process.execPath,resources:process.resourcesPath,argv:process.argv})`,
+      );
+      tree.sample();
+      if (
+        identity.pid !== app.pid ||
+        identity.executable.toLowerCase() !== runner.executable.toLowerCase() ||
+        identity.resources.toLowerCase() !== join(runner.installRoot, "resources").toLowerCase() ||
+        !identity.argv.includes(`--user-data-dir=${profile}`)
+      )
+        throw new Error("Paused main is not the owned installed app");
+      if (
+        (await fileSha256(identity.executable)) !== beforeLaunch.executable ||
+        (await fileSha256(join(identity.resources, "app.asar"))) !== beforeLaunch.appAsar ||
+        (
+          await Promise.all(
+            runner.tools.map(async (tool) => (await fileSha256(tool)) === beforeLaunch.tools[tool]),
+          )
+        ).some((same) => !same)
+      )
+        throw new Error("Paused installed executable changed");
+      bootstrap = await bootstrapSubtitles(paused, subtitleOrigin);
+      if (bootstrap.pid !== app.pid) throw new Error("Subtitle bootstrap PID changed");
+      const provenance = await catalogueWorkerScripts(identity.resources, beforeLaunch.appAsar);
+      workerDiagnostics.provenance = provenance;
+      workers = installCatalogueWorkerProbe({
+        main,
+        expectedWorker: provenance.expectedWorker,
+        startupScriptURLs: provenance.startupScriptURLs,
+        verifiedMainPID: identity.pid,
+        evidence: (event) => {
+          workerDiagnostics.events.push(event);
+          return undefined;
+        },
+      });
+      const enabled = await workers.ready;
+      if (!enabled.ok) throw new Error(enabled.error);
+      // Join this control task after the UI stage, including Connect which creates the worker.
+      workerControl = workers.start(120_000);
+      await resumeMain(main);
+    }
     page = await connect(port);
     const d = driver(page, evidence, pkg.stage);
-    await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    await page.send("Network.enable");
     const command = await page.send("Browser.getBrowserCommandLine");
     const args = (command.result as { arguments?: string[] } | undefined)?.arguments ?? [];
     if (
@@ -901,23 +1425,128 @@ async function start(
       throw new Error(
         `The app says ${status.version} (${status.distribution}), not ${pkg.version} direct.`,
       );
-    if (pkg.stage !== "stable") {
-      const language = await d.read("language.get");
-      if (language.locale !== "en-US")
-        throw new Error(`The check reads English; the app shows ${language.locale}.`);
-    }
+    const rendererOwnerPid = await inspectorOwner(port, [app.pid]);
+    if (rendererOwnerPid !== app.pid || app.exitCode !== null || app.signalCode !== null)
+      throw new Error("Renderer listener is not the active owned app");
     tree.sample();
+    verifiedPage = page;
+    // The bridge can appear before Connect mounts. Wait for the legacy form before reading it.
+    if (pkg.stage === "stable" && !subtitleOrigin)
+      await d.wait(
+        () =>
+          d.page.evaluate<boolean>(
+            "!!document.querySelector('form button[type=submit]')?.textContent.trim()",
+          ),
+        30_000,
+        "the legacy Connect form",
+      );
+    // Legacy 0.0.9 predates language.get and renders fixed English. Observe that UI directly.
+    const language =
+      pkg.stage === "stable" && !subtitleOrigin
+        ? {
+            legacyConnect: await d.page.evaluate<string>(
+              "document.querySelector('form button[type=submit]')?.textContent.trim() ?? ''",
+            ),
+          }
+        : await d.read("language.get");
+    if ("locale" in language ? language.locale !== "en-US" : language.legacyConnect !== "Connect")
+      throw new Error(`The check requires English: ${JSON.stringify(language)}.`);
+    await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await page.send("Network.enable");
     return {
       d,
       tree,
-      identity: { pid: app.pid, port, profile, executable: tree.root.path, renderer, status },
-      stop: () => tree.stop(() => page!.send("Browser.close")),
+      async verifyWorker() {
+        if (!workers || !workerControl) return;
+        workerDiagnostics.startup = await workerControl;
+        await closeWorkers();
+        if (!workerDiagnostics.startup?.ok)
+          throw new Error(workerDiagnostics.startup?.error ?? "Worker startup was not verified");
+      },
+      subtitleRequests: () => (main ? subtitleRequests(main) : Promise.resolve([])),
+      identity: {
+        subtitleBootstrap: bootstrap,
+        catalogueWorker: workerDiagnostics,
+        rendererOwnerPid,
+        language,
+        beforeLaunch,
+        pid: app.pid,
+        createdAt: tree.root.created,
+        port,
+        profile,
+        executable: tree.root.path,
+        renderer,
+        status,
+        binary: {
+          executable: await fileSha256(runner.executable),
+          appAsar: await fileSha256(join(runner.installRoot, "resources", "app.asar")),
+          tools: Object.fromEntries(
+            await Promise.all(runner.tools.map(async (tool) => [tool, await fileSha256(tool)])),
+          ),
+        },
+      },
+      stop,
     };
   } catch (error) {
-    await tree.stop(() => page?.send("Browser.close") ?? Promise.resolve()).catch(() => undefined);
-    page?.close();
+    try {
+      await stop();
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "Installed startup and cleanup failed");
+    } finally {
+      page?.close();
+    }
     throw error;
   }
+}
+
+/** Observes the setup child owned by this driver while the existing NSIS helper waits for it. */
+export async function installPublished(
+  runner: Runner,
+  setup: string,
+  version: string,
+  previous: string | null,
+) {
+  const setupSha256 = await fileSha256(setup);
+  const since = Date.now();
+  const pending = install(runner, setup, version, previous);
+  // install has spawned its child before yielding. Snapshot only; no process is stopped by id.
+  let observed: ReturnType<typeof processes> = [];
+  let observationError: unknown;
+  try {
+    observed = processes().filter(
+      (each) =>
+        each.parent === process.pid &&
+        each.path?.toLowerCase() === setup.toLowerCase() &&
+        Date.parse(each.created) >= since,
+    );
+  } catch (error) {
+    observationError = error;
+  }
+  const result = await pending;
+  requirePublished(
+    !observationError && observed.length === 1,
+    "The setup cannot be identified as one installer child owned by this driver.",
+  );
+  const installer = observed[0]!;
+  requirePublished(
+    !processes().some((each) => each.pid === installer.pid && each.created === installer.created),
+    "The owned installer is still running after setup completed.",
+  );
+  requirePublished(
+    (await fileSha256(setup)) === setupSha256,
+    "The setup changed while the installer ran.",
+  );
+  return {
+    ...result,
+    installer: {
+      pid: installer.pid,
+      parent: installer.parent,
+      executable: installer.path,
+      createdAt: installer.created,
+      setupSha256,
+      ended: true,
+    },
+  };
 }
 
 /** What a run leaves on the runner, and how each part is taken down. */
@@ -965,8 +1594,8 @@ export async function cleanUp(failure: unknown, left: Leftovers) {
   return { failed, steps, kept };
 }
 
-/** The whole chain on the disposable runner, with its evidence and cleanup. */
-async function runCommand(args: string[]) {
+/** The selected chain on the disposable runner, with its evidence and cleanup. */
+export async function runCommand(args: string[], published = false) {
   const { values } = parseArgs({
     args,
     options: { packages: { type: "string" }, root: { type: "string" } },
@@ -982,15 +1611,41 @@ async function runCommand(args: string[]) {
     isAbsolute(under)
   )
     throw new Error(`${usage}\nThe root must be a new folder under RUNNER_TEMP.`);
-  const receipt = JSON.parse(
-    await readFile(join(values.packages, "receipt.json"), "utf8"),
-  ) as Receipt;
-  if (receipt.packages.map((each) => each.stage).join() !== "stable,a,b")
+  const raw: unknown = JSON.parse(await readFile(join(values.packages, "receipt.json"), "utf8"));
+  const receipt = published ? readPublishedReceipt(raw) : (raw as Receipt);
+  if (
+    !published &&
+    ("mode" in receipt || receipt.packages.map((each) => each.stage).join() !== "stable,a,b")
+  )
     throw new Error("The receipt doesn't name stable, A and B in that order.");
+  if (receipt.schemaVersion === 2) {
+    FullSha.assert(process.env["GITHUB_SHA"]);
+    requirePublished(
+      process.env["GITHUB_REF"] === "refs/heads/main",
+      "Published-pair execution requires the main verification workflow.",
+    );
+    requirePublished(
+      receipt.repository === process.env["GITHUB_REPOSITORY"],
+      "The receipt belongs to another repository.",
+    );
+    // Both packages must still match before the first setup starts.
+    for (const pkg of receipt.packages) {
+      const bytes = await readFile(join(values.packages, pkg.file));
+      requirePublished(
+        bytes.length === pkg.bytes && sha256(bytes) === pkg.sha256,
+        `${pkg.file} changed since resolution.`,
+      );
+      requirePublished(
+        (!pkg.provenance.assetDigest || pkg.provenance.assetDigest === `sha256:${pkg.sha256}`) &&
+          pkg.provenance.metadata.sha512 === createHash("sha512").update(bytes).digest("base64"),
+        `${pkg.file} no longer matches its resolved published metadata.`,
+      );
+    }
+  }
   const profile = join(root, "profile");
   const evidence = join(root, "evidence");
   const lock = join(root, "profile.lock");
-  await mkdir(root, { recursive: true });
+  await mkdir(root, { recursive: !published });
   // Fresh folders only: an earlier attempt's profile is never reused or rewritten.
   await mkdir(profile);
   await mkdir(evidence);
@@ -1003,7 +1658,7 @@ async function runCommand(args: string[]) {
       startedAt: new Date().toISOString(),
     }),
   );
-  // The app reads only what the check sets: a synthetic TMDB key, so the built-in one is never sent.
+  // The synthetic TMDB key keeps the built-in key out of fixture requests.
   for (const name of Object.keys(process.env))
     if (
       name.startsWith("MR_STREAMER_") ||
@@ -1014,10 +1669,27 @@ async function runCommand(args: string[]) {
   process.env["MR_STREAMER_TMDB_KEY"] = "synthetic-installed-upgrade";
 
   /** What each stage did, by stage, for proof.json. */
-  type ByStage = Partial<Record<Stage, unknown>>;
+  type ByStage = Partial<Record<RunStage, unknown>>;
   const proof = {
-    schemaVersion: 1,
+    schemaVersion: published ? 2 : 1,
+    mode: published ? "published-pair" : "legacy",
     runner: runner.id,
+    verification: {
+      workflowCommit: process.env["GITHUB_SHA"] ?? null,
+      runId: process.env["GITHUB_RUN_ID"] ?? null,
+      runAttempt: process.env["GITHUB_RUN_ATTEMPT"] ?? null,
+      driverSha256: sha256(await readFile(fileURLToPath(import.meta.url))),
+      workerHelperSha256: sha256(
+        await readFile(new URL("./installed-catalogue-worker.ts", import.meta.url)),
+      ),
+      workerScriptsHelperSha256: sha256(
+        await readFile(new URL("./installed-worker-scripts.ts", import.meta.url)),
+      ),
+      appHelperSha256: sha256(await readFile(new URL("./app.ts", import.meta.url))),
+      subtitleHelperSha256: sha256(
+        await readFile(new URL("./installed-subtitles.ts", import.meta.url)),
+      ),
+    },
     receipt,
     installs: {} as ByStage,
     starts: {} as ByStage,
@@ -1030,9 +1702,17 @@ async function runCommand(args: string[]) {
     cleanup: {} as Record<string, unknown>,
     limits: [] as string[],
   };
-  const record = (part: ByStage, stage: Stage, value: unknown) => (part[stage] = value);
+  const record = (part: ByStage, stage: RunStage, value: unknown) => (part[stage] = value);
   const services = await startServices();
   const titles = fixtures(services.titles);
+  const subtitles = await startSubtitleFixture().catch(async (error) => {
+    try {
+      await services.stop();
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "Subtitle startup and provider cleanup failed");
+    }
+    throw error;
+  });
   const block = outboundBlock(runner);
   let blocking = false;
   let failed: unknown;
@@ -1040,17 +1720,43 @@ async function runCommand(args: string[]) {
   let afterA: AfterA | undefined;
   try {
     let previous: string | null = null;
-    for (const pkg of receipt.packages) {
+    let previousBinary: Awaited<ReturnType<typeof start>>["identity"]["binary"] | undefined;
+    const packages: readonly RunPackage[] = published
+      ? [...receipt.packages, { ...receipt.packages[1]!, stage: "candidate-restart" }]
+      : receipt.packages;
+    for (const pkg of packages) {
       const setup = join(values.packages, pkg.file);
       if (sha256(await readFile(setup)) !== pkg.sha256)
         throw new Error(`${pkg.file} changed since it was checked.`);
-      record(proof.installs, pkg.stage, await install(runner, setup, pkg.version, previous));
+      if (pkg.stage !== "candidate-restart")
+        record(
+          proof.installs,
+          pkg.stage,
+          published
+            ? await installPublished(runner, setup, pkg.version, previous)
+            : await install(runner, setup, pkg.version, previous),
+        );
       previous = pkg.version;
-      const session = await start(runner, profile, evidence, pkg, services.tmdbApi);
+      const session = await start(
+        runner,
+        profile,
+        evidence,
+        pkg,
+        services.tmdbApi,
+        published || pkg.stage !== "stable" ? subtitles.origin : undefined,
+      );
       try {
         record(proof.starts, pkg.stage, session.identity);
+        if (
+          pkg.stage === "candidate-restart" &&
+          JSON.stringify(session.identity.binary) !== JSON.stringify(previousBinary)
+        )
+          throw new Error(
+            "The candidate executable, app.asar or bundled tools changed before its restart.",
+          );
+        previousBinary = session.identity.binary;
         // Settings opens once a subscription is saved: after connecting on the stable release,
-        // before anything else on A and B.
+        // before anything else on the subsequent starts.
         const checkAbout = async () => {
           const shown = await about(session.d);
           if (!shown.text.includes(pkg.version) || shown.source !== pkg.source)
@@ -1058,6 +1764,7 @@ async function runCommand(args: string[]) {
           record(proof.about, pkg.stage, shown.source);
         };
         if (pkg.stage !== "stable") await checkAbout();
+        let requestsAtCutoff: number | undefined;
         const offline: Offline = {
           async cutOff(d) {
             const probeTools = () =>
@@ -1070,6 +1777,8 @@ async function runCommand(args: string[]) {
             const reachedBefore = await d.page.evaluate<string>(probe);
             const toolsBefore = await probeTools();
             const stopped = await services.stop();
+            const subtitlesStopped = await subtitles.stop();
+            requestsAtCutoff = (await session.subtitleRequests()).length;
             const since = new Date();
             blocking = true;
             const applied = block.apply();
@@ -1090,6 +1799,7 @@ async function runCommand(args: string[]) {
             const proven = {
               endpoints: { window: OUTSIDE, tools: TOOLS_OUTSIDE },
               servicesStopped: stopped,
+              subtitlesStopped,
               appReachedOutsideBeforeBlock: reachedBefore,
               toolsBeforeBlock: toolsBefore,
               applied,
@@ -1117,18 +1827,49 @@ async function runCommand(args: string[]) {
           refused: (since) => block.blocked(since),
         };
         session.tree.sample();
-        if (pkg.stage === "stable") seeded = await seedStable(session.d, services, titles);
-        else if (pkg.stage === "a") afterA = await upgradeToA(session.d, titles, seeded!);
-        else record(proof.stages, "b", await upgradeToB(session.d, titles, afterA!, offline));
+        if (pkg.stage === "stable")
+          seeded = await seedStable(session.d, services, titles, published);
+        else if (pkg.stage === "a" || pkg.stage === "candidate")
+          afterA = await upgradeToA(
+            session.d,
+            titles,
+            seeded!,
+            pkg.stage === "candidate" ? "Upgrading to candidate" : "Upgrading to A",
+            published ? "retained" : "seed",
+          );
+        else
+          record(
+            proof.stages,
+            pkg.stage,
+            await upgradeToB(
+              session.d,
+              titles,
+              afterA!,
+              offline,
+              pkg.stage === "candidate-restart" ? "Restarting candidate" : "Upgrading to B",
+              true,
+            ),
+          );
+        if (pkg.stage === "candidate" && (await session.subtitleRequests()).length !== 0)
+          throw new Error(
+            "Candidate migration fetched a new online subtitle instead of retaining stable's saved file",
+          );
+        if (
+          requestsAtCutoff !== undefined &&
+          (await session.subtitleRequests()).length !== requestsAtCutoff
+        )
+          throw new Error("Offline copies attempted new subtitle service requests");
         if (pkg.stage === "stable") await checkAbout();
         if (pkg.stage === "stable") record(proof.stages, "stable", seeded);
-        if (pkg.stage === "a")
-          record(proof.stages, "a", {
+        if (pkg.stage === "a" || pkg.stage === "candidate")
+          record(proof.stages, pkg.stage, {
             kept: afterA!.kept,
+            savedSubtitle: afterA!.savedSubtitle,
             played: afterA!.played,
             copies: afterA!.copies,
             after: afterA!.after,
           });
+        await session.verifyWorker();
         session.tree.sample();
       } catch (error) {
         await session.d.capture("failure").catch(() => undefined);
@@ -1138,10 +1879,17 @@ async function runCommand(args: string[]) {
       // that failed keeps its own error; a stop that fails after a passing stage is the failure.
       record(proof.actions, pkg.stage, session.d.actions);
       try {
-        record(proof.ends, pkg.stage, await session.stop());
+        const ended = await session.stop();
+        record(proof.ends, pkg.stage, ended);
+        // Published stable/C acceptance requires a real clean shutdown before replacement.
+        // Keep the legacy check's explicitly recorded terminated gate for compatibility.
+        if (published && !ended.graceful)
+          failed ??= new Error("Published installed app required forced termination.");
       } catch (error) {
         record(proof.ends, pkg.stage, `failed: ${String(error)}`);
-        failed ??= error;
+        failed = failed
+          ? new AggregateError([failed, error], "Installed stage and cleanup failed")
+          : error;
       }
       session.d.page.close();
       if (failed) break;
@@ -1151,7 +1899,16 @@ async function runCommand(args: string[]) {
   } finally {
     const left = await cleanUp(failed, {
       network: blocking ? () => block.restore() : null,
-      services: () => services.stop(),
+      services: async () => {
+        const outcomes = await Promise.allSettled([services.stop(), subtitles.stop()]);
+        const failures = outcomes.filter((result) => result.status === "rejected");
+        if (failures.length)
+          throw new AggregateError(
+            failures.map((result) => result.reason),
+            "Fixture cleanup failed",
+          );
+        return outcomes;
+      },
       uninstall: () => uninstall(runner),
       installRoot: runner.installRoot,
       profile,
@@ -1161,18 +1918,23 @@ async function runCommand(args: string[]) {
     proof.status = failed ? "failed" : "passed";
     proof.error =
       failed instanceof Error ? (failed.stack ?? failed.message) : failed ? String(failed) : null;
+    Object.assign(proof, {
+      subtitleFixture: { requests: subtitles.requests, zipSha256: subtitles.zipSha256 },
+    });
     proof.cleanup = {
       ...left.steps,
       kept: left.kept,
       failureProfile: left.kept.includes("profile")
-        ? "The workflow uploads the profile without Chromium's caches. It holds only the fake provider's demo subscription, fixtures and a synthetic TMDB key."
+        ? "The workflow uploads the profile without Chromium's caches. It holds only the fake provider's demo subscription, fixtures and synthetic TMDB and SubDL keys."
         : null,
     };
     proof.limits = [
       ...receipt.limits,
       "Decoded sound is not audible output; GPU, native menus and dialogs are not checked.",
       "The stable episode is a 12-second clip, recorded as finished: unfinished-episode resume is not shown. The movie's unfinished progress and its copy's resume are.",
-      "Embedded subtitles are shown from a copy. Saved online subtitles and their timing across upgrades are not checked: an installed app has no fake subtitle service.",
+      published
+        ? "Saved online subtitles are seeded on stable through UI with a paused-main SubDL boundary, then checked on candidate and offline restart."
+        : "Legacy stable has no online subtitle requirement. A seeds the exact-file saved result before downloading; B checks subsequent upgrade persistence.",
       "Installs are by the silent setup, not by the in-app updater, and the direct setup alone, not the Microsoft Store package.",
     ];
     await writeFile(join(evidence, "proof.json"), JSON.stringify(proof, null, 2));
@@ -1195,6 +1957,8 @@ if (import.meta.main) {
   const [command, ...args] = process.argv.slice(2);
   if (command === "resolve") await resolveCommand(args);
   else if (command === "run") await runCommand(args);
+  else if (command === "resolve-published") await resolveCommand(args, true);
+  else if (command === "run-published") await runCommand(args, true);
   else {
     console.error(usage);
     process.exit(2);

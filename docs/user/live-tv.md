@@ -16,7 +16,13 @@ Your subscription may allow a single connection. Home then uses it as soon as it
 
 ## The guide
 
-**Live TV** lists your favourites, recently watched channels, all channels and every category on the left, from [every subscription you added](subscriptions.md#everything-together). A channel that reads like one of another subscription says which one it is from. When a subscription's channels couldn't be fetched, a line above the list says so, with **Retry**, and the others show as usual. The channels on the right show what's on now, with how long it has left, and what's next. The channel you're watching plays muted at the top.
+**Live TV** lists your favourites, recently watched channels and all channels on the left, then your categories in your provider's order, from [every subscription you added](subscriptions.md#everything-together). From 0.0.12, categories named for a country, such as "BE | VLAANDEREN", sit under one row for that country with its channel count. Open the country for its categories. Its name at the top, Left or Backspace goes back to the countries. Categories without a country have rows of their own. When two subscriptions have a category with the same name, each row names its subscription.
+
+**Find**, above the categories, searches category and country names in every country, and each result names its country. Escape clears it. It finds categories only; the field beside the list's name searches channels and programmes.
+
+Live TV opens on the category you picked last, inside its country. If your provider no longer lists it, Live TV shows All channels and says so.
+
+A channel that reads like one of another subscription says which one it is from. When a subscription's channels couldn't be fetched, a line above the list says so, with **Retry**, and the others show as usual. The channels on the right show what's on now, with how long it has left, and what's next. The channel you're watching plays muted at the top.
 
 - Click a channel to watch it. **Back**, or Escape, returns to the same place in the list.
 - The arrow at the end of a row lists the rest of the day. Click a later programme to read about it.
@@ -44,7 +50,7 @@ Programme information comes from your provider. Many providers only cover some c
 
 ## Watching
 
-While watching, the channel list opens over the left of the picture with the list button, Enter or the left arrow. Click a channel to switch; its title switches to another category. Clicking the picture shows the controls, and a double click toggles full screen. From 0.0.9, scroll over the picture to switch channel, once per gesture.
+While watching, the channel list opens over the left of the picture with the list button, Enter or the left arrow. Click a channel to switch; its title switches to another category, with the same countries and **Find** as Live TV. Clicking the picture shows the controls, and a double click toggles full screen. From 0.0.9, scroll over the picture to switch channel, once per gesture.
 
 From 0.0.9, the bar keeps Channels, Favourite, Stop or Watch, CC when available, volume, full screen and **More**. More holds channel up, channel down, the previous channel, Sound, Quality, Play on and Mini player. In 0.0.8, these actions have their own buttons in the bar.
 
@@ -87,24 +93,24 @@ When the picture stands still for three seconds, "Waiting for data" shows at the
 
 ## Keys
 
-| Key                | In the guide                                                   | While watching                              |
-| ------------------ | -------------------------------------------------------------- | ------------------------------------------- |
-| Up, Down           | Move through the list                                          | Previous or next channel; in the list, move |
-| Page Up, Page Down | Move ten rows                                                  | Move ten rows in the list                   |
-| Enter              | Watch                                                          | Open the list; in it, watch                 |
-| Right              | The rest of the day; from the categories, back to the channels | In the list, back from the categories       |
-| Left               | Close the rest of the day, then go to the categories           | Open the list, then its categories          |
-| Digits             | Jump to a channel number                                       | Jump to a channel number                    |
-| S                  | Add to or remove from favourites                               | The same, for the channel you're watching   |
-| R                  | Reorder the favourites, in Favourites                          | Retry, once a channel failed                |
-| /                  | Search the list                                                |                                             |
-| Escape             | Clear the search, then Home                                    | Close the list, leave full screen, go back  |
-| Backspace          |                                                                | The previous channel                        |
-| C                  |                                                                | Subtitles on and off                        |
-| G, H               |                                                                | Subtitles 0.1 s earlier or later            |
-| Q                  |                                                                | The quality menu                            |
-| F, M, I            |                                                                | Full screen, mute, show the details         |
-| P                  |                                                                | Mini player, and back                       |
+| Key                | In the guide                                                                              | While watching                                                          |
+| ------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Up, Down           | Move through the list                                                                     | Previous or next channel; in the list, move                             |
+| Page Up, Page Down | Move ten rows                                                                             | Move ten rows in the list                                               |
+| Enter              | Watch                                                                                     | Open the list; in it, watch                                             |
+| Right              | The rest of the day; from the categories, back to the channels                            | In the list, back from the categories                                   |
+| Left               | Close the rest of the day, then go to the categories; in a country, back to the countries | Open the list, then its categories; in a country, back to the countries |
+| Digits             | Jump to a channel number                                                                  | Jump to a channel number                                                |
+| S                  | Add to or remove from favourites                                                          | The same, for the channel you're watching                               |
+| R                  | Reorder the favourites, in Favourites                                                     | Retry, once a channel failed                                            |
+| /                  | Search the list                                                                           |                                                                         |
+| Escape             | Clear the search, then Home                                                               | Close the list, leave full screen, go back                              |
+| Backspace          | In a country, back to the countries                                                       | The previous channel; in a country, back to the countries               |
+| C                  |                                                                                           | Subtitles on and off                                                    |
+| G, H               |                                                                                           | Subtitles 0.1 s earlier or later                                        |
+| Q                  |                                                                                           | The quality menu                                                        |
+| F, M, I            |                                                                                           | Full screen, mute, show the details                                     |
+| P                  |                                                                                           | Mini player, and back                                                   |
 
 While you reorder favourites, the keys are these alone:
 
