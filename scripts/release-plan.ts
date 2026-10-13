@@ -4,7 +4,7 @@
 //
 //   node scripts/release-plan.ts nightly --ref <ref> --sha <commit> --run <number> [--scheduled | --dry-run]
 //   node scripts/release-plan.ts stable --ref <ref> --sha <main's commit> --run <number> --nightly <tested nightly> [--version 0.1.0]
-//   node scripts/release-plan.ts check --version <version>   right before publishing
+//   node scripts/release-plan.ts check --version <version> --dir <folder> --sources <names>   right before publishing
 //   node scripts/release-plan.ts notes --tag <tag> --sha <commit> [--previous-tag <tag>]
 //   node scripts/release-plan.ts record --version <version>  after a stable release, on main
 //   node scripts/release-plan.ts feed --out <file> [--current <url>] [--allow-regress]
@@ -24,7 +24,7 @@
 // a release is refused. Release jobs run it with plain node before installing packages, so it
 // imports only node: modules and dependency-free files, by relative path rather than package name.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import {
@@ -35,6 +35,7 @@ import {
   type Channel,
   type Version,
 } from "../packages/contracts/src/version.ts";
+import { releaseFiles } from "../packages/contracts/src/release-files.ts";
 import {
   buildFeed,
   mergeFeeds,
@@ -272,6 +273,21 @@ export function checkUnreleased(repo: Repository, version: string): void {
   const parsed = parseVersion(version);
   if (!parsed) throw new Error(`"${version}" is not a release version.`);
   assertUnreleased(releasedVersions(repo), parsed);
+}
+
+/**
+ * Throws unless `present`, the files about to be attached to the release of `version`, holds every
+ * platform's installers and update metadata and every source archive the sources job prepared.
+ * Each package job checked its own files already; this catches one lost on the way to publishing.
+ */
+export function checkFiles(
+  version: string,
+  present: readonly string[],
+  sources: readonly string[],
+): void {
+  if (sources.length === 0) throw new Error("The sources job named no source archives.");
+  const missing = [...releaseFiles(version), ...sources].filter((name) => !present.includes(name));
+  if (missing.length > 0) throw new Error(`The release of ${version} lacks ${missing.join(", ")}.`);
 }
 
 /**
@@ -594,6 +610,8 @@ async function main(): Promise<void> {
       nightly: { type: "string" },
       current: { type: "string" },
       out: { type: "string" },
+      dir: { type: "string" },
+      sources: { type: "string" },
       scheduled: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       "allow-regress": { type: "boolean", default: false },
@@ -631,10 +649,17 @@ async function main(): Promise<void> {
         }),
       );
       return;
-    case "check":
-      checkUnreleased(githubRepository(), values.version ?? "");
-      console.log(`${values.version} is still new.`);
+    case "check": {
+      if (!values.dir) throw new Error("Name the folder of the release's files with --dir.");
+      const version = values.version ?? "";
+      const sources = values.sources?.split(/\s+/).filter(Boolean) ?? [];
+      checkFiles(version, readdirSync(values.dir), sources);
+      checkUnreleased(githubRepository(), version);
+      console.log(
+        `${version} is still new, and the release has every platform's files and source.`,
+      );
       return;
+    }
     case "notes":
       console.log(
         await releaseNotes(githubRepository(), {

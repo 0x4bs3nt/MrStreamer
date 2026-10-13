@@ -1,23 +1,24 @@
-# Builds the website, apps/marketing, on every pull request and push to main: the pictures from
-# the captures, the page, and the package Vercel takes, which checks itself. It installs only what
-# the website declares, as publishing does. No owner secrets; a read-only workflow token fetches release history. Fork PRs run it too.
+# Builds the website, apps/marketing, on every pull request: the pictures from the captures, the
+# page, and the package Vercel takes, which checks itself. It installs only what the website
+# declares, as publishing does. No owner secrets; a read-only workflow token fetches release
+# history. Fork PRs run it too.
 #
-# Publishing is marketing-deploy.yml's. The release's checks (ci.yml) leave the website out: a
-# page that doesn't build never holds back an app release.
+# On main, marketing-deploy.yml builds the same way after every change to what the page is built
+# from, so this doesn't run there. ci.yml lints, typechecks and tests the website's code but
+# doesn't build it, and the release's checks leave it out: a page that doesn't build never holds
+# back an app release.
 name: Marketing
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 # A new push to a pull request replaces its running build.
 concurrency:
-  group: marketing-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: marketing-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   build:

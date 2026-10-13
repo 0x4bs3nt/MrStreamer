@@ -268,7 +268,7 @@ else
     node scripts/ci-signing-identity.ts finish || SKIPPED+=("Developer ID identity: node scripts/ci-signing-identity.ts finish")
   fi
 fi
-note "  Check everything with the Mac signing check workflow: gh workflow run mac-signing-check.yml"
+note "  Check everything with a release dry run, which signs and notarizes: label a pull request \"release dry run\"."
 pause "Press Enter to finish."
 
 finish

@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   STORE_APP,
   STORE_NAME,
+  packageRecord,
   storeGate,
   storeRelease,
   verifyPackage,
@@ -98,13 +99,19 @@ const RELEASE: StoreRelease = {
 const built = (wrong: Partial<Built> = {}) => writeArtifact({ ...RELEASE, ...wrong });
 
 /**
- * A manifest as electron-builder writes it, up to the properties, copied from the 0.0.7 package:
- * each attribute on a line of its own, the publisher alone in single quotes, and the name from
- * before the Store name.
+ * A manifest as electron-builder writes it, its layout copied from the 0.0.7 package: each identity
+ * attribute on a line of its own, the publisher alone in single quotes, and by default the name
+ * from before the Store name.
  */
-const builderManifest = (
-  publisher: string = STORE_APP.publisher,
-) => `<?xml version="1.0" encoding="utf-8"?>
+const builderManifest = ({
+  publisher = STORE_APP.publisher as string,
+  name = "Mr. Streamer",
+  startName = name,
+  publisherName = "Mr Streamer OSS",
+  applicationId = "MrStreamer",
+}: Partial<
+  Record<"publisher" | "name" | "startName" | "publisherName" | "applicationId", string>
+> = {}) => `<?xml version="1.0" encoding="utf-8"?>
 <!--suppress XmlUnusedNamespaceDeclaration -->
 <Package
    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -117,11 +124,22 @@ const builderManifest = (
     Publisher='${publisher}'
     Version="${RELEASE.packageVersion}" />
   <Properties>
-    <DisplayName>Mr. Streamer</DisplayName>
-    <PublisherDisplayName>Mr Streamer OSS</PublisherDisplayName>
+    <DisplayName>${name}</DisplayName>
+    <PublisherDisplayName>${publisherName}</PublisherDisplayName>
     <Description>A clean, fast, open-source IPTV player for macOS, Windows and Linux.</Description>
     <Logo>assets\\StoreLogo.png</Logo>
   </Properties>
+  <Applications>
+    <Application Id="${applicationId}" Executable="app\\Mr. Streamer.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+       BackgroundColor="#000000"
+       DisplayName="${startName}"
+       Square150x150Logo="assets\\Square150x150Logo.png"
+       Square44x44Logo="assets\\Square44x44Logo.png"
+       Description="A clean, fast, open-source IPTV player for macOS, Windows and Linux.">
+      </uap:VisualElements>
+    </Application>
+  </Applications>
 </Package>
 `;
 
@@ -305,7 +323,8 @@ describe("the package a run kept", () => {
       sha256,
       displayName: "Mr. Streamer",
     });
-    expect(() => verifyPackage(RELEASE, builtWith(builderManifest("CN=Someone Else")).dir)).toThrow(
+    const elsewhere = builderManifest({ publisher: "CN=Someone Else" });
+    expect(() => verifyPackage(RELEASE, builtWith(elsewhere).dir)).toThrow(
       `The package's publisher is "CN=Someone Else"`,
     );
   });
@@ -348,13 +367,49 @@ describe("the package a run kept", () => {
   });
 
   it("carries the identity and the name electron-builder builds the package with", () => {
-    const builder: { appx: { identityName: string; publisher: string; displayName: string } } =
-      parse(readFileSync("apps/desktop/electron-builder.yml", "utf8"));
+    const builder: { appx: Record<string, unknown> } = parse(
+      readFileSync("apps/desktop/electron-builder.yml", "utf8"),
+    );
 
     expect(builder.appx).toMatchObject({
       identityName: STORE_APP.identityName,
       publisher: STORE_APP.publisher,
+      publisherDisplayName: STORE_APP.publisherDisplayName,
+      applicationId: STORE_APP.applicationId,
       displayName: STORE_NAME,
     });
+  });
+});
+
+describe("the package a stable release or dry run builds", () => {
+  const msix = Buffer.from("the package's bytes");
+  const storeManifest = (wrong: Parameters<typeof builderManifest>[0] = {}) =>
+    builderManifest({ name: STORE_NAME, ...wrong });
+
+  it("is recorded with its release, Store version, commit and checksum when Partner Center's identity is all there", () => {
+    expect(packageRecord(storeManifest(), msix, { version: "0.0.5", commit: COMMIT })).toEqual({
+      version: "0.0.5",
+      packageVersion: "1.0.5.0",
+      commit: COMMIT,
+      sha256: createHash("sha256").update(msix).digest("hex"),
+    });
+  });
+
+  it.each([
+    ["publisher", { publisher: "CN=Someone Else" }, "The package's publisher"],
+    ["publisher's name", { publisherName: "Mr. Streamer OSS" }, "The publisher's name"],
+    ["application id", { applicationId: "App" }, "The application id"],
+    ["name, from before the Store name", { name: "Mr. Streamer" }, "The package's name"],
+    ["Start entry's name", { startName: "Mr. Streamer" }, "The Start entry's name"],
+  ])("is refused with another %s", (_, wrong, message) => {
+    expect(() =>
+      packageRecord(storeManifest(wrong), msix, { version: "0.0.5", commit: COMMIT }),
+    ).toThrow(message);
+  });
+
+  it("is refused with another release's Store version", () => {
+    expect(() =>
+      packageRecord(storeManifest(), msix, { version: "0.0.6", commit: COMMIT }),
+    ).toThrow(`The package's version is "1.0.5.0", not "1.0.6.0"`);
   });
 });

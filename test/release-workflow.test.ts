@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { afterAll, describe, expect, it } from "vitest";
-import { artifactName, STORE_ENVIRONMENT, STORE_NAME } from "../scripts/store-release.ts";
+import { artifactName, STORE_ENVIRONMENT } from "../scripts/store-release.ts";
 
 // A stable run can build and publish two releases, a nightly of main first and then the stable
 // release, through the same reusable workflows. Artifacts are named per run, so every artifact the
@@ -244,46 +244,6 @@ describe("a CI run's test report", () => {
     expect(run.stdout).toContain("All 1 test files are in the report");
     expect(run.status).toBe(0);
   });
-
-  it("is checked by its own script for a tested nightly from before the check", () => {
-    // The script sources up to bbd8d930 check their report with.
-    const run = checkReport("older", {
-      "apps/desktop/scripts/ci-multimedia-results.ts":
-        "console.log(`older check of ${process.argv[2]}`);",
-    });
-
-    expect(run.stdout).toContain(`older check of ${join(root, "older", "test-results.json")}`);
-    expect(run.status).toBe(0);
-  });
-
-  it("fails for a source with no script to check it", () => {
-    const run = checkReport("none", {});
-
-    expect(run.stdout).toContain("no script that checks its test report");
-    expect(run.status).toBe(1);
-  });
-});
-
-describe("checking the Store package of a stable release", () => {
-  const job = read("build-release.yml").jobs["msix"];
-  const check = job?.steps?.find((step) => step.id === "check")?.run ?? "";
-  const script = /\bnode --input-type=module -e '([^']+)' \$env:VERSION$/m.exec(check)?.[1] ?? "";
-
-  it("works out the version with the script every tested nightly has", () => {
-    // As the step runs it: in the job's folder, the release version its one argument.
-    const version = execFileSync(process.execPath, ["--input-type=module", "-e", script, "0.0.4"], {
-      cwd: job?.defaults?.run?.["working-directory"],
-      encoding: "utf8",
-    });
-
-    // Nightlies from before packages/contracts/src/package-version.ts have it only in this script.
-    expect(script).toContain('from "./scripts/msix-version.ts"');
-    expect(version.trim()).toBe("1.0.4.0");
-  });
-
-  it("insists on the name the Store's listings take", () => {
-    expect(check).toContain(`"${STORE_NAME}"`);
-  });
 });
 
 describe("Windows FFmpeg setup and cache inputs", () => {
@@ -426,12 +386,6 @@ describe("Windows FFmpeg provenance across promoted source revisions", () => {
 
   it.each([
     {
-      name: "older tested nightly",
-      script: "# MSYS2 MINGW64",
-      stamp: "MSYS2 packages ",
-      status: 0,
-    },
-    {
       name: "UCRT64 source with its cached provenance",
       script: "# MSYS2 UCRT64",
       stamp: "C runtime UCRT; MSYS2 UCRT64; packages mingw-w64-ucrt-x86_64-gcc 15.2.0-8",
@@ -476,9 +430,7 @@ describe("sending a stable release to the Microsoft Store", () => {
 
     expect(job?.uses).toBe(called);
     expect(job?.needs).toEqual(["publish", "msix"]);
-    expect(job?.if?.split(/\s+/).join(" ")).toBe(
-      "inputs.channel == 'stable' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'",
-    );
+    expect(job?.if?.split(/\s+/).join(" ")).toBe("inputs.channel == 'stable'");
     // No push, tag, release, schedule or pull request starts the Store workflow itself.
     expect(Object.keys(store.on)).toEqual(["workflow_call", "workflow_dispatch"]);
     // And nothing else calls it or names its environment.
@@ -711,10 +663,9 @@ describe("the cached AirPlay helper of a Mac build", () => {
   });
 });
 
-// This workflow runs from main on the commit a release names, and a stable release can name a
-// nightly tested before the AirPlay key and the phase timer existed. These run the Mac steps'
-// commands, as the runner's bash runs them, in a checkout with and without those scripts.
-describe("a Mac build of a commit from before the cache key and the phase timer", () => {
+// These run the Mac steps' commands, as the runner's bash runs them, in a checkout with stand-ins
+// for the build tools.
+describe("a Mac build", () => {
   const steps = read("build-release.yml").jobs["package"]?.steps ?? [];
   const keyStep = steps.find((step) => step.id === "airplay-key");
   const buildStep = steps.find((step) => step.name === "Build for macOS, signed and notarized");
@@ -782,20 +733,6 @@ describe("a Mac build of a commit from before the cache key and the phase timer"
     };
   };
 
-  it("compiles the helper every time when its script names no --key", () => {
-    // The script of those commits took a target and nothing else.
-    const old = checkout("old-key", {
-      "build-airplay-helper.sh":
-        '#!/bin/sh\ncase ${1:?usage} in mac-arm64) ;; *) echo "Unknown target $1" >&2; exit 1 ;; esac\n',
-    });
-
-    expect(run(old, keyStep)).toMatchObject({ status: 0, outputs: "" });
-    // No key, so the cache is skipped and the build step's miss condition holds.
-    expect(steps.find((step) => step.id === "airplay")?.if).toContain(
-      "steps.airplay-key.outputs.key != ''",
-    );
-  });
-
   it("keys the helper by what a script that names --key prints, and stops when that fails", () => {
     const prints = checkout("key", {
       "build-airplay-helper.sh": "#!/bin/sh\n# --key prints the inputs\necho abc123\n",
@@ -812,9 +749,8 @@ describe("a Mac build of a commit from before the cache key and the phase timer"
     expect(run(fails, keyStep)).toMatchObject({ status: 3, outputs: "" });
   });
 
-  it("builds and notarizes with the timer when the commit has one, and without it when not", () => {
+  it("builds and notarizes with the phase timer", () => {
     const timed = run(checkout("timed", { "mac-release-phases.ts": "" }), buildStep, secrets);
-    const untimed = run(checkout("untimed", {}), buildStep, secrets);
 
     expect(timed.status).toBe(0);
     expect(timed.calls.toSorted()).toEqual([
@@ -822,24 +758,15 @@ describe("a Mac build of a commit from before the cache key and the phase timer"
       "node scripts/notarize-dmg.ts dist/*.dmg",
       "pnpm exec electron-builder --mac --arm64 --publish never",
     ]);
-    expect(untimed).toMatchObject({
-      status: 0,
-      calls: [
-        "pnpm exec electron-builder --mac --arm64 --publish never",
-        "node scripts/notarize-dmg.ts dist/*.dmg",
-      ],
-    });
   });
 
-  it("fails the step before notarizing when the build fails, timed or not", () => {
-    for (const [name, scripts] of [
-      ["timed-failure", { "mac-release-phases.ts": "" }],
-      ["untimed-failure", {}],
-    ] as const) {
-      const result = run(checkout(name, scripts), buildStep, { ...secrets, PNPM_EXIT: "7" });
+  it("fails the step before notarizing when the build fails", () => {
+    const failed = run(checkout("timed-failure", { "mac-release-phases.ts": "" }), buildStep, {
+      ...secrets,
+      PNPM_EXIT: "7",
+    });
 
-      expect(result.status).not.toBe(0);
-      expect(result.calls.join("\n")).not.toContain("notarize-dmg");
-    }
+    expect(failed.status).not.toBe(0);
+    expect(failed.calls.join("\n")).not.toContain("notarize-dmg");
   });
 });

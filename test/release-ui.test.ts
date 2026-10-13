@@ -1,9 +1,8 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parse } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   inspectScenario,
@@ -203,50 +202,3 @@ describe("release UI public runner/report contract", () => {
     expect(await verifyBuild(f.root, f.revision, receipt.appVersion)).toEqual(receipt);
   });
 });
-
-it.skipIf(process.platform === "win32")(
-  "main's release workflow explicitly allows missing legacy helpers only before 0.0.11",
-  async () => {
-    const workflow = parse(await readFile(".github/workflows/build-release.yml", "utf8")) as {
-      jobs: Record<
-        string,
-        { if?: string; needs?: string; steps: { name?: string; run?: string }[] }
-      >;
-    };
-    expect(workflow.jobs["release-ui"]?.if).toBe("github.event_name == 'pull_request'");
-    expect(workflow.jobs["release-ui"]?.needs).toBe("bundle");
-    const f = await fixture();
-    const steps = [
-      workflow.jobs["bundle"]?.steps.find(
-        (step) => step.name === "Record release UI bundle identity",
-      ),
-      workflow.jobs["release-ui"]?.steps.find(
-        (step) => step.name === "Verify required release UI scenarios",
-      ),
-    ];
-    for (const version of [
-      "0.0.10",
-      "0.0.10-nightly.20261010.283",
-      "0.0.11",
-      "0.0.11-nightly.20261011.1",
-      "0.1.0",
-      "invalid",
-    ]) {
-      for (const step of steps) {
-        expect(step?.run).toBeTruthy();
-        const result = spawnSync("bash", ["-e", "-c", step!.run!], {
-          cwd: f.root,
-          env: {
-            ...process.env,
-            VERSION: version,
-            SHA: f.revision,
-            GITHUB_STEP_SUMMARY: join(f.root, ".local/summary"),
-          },
-        });
-        expect(result.status, `${version}: ${result.stderr}`).toBe(
-          version.startsWith("0.0.10") ? 0 : 1,
-        );
-      }
-    }
-  },
-);

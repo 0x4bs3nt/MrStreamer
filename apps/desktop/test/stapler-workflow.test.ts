@@ -88,15 +88,6 @@ describe.skipIf(process.platform === "win32")("Mac release ticket checks", () =>
     ]);
   });
 
-  it("keeps the original fail-closed checks for an older tested source", () => {
-    const result = run(directory, calls, true);
-
-    expect(result.status).toBe(68);
-    expect(readFileSync(calls, "utf8").trim()).toBe(
-      "stapler validate dist/mac-arm64/Mr. Streamer.app",
-    );
-  });
-
   it("stops on a rejected app ticket even when the helper exists", () => {
     mkdirSync(join(directory, "scripts"));
     copyFileSync(

@@ -398,10 +398,10 @@ Use the platform's normal display and mock keychain arguments on macOS. For chan
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`, in two jobs:
 
-- **Check:** unused files, exports and dependencies (`pnpm knip`), lint (`pnpm lint`), format, typecheck and the production build.
+- **Check:** unused files, exports and dependencies (`pnpm knip`), lint (`pnpm lint`), format, typecheck and the production build. Lint, typecheck and tests cover the website's code too.
 - **Test:** installs Ubuntu's complete ffmpeg and ffprobe (`apps/desktop/scripts/ci-ffmpeg.sh` fails unless both run and their codecs are there), runs the suite with Vitest's JSON reporter, keeps the report and checks it.
 
-The [release workflow](../maintainers/releasing.md) runs both jobs on the exact commit it releases, next to the packaged-app test on every installed package. CI needs no secrets, so pull requests from forks run it too.
+The [release workflow](../maintainers/releasing.md) runs both jobs on the exact commit it releases, next to the packaged-app test on every installed package. There the production build is the release's own bundle job, so Check leaves it out. CI needs no secrets, so pull requests from forks run it too.
 
 ### The test report
 
@@ -424,9 +424,7 @@ jq -r '.testResults[] | "\(.endTime - .startTime | floor) ms \(.name)"' .local/c
 
 Files run in parallel, so their times overlap and don't add up to the job's. When no report was written, the tests never ran: the upload warns that it found no file, and the check fails on the missing report.
 
-A release checks out the source it builds under the workflows of the commit the run started from, main's. A stable release can promote a tested nightly from before `scripts/ci-test-results.ts`. For such a source the step runs the `apps/desktop/scripts/ci-multimedia-results.ts` it has instead, which requires its seven multimedia files and no others, and a source with neither script fails. Keep that branch while a tested nightly that old can still be promoted; `test/release-workflow.test.ts` runs the step on both layouts.
-
-`.github/workflows/marketing.yml` builds the website on every pull request and push to `main`, also without secrets, installing only what `apps/marketing` declares. It is apart from CI, so a page that doesn't build never holds back an app release. `.github/workflows/marketing-deploy.yml` publishes the page from `main`; [the website's README](../../apps/marketing/README.md#how-it-gets-published) describes it.
+`.github/workflows/marketing.yml` builds the website on every pull request, also without secrets, installing only what `apps/marketing` declares. On `main` the publishing workflow builds it after every change to what the page is built from. It is apart from CI, so a page that doesn't build never holds back an app release. `.github/workflows/marketing-deploy.yml` publishes the page from `main`; [the website's README](../../apps/marketing/README.md#how-it-gets-published) describes it.
 
 ## Bounded release UI proof
 

@@ -5,7 +5,8 @@
 // docs/maintainers/releasing.md describes the policy.
 //
 // Release jobs run this with plain node before installing packages, so it imports only
-// ./version.ts, by relative path.
+// ./version.ts and ./release-files.ts, by relative path.
+import { UPDATE_METADATA } from "./release-files.ts";
 import {
   channelOf,
   compareVersions,
@@ -16,7 +17,7 @@ import {
 } from "./version.ts";
 
 /** The update metadata electron-builder writes for macOS, Windows and Linux. */
-const PLATFORM_FILES = ["latest-mac.yml", "latest.yml", "latest-linux.yml"] as const;
+const PLATFORM_FILES = Object.values(UPDATE_METADATA);
 
 /** How the files people install end: the DMG, the setup .exe, the AppImage and the deb. */
 const INSTALLER_ENDINGS = [".dmg", ".exe", ".AppImage", ".deb"] as const;

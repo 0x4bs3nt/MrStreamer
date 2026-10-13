@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
+  checkFiles,
   checkUnreleased,
   deployedFeed,
   planNightly,
@@ -552,6 +553,32 @@ describe("publishing", () => {
       "would sort before 0.0.1",
     );
     expect(() => checkUnreleased(repo, "0.0.2-nightly.20261002.40")).not.toThrow();
+  });
+
+  it("waits for every platform's installers, update metadata and source archive", () => {
+    const sources = ["ffmpeg-8.0.tar.xz", "electron-38.1.0.tar.gz"];
+    const files = [
+      "Mr-Streamer-0.0.5-mac-arm64.dmg",
+      "Mr-Streamer-0.0.5-mac-arm64.zip",
+      "Mr-Streamer-0.0.5-mac-arm64.zip.blockmap",
+      "latest-mac.yml",
+      "Mr-Streamer-0.0.5-win-x64-setup.exe",
+      "Mr-Streamer-0.0.5-win-x64-setup.exe.blockmap",
+      "latest.yml",
+      "Mr-Streamer-0.0.5-linux-x86_64.AppImage",
+      "Mr-Streamer-0.0.5-linux-amd64.deb",
+      "latest-linux.yml",
+      ...sources,
+    ];
+
+    expect(() => checkFiles("0.0.5", files, sources)).not.toThrow();
+    expect(() => checkFiles("0.0.5", files.slice(1), sources)).toThrow(
+      "The release of 0.0.5 lacks Mr-Streamer-0.0.5-mac-arm64.dmg.",
+    );
+    expect(() => checkFiles("0.0.5", files, [...sources, "x264-0123456789ab.tar.gz"])).toThrow(
+      "lacks x264-0123456789ab.tar.gz",
+    );
+    expect(() => checkFiles("0.0.5", files, [])).toThrow("named no source archives");
   });
 
   it("records a stable version on main only when it is newer", () => {

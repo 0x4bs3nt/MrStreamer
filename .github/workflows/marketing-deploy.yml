@@ -26,7 +26,7 @@ name: Marketing deploy
 on:
   push:
     branches: [main]
-    # What the page is built from. MARKETING_INPUTS below names the same files for git.
+    # What the page is built from. The publish job compares main with the build over these too.
     paths:
       - apps/marketing/**
       - docs/assets/**
@@ -35,6 +35,7 @@ on:
       - docs/security.md
       - docs/user/**
       - packages/contracts/src/update-feed.ts
+      - packages/contracts/src/release-files.ts
       - packages/contracts/src/version.ts
       - apps/desktop/assets/brand/mark.svg
       - package.json
@@ -61,12 +62,6 @@ concurrency:
   group: marketing-production-${{ github.ref }}
   cancel-in-progress: false
   queue: max
-
-env:
-  MARKETING_INPUTS: >-
-    apps/marketing docs/assets docs/privacy.md docs/about.md docs/security.md docs/user apps/desktop/assets/brand/mark.svg package.json pnpm-workspace.yaml
-    pnpm-lock.yaml .github/workflows/marketing.yml .github/workflows/marketing-deploy.yml
-    packages/contracts/src/update-feed.ts packages/contracts/src/version.ts
 
 jobs:
   trigger:
@@ -109,6 +104,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
+      inputs: ${{ steps.inputs.outputs.paths }}
     steps:
       # main as it is now, which a run that waited its turn finds newer than the push behind it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,6 +118,19 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      # The push trigger's paths at this commit, which the publish job compares main over.
+      - name: Note what the page is built from
+        id: inputs
+        run: |
+          # shellcheck disable=SC2016 # The quoted script is JavaScript, for node to read.
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const workflow = readFileSync(".github/workflows/marketing-deploy.yml", "utf8");
+            const list = /^    paths:\n((?:      - .+\n)+)/m.exec(workflow)?.[1];
+            if (!list) throw new Error("marketing-deploy.yml names no push paths.");
+            const paths = list.trim().split("\n").map((line) => line.replace(/^\s*- /, ""));
+            console.log(`paths=${paths.join(" ")}`);
+          ' >> "$GITHUB_OUTPUT"
       - run: pnpm install --frozen-lockfile --filter mrstreamer-marketing...
       - name: Build and check the package
         env:
@@ -191,12 +200,15 @@ jobs:
         id: newest
         env:
           BUILT: ${{ needs.build.outputs.commit }}
+          INPUTS: ${{ needs.build.outputs.inputs }}
         run: |
           git clone --quiet --bare --filter=blob:none --single-branch --branch main \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$RUNNER_TEMP/main.git"
-          read -ra inputs <<<"$MARKETING_INPUTS"
+          # The trigger's paths, as pathspecs that read ** as the trigger does.
+          read -ra paths <<<"$INPUTS"
+          [ ${#paths[@]} -gt 0 ] || { echo "::error::The build named no website inputs."; exit 1; }
           changed=0
-          git --git-dir="$RUNNER_TEMP/main.git" diff --quiet --no-renames "$BUILT" main -- "${inputs[@]}" || changed=$?
+          git --git-dir="$RUNNER_TEMP/main.git" diff --quiet --no-renames "$BUILT" main -- "${paths[@]/#/:(glob)}" || changed=$?
           if [ "$changed" -eq 1 ]; then
             echo "::notice::main changed the website after $BUILT was built. The run for that change publishes it."
             echo "superseded=true" >> "$GITHUB_OUTPUT"

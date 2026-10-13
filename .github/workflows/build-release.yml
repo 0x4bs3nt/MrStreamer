@@ -2,8 +2,11 @@
 # the release and calls this, twice when a stable run publishes a nightly of main first;
 # docs/maintainers/releasing.md describes the process.
 #
-# Every job checks out the planned commit, except the Store job, which runs main's scripts on the
-# package the run built. Windows also reads its toolchain action from the workflow commit.
+# The jobs that build check out the planned commit, which for a stable release is a nightly tested
+# earlier and can be older than this workflow. What judges a build rather than makes it comes from
+# the workflow commit: the Windows ffmpeg toolchain, the package receipt and the Store package
+# check. Publishing and the Store job run the workflow commit's scripts on the files the run built,
+# and the finalize job commits to the branch the run started from.
 # Pull requests are dry runs: they build, sign and test, prepare the source archives a release
 # attaches, keep the files as workflow artifacts and publish nothing, whatever the inputs say. Artifact names carry the version, so the two releases of one run never mix files.
 # It has no concurrency group of its own: release.yml's queue already holds the whole run, and a
@@ -44,6 +47,7 @@ permissions:
   contents: read
 
 jobs:
+  # CI's checks and tests on the planned commit. The bundle job below is its build.
   checks:
     name: Checks
     uses: ./.github/workflows/ci.yml
@@ -83,15 +87,7 @@ jobs:
         env:
           SHA: ${{ inputs.sha }}
           VERSION: ${{ inputs.version }}
-        run: |
-          if [ -f scripts/release-ui.ts ]; then
-            node scripts/release-ui.ts record "$SHA" "$VERSION"
-          elif [[ "$VERSION" =~ ^0\.0\.([0-9]|10)(-nightly\.[0-9]{8}\.[0-9]+)?$ ]]; then
-            echo "Legacy source before 0.0.11: release UI helpers are not required." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::This source requires release UI helpers."
-            exit 1
-          fi
+        run: node scripts/release-ui.ts record "$SHA" "$VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: js-bundle-${{ inputs.version }}
@@ -129,22 +125,7 @@ jobs:
           name: js-bundle-${{ inputs.version }}
           path: apps/desktop/out
       - name: Verify required release UI scenarios
-        run: |
-          if [ -f scripts/release-ui.ts ]; then
-            xvfb-run -a node scripts/release-ui.ts run "$SHA" "$VERSION" .local/release-ui
-          elif [[ "$VERSION" =~ ^0\.0\.([0-9]|10)(-nightly\.[0-9]{8}\.[0-9]+)?$ ]]; then
-            mkdir -p .local/release-ui
-            node --input-type=module -e '
-              import { writeFileSync } from "node:fs";
-              writeFileSync(".local/release-ui/legacy.json", JSON.stringify({
-                status: "legacy-ineligible", revision: process.env.SHA, version: process.env.VERSION,
-                reason: "Source before 0.0.11 without release UI helpers; prior promotion checks remain required."
-              }, null, 2));'
-            echo "Legacy source before 0.0.11 has no aggregate UI acceptance." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::This source requires release UI helpers."
-            exit 1
-          fi
+        run: xvfb-run -a node scripts/release-ui.ts run "$SHA" "$VERSION" .local/release-ui
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -216,20 +197,16 @@ jobs:
       # The AirPlay helper as it comes from the compiler, rebuilt only when what the script hashes
       # changes: its sources, Info.plist and flags, and the Swift compiler and SDK of this runner
       # image. Packaging signs a copy inside the app, so no release signature is ever cached.
-      # This workflow runs from main on whichever commit the release names, which can be a tested
-      # nightly from before the script printed a key. That source compiles every time, as it did.
       - name: Find the AirPlay helper's inputs
         id: airplay-key
         if: runner.os == 'macOS'
-        # A script that names --key supports it, and then its failure stops the step. Assigned
-        # first, so that failure cannot leave one empty key shared by every build.
+        # Assigned first, so the script's failure stops the step and cannot leave one empty key
+        # shared by every build.
         run: |
-          if grep -q -e '--key' scripts/build-airplay-helper.sh; then
-            inputs=$(scripts/build-airplay-helper.sh --key ${{ matrix.target }})
-            echo "key=airplay-${{ matrix.target }}-$inputs" >> "$GITHUB_OUTPUT"
-          fi
+          inputs=$(scripts/build-airplay-helper.sh --key ${{ matrix.target }})
+          echo "key=airplay-${{ matrix.target }}-$inputs" >> "$GITHUB_OUTPUT"
       - id: airplay
-        if: runner.os == 'macOS' && steps.airplay-key.outputs.key != ''
+        if: runner.os == 'macOS'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/airplay/${{ matrix.target }}
@@ -245,8 +222,7 @@ jobs:
           path: apps/desktop/out
 
       # The build and the disk image's notarization print their phases, which the last command
-      # times: the runner's own work apart from the waits on Apple, in the job summary. A commit
-      # from before that command existed is built and notarized the same way, untimed.
+      # times: the runner's own work apart from the waits on Apple, in the job summary.
       - name: Build for macOS, signed and notarized
         if: runner.os == 'macOS'
         env:
@@ -264,15 +240,10 @@ jobs:
           done
           export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
           printf '%s\n' "$APPLE_API_KEY_P8" > "$APPLE_API_KEY"
-          build() {
+          {
             pnpm exec electron-builder ${{ matrix.builder }} --publish never
             node scripts/notarize-dmg.ts dist/*.dmg
-          }
-          if [ -f scripts/mac-release-phases.ts ]; then
-            build 2>&1 | node scripts/mac-release-phases.ts "Mac release phases, $VERSION from ${SHA::12}"
-          else
-            build
-          fi
+          } 2>&1 | node scripts/mac-release-phases.ts "Mac release phases, $VERSION from ${SHA::12}"
           rm -f "$APPLE_API_KEY"
 
       - name: Check the macOS signature
@@ -286,13 +257,8 @@ jobs:
           codesign -dv "$app" 2>&1 | grep -q "flags=0x10000(runtime)"
           spctl --assess --type execute --verbose "$app"
           spctl --assess --type open --context context:primary-signature --verbose dist/*.dmg
-          if [ -f scripts/stapler-ticket.ts ]; then
-            node scripts/stapler-ticket.ts validate "$app"
-            node scripts/stapler-ticket.ts validate dist/*.dmg
-          else
-            xcrun stapler validate "$app"
-            xcrun stapler validate dist/*.dmg
-          fi
+          node scripts/stapler-ticket.ts validate "$app"
+          node scripts/stapler-ticket.ts validate dist/*.dmg
 
       - name: Check the AirPlay helper starts
         if: runner.os == 'macOS'
@@ -397,8 +363,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Keep setup with this workflow even when stable promotes source predating the action.
-      # All callers use local reusable workflows, from the caller's workflow commit.
+      # The toolchain action comes from the workflow commit, the source's build script from the
+      # planned commit. All callers use local reusable workflows, from the caller's workflow commit.
       - name: Read the Windows FFmpeg toolchain
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -428,11 +394,8 @@ jobs:
       - name: Check and record Windows ffmpeg provenance
         # README.txt is cached with both binaries, including on a warm-cache run.
         run: |
-          # Stable can rebuild a tested nightly from before the script recorded UCRT64.
-          if grep -q 'MSYS2 UCRT64' scripts/build-ffmpeg.sh; then
-            grep -q 'C runtime UCRT; MSYS2 UCRT64; packages ' vendor/ffmpeg/win-x64/README.txt
-            grep -q 'mingw-w64-ucrt-x86_64-gcc ' vendor/ffmpeg/win-x64/README.txt
-          fi
+          grep -q 'C runtime UCRT; MSYS2 UCRT64; packages ' vendor/ffmpeg/win-x64/README.txt
+          grep -q 'mingw-w64-ucrt-x86_64-gcc ' vendor/ffmpeg/win-x64/README.txt
           cat vendor/ffmpeg/win-x64/README.txt
       - name: Check ffmpeg cuts segments for receivers
         # A cached build from before the segment muxer would play on no TV.
@@ -541,6 +504,16 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The Store's identity, which the package check holds the package to, is the workflow's.
+      - name: Read the Store package check
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .workflow
+          sparse-checkout: |
+            scripts
+            packages/contracts/src
+          persist-credentials: false
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: apps/desktop/vendor/ffmpeg/win-x64
@@ -554,49 +527,23 @@ jobs:
       - name: Build the MSIX
         run: pnpm exec electron-builder --win appx --x64 --publish never
 
-      # Partner Center's identity exactly, a name it reserved, the Store version for this release,
-      # and what the app needs at run time: ffmpeg, ffprobe and the notices Settings > About reads.
-      # The record it writes beside the package ties the file to the release and its commit by
-      # checksum.
-      #
-      # This workflow is main's, and the checkout is the release's commit, which for a stable
-      # release is a nightly tested earlier. scripts/msix-version.ts exports packageVersion in
-      # every one of them, so the check imports it from there and nowhere newer. A commit from
-      # before the Store name builds a package named "Mr. Streamer", which stays reserved: it
-      # passes, and its submission leaves the listing's title alone.
+      # Partner Center's identity exactly, the Store name, the Store version for this release
+      # (scripts/store-release.ts holds all three), and what the app needs at run time: ffmpeg,
+      # ffprobe and the notices Settings > About reads. The record the check writes beside the
+      # package ties the file to the release and its commit by checksum.
       - name: Check the package
         id: check
         run: |
           $makeappx = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\makeappx.exe" | Sort-Object FullName | Select-Object -Last 1
           & $makeappx.FullName unpack /p "dist/Mr-Streamer-$env:VERSION-win-x64.msix" /d "$env:RUNNER_TEMP\msix" /o | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          [xml]$manifest = Get-Content "$env:RUNNER_TEMP\msix\AppxManifest.xml"
-          $version = node --input-type=module -e 'import { packageVersion } from "./scripts/msix-version.ts"; console.log(packageVersion(process.argv[1]))' $env:VERSION
-          $name = $manifest.Package.Properties.DisplayName
-          $reserved = if ($name -ceq "Mr. Streamer") { $name } else { "Mr. Streamer: IPTV Player" }
-          $checks = @(
-            @("Identity name", $manifest.Package.Identity.Name, "MrStreamerOSS.Mr.Streamer"),
-            @("Publisher", $manifest.Package.Identity.Publisher, "CN=A132E842-C4C9-40BF-83C4-D304E7952C2D"),
-            @("Publisher display name", $manifest.Package.Properties.PublisherDisplayName, "Mr Streamer OSS"),
-            @("Display name", $name, $reserved),
-            @("Start menu name", $manifest.Package.Applications.Application.VisualElements.DisplayName, $name),
-            @("Application id", $manifest.Package.Applications.Application.Id, "MrStreamer"),
-            @("Architecture", $manifest.Package.Identity.ProcessorArchitecture, "x64"),
-            @("Version", $manifest.Package.Identity.Version, $version)
-          )
-          foreach ($check in $checks) {
-            if ($check[1] -cne $check[2]) { echo "::error::$($check[0]) is '$($check[1])', not '$($check[2])'."; exit 1 }
-          }
+          node ../../.workflow/scripts/store-release.ts package --manifest "$env:RUNNER_TEMP\msix\AppxManifest.xml" `
+            --dir dist --version $env:VERSION --sha $env:SHA
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($file in "Mr. Streamer.exe", "resources\app.asar", "resources\ffmpeg\ffmpeg.exe",
               "resources\ffmpeg\ffprobe.exe", "LICENSES.chromium.html", "LICENSE.electron.txt") {
             if (-not (Test-Path -LiteralPath "$env:RUNNER_TEMP\msix\app\$file")) { echo "::error::The package has no $file."; exit 1 }
           }
-          $hash = (Get-FileHash "dist/Mr-Streamer-$env:VERSION-win-x64.msix" -Algorithm SHA256).Hash.ToLower()
-          [ordered]@{ version = $env:VERSION; packageVersion = $version; commit = $env:SHA; sha256 = $hash } |
-            ConvertTo-Json | Set-Content "dist/Mr-Streamer-$env:VERSION-win-x64.msix.json"
-          Add-Content $env:GITHUB_OUTPUT "sha256=$hash"
-          Add-Content $env:GITHUB_OUTPUT "package-version=$version"
-          Add-Content $env:GITHUB_STEP_SUMMARY "Mr. Streamer $env:VERSION is package $version, named '$name', built from $env:SHA. SHA-256 $hash."
 
       # Windows installs only signed packages. A certificate made here, with the package's
       # publisher as its subject and trusted on this runner alone, signs a copy to install; the
@@ -616,14 +563,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Add-AppxPackage "$env:RUNNER_TEMP\test.msix"
           # Windows derives the family name from the identity: it must be the one Partner Center gave.
-          $family = (Get-AppxPackage MrStreamerOSS.Mr.Streamer).PackageFamilyName
-          if ($family -cne "MrStreamerOSS.Mr.Streamer_5yzg1erdm3xmr") { echo "::error::Installed as $family."; exit 1 }
+          $family = (Get-AppxPackage "${{ steps.check.outputs.identity-name }}").PackageFamilyName
+          if ($family -cne "${{ steps.check.outputs.family-name }}") { echo "::error::Installed as $family."; exit 1 }
 
       # Started by its path, the app runs with the package's identity, as it does from Start, so
       # the test also expects it to leave updates to the Store.
       - name: Smoke test the installed package
         run: |
-          $package = Get-AppxPackage MrStreamerOSS.Mr.Streamer
+          $package = Get-AppxPackage "${{ steps.check.outputs.identity-name }}"
           node test/e2e/packaged-app.ts (Join-Path $package.InstallLocation "app\Mr. Streamer.exe")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -631,7 +578,7 @@ jobs:
       # package's, apart from a direct copy's; docs/contributing/architecture.md#data.
       - name: Check where the Store copy keeps its data
         run: |
-          $package = Get-AppxPackage MrStreamerOSS.Mr.Streamer
+          $package = Get-AppxPackage "${{ steps.check.outputs.identity-name }}"
           Start-Process -FilePath (Join-Path $package.InstallLocation "app\Mr. Streamer.exe")
           Start-Sleep 15
           Get-Process "Mr. Streamer" -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -661,7 +608,7 @@ jobs:
       # Uninstalling removes what the package wrote to AppData along with it.
       - name: Uninstall
         run: |
-          $package = Get-AppxPackage MrStreamerOSS.Mr.Streamer
+          $package = Get-AppxPackage "${{ steps.check.outputs.identity-name }}"
           Remove-AppxPackage $package.PackageFullName
           if (Test-Path "$env:LOCALAPPDATA\Packages\$($package.PackageFamilyName)") {
             echo "::error::Uninstalling left the package's data behind."
@@ -780,9 +727,10 @@ jobs:
       # The archives the sources job prepared, by name.
       SOURCES: ${{ needs.sources.outputs.files }}
     steps:
+      # The workflow's scripts. The release's files come from the jobs that built them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.sha }}
+          ref: ${{ github.workflow_sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
@@ -792,17 +740,9 @@ jobs:
           pattern: release-*-${{ inputs.version }}
           path: release
           merge-multiple: true
-      - name: Check every platform's files and every source are here
-        run: |
-          [ -n "$SOURCES" ] || { echo "::error::The sources job named no source archives."; exit 1; }
-          for pattern in "Mr-Streamer-$VERSION-mac-arm64.dmg" "Mr-Streamer-$VERSION-mac-arm64.zip" latest-mac.yml \
-            "Mr-Streamer-$VERSION-win-x64-setup.exe" latest.yml \
-            "Mr-Streamer-$VERSION-linux-*.AppImage" "Mr-Streamer-$VERSION-linux-*.deb" latest-linux.yml $SOURCES; do
-            compgen -G "release/$pattern" >/dev/null || { echo "::error::No $pattern among the release's files."; exit 1; }
-          done
       - name: Write checksums and notes
         run: |
-          (cd release && sha256sum * > SHA256SUMS.txt)
+          (cd release && sha256sum -- * > SHA256SUMS.txt)
           {
             echo "**${CHANNEL^}** · built from \`${SHA::12}\`"
             echo
@@ -816,8 +756,10 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" |
             while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
-      - name: Check the version is still new
-        run: node scripts/release-plan.ts check --version "$VERSION"
+      # Every platform's files (packages/contracts/src/release-files.ts) and every source are here,
+      # and the version still sorts after every release.
+      - name: Check the release is complete and still new
+        run: node scripts/release-plan.ts check --version "$VERSION" --dir release --sources "$SOURCES"
       # Uploads into a draft, which the app can't see, and publishes once every file is in.
       - name: Publish
         run: |
@@ -831,18 +773,16 @@ jobs:
           fi
 
   # Sends the stable release's package to the Microsoft Store, once the release is published and
-  # the package passed its checks: only for a stable release started by hand from main, never for
-  # a nightly, a dry run, a push or a tag. The release is out by then, and feed and finalize don't
-  # wait for this job, so a failure here shows on the run without holding up or undoing anything.
-  # It waits for Microsoft to take the upload, a few minutes, and not for certification, which can
-  # take days. Until the owner turns submissions on it says so and sends nothing;
-  # docs/maintainers/microsoft-store.md.
+  # the package passed its checks. The plan makes stable releases only when started by hand from
+  # main, and a dry run never publishes, so a nightly, a dry run, a push or a tag never gets here.
+  # The release is out by then, and feed and finalize don't wait for this job, so a failure here
+  # shows on the run without holding up or undoing anything. It waits for Microsoft to take the
+  # upload, a few minutes, and not for certification, which can take days. Until the owner turns
+  # submissions on it says so and sends nothing; docs/maintainers/microsoft-store.md.
   store:
     name: Microsoft Store
     needs: [publish, msix]
-    if: >-
-      inputs.channel == 'stable' && github.event_name == 'workflow_dispatch'
-      && github.ref == 'refs/heads/main'
+    if: inputs.channel == 'stable'
     uses: ./.github/workflows/microsoft-store.yml
     with:
       version: ${{ inputs.version }}

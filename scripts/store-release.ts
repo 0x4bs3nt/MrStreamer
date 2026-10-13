@@ -1,12 +1,15 @@
-// The GitHub side of a Microsoft Store submission: whether the Store workflow may run, which
-// release it is for, and whether the package a release run kept is that release's.
-// scripts/store-submission.ts is the Microsoft side; docs/maintainers/microsoft-store.md describes
-// both.
+// The GitHub side of a Microsoft Store submission: whether the package a release run built carries
+// the Store's identity, whether the Store workflow may run, which release it is for, and whether
+// the package a release run kept is that release's. scripts/store-submission.ts is the Microsoft
+// side; docs/maintainers/microsoft-store.md describes both.
 //
+//   node scripts/store-release.ts package --manifest <AppxManifest.xml> --dir <folder> --version <0.0.5> --sha <commit>
 //   node scripts/store-release.ts gate --action <preflight|status|submit> --ref <ref> [--enabled <value>] [--release-run]
 //   node scripts/store-release.ts release --version <0.0.5> --out <file> [--sha <commit>] [--run <id>] [--package]
 //   node scripts/store-release.ts verify --release <file> --dir <folder> [--sha256 <checksum>]
 //
+// - package: the release run's MSIX job checks the manifest it unpacked from the package it built
+//   against STORE_APP and STORE_NAME, and writes the record that travels with the package.
 // - gate: submitting needs the repository variable STORE_AUTOMATION_ENABLED to be "true", and every
 //   action needs the microsoft-store environment to exist for main alone. It runs before any job
 //   names that environment, because GitHub creates a missing one, unprotected, for the first job
@@ -31,12 +34,22 @@ import { packageVersion } from "../packages/contracts/src/package-version.ts";
 import { formatVersion, parseVersion } from "../packages/contracts/src/version.ts";
 import { readZipEntry } from "./zip.ts";
 
-/** The app in the Store, from Partner Center's Product identity page. Public, and never changes. */
+/**
+ * The app in the Store, from Partner Center's Product identity page. Public, and never changes.
+ * apps/desktop/electron-builder.yml writes the same values into the package, and the release run's
+ * package check and the Store job hold every package to these.
+ */
 export const STORE_APP = {
   /** The Store ID, which the submission API takes as the application ID. */
   id: "9N45GG76ZP4T",
   identityName: "MrStreamerOSS.Mr.Streamer",
   publisher: "CN=A132E842-C4C9-40BF-83C4-D304E7952C2D",
+  /** No period: Partner Center doesn't allow one here. */
+  publisherDisplayName: "Mr Streamer OSS",
+  /** Windows derives it from the identity name and publisher, and installs the package under it. */
+  familyName: "MrStreamerOSS.Mr.Streamer_5yzg1erdm3xmr",
+  /** Names the app inside the package. With the family name, the id Windows pins it by. */
+  applicationId: "MrStreamer",
   architecture: "x64",
 } as const;
 
@@ -279,6 +292,91 @@ function releaseRunProblem(github: GitHub, run: WorkflowRun | null): string | nu
   return null;
 }
 
+/** What a package's AppxManifest.xml says about the app; undefined where it says nothing. */
+export interface PackageManifest {
+  readonly identityName: string | undefined;
+  readonly publisher: string | undefined;
+  readonly architecture: string | undefined;
+  readonly version: string | undefined;
+  /** The package's name, which the Store's listings carry. */
+  readonly displayName: string | undefined;
+  readonly publisherDisplayName: string | undefined;
+  readonly applicationId: string | undefined;
+  /** The name of the app's Start entry. */
+  readonly startName: string | undefined;
+}
+
+/** The fields of `xml`, a manifest as electron-builder's appx target writes it. */
+export function readManifest(xml: string): PackageManifest {
+  const element = (name: string) => new RegExp(`<${name}\\b[^>]*>`).exec(xml)?.[0] ?? "";
+  // electron-builder writes the publisher in single quotes and the other attributes in double.
+  const attribute = (from: string, name: string) =>
+    new RegExp(`\\s${name}=(["'])(.*?)\\1`).exec(from)?.[2];
+  const text = (name: string) => new RegExp(`<${name}>([^<]+)</${name}>`).exec(xml)?.[1];
+  const identity = element("Identity");
+  return {
+    identityName: attribute(identity, "Name"),
+    publisher: attribute(identity, "Publisher"),
+    architecture: attribute(identity, "ProcessorArchitecture"),
+    version: attribute(identity, "Version"),
+    displayName: text("DisplayName"),
+    publisherDisplayName: text("PublisherDisplayName"),
+    applicationId: attribute(element("Application"), "Id"),
+    startName: attribute(element("uap:VisualElements"), "DisplayName"),
+  };
+}
+
+/** Throws unless `actual` is `wanted`, saying what `what` is instead. */
+function differs(what: string, actual: unknown, wanted: string): void {
+  if (actual !== wanted) throw new Error(`${what} is ${JSON.stringify(actual)}, not "${wanted}".`);
+}
+
+/**
+ * `manifest`, once it carries the Store's identity and architecture and `packageVersion`. Throws
+ * at the first that differs. The name is left to the caller: a package built before the Store
+ * name carries the one before it, and the Store job may still send one of those.
+ */
+function checkIdentity(manifest: PackageManifest, packageVersion: string): PackageManifest {
+  differs("The package's identity name", manifest.identityName, STORE_APP.identityName);
+  differs("The package's publisher", manifest.publisher, STORE_APP.publisher);
+  differs("The package's architecture", manifest.architecture, STORE_APP.architecture);
+  differs("The package's version", manifest.version, packageVersion);
+  return manifest;
+}
+
+/** What a release run records beside the Store package it built, and the Store job reads back. */
+export interface PackageRecord {
+  readonly version: string;
+  readonly packageVersion: string;
+  readonly commit: string;
+  readonly sha256: string;
+}
+
+/**
+ * The record of the package `msix` a release run built for `version` from `commit`, once its
+ * manifest, `xml`, carries everything Partner Center reserved: the identity, the publisher's
+ * name, the application id, the Store name for the package and its Start entry, x64, and the
+ * release's Store version. Throws at the first that differs.
+ */
+export function packageRecord(
+  xml: string,
+  msix: Buffer,
+  request: { readonly version: string; readonly commit: string },
+): PackageRecord {
+  const version = packageVersion(request.version);
+  const manifest = checkIdentity(readManifest(xml), version);
+  differs("The publisher's name", manifest.publisherDisplayName, STORE_APP.publisherDisplayName);
+  differs("The application id", manifest.applicationId, STORE_APP.applicationId);
+  differs("The package's name", manifest.displayName, STORE_NAME);
+  differs("The Start entry's name", manifest.startName, STORE_NAME);
+  return {
+    version: request.version,
+    packageVersion: version,
+    commit: request.commit,
+    sha256: createHash("sha256").update(msix).digest("hex"),
+  };
+}
+
 /**
  * The package in `dir`, the release run's downloaded artifact, once it is shown to be `release`'s:
  * the record beside it names the release, its commit and its checksum, the file has that checksum
@@ -295,14 +393,10 @@ export function verifyPackage(
   if (!existsSync(path)) throw new Error(`The artifact holds no ${packageFile(release.version)}.`);
   const bytes = readFileSync(path);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const differs = (what: string, actual: unknown, wanted: string) => {
-    if (actual !== wanted)
-      throw new Error(`${what} is ${JSON.stringify(actual)}, not "${wanted}".`);
-  };
   if (expected !== undefined) differs("The checksum the build job reported", expected, sha256);
 
   if (!existsSync(`${path}.json`)) throw new Error("The artifact holds no record of the package.");
-  // PowerShell may start a file with a byte order mark.
+  // Records written by PowerShell, before packageRecord wrote them, may start with a byte order mark.
   const record: unknown = JSON.parse(readFileSync(`${path}.json`, "utf8").replace(/^\uFEFF/, ""));
   const recorded = isRecord(record) ? record : {};
   differs("The record's release", recorded["version"], release.version);
@@ -310,16 +404,9 @@ export function verifyPackage(
   differs("The record's package version", recorded["packageVersion"], release.packageVersion);
   differs("The record's checksum", recorded["sha256"], sha256);
 
-  const manifest = readZipEntry(bytes, "AppxManifest.xml")?.toString("utf8");
-  const identity = /<Identity\b[^>]*>/.exec(manifest ?? "")?.[0];
-  if (!identity) throw new Error("The package has no manifest with an identity.");
-  // electron-builder writes the publisher in single quotes and the other attributes in double.
-  const attribute = (name: string) => new RegExp(`\\s${name}=(["'])(.*?)\\1`).exec(identity)?.[2];
-  differs("The package's identity name", attribute("Name"), STORE_APP.identityName);
-  differs("The package's publisher", attribute("Publisher"), STORE_APP.publisher);
-  differs("The package's architecture", attribute("ProcessorArchitecture"), STORE_APP.architecture);
-  differs("The package's version", attribute("Version"), release.packageVersion);
-  const displayName = /<DisplayName>([^<]+)<\/DisplayName>/.exec(manifest ?? "")?.[1];
+  const xml = readZipEntry(bytes, "AppxManifest.xml")?.toString("utf8");
+  if (!xml) throw new Error("The package has no manifest with an identity.");
+  const { displayName } = checkIdentity(readManifest(xml), release.packageVersion);
   if (!displayName) throw new Error("The package's manifest names no app.");
 
   return {
@@ -474,6 +561,7 @@ async function main(): Promise<void> {
       release: { type: "string" },
       dir: { type: "string" },
       sha256: { type: "string" },
+      manifest: { type: "string" },
     },
   });
   const [command] = positionals;
@@ -510,6 +598,27 @@ async function main(): Promise<void> {
       output({ "run-id": release.run === null ? "" : String(release.run) });
       return;
     }
+    case "package": {
+      if (!values.manifest || !values.dir || !values.version || !values.sha) {
+        throw new Error("Give --manifest, --dir, --version and --sha.");
+      }
+      const path = join(values.dir, packageFile(values.version));
+      const record = packageRecord(readFileSync(values.manifest, "utf8"), readFileSync(path), {
+        version: values.version,
+        commit: values.sha,
+      });
+      writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`);
+      output({
+        sha256: record.sha256,
+        "package-version": record.packageVersion,
+        "identity-name": STORE_APP.identityName,
+        "family-name": STORE_APP.familyName,
+      });
+      summary(
+        `Mr. Streamer ${record.version} is package ${record.packageVersion}, named "${STORE_NAME}", built from ${record.commit}. SHA-256 ${record.sha256}.`,
+      );
+      return;
+    }
     case "verify": {
       if (!values.release || !values.dir) throw new Error("Give --release and --dir.");
       if (values.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(values.sha256)) {
@@ -527,7 +636,7 @@ async function main(): Promise<void> {
       return;
     }
     default:
-      throw new Error(`Unknown command "${command}". Use gate, release or verify.`);
+      throw new Error(`Unknown command "${command}". Use package, gate, release or verify.`);
   }
 }
 

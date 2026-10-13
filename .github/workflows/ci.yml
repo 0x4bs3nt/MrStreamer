@@ -1,5 +1,5 @@
-# Checks every pull request and push to main. The release workflow runs the same jobs on the exact
-# commit it releases.
+# Checks every pull request and push to main. The release workflow runs the same checks and tests
+# on the exact commit it releases, and builds it in a job of its own.
 name: CI
 
 on:
@@ -49,7 +49,9 @@ jobs:
         run: pnpm fmt:check
       - name: Typecheck
         run: pnpm typecheck
+      # A release's own bundle job is its build.
       - name: Build
+        if: inputs.ref == ''
         run: pnpm build
 
   test:
@@ -91,17 +93,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
       # Every test file in the report, each test passed: a suite that skipped for want of ffmpeg
-      # fails here. A release checks out the source it builds under this workflow from main, and the
-      # tested nightly a stable release promotes can be older than scripts/ci-test-results.ts; that
-      # source is held to the multimedia files its own script names.
+      # fails here.
       - name: Require complete test results
         if: always()
-        run: |
-          if [ -f scripts/ci-test-results.ts ]; then
-            node scripts/ci-test-results.ts "$RUNNER_TEMP/test-results.json"
-          elif [ -f apps/desktop/scripts/ci-multimedia-results.ts ]; then
-            node apps/desktop/scripts/ci-multimedia-results.ts "$RUNNER_TEMP/test-results.json"
-          else
-            echo "::error::This source has no script that checks its test report."
-            exit 1
-          fi
+        run: node scripts/ci-test-results.ts "$RUNNER_TEMP/test-results.json"

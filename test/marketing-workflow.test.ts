@@ -23,7 +23,6 @@ interface Workflow {
     };
   };
   readonly concurrency?: { readonly group: string; readonly "cancel-in-progress": boolean };
-  readonly env?: Record<string, string>;
   readonly jobs: Record<string, Job>;
 }
 
@@ -127,13 +126,6 @@ describe("publishing the website", () => {
     ).toBe('node marketing-indexnow/indexnow.ts marketing-output/static "$BUILT"');
   });
 
-  it("starts on a push that changes what it checks main for before publishing", () => {
-    const paths = (deploy.workflow.on.push?.paths ?? []).map((path) => path.replace(/\/\*\*$/, ""));
-    const inputs = deploy.workflow.env?.["MARKETING_INPUTS"]?.split(/\s+/) ?? [];
-
-    expect(paths.toSorted()).toEqual(inputs.toSorted());
-  });
-
   it("pins every action to a commit and the Vercel CLI to a version", () => {
     const steps = [build, deploy].flatMap(({ workflow }) =>
       Object.values(workflow.jobs).flatMap((job) => job.steps),
@@ -203,7 +195,8 @@ function leftToNewerRun(later: readonly string[], built?: string): boolean {
       {
         env: {
           ...env,
-          ...deploy.workflow.env,
+          // What the build job reads from the push trigger's paths.
+          INPUTS: (deploy.workflow.on.push?.paths ?? []).join(" "),
           BUILT: built ?? head,
           GITHUB_SERVER_URL: `file://${folder}`,
           GITHUB_REPOSITORY: "origin",
