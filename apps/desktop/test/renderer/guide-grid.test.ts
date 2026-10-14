@@ -7,7 +7,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Programme } from "@mrstreamer/contracts/guide";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
@@ -16,6 +16,16 @@ import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { GuidePage } from "../../src/renderer/src/features/live/GuidePage.tsx";
 import { queries, syncGuideUpdates } from "../../src/renderer/src/lib/queries.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
+
+// The tests' clock: 10:40:20 on a day without a clock change, well inside most of the test
+// guide's programmes (ten minutes into One's half hour, twenty-five into Two's hour) and twenty
+// seconds into Four's, running on in real time. What is on now, aired or to come is then the same
+// whenever the tests run, and the app's own clock, read as its modules load, agrees with it.
+vi.hoisted(() => {
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  vi.setSystemTime(new Date(2026, 9, 14, 10, 40, 20));
+});
+afterAll(() => vi.useRealTimers());
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -37,13 +47,13 @@ const channel = (id: string, title: string, catchupDays: number | null = null): 
 const BASE = Math.floor(Date.now() / HOUR) * HOUR;
 
 /**
- * The guide the main process has: channel 1 in half hours, channel 2 in hours a quarter past, and
- * channel 3 without any; every other channel in hours.
+ * The guide the main process has: channel 1 in half hours, channel 2 in hours a quarter past,
+ * channel 3 without any and channel 4 in hours from twenty to; every other channel in hours.
  */
 function programmesOf(id: string): Programme[] {
   if (id === "3") return [];
   const length = id === "1" ? HOUR / 2 : HOUR;
-  const offset = id === "2" ? 15 * MINUTE : 0;
+  const offset = id === "2" ? 15 * MINUTE : id === "4" ? 40 * MINUTE : 0;
   return Array.from({ length: (2 * 7 * 24 * HOUR) / length }, (_, slot) => {
     const start = BASE - 7 * 24 * HOUR + offset + slot * length;
     return {
@@ -422,6 +432,18 @@ describe("the guide grid", () => {
     await page.press("Enter");
     expect(player.state().channel?.id).toBe("2");
     expect(player.state().archive).toBeNull();
+  });
+
+  it("plays a programme that began within the minute from its start too", async () => {
+    const page = await gridPage([channel("4", "Four", 3)]);
+    const four = guide.get("4") ?? programmesOf("4");
+    const begun = four.find((p) => p.start <= Date.now() && Date.now() < p.stop)!;
+    expect(Date.now() - begun.start).toBeLessThan(MINUTE);
+    await ready(() => expect(page.cell(begun.title)).toBeDefined());
+    await act(async () => page.cell(begun.title)!.click());
+    expect(page.actions()).toEqual(["Watch live", "Play from start"]);
+    await page.click("Play from start");
+    expect(player.state().archive?.title).toBe(begun.title);
   });
 
   it("plays the programme on now from its start with Play from start, and an aired one with a double click", async () => {

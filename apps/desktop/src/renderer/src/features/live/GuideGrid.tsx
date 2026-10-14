@@ -194,7 +194,7 @@ export function GuideGrid({
       channels.findIndex((channel) => ownedKey(channel) === playingKey),
       0,
     );
-    return { index, channel: channels[index] ?? null, at: Date.now(), asked: 0 };
+    return { index, channel: channels[index] ?? null, at: now, asked: 0 };
   });
   // Found again once per list and cursor, not on each render as the grid scrolls.
   const index = useMemo(() => {
@@ -374,9 +374,13 @@ export function GuideGrid({
   // A moment the timeline no longer reaches, as it starts later, is its nearest end.
   const at = Math.min(Math.max(cursor.at, origin), end - 1);
 
-  /** What `cell` of `channel` offers now, the first what Enter does. */
+  /**
+   * What `cell` of `channel` offers now, the first what Enter does. By the clock, not the minute
+   * the grid is drawn at: a programme that began within the minute has begun, and plays from its
+   * start as the list's do. The details show the same as Enter does.
+   */
   const offered = (channel: LiveChannel, cell: Cell): readonly GridAction[] =>
-    remote ? ["live"] : actionsOf(channel, cell, Date.now());
+    remote ? ["live"] : actionsOf(channel, cell, now);
   /** Watches `channel` live, or plays `cell` from its start. */
   const act = (channel: LiveChannel, cell: Cell, action: GridAction) => {
     if (action === "live" || cell.kind === "gap") return onWatch(channel);
@@ -569,6 +573,7 @@ export function GuideGrid({
                   ids={ids}
                   cursor={here && cursorShown ? cursorCell : null}
                   details={here && open ? width : null}
+                  actions={here && open ? offered(channel, cursorCell) : null}
                   remote={remote}
                   onPick={pick}
                   onWatch={watch}
@@ -696,6 +701,7 @@ const GridRow = memo(function GridRow({
   playing,
   cursor,
   details,
+  actions,
   remote,
   ids,
   onPick,
@@ -719,6 +725,8 @@ const GridRow = memo(function GridRow({
   cursor: Cell | null;
   /** The width of the details under the row, while they are open. */
   details: number | null;
+  /** What the cursor's programme offers, while its details are open. */
+  actions: readonly GridAction[] | null;
   /** A receiver has playback, so programmes watch live only. */
   remote: boolean;
   /** The grid's prefix for its cells' ids, which name the cursor's to assistive technology. */
@@ -848,7 +856,7 @@ const GridRow = memo(function GridRow({
           cell={cursor}
           minute={minute}
           width={details}
-          actions={remote ? ["live"] : actionsOf(channel, cursor, minute)}
+          actions={actions ?? ["live"]}
           onAction={(action) => onAction(channel, cursor, action)}
         />
       )}
