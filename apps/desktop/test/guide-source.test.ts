@@ -100,6 +100,10 @@ const failureOf = (promise: Promise<unknown>) =>
 
 const changed = { kind: "guide", failure: { kind: "changed" } };
 
+/** An indexer whose worker never finishes, however long it is given. */
+const stuck: MainConfig["guideIndexWorker"] = (options) =>
+  new Worker("setInterval(() => {}, 1000);", { ...options, eval: true });
+
 /** A clock that stands at NOW until a test moves it. */
 const clock = () =>
   Layer.effectDiscard(TestClock.setTime(NOW)).pipe(
@@ -851,10 +855,6 @@ describe("work that finishes after what it was for changed", () => {
 });
 
 describe("a subscription removed while its guide takes its time", () => {
-  /** An indexer whose worker never finishes, however long it is given. */
-  const stuck: MainConfig["guideIndexWorker"] = (options) =>
-    new Worker("setInterval(() => {}, 1000);", { ...options, eval: true });
-
   it("goes at once while what 0.0.12 kept is indexed, and its start's refresh asks nothing after", async () => {
     const provider = await fakeProvider();
     const dataDir = await tempDir();
@@ -1252,7 +1252,7 @@ describe("an address a release before gave one subscription", () => {
     expect(await again.nowOn({ subscriptionId: id, id: loose })).toBe("Spare");
   });
 
-  it("comes over from 0.0.12 with its address and its mappings, each document indexed once when it is wanted, asking nobody", async () => {
+  it("comes over from 0.0.12 with its address and its mappings, each document indexed once when it is wanted, and downloads the address straight after", async () => {
     const { host, provider, dataDir, id, quality, close } = await connected();
     await close();
     expect(await openIn(dataDir)).toEqual([]);
@@ -1275,11 +1275,18 @@ describe("an address a release before gave one subscription", () => {
       { file: document, fetchedAt },
       { [loose]: { guideId: "spare.test", name: "Loose" } },
     );
-    const asked = [host.requests().length, provider.guideRequests()];
+    // The address answers as it did, so what is read is the same before its download and after.
+    host.serve("/guide.xml", external);
+    const once = [host.requests().length + 1, provider.guideRequests()];
 
     const upgraded = await app(dataDir);
-    // Indexed in the background; a refresh that finds the guides recent waits for its own.
+    // As the app does after its start. Indexed in the background; a refresh that finds the own
+    // guide recent waits for it and asks its provider nothing, and the address downloads again
+    // once what 0.0.12 kept for it is indexed.
     await upgraded.run(upgraded.guide.refreshIfStale(id));
+    await vi.waitFor(() =>
+      expect([host.requests().length, provider.guideRequests()]).toEqual(once),
+    );
     await vi.waitFor(async () =>
       expect((await upgraded.sources())[0]?.processing).toMatchObject({ state: "ready" }),
     );
@@ -1293,18 +1300,17 @@ describe("an address a release before gave one subscription", () => {
       fetchedAt,
       processing: { state: "ready" },
     });
-    // Each is an index where it is read; the address's own download stays where it was until
-    // the source has one of its own.
+    // Each is an index where it is read, and the source's own download let go of what 0.0.12
+    // kept for the address.
     await vi.waitFor(async () => expect(await guideFiles(sourcesIn(dataDir))).toEqual(ONE_SOURCE));
     await vi.waitFor(async () =>
       expect(await guideFiles(dataDir)).toEqual([
-        "guide-external.*.xml",
         "guide-index.*.sqlite",
         "guide-source.json",
         "guide.json",
       ]),
     );
-    expect([host.requests().length, provider.guideRequests()]).toEqual(asked);
+    expect([host.requests().length, provider.guideRequests()]).toEqual(once);
   });
 });
 
@@ -1318,15 +1324,17 @@ describe("an address a release before gave, moving to the sources", () => {
   /**
    * The guide service alone on `root`, as one start of the app: the subscriptions `order` names,
    * each in a folder of its own with channels "1" and "2" that name no guide channel, and a store
-   * whose step `failing` names fails once. Addresses are sealed as they are, and their host
-   * answers with `host.xml`.
+   * whose step `failing` names fails once. Addresses are sealed as they are, their host answers
+   * with `host.xml`, and documents are indexed by `indexWorker`'s workers.
    */
   async function started(
     root: string,
     order: readonly string[],
     failing: Step | null = null,
     host: { xml: string } = { xml: "" },
+    indexWorker: MainConfig["guideIndexWorker"] = guideIndexWorker,
   ) {
+    let asked = 0;
     let fails = failing;
     const once = (step: Step) => {
       if (fails !== step) return false;
@@ -1371,9 +1379,12 @@ describe("an address a release before gave, moving to the sources", () => {
       Layer.succeed(GuideAddresses, {
         seal: (address) => Effect.succeed(address),
         open: (sealed) => Effect.succeed(sealed),
-        fetch: async () => ({ body: new Blob([host.xml]).stream(), size: null }),
+        fetch: async () => {
+          asked += 1;
+          return { body: new Blob([host.xml]).stream(), size: null };
+        },
       }),
-      guideIndexerLayer(guideIndexWorker),
+      guideIndexerLayer(indexWorker),
       guideSearcherLayer(guideSearchWorker),
     );
     const runtime = runtimeFor(Guide.layer.pipe(Layer.provide(ports), Layer.provideMerge(clock())));
@@ -1384,6 +1395,8 @@ describe("an address a release before gave, moving to the sources", () => {
       guide,
       close: () => runtime.dispose(),
       sources: () => run(guide.sources),
+      /** How many times the host was asked for a guide. */
+      asked: () => asked,
       nowOn: async (subscriptionId: string, id: string) =>
         (await run(guide.listings([{ subscriptionId, id }])))[ownedKey({ subscriptionId, id })]?.now
           ?.title,
@@ -1725,20 +1738,37 @@ describe("an address a release before gave, moving to the sources", () => {
     await app.close();
   });
 
-  it("downloads a source a move brought at the next refresh, however recent what it brought", async () => {
+  it("downloads a source a move brought at the start's refresh, however recent what it brought, once that is indexed", async () => {
     const root = await tempDir();
     await kept012(root);
     const host = { xml: tv(named("spare.test", "Spare"), slot("spare.test", "Fresh")) };
     const app = await started(root, ["a"], null, host);
-    await vi.waitFor(async () => expect(await app.nowOn("a", "1")).toBe("Spare"), INDEXED);
 
+    // As the app does after its start, while what 0.0.12 kept is still being indexed.
     await app.run(app.guide.refreshIfStale("a"));
 
     await vi.waitFor(async () => expect(await app.nowOn("a", "1")).toBe("Fresh"), INDEXED);
+    expect(app.asked()).toBe(1);
     await vi.waitFor(
       async () => expect(await guideFiles(join(root, "a"))).toEqual(["guide-source.json"]),
       INDEXED,
     );
+    await app.close();
+  });
+
+  it("asks nothing for a source a move brought that is removed while what it brought is indexed", async () => {
+    const root = await tempDir();
+    await kept012(root);
+    const app = await started(root, ["a"], null, { xml: "" }, stuck);
+    await app.run(app.guide.refreshIfStale("a"));
+    const [source] = await app.sources();
+
+    await app.run(app.guide.removeSource(source?.id ?? ""));
+    // Whatever waited for the indexing has had its turn by now.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(await app.sources()).toEqual([]);
+    expect(app.asked()).toBe(0);
     await app.close();
   });
 });

@@ -52,9 +52,10 @@
 // downloads (`movedFrom`), and the address and the mappings made against it name that source. A
 // move only adds: each subscription keeps the address and its file, unread, until the source's
 // first download of its own, which lets go of them; a mapping to a guide channel only an older
-// download listed waits for that download. Such a source downloads at the next refresh, whatever
-// the age of what it has. An address that couldn't move this run is read where it is, and moves
-// at the next start.
+// download listed waits for that download. Such a source downloads at the next refresh, the one
+// the app asks for after its start too, whatever the age of what it has, once what it brought is
+// indexed. An address that couldn't move this run is read where it is, and moves at the next
+// start.
 //
 // A record of the guides that is there but can't be read, or a file that can't be looked at,
 // keeps everything for the rest of the run: nothing is swept or let go of. The sweep of what a
@@ -1919,24 +1920,46 @@ function make() {
       );
 
     /**
-     * Downloads a source: joins its download under way, else starts one. One whose address the
-     * keychain no longer opens isn't asked for: it says so, and keeps what it had.
+     * Downloads a source: joins its download under way, else starts one, after the indexing of
+     * what an older release kept when that is under way. One removed by then isn't asked for and
+     * fails with `changed`, and one whose address the keychain no longer opens isn't either: it
+     * says so, and keeps what it had.
      */
     const refreshSourceOf = (each: Source) =>
-      each.address === null
-        ? Effect.fail(failed({ kind: "locked" }))
-        : downloading(sourceKey(each.id), each.identity, (report) => downloadSource(each, report));
+      Effect.gen(function* () {
+        if (each.address === null) return yield* failed({ kind: "locked" });
+        const key = sourceKey(each.id);
+        const indexing = jobs.get(key);
+        if (indexing?.kind === "reindex") yield* Fiber.await(indexing.fiber);
+        // As it is now: the indexing replaced the document it had, which the download builds on.
+        const kept = sourceList?.find((one) => one.id === each.id);
+        if (!kept) return yield* changed;
+        yield* downloading(key, kept.identity, (report) => downloadSource(kept, report));
+      });
 
-    /** Starts the downloads of the sources with no guide, or one six hours old, that can be had. */
+    /**
+     * Starts the downloads of the sources with no guide, or one six hours old, that can be had.
+     * One whose kept document is still being indexed, as at the first start after a move, downloads
+     * once that is done, in the background: nothing waits for it, and removing it stops both.
+     */
     const staleSources = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       for (const each of yield* currentSources) {
         const key = sourceKey(each.id);
-        if (each.address === null || jobs.has(key)) continue;
+        const job = jobs.get(key);
+        if (each.address === null || job?.kind === "download") continue;
         // One a move brought downloads straight away: until then it reads one download only.
         const fresh = each.document && each.movedFrom === null;
         if (fresh && now - (each.document?.fetchedAt ?? 0) < MAX_AGE_MS) continue;
-        yield* startJob(key, "download", each.identity, (report) => downloadSource(each, report));
+        if (job) {
+          // How it ends shows in the status.
+          yield* Effect.forkIn(
+            refreshSourceOf(each).pipe(Effect.catchTag("Failed", () => Effect.void)),
+            scope,
+          );
+        } else {
+          yield* startJob(key, "download", each.identity, (report) => downloadSource(each, report));
+        }
       }
     });
 

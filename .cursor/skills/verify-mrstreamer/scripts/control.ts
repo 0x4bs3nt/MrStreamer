@@ -17,6 +17,7 @@ import { startGuideHost, type GuideHost } from "../../../../apps/desktop/test/fa
 import { homeScenario } from "./home.ts";
 import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
+import { movedGuideScenario } from "./moved-guide.ts";
 import { removeDuringGuideScenario } from "./remove-during-guide.ts";
 import {
   electronExecutable,
@@ -40,6 +41,7 @@ const scenarios = [
   "subscriptions",
   "background-refresh",
   "remove-during-guide",
+  "moved-guide",
   "live-tv",
   "guides",
   "catch-up",
@@ -126,6 +128,7 @@ async function run(scenario: Scenario) {
   let playlist: Awaited<ReturnType<typeof startFakePlaylist>> | undefined;
   let other: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
   let guideHosts: { north: GuideHost; south: GuideHost } | undefined;
+  let movedHost: GuideHost | undefined;
   let releaseGuide: (() => void) | undefined;
   let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
   let app: ChildProcess | undefined;
@@ -177,6 +180,7 @@ async function run(scenario: Scenario) {
       guideHosts = { north: await startGuideHost(), south: await startGuideHost() };
       serveGuides(guideHosts.north, guideHosts.south);
     }
+    if (scenario === "moved-guide") movedHost = await startGuideHost();
     if (scenario === "live-categories")
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
     if (scenario === "live-categories")
@@ -310,6 +314,7 @@ async function run(scenario: Scenario) {
           ...(guideHosts
             ? [guideHosts.north, guideHosts.south].map((host) => Number(new URL(host.origin).port))
             : []),
+          ...(movedHost ? [Number(new URL(movedHost.origin).port)] : []),
         ],
         url,
         ...build,
@@ -541,6 +546,24 @@ async function run(scenario: Scenario) {
           hold: () => ownedProvider.serveGuide("hold"),
           requests: () => ownedProvider.guideRequests(),
         },
+      );
+    } else if (scenario === "moved-guide") {
+      await movedGuideScenario(
+        {
+          profile: ownedProfile,
+          observed,
+          evaluate: (expression) => livePage.evaluate(expression),
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        movedHost!,
       );
     } else if (scenario === "subscriptions") {
       await click("Open Settings", "document.querySelector('button[aria-label=Settings]')");
@@ -839,6 +862,10 @@ async function run(scenario: Scenario) {
     if (guideHosts) {
       const owned = guideHosts;
       await clean(() => Promise.all([owned.north.close(), owned.south.close()]));
+    }
+    if (movedHost) {
+      const owned = movedHost;
+      await clean(() => owned.close());
     }
     if (tmdb) {
       const ownedTmdb = tmdb;
