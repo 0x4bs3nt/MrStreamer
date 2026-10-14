@@ -63,12 +63,14 @@
 // The app supplies the ports: the subscriptions and their downloads, each catalogue's channels,
 // a store for the documents and for what is set, the workers that index and search, and the
 // addresses' keychain and network. Downloads run in the service's scope, so `forget`, removing a
-// source and shutdown stop them. Whatever work finishes late changes nothing: not after its
-// subscription went, not under a login that changed since, and not once its source was removed.
-// Each write is checked for that in its turn, so one that waited can't bring back what was
-// removed meanwhile. A mapping reads the channels and the guides in that turn too, so it is made
-// for none that either stopped listing while it waited. One guide failing leaves every other as
-// it is.
+// source and shutdown stop them. One a subscription asked for before `forget` doesn't start, and
+// one begun under a login that changed since stops, so a removal waits for no download, however
+// long its server or its indexing takes. Whatever work finishes late changes nothing: not after
+// its subscription went, not under a login that changed since, and not once its source was
+// removed. Each write is checked for that in its turn, so one that waited can't bring back what
+// was removed meanwhile. A mapping reads the channels and the guides in that turn too, so it is
+// made for none that either stopped listing while it waited. One guide failing leaves every other
+// as it is.
 import { randomUUID } from "node:crypto";
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
 import type {
@@ -690,7 +692,7 @@ function make() {
     >();
     /**
      * Rises, per subscription, whenever `forget` drops its guide. Work that started before
-     * doesn't apply its result.
+     * doesn't apply its result, and a download asked for before doesn't start.
      */
     const generations = new Map<string, number>();
     const generationOf = (id: string) => generations.get(id) ?? 0;
@@ -1355,7 +1357,9 @@ function make() {
     /**
      * Starts work on a guide in the service's scope, under `key`: `work` tells how it goes,
      * which the status shows, and every step of it is told. A download shows as one from the
-     * start, before its server answers.
+     * start, before its server answers. Work still under way under `key`, begun for what was
+     * asked before, as under a login stored anew since, would apply nothing: it is stopped, so
+     * the work under a key is all there is for `forget` to stop.
      */
     const startJob = (
       key: string,
@@ -1375,6 +1379,8 @@ function make() {
           toldAt = now;
           PubSub.publishUnsafe(updates, undefined);
         };
+        const replaced = jobs.get(key);
+        if (replaced) yield* Effect.forkIn(Fiber.interrupt(replaced.fiber), scope);
         const fiber = yield* Effect.forkIn(
           work(report).pipe(
             Effect.ensuring(
@@ -1406,16 +1412,19 @@ function make() {
 
     /**
      * Downloads under `key`: joins the download under way when it was begun for `version`, else
-     * starts one, after the indexing of what an older release kept when that is under way.
+     * starts one, after the indexing of what an older release kept when that is under way. Once
+     * what it was asked for no longer `stands` by then, nothing starts and it fails with `changed`.
      */
     const downloading = (
       key: string,
       version: string,
       work: (report: (progress: Progress) => void) => Effect.Effect<void, Failed>,
+      stands: () => boolean = () => true,
     ) =>
       Effect.gen(function* () {
         const indexing = jobs.get(key);
         if (indexing?.kind === "reindex") yield* Fiber.await(indexing.fiber);
+        if (!stands()) return yield* changed;
         const under = jobs.get(key);
         const running =
           under?.kind === "download" && under.version === version
@@ -1424,24 +1433,36 @@ function make() {
         yield* joined(running, { kind: "changed" });
       });
 
-    const refreshOf = (subscription: GuideSubscription): Effect.Effect<void, Failed> =>
+    /**
+     * Downloads a subscription's own guide, asked for while its guide was the one of `started`.
+     * Once `forget` dropped that guide, as while what an older release kept was indexed, no
+     * download starts: one would hold the subscription's files, and its removal wait for it.
+     */
+    const refreshOf = (
+      subscription: GuideSubscription,
+      started = generationOf(subscription.id),
+    ): Effect.Effect<void, Failed> =>
       Effect.gen(function* () {
+        const { id } = subscription;
         // What an older release kept is read first, so it is indexed before the download.
         yield* current(subscription);
         if (subscription.download === null) return yield* needsSecret(subscription);
-        yield* downloading(subscription.id, versionOf(subscription), (report) =>
-          download(subscription, report),
+        yield* downloading(
+          id,
+          versionOf(subscription),
+          (report) => download(subscription, report),
+          () => generationOf(id) === started && !forgotten.has(id),
         );
       });
 
-    const staleOf = (subscription: GuideSubscription) =>
+    const staleOf = (subscription: GuideSubscription, started = generationOf(subscription.id)) =>
       Effect.gen(function* () {
         // Known to have none: asking again every check would only read the playlist over and over.
         if (absent.has(subscription.id)) return;
         const guide = yield* keptGuide(subscription);
         const now = yield* Clock.currentTimeMillis;
         if (guide && now - guide.fetchedAt < MAX_AGE_MS) return;
-        yield* refreshOf(subscription);
+        yield* refreshOf(subscription, started);
       });
 
     /**
@@ -2441,11 +2462,12 @@ function make() {
       refreshIfStale: (subscriptionId: string) =>
         Effect.gen(function* () {
           const subscription = yield* savedOr(subscriptionId);
+          const started = generationOf(subscription.id);
           // The sources' downloads run on their own, shared by every subscription.
           yield* staleSources.pipe(
             Effect.catchDefect((defect) => Effect.logWarning("[guide] refresh failed", defect)),
           );
-          yield* staleOf(subscription);
+          yield* staleOf(subscription, started);
         }),
 
       sources: Effect.gen(function* () {

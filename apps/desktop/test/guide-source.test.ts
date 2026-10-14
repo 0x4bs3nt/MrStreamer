@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 import { AppFailure } from "@mrstreamer/contracts/errors";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
@@ -33,7 +34,7 @@ import { guideSearcherLayer } from "../src/main/platform/guide-searcher.ts";
 import { guideStoreLayer } from "../src/main/platform/guide-store.ts";
 import type { Secrets } from "../src/main/platform/secrets.ts";
 import { xmltvFetch } from "../src/main/providers/xmltv.ts";
-import { mainLayer } from "../src/main/runtime.ts";
+import { mainLayer, type MainConfig } from "../src/main/runtime.ts";
 import { Library } from "../src/main/services/library.ts";
 import { Roster } from "../src/main/services/roster.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
@@ -105,10 +106,13 @@ const clock = () =>
     Layer.provideMerge(TestClock.layer({ warningDelay: "1 day" })),
   );
 
-/** The app's services on `dataDir`, with the clock at NOW; another call is the app started again. */
-async function app(dataDir: string, secrets: Secrets = testSecrets) {
+/**
+ * The app's services on `dataDir`, with the clock at NOW, and what `changes` gives it in place of
+ * the test's own; another call is the app started again.
+ */
+async function app(dataDir: string, changes: Partial<MainConfig> = {}) {
   const runtime = runtimeFor(
-    mainLayer({ ...testConfig(dataDir), secrets }).pipe(Layer.provideMerge(clock())),
+    mainLayer({ ...testConfig(dataDir), ...changes }).pipe(Layer.provideMerge(clock())),
   );
   const run = <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect);
   const guide = await runtime.runPromise(Guide);
@@ -846,6 +850,64 @@ describe("work that finishes after what it was for changed", () => {
   });
 });
 
+describe("a subscription removed while its guide takes its time", () => {
+  /** An indexer whose worker never finishes, however long it is given. */
+  const stuck: MainConfig["guideIndexWorker"] = (options) =>
+    new Worker("setInterval(() => {}, 1000);", { ...options, eval: true });
+
+  it("goes at once while what 0.0.12 kept is indexed, and its start's refresh asks nothing after", async () => {
+    const provider = await fakeProvider();
+    const dataDir = await tempDir();
+    const before = await app(dataDir);
+    const { id } = await before.run(before.subscriptions.add(login(provider)));
+    await before.run(before.guide.refresh(id));
+    await before.close();
+    // What 0.0.12 kept: the document itself, named by a guide.json without an index.
+    const { key, fetchedAt } = JSON.parse(await readFile(join(dataDir, "guide.json"), "utf8"));
+    for (const name of await readdir(dataDir)) {
+      if (name.startsWith("guide-index.")) await rm(join(dataDir, name));
+    }
+    await writeFile(join(dataDir, "guide.json"), JSON.stringify({ key, fetchedAt }));
+    await writeFile(
+      join(dataDir, "guide.xml"),
+      tv(named("aac.test", "AAC"), slot("aac.test", "Provider")),
+    );
+    const { run, guide, roster, status } = await app(dataDir, { guideIndexWorker: stuck });
+    const asked = provider.guideRequests();
+
+    // As at the start, the refresh waits for the document to be indexed first.
+    const refreshing = failureOf(run(guide.refreshIfStale(id)));
+    await vi.waitFor(async () =>
+      expect((await status(id)).processing).toMatchObject({ state: "reading" }),
+    );
+    await run(roster.remove(id, false));
+
+    expect(await refreshing).toEqual(changed);
+    expect(provider.guideRequests()).toBe(asked);
+    expect(await guideFiles(dataDir)).toEqual([]);
+  });
+
+  it("goes at once while a download asked for under its login before a new one hangs", async () => {
+    const provider = await fakeProvider();
+    const dataDir = await tempDir();
+    const { run, guide, roster, subscriptions } = await app(dataDir);
+    const { id } = await run(subscriptions.add(login(provider)));
+    const held = provider.hold("guide");
+    const before = failureOf(run(guide.refresh(id)));
+    await held.arrived;
+
+    // The login is stored anew, and its guide asked for under it: the download before stops.
+    await run(subscriptions.update(id, { secret: "demo" }));
+    const after = failureOf(run(guide.refresh(id)));
+    expect(await before).toEqual(changed);
+    await run(roster.remove(id, false));
+    held.release();
+
+    expect(await after).toEqual(changed);
+    await vi.waitFor(async () => expect(await guideFiles(dataDir)).toEqual([]));
+  });
+});
+
 /** A subscription's channels that name no guide channel themselves, by their ids. */
 function listing(subscriptionId: string, ...ids: string[]): CatalogueChannels {
   const all = ids.map((id): LiveChannel => ({
@@ -1024,7 +1086,7 @@ describe("a source across starts", () => {
     const source = await add(host.address());
     const asked = host.requests().length;
 
-    const locked = await app(dataDir, withoutGuide);
+    const locked = await app(dataDir, { secrets: withoutGuide });
 
     expect((await locked.sources())[0]).toMatchObject({
       id: source.id,

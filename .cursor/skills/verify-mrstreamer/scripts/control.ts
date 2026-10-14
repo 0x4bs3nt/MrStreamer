@@ -17,6 +17,7 @@ import { startGuideHost, type GuideHost } from "../../../../apps/desktop/test/fa
 import { homeScenario } from "./home.ts";
 import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
+import { removeDuringGuideScenario } from "./remove-during-guide.ts";
 import {
   electronExecutable,
   evidenceDirectory,
@@ -38,6 +39,7 @@ const scenarios = [
   "home-stage-live-only",
   "subscriptions",
   "background-refresh",
+  "remove-during-guide",
   "live-tv",
   "guides",
   "catch-up",
@@ -518,6 +520,28 @@ async function run(scenario: Scenario) {
         })()`),
       );
       observed["guideReadyAfterRelease"] = true;
+    } else if (scenario === "remove-during-guide") {
+      const ownedProvider = provider;
+      await removeDuringGuideScenario(
+        {
+          profile: ownedProfile,
+          observed,
+          evaluate: (expression) => livePage.evaluate(expression),
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          hold: () => ownedProvider.serveGuide("hold"),
+          requests: () => ownedProvider.guideRequests(),
+        },
+      );
     } else if (scenario === "subscriptions") {
       await click("Open Settings", "document.querySelector('button[aria-label=Settings]')");
       await click("Open Subscriptions", button("nav button", "Subscriptions"));
