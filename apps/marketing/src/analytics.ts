@@ -42,6 +42,7 @@ type Status = Choice | "refused" | "unavailable";
 
 const HOME_SECTIONS = [
   "live-tv",
+  "tv-guide",
   "movies-and-series",
   "sound-and-subtitles",
   "what-you-need",

@@ -34,6 +34,8 @@ const SHOTS = {
   // Home keeps its actions, compact preview and personalized rows together.
   home: { left: 0, top: 0, width: 1280, height: 800 },
   "live-tv": { left: 236, top: 56, width: 600, height: 650 },
+  // The catch-up signs, the open programme's Play from start and the now line.
+  "tv-guide": { left: 250, top: 236, width: 632, height: 564 },
   library: { left: 164, top: 53, width: 620, height: 700 },
   // The subtitle panel moved to the right; retain it alongside the actual subtitle.
   watching: { left: 396, top: 42, width: 884, height: 758 },

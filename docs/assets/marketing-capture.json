@@ -73,6 +73,27 @@
         "captureScriptSha256": "c32519fc1db8fe71d857ebd37148109ed91b9c46bde1cfde16d67a0fddfff1b9",
         "sourceTree": "c7d534d273b787d20d4728db6660f40857052bd0"
       }
+    },
+    {
+      "name": "tv-guide",
+      "file": "marketing-tv-guide.png",
+      "width": 2560,
+      "height": 1600,
+      "bytes": 527757,
+      "sha256": "0bfccdebe3d2d8231375c63bbec5b9083c917c2516252a156d51ceb7cd2cdff9",
+      "videoBox": null,
+      "provenance": {
+        "capturedAt": "2026-10-14T04:53:39.256Z",
+        "appSource": "7bfb1a0f7cf183ff4d202d3c91ea8900ae1934b0",
+        "appVersion": "0.0.12",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "system": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434\n",
+        "electron": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.12 Chrome/152.0.7977.130 Electron/44.4.5 Safari/537.36",
+        "mainSha256": "6db5111a5286822f5fd5c4ed33dd1ab77c518836f268eaefb8793f0d1a74129a",
+        "demoManifestSha256": "7ffc0d37fd28c5cc2bbced859fe97f6d2057368a8ddd1717b263ccd9b5a19f0c",
+        "captureScriptSha256": "8e7fbb90510152ed044f98c9a35bd728cd16291ac1c3b1c422e50556951981de"
+      }
     }
   ]
 }

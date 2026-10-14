@@ -61,6 +61,7 @@
   "channels": [
     {
       "streamId": 2014,
+      "catchupDays": 3,
       "number": 1,
       "name": "UK | ESTUARY MAX HD",
       "categoryId": "2",
@@ -69,6 +70,7 @@
     },
     {
       "streamId": 2016,
+      "catchupDays": 7,
       "number": 2,
       "name": "UK | RIVERBEND",
       "categoryId": "1",
@@ -77,6 +79,7 @@
     },
     {
       "streamId": 2018,
+      "catchupDays": null,
       "number": 3,
       "name": "NL | MERIDIAN HD",
       "categoryId": "3",
@@ -85,6 +88,7 @@
     },
     {
       "streamId": 2020,
+      "catchupDays": null,
       "number": 4,
       "name": "NL | WILDMOOR MAX",
       "categoryId": "4",
@@ -93,6 +97,7 @@
     },
     {
       "streamId": 2022,
+      "catchupDays": 3,
       "number": 5,
       "name": "BE | FERNLIGHT HD",
       "categoryId": "5",
@@ -101,6 +106,7 @@
     },
     {
       "streamId": 2024,
+      "catchupDays": 2,
       "number": 6,
       "name": "UK | SKYREACH 24",
       "categoryId": "1",
@@ -109,6 +115,7 @@
     },
     {
       "streamId": 2026,
+      "catchupDays": null,
       "number": 7,
       "name": "BE | BEACON PLUS",
       "categoryId": "6",
@@ -117,6 +124,7 @@
     },
     {
       "streamId": 2028,
+      "catchupDays": 3,
       "number": 8,
       "name": "UK | COASTWAY MAX HD",
       "categoryId": "2",

@@ -1,15 +1,21 @@
-// Captures the four windows the marketing site is made from, as docs/assets/marketing-*.png: a
-// series' details, an episode playing with its subtitle menu open, Live TV and Home. See
-// docs/contributing/marketing-artwork.md.
+// Captures the five windows the marketing site is made from, as docs/assets/marketing-*.png: a
+// series' details, an episode playing with its subtitle menu open, Live TV, its guide grid with an
+// aired programme's catch-up and Home. See docs/contributing/marketing-artwork.md.
 //
-//   xvfb-run -a node apps/desktop/scripts/marketing-capture.ts --cache-dir <folder outside the repository>
+//   xvfb-run -a node apps/desktop/scripts/marketing-capture.ts --cache-dir <folder outside the repository> [--only tv-guide,home]
 //
 // Runs the development build (`pnpm build` first) with a throwaway profile against the made-up
 // subscription of marketing-demo.ts, and drives it through its DevTools port as a viewer would:
-// it plays an episode to seed history/recommendations, stars two channels and watches two. Each
-// capture is
-// the window's page at 1280 × 800 and twice the pixels, 2560 × 1600, written only once it shows
-// what it should: the names, a decoded picture, the tracks and the subtitle.
+// it plays an episode to seed history/recommendations, stars two channels, watches two and opens
+// the guide grid. Each capture is the window's page at 1280 × 800 and twice the pixels,
+// 2560 × 1600, written only once it shows what it should: the names, a decoded picture, the
+// tracks and the subtitle.
+//
+// `--only` refreshes the named captures alone: it takes only the stages they need (`capturePlan`)
+// and leaves the other masters and their manifest entries as they are. Each master's entry in
+// marketing-capture.json is replaced, with its own provenance, as soon as the master is written,
+// so a stage that fails later leaves no stale hash. A run of every capture then writes the whole
+// manifest again under one provenance.
 //
 // Linux draws the app in the system's sans-serif font; the captures use Inter, which must be
 // installed. Nothing here reaches a real provider: the app's images are answered from the demo
@@ -20,6 +26,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import sharp from "sharp";
 import manifest from "../../../docs/assets/marketing-demo-sources.json" with { type: "json" };
 import { connect, delay, key, login, waitFor, type Page } from "../test/e2e/app.ts";
@@ -29,6 +36,13 @@ import {
   stop,
   record,
 } from "../../../.cursor/skills/verify-mrstreamer/scripts/session.ts";
+import {
+  capturePlan,
+  parseOnly,
+  recordCapture,
+  type CaptureEntry,
+  type CaptureName,
+} from "./marketing-captures.ts";
 import { cacheDirectory, prepareMedia, startMarketingDemo } from "./marketing-demo.ts";
 
 const desktop = join(import.meta.dirname, "..");
@@ -42,26 +56,25 @@ if (!episode || !nextEpisode) throw new Error("The manifest lists no two episode
 /** The subtitle the capture of the playing episode shows. */
 const [, line] = featured.subtitles.eng;
 if (!line) throw new Error("The manifest lists no second subtitle.");
+const { values: options } = parseArgs({
+  options: { "cache-dir": { type: "string" }, only: { type: "string" } },
+});
+const only = parseOnly(options.only);
+const plan = capturePlan(only);
+const { wanted } = plan;
+const manifestFile = join(assets, "marketing-capture.json");
 
 const root = join(desktop, "../..");
 const evidenceRoot = join(root, ".local/marketing-captures");
 mkdirSync(evidenceRoot, { recursive: true });
 const evidence = mkdtempSync(join(evidenceRoot, "capture-"));
 const executable = await electronExecutable();
-const cache = cacheDirectory();
+const cache = cacheDirectory(options["cache-dir"]);
 const media = await prepareMedia(cache);
 const profile = mkdtempSync(join(tmpdir(), "mr-streamer-marketing-"));
 const session = `marketing-${Date.now()}`;
 const actions: { action: string; at: string }[] = [];
-const captures: {
-  name: string;
-  file: string;
-  width: number;
-  height: number;
-  bytes: number;
-  sha256: string;
-  videoBox: unknown;
-}[] = [];
+const captures: CaptureEntry[] = [];
 const proof: Record<string, unknown> = {
   status: "running",
   source: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
@@ -230,120 +243,148 @@ try {
   await login(page, demo.provider);
 
   // Movies and series: the series' details, before anything was played.
-  await click(page, "header button", "Series");
-  await click(page, "button", featured.name);
-  await shows(page, [
-    featured.overview,
-    ...featured.cast.map((person) => person.name),
-    `Play S${episode.season} E${episode.number}`,
-    episode.name,
-    featured.creator,
-  ]);
-  await capture(page, "library", { fullScreen: true, pictures: '[role="dialog"] img' });
+  if (plan.series) {
+    await click(page, "header button", "Series");
+    await click(page, "button", featured.name);
+  }
+  if (wanted("library")) {
+    await shows(page, [
+      featured.overview,
+      ...featured.cast.map((person) => person.name),
+      `Play S${episode.season} E${episode.number}`,
+      episode.name,
+      featured.creator,
+    ]);
+    await capture(page, "library", { fullScreen: true, pictures: '[role="dialog"] img' });
+  }
 
   // Sound and subtitles: the episode playing, its subtitle showing and the subtitle menu open.
-  await click(page, '[role="dialog"] button', `Play S${episode.season} E${episode.number}`);
-  const time = () => page!.evaluate<number>(`document.querySelector("video")?.currentTime ?? 0`);
-  await waitFor(async () => (await time()) > 0.5);
-  await openMenu(page, "Subtitles");
-  await click(page, "[data-item]", "English");
-  // Higher up, so the menu the capture shows open doesn't cover the subtitle.
-  await click(page, "[role=radio]", "Higher");
-  await key(page, "Escape", 27);
-  const subtitle = () =>
-    page!.evaluate<string>(
-      `[...document.querySelector("video").textTracks].flatMap((track) => [...(track.activeCues ?? [])]).map((cue) => cue.text).join("|")`,
-    );
-  for (let attempt = 1; ; attempt++) {
-    await waitFor(async () => (await time()) >= line.from + 0.6);
-    await openMenu(page, "Subtitles");
-    await shows(page, [
-      featured.name,
-      episode.name,
-      "Off",
-      "English",
-      "Nederlands",
-      "Next episode",
-    ]);
-    const taken = await capture(page, "watching", {
-      video: true,
-      holds: async () => (await subtitle()) === line.text,
-    });
-    if (taken) break;
-    if (attempt === 3) throw new Error(`The capture missed "${line.text}".`);
-    // Close the menu and go back ten seconds for another try.
+  // Played on, it seeds Continue watching and recommendations through normal viewing history.
+  if (plan.episode) {
+    await click(page, '[role="dialog"] button', `Play S${episode.season} E${episode.number}`);
+    const time = () => page!.evaluate<number>(`document.querySelector("video")?.currentTime ?? 0`);
+    await waitFor(async () => (await time()) > 0.5);
+    if (wanted("watching")) {
+      await openMenu(page, "Subtitles");
+      await click(page, "[data-item]", "English");
+      // Higher up, so the menu the capture shows open doesn't cover the subtitle.
+      await click(page, "[role=radio]", "Higher");
+      await key(page, "Escape", 27);
+      const subtitle = () =>
+        page!.evaluate<string>(
+          `[...document.querySelector("video").textTracks].flatMap((track) => [...(track.activeCues ?? [])]).map((cue) => cue.text).join("|")`,
+        );
+      for (let attempt = 1; ; attempt++) {
+        await waitFor(async () => (await time()) >= line.from + 0.6);
+        await openMenu(page, "Subtitles");
+        await shows(page, [
+          featured.name,
+          episode.name,
+          "Off",
+          "English",
+          "Nederlands",
+          "Next episode",
+        ]);
+        const taken = await capture(page, "watching", {
+          video: true,
+          holds: async () => (await subtitle()) === line.text,
+        });
+        if (taken) break;
+        if (attempt === 3) throw new Error(`The capture missed "${line.text}".`);
+        // Close the menu and go back ten seconds for another try.
+        await key(page, "Escape", 27);
+        await key(page, "ArrowLeft", 37);
+      }
+    }
+    await waitFor(async () => (await time()) > 12);
+    action("Leave the played episode to seed real Continue watching and recommendations");
     await key(page, "Escape", 27);
-    await key(page, "ArrowLeft", 37);
+    await key(page, "Escape", 27);
+    await waitFor(() => page!.evaluate<boolean>(`!document.querySelector("[data-view=title]")`));
+    await key(page, "Escape", 27);
   }
-  await waitFor(async () => (await time()) > 12);
-  action("Leave the played episode to seed real Continue watching and recommendations");
-  await key(page, "Escape", 27);
-  await key(page, "Escape", 27);
-  await waitFor(() => page!.evaluate<boolean>(`!document.querySelector("[data-view=title]")`));
-  await key(page, "Escape", 27);
 
-  // Live TV: two favourites, and the channel watched last on top.
-  await click(page, "header button", "Live TV");
-  for (const channel of manifest.favourites) {
+  if (plan.liveTv) {
+    // Live TV: two favourites, and the channel watched last on top.
+    await click(page, "header button", "Live TV");
+    for (const channel of manifest.favourites) {
+      await clickExpression(
+        page,
+        `${row(channel)}.querySelector('[aria-label="Add to favourites"]')`,
+        `Favourite ${channel}`,
+      );
+    }
+    await watch(page, manifest.guide);
+    await shows(page, [
+      "Favourites",
+      "Recently watched",
+      ...manifest.channels.flatMap((channel) => channel.programmes.slice(0, 2)),
+    ]);
+    if (wanted("live-tv"))
+      await capture(page, "live-tv", { fullScreen: true, video: true, pictures: "img" });
+  }
+
+  if (wanted("tv-guide")) {
+    // TV Guide: the grid by time, the first channel's programme that aired open in its details,
+    // with Play from start from its catch-up and the catch-up signs beside the channels keeping one.
+    await click(page, "main section button", "Guide");
+    const grid = "document.querySelector('[role=grid]')";
+    const selected = `${grid}?.querySelector('[role=gridcell][aria-selected=true]')`;
+    await waitFor(() =>
+      page!.evaluate<boolean>(`(${grid}?.querySelectorAll('[role=gridcell]').length ?? 0) > 20`),
+    );
+    // Left from what's on now, until the cursor's programme ended before the now line.
+    const aired = () =>
+      page!.evaluate<boolean>(
+        `!!${selected} && ${selected}.getBoundingClientRect().right <= ${grid}.querySelector('.bg-white.w-px').getBoundingClientRect().x + 1`,
+      );
+    for (let presses = 0; presses < 4 && !(await aired()); presses++) {
+      action("Press Left in the guide grid");
+      await key(page, "ArrowLeft", 37);
+    }
+    if (!(await aired())) throw new Error("Left didn't reach a programme that aired.");
+    const catchupChannels = manifest.channels.filter((channel) => channel.catchupDays).length;
+    await waitFor(() =>
+      page!.evaluate<boolean>(
+        `[...${grid}.querySelectorAll('[role=region] button')].map((b) => b.textContent.trim()).join() === "Play from start,Watch live" && ${grid}.querySelectorAll('[role=rowheader] [aria-label="Catch-up"]').length === ${catchupChannels}`,
+      ),
+    );
+    await shows(page, [
+      "Play from start",
+      ...manifest.channels.flatMap((channel) => channel.programmes.slice(0, 2)),
+    ]);
+    await capture(page, "tv-guide", { fullScreen: true, pictures: "[role=grid] img" });
+    await click(page, "main section button", "List");
+    await waitFor(() => page!.evaluate<boolean>(`!${grid}`));
+  }
+
+  if (wanted("home")) {
+    // Home: another channel on now, and the series to go on with.
+    await watch(page, manifest.home);
+    await click(page, "header button", "Home");
+    await shows(page, [
+      "Continue watching",
+      "Recommendations",
+      `Because you watched ${featured.name}`,
+      "Watchlist",
+      featured.name,
+      manifest.home,
+    ]);
+    await waitFor(() => playing(page!));
+    await capture(page, "home", { fullScreen: true, video: true, pictures: "img" });
+    await click(page, 'header button[aria-label="Settings"]', "");
+    await click(page, "nav button", "Home");
+    await shows(page, ["Reset to defaults", "Recommendations"]);
+    await retain(page, "home-customize");
     await clickExpression(
       page,
-      `${row(channel)}.querySelector('[aria-label="Add to favourites"]')`,
-      `Favourite ${channel}`,
+      "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')",
+      "Return from Home settings",
     );
   }
-  await watch(page, manifest.guide);
-  await shows(page, [
-    "Favourites",
-    "Recently watched",
-    ...manifest.channels.flatMap((channel) => channel.programmes.slice(0, 2)),
-  ]);
-  await capture(page, "live-tv", { fullScreen: true, video: true, pictures: "img" });
-
-  // Home: another channel on now, and the series to go on with.
-  await watch(page, manifest.home);
-  await click(page, "header button", "Home");
-  await shows(page, [
-    "Continue watching",
-    "Recommendations",
-    `Because you watched ${featured.name}`,
-    "Watchlist",
-    featured.name,
-    manifest.home,
-  ]);
-  await waitFor(() => playing(page!));
-  await capture(page, "home", { fullScreen: true, video: true, pictures: "img" });
-  await click(page, 'header button[aria-label="Settings"]', "");
-  await click(page, "nav button", "Home");
-  await shows(page, ["Reset to defaults", "Recommendations"]);
-  await retain(page, "home-customize");
-  await clickExpression(
-    page,
-    "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')",
-    "Return from Home settings",
-  );
-  writeFileSync(
-    join(assets, "marketing-capture.json"),
-    JSON.stringify(
-      {
-        capturedAt: new Date().toISOString(),
-        appSource: proof["source"],
-        appVersion: proof["appVersion"],
-        platform: proof["platform"],
-        architecture: proof["architecture"],
-        system: proof["system"],
-        electron: proof["electron"],
-        mainSha256: proof["mainSha256"],
-        demoManifestSha256: proof["manifestSha256"],
-        captureScriptSha256: hash(readFileSync(join(desktop, "scripts/marketing-capture.ts"))),
-        captures: captures.map((capture) => ({
-          ...capture,
-          file: `marketing-${capture.name}.png`,
-        })),
-      },
-      null,
-      2,
-    ) + "\n",
-  );
+  // Every capture was taken: one provenance for the whole manifest.
+  if (!only)
+    writeFileSync(manifestFile, JSON.stringify({ ...provenance(), captures }, null, 2) + "\n");
   proof["status"] = "passed";
 } catch (error) {
   proof["status"] = "failed";
@@ -454,7 +495,7 @@ async function shows(page: Page, texts: readonly string[]): Promise<void> {
  */
 async function capture(
   page: Page,
-  name: string,
+  name: CaptureName,
   wanted: {
     readonly fullScreen?: boolean;
     readonly video?: boolean;
@@ -508,18 +549,36 @@ async function capture(
   // Lossless: every pixel as the window drew it, without the alpha channel it never uses.
   await image.removeAlpha().png({ compressionLevel: 9 }).toFile(file);
   await retain(page, name, Buffer.from((reply.result as { data: string }).data, "base64"));
-  captures.push({
+  const entry: CaptureEntry = {
     name,
-    file,
+    file: `marketing-${name}.png`,
     width,
     height,
     bytes: readFileSync(file).length,
     sha256: hash(readFileSync(file)),
     videoBox: box,
-  });
+  };
+  captures.push(entry);
+  recordCapture(manifestFile, entry, provenance());
   if (wanted.fullScreen) await fullScreen(page, false);
   console.log(`Wrote ${file}`);
   return true;
+}
+
+/** The build, system and inputs of this run, as the manifest records them. */
+function provenance() {
+  return {
+    capturedAt: new Date().toISOString(),
+    appSource: proof["source"],
+    appVersion: proof["appVersion"],
+    platform: proof["platform"],
+    architecture: proof["architecture"],
+    system: proof["system"],
+    electron: proof["electron"],
+    mainSha256: proof["mainSha256"],
+    demoManifestSha256: proof["manifestSha256"],
+    captureScriptSha256: hash(readFileSync(join(desktop, "scripts/marketing-capture.ts"))),
+  };
 }
 
 function hash(bytes: Buffer): string {

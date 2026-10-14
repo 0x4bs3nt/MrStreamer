@@ -1,15 +1,16 @@
 # Marketing artwork
 
-The website shows four captures of the real app. They live in `docs/assets`:
+The website shows five captures of the real app. They live in `docs/assets`:
 
 | File                     | Shows                                                                                                 |
 | ------------------------ | ----------------------------------------------------------------------------------------------------- |
 | `marketing-home.png`     | Stage preview and compact channel list, rounded actions, Continue watching and a local recommendation |
 | `marketing-live-tv.png`  | Live TV, with eight channels and what's on now and next                                               |
+| `marketing-tv-guide.png` | The guide grid, an aired programme open with Play from start and the catch-up signs                   |
 | `marketing-library.png`  | A series' details, with its story, cast, Play, Save and a related title                               |
 | `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle panel beside it                           |
 
-Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these four files, and the social picture too. The page changes when you commit new captures and at no other time.
+Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these five files, and the social picture too. The page changes when you commit new captures and at no other time.
 
 Nothing in them comes from a real provider, film or person. The channels, programmes, titles, cast and subtitles are invented, and [`docs/assets/marketing-demo-sources.json`](../assets/marketing-demo-sources.json) lists every one. The moving pictures are public domain. Keep it that way. No provider's catalogue, no real posters, no real faces, no agency emblems.
 
@@ -31,12 +32,12 @@ onmac run -- pnpm install --frozen-lockfile
 onmac run -- pnpm build
 onmac run -- pnpm verify:desktop doctor
 onmac run -- node apps/desktop/scripts/marketing-demo.ts --cache-dir .local/marketing-media
-onmac run -- node apps/desktop/scripts/marketing-capture.ts --cache-dir .local/marketing-media
+onmac run -- node apps/desktop/scripts/marketing-capture.ts --cache-dir .local/marketing-media [--only tv-guide]
 onmac pull docs/assets .local/marketing-masters
 onmac pull .local/marketing-captures .local/marketing-proof
 ```
 
-If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. For a Home-only refresh, copy only Home and its manifest entry. Keep the unchanged masters and their original provenance; an entry's `provenance` overrides the manifest's top-level capture provenance. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
+If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. `--only` with capture names (`library`, `watching`, `live-tv`, `tv-guide`, `home`) refreshes those alone: it takes only the stages they need, writes only their masters and replaces only their manifest entries, each with its own `provenance`. Every master's entry is replaced as soon as the master is written, so a stage that fails later leaves no stale hash. Copy just those files. Keep the unchanged masters and their original provenance; an entry's `provenance` overrides the manifest's top-level capture provenance. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
 
 Finally run `pnpm build:marketing` locally and inspect the real site at wide and 390px widths. This builds local output; deployment is separate.
 
@@ -64,7 +65,7 @@ Credit them as "NASA" and "U.S. National Park Service" wherever the pictures app
 It also starts the made-up subscription, on loopback ports of its own:
 
 - The fake provider from the tests, unchanged, streaming the Earth loop through its `streams` option.
-- An adapter in front of it. The app logs in to the adapter. It lists the manifest's eight channels and seven series under the fake provider's ids, answers the guide, and serves the episode's file by byte range.
+- An adapter in front of it. The app logs in to the adapter. It lists the manifest's eight channels and seven series under the fake provider's ids, answers the guide, and serves the episode's file by byte range. Channels with `catchupDays` in the manifest say they keep that many days of catch-up, for the grid's signs and Play from start; the adapter serves no recording.
 - The fake TMDB behind a wrapper that answers with the manifest's names, stories and credits. The app reaches it through `MR_STREAMER_TMDB_API` with a made-up key.
 
 `marketing-capture.ts` starts the development build with a throwaway profile and update checks off, then drives it through its DevTools port as a viewer would:
@@ -74,9 +75,10 @@ It also starts the made-up subscription, on loopback ports of its own:
 3. Plays the first episode, turns on English subtitles, selects Higher under Position, opens the subtitle panel and captures the actual active cue.
 4. Leaves the actually played episode, which seeds Continue watching and recommendations through normal viewing history.
 5. Stars two channels in Live TV, watches one and captures Live TV.
-6. Watches another channel, goes Home and requires the permanent actions, Continue watching and the recommendation naming the actual seed before capturing. Opens Customize for additional ignored native proof.
+6. Opens the guide grid from **Guide**, presses Left until the first channel's selected programme has aired, requires Play from start before Watch live and a catch-up sign beside every channel the manifest gives catch-up, and captures the grid. **List** goes back.
+7. Watches another channel, goes Home and requires the permanent actions, Continue watching and the recommendation naming the actual seed before capturing. Opens Customize for additional ignored native proof.
 
-Each capture is the page of the window, taken with `Emulation.setDeviceMetricsOverride` at 1280 × 800 and a scale of 2, then `Page.captureScreenshot`. `Emulation.setScrollbarsHidden` keeps scroll bars out of it, as on a Mac, where they show only while scrolling. A page capture doesn't include the window's buttons. Home, Live TV and the details are captured in full screen, where the top bar keeps no room for those buttons. The episode is captured in a window, because in full screen the player hides the top bar.
+Each capture is the page of the window, taken with `Emulation.setDeviceMetricsOverride` at 1280 × 800 and a scale of 2, then `Page.captureScreenshot`. `Emulation.setScrollbarsHidden` keeps scroll bars out of it, as on a Mac, where they show only while scrolling. A page capture doesn't include the window's buttons. Home, Live TV, the guide grid and the details are captured in full screen, where the top bar keeps no room for those buttons. The episode is captured in a window, because in full screen the player hides the top bar.
 
 The app's pictures never come from the network. The script answers the image addresses the demo hands out from the page's DevTools session, with the canyon stills and drawn artwork, and refuses any other remote image.
 
@@ -86,12 +88,14 @@ The script verifies the owned CDP arguments and renderer URL, then retains raw p
 
 ## Before you commit new captures
 
-- Look at all four files at full size. Check the names, the pictures and the subtitle against the manifest.
+- Look at all five files at full size. Check the names, the pictures and the subtitle against the manifest.
 - Run `pnpm build:marketing` and look at the page on a wide screen and a phone. The phone shows a part of each window, set in `prepare-assets.ts`. If the app's layout moved, move those parts with it and keep `index.html`'s sizes in step.
-- Put the four files' sizes in the pull request, each and in total. They are lossless and run to a few megabytes.
+- Put the new files' sizes in the pull request, each and in total. They are lossless and run to a few megabytes.
 
 The original PR 208 captures were made on the Mac mini on 11 October 2026 from Personal Home source `7b54b5265a9a62c1b20ed890c012f2041baa443a`. Live TV, details and watching retain those masters and the manifest's original top-level provenance.
 
 Home was replaced on 12 October 2026 from merged Stage source `5db40b13ec7b3bf7a39781a71363f4fb17f2ad6d`, tree `c7d534d273b787d20d4728db6660f40857052bd0`. Its entry records the new capture provenance. This unsigned source build reports 0.0.10 on macOS 27.0.1, arm64 and Electron 44.4.5; it is not an installed 0.0.11 release. Exact capture, bundle and master hashes are in `marketing-capture.json`.
+
+The TV Guide was added on 14 October 2026 with `--only tv-guide` on the Mac mini, with this capture script and demo manifest (their hashes are in its entry). Its `appSource`, `7bfb1a0f`, is this branch before its commits were squashed; its app code is that of `401072a16537c8b57658776440463656339cf0cc`. That unsigned source build reports 0.0.12 on macOS 27.0.1, arm64 and Electron 44.4.5. Its phone asset is 632 × 564 points at 250,236: the catch-up signs, the open programme with Play from start, and the now line.
 
 Home's phone asset keeps the full 1280 × 800 window so Watchlist, Customize, the left-hand Stage preview, compact channel list and personalized rows all survive. The watching crop is 884 × 758 points at 396,42, keeping the real subtitle beside the right-hand panel. Live TV and details keep their existing crops. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.

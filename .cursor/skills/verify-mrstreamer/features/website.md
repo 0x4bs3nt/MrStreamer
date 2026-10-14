@@ -39,7 +39,7 @@ The baseline `verify:website` blocks the production-configured build's PostHog r
 
 ## Screenshot assets
 
-The four lossless masters and their checked capture manifest are under `docs/assets/marketing-*`. Follow `docs/contributing/marketing-artwork.md` for the licensed demo, Mac mini source capture and owned cleanup. `prepare-assets.ts` builds desktop/phone WebP sizes and the social PNG. Home's per-entry `provenance` records its Stage source build; the manifest's top-level provenance still describes the three unchanged PR 208 captures. Home keeps the complete Stage window on phones and social links; watching keeps the subtitle beside its current right-hand panel. Inspect these actual assets and the rendered site at wide and 390px widths after a refresh, checking each `<picture>` source's intrinsic dimensions and descriptions. Build output stays ignored.
+The five lossless masters and their checked capture manifest are under `docs/assets/marketing-*`. Follow `docs/contributing/marketing-artwork.md` for the licensed demo, Mac mini source capture and owned cleanup. `prepare-assets.ts` builds desktop/phone WebP sizes and the social PNG. Home's and the TV Guide's per-entry `provenance` record their own source builds; the manifest's top-level provenance still describes the three unchanged PR 208 captures. `marketing-capture.ts --only <names>` refreshes some captures without rewriting the others. Home keeps the complete Stage window on phones and social links; watching keeps the subtitle beside its current right-hand panel. Inspect these actual assets and the rendered site at wide and 390px widths after a refresh, checking each `<picture>` source's intrinsic dimensions and descriptions. Build output stays ignored.
 
 ## IndexNow deployment notifications
 

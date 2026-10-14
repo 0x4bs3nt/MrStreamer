@@ -202,7 +202,7 @@ describe("one stable download contract across pages and metadata", () => {
     const homepageLinks = links();
     expect(appData()["softwareVersion"]).toBe("0.0.8");
     expect(appData()["alternateName"]).toBe("Mr. Streamer: IPTV Player");
-    expect(appData()["screenshot"]).toHaveLength(4);
+    expect(appData()["screenshot"]).toHaveLength(5);
     open(writeDownloads(renderPage("download/index.html", released, null), released));
     expect(links()).toEqual(homepageLinks);
     expect(document.title).toBe("Download Mr. Streamer 0.0.8 for Mac, Windows and Linux");

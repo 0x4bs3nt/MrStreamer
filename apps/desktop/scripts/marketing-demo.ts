@@ -12,7 +12,8 @@
 //
 // marketing-capture.ts starts the subscription with `startMarketingDemo`: the fake provider
 // streaming the Earth loop, an adapter in front of it that lists only the manifest's channels and
-// series and serves the episode, and the fake TMDB behind a wrapper that answers with the
+// series and serves the episode, marks the channels the manifest gives catch-up days as keeping
+// recordings, without serving one, and the fake TMDB behind a wrapper that answers with the
 // manifest's names, stories and credits. Everything listens on loopback only.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -64,11 +65,10 @@ export interface DemoMedia {
   readonly stills: readonly string[];
 }
 
-/** The folder given as --cache-dir. */
-export function cacheDirectory(): string {
-  const { values } = parseArgs({ options: { "cache-dir": { type: "string" } } });
-  if (!values["cache-dir"]) throw new Error("Pass --cache-dir <folder outside the repository>.");
-  return resolve(values["cache-dir"]);
+/** The folder given as --cache-dir, from a command's parsed options. */
+export function cacheDirectory(given: string | undefined): string {
+  if (!given) throw new Error("Pass --cache-dir <folder outside the repository>.");
+  return resolve(given);
 }
 
 /** Downloads and cuts the media unless the cache folder already holds it. */
@@ -251,6 +251,9 @@ export async function startMarketingDemo(media: DemoMedia): Promise<MarketingDem
             category_ids: [Number(channel.categoryId)],
             stream_icon: channel.logo ? `${ARTWORK}/logo-${channel.streamId}.svg` : "",
             epg_channel_id: guideId(channel),
+            // The guide grid's catch-up sign and Play from start. Nothing answers a recording.
+            tv_archive: channel.catchupDays ? 1 : 0,
+            tv_archive_duration: channel.catchupDays ? String(channel.catchupDays) : 0,
           };
         });
       }
@@ -585,6 +588,7 @@ function json(response: ServerResponse, body: unknown, status = 200): void {
 }
 
 if (import.meta.main) {
-  const media = await prepareMedia(cacheDirectory());
+  const { values } = parseArgs({ options: { "cache-dir": { type: "string" } } });
+  const media = await prepareMedia(cacheDirectory(values["cache-dir"]));
   console.log(`Ready: ${Object.values(media).flat().join(", ")}`);
 }
