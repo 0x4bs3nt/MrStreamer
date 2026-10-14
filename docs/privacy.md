@@ -100,6 +100,7 @@ Your network operator and DNS provider can see which servers the app contacts.
 ### Deleting your data
 
 - **Remove** on a subscription in Settings > Subscriptions deletes its login, lists, guide and mapped channels, and cancels its unfinished downloads. Tick **Also delete favourites, watchlist, history and progress** to delete those and its saved subtitles too. Finished downloads stay until you delete them.
+- **The cross** on a guide in Settings > Guides deletes its address and what it downloaded. Every subscription reads those guides, so removing a subscription keeps them.
 - **Delete** on a download deletes the copy with its details, pictures, progress and subtitles.
 - **Deleting the data folder** deletes everything else, including the statistics setting, so a new folder starts with statistics on. To also remove the password key, delete "Mr. Streamer Safe Storage" in Keychain Access on macOS or the matching entry in your Linux keyring. A downloaded update stays in `~/Library/Caches/mrstreamer-updater` on macOS, `%LOCALAPPDATA%\mrstreamer-updater` on Windows or `~/.cache/mrstreamer-updater` on Linux until you delete that folder.
 - **Statistics already sent** stay with PostHog when you turn the setting off. Email privacy@mrstreamer.app with the `installationId` from `analytics.json` in your data folder, so we can find them.
