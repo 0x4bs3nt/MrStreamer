@@ -60,7 +60,10 @@ function errorText(value: unknown): string {
 }
 
 /**
- * Install before root resumes main, then await ready. Observation never runs or resumes a worker.
+ * Install before root resumes main, then await ready. Observation never runs or resumes the
+ * catalogue worker. Every worker inherits main's inspect-brk and waits before its first line for a
+ * debugger, so each other worker the app starts, as the guide's indexing and search, is let run as
+ * soon as it attaches, as it would without the check.
  * Node 24 with inherited inspect-brk needs explicit runToStartupPause() to expose its startup break.
  * resumeStartup() is a separate explicit request and only resumes the currently verified startup pause.
  * Await close() before closing Page. It drains commands, disables NodeWorker and unregisters its listeners.
@@ -230,6 +233,21 @@ export function installCatalogueWorkerProbe(options: ProbeOptions) {
       pending.delete(id);
     }
   }
+  /**
+   * Lets a worker other than the catalogue's run past its inherited inspector wait. Its session
+   * stays attached, with no debugger enabled, until close() disables NodeWorker.
+   */
+  async function release(other: string) {
+    await mainSend("NodeWorker.sendMessageToWorker", {
+      sessionId: other,
+      message: JSON.stringify({
+        id: nextId++,
+        method: "Runtime.runIfWaitingForDebugger",
+        params: {},
+      }),
+    });
+    record("worker-released", { sessionId: other });
+  }
   async function pausedPID(frameId: string) {
     const reply = await workerSend("Debugger.evaluateOnCallFrame", {
       callFrameId: frameId,
@@ -345,8 +363,12 @@ export function installCatalogueWorkerProbe(options: ProbeOptions) {
       !object(params.workerInfo) ||
       params.workerInfo.url !== workerURL ||
       params.workerInfo.type !== "worker"
-    )
+    ) {
+      const other = params.sessionId;
+      if (typeof other !== "string" || !other) throw new Error("Invalid worker sessionId");
+      void task(() => release(other));
       return;
+    }
     if (typeof params.sessionId !== "string" || !params.sessionId)
       throw new Error("Invalid catalogue worker sessionId");
     if (sessionId !== undefined)

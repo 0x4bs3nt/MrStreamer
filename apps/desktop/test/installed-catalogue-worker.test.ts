@@ -31,6 +31,8 @@ class Transport implements MainTransport {
   listeners = new Map<string, (params: unknown) => void>();
   commands: Command[] = [];
   outer: string[] = [];
+  /** Sessions of other workers, and what each was sent. */
+  others: { sessionId: unknown; message: unknown }[] = [];
   pid = pid;
   replySession = "owned";
   respond = true;
@@ -76,7 +78,12 @@ class Transport implements MainTransport {
   async send(method: string, params: Record<string, unknown> = {}) {
     this.outer.push(method);
     if (method === "NodeWorker.disable" && this.disableError) return { error: this.disableError };
-    if (method === "NodeWorker.sendMessageToWorker") {
+    if (method === "NodeWorker.sendMessageToWorker" && params.sessionId !== "owned") {
+      this.others.push({
+        sessionId: params.sessionId,
+        message: JSON.parse(String(params.message)),
+      });
+    } else if (method === "NodeWorker.sendMessageToWorker") {
       const raw: unknown = JSON.parse(String(params.message));
       assert(
         object(raw) &&
@@ -145,7 +152,7 @@ describe("owned catalogue worker inspector startup", () => {
     main.startupURL = dependency;
     success(await worker.ready);
     const startup = worker.start(100);
-    main.attach(expected.replace("/owned/", "/foreign/"));
+    main.attach(expected.replace("/owned/", "/foreign/"), "foreign");
     main.worker({ method: "Debugger.paused", params: {} }, "foreign");
     main.attach();
     expect(success(await startup)).toMatchObject({
@@ -158,6 +165,13 @@ describe("owned catalogue worker inspector startup", () => {
     await worker.settle();
     expect((await worker.resumeStartup()).ok).toBe(false);
     expect(main.commands.filter((c) => c.method === "Debugger.resume")).toHaveLength(1);
+    // The other worker runs at once, as it would without the check.
+    expect(main.others).toEqual([
+      {
+        sessionId: "foreign",
+        message: expect.objectContaining({ method: "Runtime.runIfWaitingForDebugger" }),
+      },
+    ]);
     await worker.close();
   });
 
@@ -312,7 +326,7 @@ describe("owned catalogue worker inspector startup", () => {
 });
 
 it.each([false, true])(
-  "real Node24 worker holds startup until guarded resume, nested ESM dependency=%s",
+  "real Node24 worker holds startup until guarded resume while other workers run, nested ESM dependency=%s",
   async (nested) => {
     const root = await mkdtemp(join(tmpdir(), "owned catalogue worker "));
     const scripts = join(root, "Resources", "app.asar", "out", "main");
@@ -325,10 +339,16 @@ it.each([false, true])(
       entry,
       `${nested ? 'import "./dependency.js";\n' : ""}import { parentPort } from "node:worker_threads"; parentPort.postMessage({phase:"started",pid:process.pid}); setTimeout(()=>{debugger; parentPort.postMessage({phase:"later"}); process.exitCode=7},10);`,
     );
+    // Another of the app's workers, as the guide's indexer, which inherits inspect-brk too.
+    const other = join(scripts, "index-worker-test.js");
+    await writeFile(
+      other,
+      'import { parentPort } from "node:worker_threads"; parentPort.postMessage({phase:"other"});',
+    );
     const mainPath = join(root, "main.cjs");
     await writeFile(
       mainPath,
-      `const {Worker}=require("node:worker_threads"); const w=new Worker(${JSON.stringify(entry)}); w.on("message",m=>console.log(JSON.stringify(m))); w.on("exit",code=>process.exitCode=code); w.on("error",e=>{console.error(e);process.exitCode=19});`,
+      `const {Worker}=require("node:worker_threads"); const w=new Worker(${JSON.stringify(entry)}); w.on("message",m=>console.log(JSON.stringify(m))); w.on("exit",code=>process.exitCode=code); w.on("error",e=>{console.error(e);process.exitCode=19}); new Worker(${JSON.stringify(other)}).on("message",m=>console.log(JSON.stringify(m)));`,
     );
     const child = spawn(process.execPath, ["--inspect-brk=127.0.0.1:0", mainPath], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -394,14 +414,15 @@ it.each([false, true])(
       await resumeMain(main);
       await until(() => !!worker?.state().sessionId);
       expect(success(await worker.observe()).kind).toBe("no-startup-pause");
-      expect(output).toBe("");
+      await until(() => output.includes('"other"'));
+      expect(output).not.toContain('"started"');
       expect(inheritedWaitFlag).toBe(false);
       const startup = success(await worker.runToStartupPause());
       expect(startup.pid).toBe(child.pid);
       expect(startup.frameURL).toBe(
         pathToFileURL(nested ? join(scripts, "nested.js") : entry).href,
       );
-      expect(output).toBe("");
+      expect(output).not.toContain('"started"');
       success(await worker.resumeStartup());
       await until(() => laterPause && output.includes('"started"'));
       expect(output).not.toContain('"later"');
