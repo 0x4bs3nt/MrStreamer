@@ -6,6 +6,11 @@
 // guide id, shared by variants of one channel, and xmltv.php serves their programmes. The last
 // category, "BE | Kwaliteit", lists one channel in Full HD, HD and SD, the Full HD one off air.
 //
+// "TEST | H.264 + AAC" keeps three days of catch-up and "TEST | HEVC + AAC" two, as `tv_archive`
+// and `tv_archive_duration` say; the login's answer names the panel's time zone. Their timeshift
+// addresses, `/timeshift/user/pass/<minutes>/<YYYY-MM-DD:HH-MM>/<id>.ts`, send the channel's
+// recording once and end, and `archiveRequests` lists the windows asked for.
+//
 // Movies and series come with their own categories, one of them for adults, and one series is
 // marked for adults in an ordinary category. Their files redirect
 // to another address, as real panels do, and answer byte ranges; each open file holds a
@@ -35,6 +40,16 @@ export interface FakeChannel {
   readonly guideId: string | null;
   /** Flagged for adults. */
   readonly adult?: boolean;
+  /** Days of catch-up the panel keeps of it; none when absent. */
+  readonly archiveDays?: number;
+}
+
+/** A timeshift request that reached the provider: the minutes and start in its address. */
+export interface ArchiveRequest {
+  readonly streamId: string;
+  readonly minutes: number;
+  /** As the address writes it, on the panel's clock: "2026-10-13:14-00". */
+  readonly start: string;
 }
 
 interface FakeCatalogue {
@@ -55,6 +70,11 @@ export interface FakeProviderOptions {
   readonly password?: string;
   readonly maxConnections?: number;
   readonly accountStatus?: "Active" | "Expired" | "Banned" | "Disabled";
+  /**
+   * The time zone the login's answer names as the panel's (`server_info.timezone`), whose clock
+   * its timeshift addresses are on: "Europe/Amsterdam" unless given, none with null.
+   */
+  readonly timeZone?: string | null;
   /** How long a closed stream keeps its connection slot. Real panels often lag behind. */
   readonly slotReleaseMs?: number;
   /** Replaces the default streams. */
@@ -234,6 +254,13 @@ export interface FakeProvider {
   hold(what: Held): { readonly arrived: Promise<void>; release(): void };
   /** How many stream requests reached the provider. */
   streamRequests(): number;
+  /** The timeshift requests that reached the provider, in order, refused ones too. */
+  archiveRequests(): readonly ArchiveRequest[];
+  /**
+   * Breaks off the next timeshift answer sent at its real-time rate after `pieces` tenths of a
+   * second of it, as a connection that drops does.
+   */
+  breakNextArchive(pieces: number): void;
   close(): Promise<void>;
 }
 
@@ -247,24 +274,25 @@ const HELD_ACTIONS: Readonly<Record<string, Held>> = {
 };
 
 /** The fixture channels, in the order the test category lists them. */
-const FIXTURE_CHANNELS: readonly { name: string; fixture: string | null }[] = [
-  { name: "TEST | H.264 + AAC", fixture: "h264-aac.mpegts" },
-  { name: "TEST | H.264 + MP2", fixture: "h264-mp2.mpegts" },
-  { name: "TEST | H.264 + MP3", fixture: "h264-mp3.mpegts" },
-  { name: "TEST | H.264 + AC-3", fixture: "h264-ac3.mpegts" },
-  { name: "TEST | H.264 + AC-3 DVB", fixture: "h264-ac3-dvb.mpegts" },
-  { name: "TEST | H.264 + E-AC-3", fixture: "h264-eac3.mpegts" },
-  { name: "TEST | HEVC + AAC", fixture: "hevc-aac.mpegts" },
-  { name: "TEST | HEVC 10-bit + AAC", fixture: "hevc10-aac.mpegts" },
-  { name: "TEST | MPEG-2 + MP2", fixture: "mpeg2-mp2.mpegts" },
-  /** An open-GOP broadcast joined mid-sequence: it starts with frames that cannot be decoded. */
-  { name: "TEST | H.264 joined mid-stream", fixture: "h264-open-gop-joined.mpegts" },
-  /** Lost packets mid-stream, which a decoder has to conceal. */
-  { name: "TEST | H.264 damaged", fixture: "h264-damaged.mpegts" },
-  /** English and Dutch sound, DVB subtitles, teletext page 888 and captions in the picture. */
-  { name: "TEST | Subtitles and two sound tracks", fixture: "h264-subtitles.mpegts" },
-  { name: "TEST | Offline", fixture: null },
-];
+const FIXTURE_CHANNELS: readonly { name: string; fixture: string | null; archiveDays?: number }[] =
+  [
+    { name: "TEST | H.264 + AAC", fixture: "h264-aac.mpegts", archiveDays: 3 },
+    { name: "TEST | H.264 + MP2", fixture: "h264-mp2.mpegts" },
+    { name: "TEST | H.264 + MP3", fixture: "h264-mp3.mpegts" },
+    { name: "TEST | H.264 + AC-3", fixture: "h264-ac3.mpegts" },
+    { name: "TEST | H.264 + AC-3 DVB", fixture: "h264-ac3-dvb.mpegts" },
+    { name: "TEST | H.264 + E-AC-3", fixture: "h264-eac3.mpegts" },
+    { name: "TEST | HEVC + AAC", fixture: "hevc-aac.mpegts", archiveDays: 2 },
+    { name: "TEST | HEVC 10-bit + AAC", fixture: "hevc10-aac.mpegts" },
+    { name: "TEST | MPEG-2 + MP2", fixture: "mpeg2-mp2.mpegts" },
+    /** An open-GOP broadcast joined mid-sequence: it starts with frames that cannot be decoded. */
+    { name: "TEST | H.264 joined mid-stream", fixture: "h264-open-gop-joined.mpegts" },
+    /** Lost packets mid-stream, which a decoder has to conceal. */
+    { name: "TEST | H.264 damaged", fixture: "h264-damaged.mpegts" },
+    /** English and Dutch sound, DVB subtitles, teletext page 888 and captions in the picture. */
+    { name: "TEST | Subtitles and two sound tracks", fixture: "h264-subtitles.mpegts" },
+    { name: "TEST | Offline", fixture: null },
+  ];
 
 export async function startFakeProvider(options: FakeProviderOptions = {}): Promise<FakeProvider> {
   const username = options.username ?? "demo";
@@ -317,6 +345,9 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
   let guidePieceBytes = 0;
   let guideCount = 0;
   let streamCount = 0;
+  const archiveAsked: ArchiveRequest[] = [];
+  let archiveBreak: number | null = null;
+  const timeZone = options.timeZone === undefined ? "Europe/Amsterdam" : options.timeZone;
   /** What a test asked to keep waiting, until it releases each. */
   const held = new Map<Held, { readonly arrived: () => void; readonly released: Promise<void> }>();
   /** Answers a request now, or once the test releases it when it is being held. */
@@ -345,6 +376,10 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     if (url.pathname === "/xmltv.php") return answering("guide", () => guide(url, response));
     const live = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.ts$/.exec(url.pathname);
     if (live) return stream(live[1] ?? "", live[2] ?? "", live[3] ?? "", request, response);
+    const shifted = /^\/timeshift\/([^/]+)\/([^/]+)\/(\d+)\/([\d:-]+)\/(\d+)\.ts$/.exec(
+      url.pathname,
+    );
+    if (shifted) return timeshift(shifted, request, response);
     const title = /^\/(movie|series)\/([^/]+)\/([^/]+)\/(\d+)\.(\w+)$/.exec(url.pathname);
     if (title) return redirectFile(title, response);
     const file = /^\/files\/(\d+)\/(movie|series)\/(\d+)$/.exec(url.pathname);
@@ -384,7 +419,10 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
           active_cons: String(slots),
           max_connections: String(maxConnections),
         },
-        server_info: { timestamp_now: now },
+        server_info: {
+          timestamp_now: now,
+          ...(timeZone === null ? {} : { timezone: timeZone }),
+        },
       });
     }
     if (catalogueFailure !== null && action?.startsWith("get_live")) {
@@ -538,6 +576,9 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
           category_id: channel.categoryId,
           category_ids: [Number(channel.categoryId)],
           is_adult: channel.adult ? 1 : 0,
+          // Panels mark catch-up 0 or 1, its days as a number or a string.
+          tv_archive: channel.archiveDays ? 1 : 0,
+          tv_archive_duration: channel.archiveDays ? String(channel.archiveDays) : 0,
           // Panels send null or "" for channels without a guide.
           epg_channel_id:
             (options.guideIdOf ?? ((each) => each.guideId))(channel) ??
@@ -597,6 +638,46 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     });
     response.writeHead(200, { "Content-Type": "video/mp2t" });
     streams(channel, response, closed.signal);
+  }
+
+  /**
+   * A channel's recording from its catch-up archive: its clip, once, at its real-time rate when
+   * `live`, then the end. Holds a connection slot as a stream does.
+   */
+  function timeshift(match: RegExpExecArray, request: IncomingMessage, response: ServerResponse) {
+    const [, user = "", pass = "", minutes = "", start = "", id = ""] = match;
+    if (decodeURIComponent(user) !== username || decodeURIComponent(pass) !== password) {
+      return void response.writeHead(401).end();
+    }
+    archiveAsked.push({ streamId: id, minutes: Number(minutes), start });
+    const channel = channels.get(id);
+    if (!channel?.archiveDays || !channel.fixture) return void response.writeHead(404).end();
+    if (slots >= maxConnections) return void response.writeHead(403).end();
+    slots++;
+    let released = false;
+    request.on("close", () => {
+      if (released) return;
+      released = true;
+      setTimeout(() => slots--, slotReleaseMs);
+    });
+    response.writeHead(200, { "Content-Type": "video/mp2t" });
+    const recording = fixture(channel.fixture);
+    if (!options.live) return void response.end(recording);
+    // A tenth of a second at a time, as `liveStreams` sends it, unless the connection breaks.
+    const pieces = chunked(recording, Math.ceil(recording.length / 30));
+    const breaks = archiveBreak;
+    archiveBreak = null;
+    const sent = Readable.from(
+      (async function* () {
+        for (const [index, piece] of pieces.entries()) {
+          if (index === breaks) return void response.destroy();
+          yield piece;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      })(),
+    );
+    response.on("close", () => sent.destroy());
+    sent.pipe(response);
   }
 
   /** Sends a movie or episode request on to where the file is, like a panel's load balancer. */
@@ -763,6 +844,10 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       };
     },
     streamRequests: () => streamCount,
+    archiveRequests: () => archiveAsked,
+    breakNextArchive(pieces) {
+      archiveBreak = pieces;
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -854,6 +939,7 @@ function buildCatalogue(size: number, adultChannels: boolean): FakeCatalogue {
     fixture: test.fixture,
     // The first test channel has a guide, so a packaged app shows programmes on Home.
     guideId: index === 0 ? "aac.test" : null,
+    ...(test.archiveDays ? { archiveDays: test.archiveDays } : {}),
   }));
 
   const groups = REGIONS.flatMap((region) => GENRES.map((genre) => `${region} | ${genre}`));

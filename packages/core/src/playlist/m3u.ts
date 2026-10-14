@@ -23,6 +23,11 @@ export interface PlaylistEntry {
   /** The User-Agent and Referer the stream wants, from its attributes or #EXTVLCOPT lines. */
   readonly userAgent: string | null;
   readonly referrer: string | null;
+  /**
+   * The #EXTM3U line's attributes by lowercase name, the same for every entry. Some say what an
+   * entry that doesn't say otherwise has, as `catchup` does (see ./catchup.ts).
+   */
+  readonly header: Readonly<Record<string, string>>;
 }
 
 export interface M3uReader {
@@ -44,6 +49,7 @@ export function m3uReader(): M3uReader {
   let rest = "";
   let playlist: boolean | null = null;
   let guideUrl: string | null = null;
+  let header: Readonly<Record<string, string>> = {};
   let group: string | null = null;
   /** The #EXTINF waiting for its address, with what the lines after it added. */
   let pending: {
@@ -61,7 +67,7 @@ export function m3uReader(): M3uReader {
     if (playlist === null) {
       playlist = /^#EXT(M3U|INF)/i.test(trimmed);
       if (/^#EXTM3U/i.test(trimmed)) {
-        const header = attributesOf(trimmed.slice("#EXTM3U".length));
+        header = attributesOf(trimmed.slice("#EXTM3U".length));
         const named = header["x-tvg-url"] ?? header["url-tvg"] ?? header["tvg-url"] ?? "";
         guideUrl =
           named
@@ -108,7 +114,7 @@ export function m3uReader(): M3uReader {
       }
     }
     if (!pending) return;
-    found.push({ ...pending, url: trimmed });
+    found.push({ ...pending, url: trimmed, header });
     pending = null;
   }
 

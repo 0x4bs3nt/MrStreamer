@@ -793,6 +793,7 @@ describe("a mapping whose channels or guide changed under it", () => {
       number: null,
       logoUrl: null,
       categoryIds: [],
+      catchupDays: null,
       variants: [{ id, name: `Channel ${id}`, tags: [], quality: null }],
     }));
     const byId = new Map(all.map((each) => [each.id, each]));

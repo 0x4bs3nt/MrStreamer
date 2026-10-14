@@ -161,6 +161,7 @@ export function normalizeCatalogue(catalogue: LiveCatalogue): NormalizedCatalogu
       logoUrl: channel.logoUrl,
       categoryIds: channel.categoryIds,
       guideId: channel.guideId,
+      catchupDays: channel.catchupDays,
       ...channelTitle(strip ? name.rest : name.text, name.text, repeatsCategory),
       region: recognised(name) ? name.region : (placed?.region ?? null),
       language: name.language ?? placed?.language ?? null,

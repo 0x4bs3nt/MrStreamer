@@ -125,6 +125,7 @@ describe("playlists", () => {
         logoUrl: "https://logos.test/alpha.png",
         categoryIds: ["News", "General"],
         guideId: "Alpha.test@HD",
+        catchupDays: null,
       },
       {
         id: "Beta.test",
@@ -133,6 +134,7 @@ describe("playlists", () => {
         logoUrl: null,
         categoryIds: ["Kid's"],
         guideId: "Beta.test",
+        catchupDays: null,
       },
       {
         id: "Gamma",
@@ -141,6 +143,7 @@ describe("playlists", () => {
         logoUrl: null,
         categoryIds: ["Music"],
         guideId: null,
+        catchupDays: null,
       },
       // A second channel under one tvg-id stays a channel of its own.
       expect.objectContaining({ id: "Alpha.test@HD|Alpha News Backup", guideId: "Alpha.test@HD" }),

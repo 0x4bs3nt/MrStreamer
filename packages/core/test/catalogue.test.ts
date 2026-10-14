@@ -24,6 +24,7 @@ function catalogue(
       logoUrl: null,
       categoryIds: [String(category)],
       guideId: null,
+      catchupDays: null,
     })),
   };
 }
@@ -239,6 +240,7 @@ function guided(
       logoUrl: null,
       categoryIds: [String(category)],
       guideId: guideId ?? null,
+      catchupDays: null,
     })),
   };
 }
@@ -537,6 +539,7 @@ describe("which stream plays", () => {
     logoUrl: null,
     categoryIds: [],
     variants,
+    catchupDays: null,
   });
   const ids = (variants: readonly ChannelVariant[]) => variants.map(({ id }) => id);
   const all = channel(

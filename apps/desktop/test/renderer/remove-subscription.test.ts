@@ -53,6 +53,7 @@ const channelOf = (owner: SubscriptionSummary): LiveChannel => ({
   number: 1,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id: "2014", name: "BE | VRT 1", tags: [], quality: null }],
 });
 

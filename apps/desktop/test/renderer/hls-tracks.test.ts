@@ -30,6 +30,7 @@ const channel = (id: string): LiveChannel => ({
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id, name: id, tags: [], quality: null }],
 });
 

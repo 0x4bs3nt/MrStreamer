@@ -3,6 +3,8 @@ import { useSearchUsage } from "../../app/analytics.ts";
 // current stream, muted, on top. A click on a channel opens Watch; Back returns here unchanged.
 //   Up and Down move the selection; PageUp, PageDown, Home and End jump. Enter watches. Right opens
 //   the rest of the day and Left closes it; Left again moves to the lists and Right comes back.
+//   A programme that aired, listed before it where the provider's catch-up keeps it, plays from
+//   its start in Watch.
 //   Search folds safe matches for display. Right opens their canonical copies; Left returns to
 //   the group. Enter on a group uses a favourite copy, then saved subscription order.
 //   Digits jump to a channel number, S stars, Escape goes Home.
@@ -602,6 +604,11 @@ export function GuidePage({ active }: { active: boolean }) {
                 onWatch={(channel, index) => {
                   setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
                   playRow(index);
+                }}
+                onWatchArchive={(channel, index, programme) => {
+                  setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
+                  player.playArchive(channel, programme);
+                  openWatch();
                 }}
                 onToggleSchedule={(key) =>
                   setExpandedKey((current) => (current === key ? null : key))

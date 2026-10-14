@@ -37,6 +37,7 @@ vi.mock("../../src/renderer/src/player/engine.ts", async (original) => {
         name: "mpegts.js",
         started: Promise.resolve(),
         onFailure() {},
+        onEnded() {},
         onWaiting() {},
         played: () => stream.elapsed,
         onPrivateData(listener) {
@@ -67,6 +68,7 @@ const channel = (id: string): LiveChannel => ({
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id, name: id, tags: [], quality: null }],
 });
 const tracks: ChannelTracks = {

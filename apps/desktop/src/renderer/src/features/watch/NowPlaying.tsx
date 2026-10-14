@@ -11,7 +11,14 @@ import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { LiveMore, type LiveMenu } from "./LiveMore.tsx";
 import { TrackMenus } from "./TrackMenus.tsx";
 import { useNow } from "../../lib/clock.ts";
-import { channelLine, clockTime, progressOf, techLine, timeLeft } from "../../lib/format.ts";
+import {
+  channelLine,
+  clockTime,
+  pastTime,
+  progressOf,
+  techLine,
+  timeLeft,
+} from "../../lib/format.ts";
 import { qualityName } from "../../lib/quality.ts";
 import {
   queries,
@@ -59,36 +66,40 @@ export function NowPlayingBar({ visible, ...props }: NowPlayingProps & { visible
 
 /**
  * Programme first: its title, time left and what's next. The channel stands in without a guide.
- * Once it plays, the line says the provider's quality and what the decoder reports, and when
- * Automatic had to play another stream.
+ * A programme from the catch-up archive says when it aired instead. Once it plays, the line says
+ * the provider's quality and what the decoder reports, and when Automatic had to play another
+ * stream.
  */
 function Details({ channel, categories }: NowPlayingProps) {
   const playing = usePlayer(
     (state) => state.phase.kind === "playing" && sameOwned(state.channel, channel),
   );
+  const archive = usePlayer((state) => (sameOwned(state.channel, channel) ? state.archive : null));
   const listing = useQuery(queries.listings([channel])).data?.[ownedKey(channel)];
   const now = useNow();
   const tech = techLine(useStreamInfo(playing));
   const quality = useChannelQuality(channel);
-  const current = listing?.now ?? null;
-  const next = listing?.next ?? null;
+  const current = archive ? null : (listing?.now ?? null);
+  const next = archive ? null : (listing?.next ?? null);
   // Whose channel it is, where another subscription has one of its name.
   const source = useSourceOf()(channel);
-  const line = current
-    ? [
-        channel.title,
-        source,
-        t("Until {time}", { time: clockTime(current.stop, now) }),
-        timeLeft(current, now),
-      ]
-    : [channelLine(channel, categories), source];
+  const line = archive
+    ? [channel.title, source, t("Aired {time}", { time: pastTime(archive.start, now) })]
+    : current
+      ? [
+          channel.title,
+          source,
+          t("Until {time}", { time: clockTime(current.stop, now) }),
+          timeLeft(current, now),
+        ]
+      : [channelLine(channel, categories), source];
   const fellBack = quality.fellBack;
   return (
     <div className="flex min-w-0 items-center gap-5 min-[720px]:flex-1">
       <ChannelLogo channel={channel} className="h-12 w-18" />
       <div className="min-w-0">
         <div className="truncate text-3xl font-semibold tracking-tight">
-          {current?.title ?? channel.title}
+          {(archive ?? current)?.title ?? channel.title}
         </div>
         <div className="mt-1 truncate text-sm text-foreground/85">
           {[...line, playing && quality.playing && qualityName(quality.playing), tech]

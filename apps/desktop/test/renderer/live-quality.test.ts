@@ -16,6 +16,7 @@ const channel = (id: string): LiveChannel => ({
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [
     { id, name: `NL | ${id} FHD`, tags: ["FHD"], quality: "fhd" },
     { id: `${id}-hd`, name: `NL | ${id} HD`, tags: ["HD"], quality: "hd" },

@@ -32,6 +32,13 @@ export type AppError =
   /** The system keychain would not store the password, or no longer gives it back. */
   | { readonly kind: "keychain-refused" }
   | { readonly kind: "channel-not-found"; readonly channelId: string }
+  /**
+   * A programme asked for from the provider's catch-up archive that it doesn't keep: the channel
+   * has no catch-up (`none`), or the programme starts outside the `days` it keeps, including one
+   * that hasn't started yet (`outside`).
+   */
+  | { readonly kind: "catch-up"; readonly reason: "none" }
+  | { readonly kind: "catch-up"; readonly reason: "outside"; readonly days: number }
   /** A movie, series or episode the provider no longer lists. */
   | { readonly kind: "title-not-found"; readonly titleId: string }
   /** A movie or episode couldn't be opened: the provider refused its file, or it can't play. */

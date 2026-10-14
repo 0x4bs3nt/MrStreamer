@@ -357,6 +357,7 @@ describe("mappings over a catalogue's guide ids", () => {
     logoUrl: null,
     categoryIds: [],
     variants: [{ id, name: title, tags: [], quality: null }],
+    catchupDays: null,
   });
   const [one, two, three] = [channel("1", "One"), channel("2", "Two"), channel("3", "Three")];
   // One and Two name the guide channel "a" themselves; Three names none, and is also found by

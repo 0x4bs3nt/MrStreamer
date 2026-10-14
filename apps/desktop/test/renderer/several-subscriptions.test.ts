@@ -61,6 +61,7 @@ const channel = (owner: SubscriptionSummary, id: string, title: string): LiveCha
   number: Number(id),
   logoUrl: null,
   categoryIds: ["uk"],
+  catchupDays: null,
   variants: [{ id, name: `UK | ${title.toUpperCase()}`, tags: [], quality: null }],
 });
 

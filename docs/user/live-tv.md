@@ -26,6 +26,7 @@ A channel that reads like one of another subscription says which one it is from.
 
 - Click a channel to watch it. **Back**, or Escape, returns to the same place in the list.
 - The arrow at the end of a row lists the rest of the day. Click a later programme to read about it.
+- From 0.0.13, on a channel your provider keeps recordings of (catch-up), the rest of the day starts with today's programmes that already aired. Click one to watch it from its start. Watch says when it aired, and at its end the channel stops; **Watch** then plays the channel live. A programme older than your provider keeps says how many days back catch-up goes. Catch-up plays on this computer, not on a TV.
 - The star adds a channel to your favourites. A new favourite goes last, and **Reorder** puts them in the order you want.
 
 The field beside the list's name searches the list you're looking at: Favourites, Recently watched, All channels or one category. It finds a channel by its name, also the full name your provider gives it, and by the programmes on now and later today, whatever the capitals and accents. The channels it finds stay in the list's order, with what matched underlined. A later programme that matched stands at the end of its row with its time, and the arrow opens the rest of the day on it. Clicking the row still watches the channel as it is now.

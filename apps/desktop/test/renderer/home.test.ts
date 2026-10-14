@@ -259,6 +259,7 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
     number: 1,
     logoUrl: null,
     categoryIds: ["all"],
+    catchupDays: null,
     variants: [{ id: "one", name: "Channel one", tags: [], quality: null }],
   };
   const film = {

@@ -20,10 +20,12 @@ import {
 import { ARTWORK_SCHEME, DOWNLOAD_ARTWORK } from "@mrstreamer/contracts/downloads";
 import type { IpcEvent, IpcEvents, IpcInput } from "@mrstreamer/contracts/ipc";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
+import type { ArchiveWindow } from "@mrstreamer/contracts/playback";
 import { ownedId } from "@mrstreamer/contracts/subscription";
 import { streamsToPlay } from "@mrstreamer/core/catalogue/variants";
+import { archiveVariants } from "@mrstreamer/core/catchup";
 import { Diagnostics } from "@mrstreamer/core/diagnostics";
-import { Failed } from "@mrstreamer/core/failure";
+import { Failed, failedWith } from "@mrstreamer/core/failure";
 import { Guide } from "@mrstreamer/core/guide/service";
 import { seriesEpisodeSeasons } from "@mrstreamer/core/ondemand/details";
 import { discovery, metadataFileFor } from "@mrstreamer/core/updates/feed";
@@ -612,15 +614,24 @@ async function start(): Promise<void> {
 
   /**
    * The channel's streams to try, by id: the one asked for, the one picked for it in its
-   * subscription before, or Automatic's. Fails when the channel has none of them.
+   * subscription before, or Automatic's. For `archive`, of those whose catch-up keeps it alone,
+   * which fails with `catch-up` when none does. Fails when the channel has none of them.
    */
-  const streamsOf = (channel: LiveChannel, variant: string | undefined) =>
+  const streamsOf = (channel: LiveChannel, variant: string | undefined, archive?: ArchiveWindow) =>
     Effect.gen(function* () {
       const preferences = {
         ...(yield* settings.get),
         ...(yield* settings.ofSubscription(channel.subscriptionId)),
       };
-      const variants = streamsToPlay(channel, preferences, variant).map(({ id }) => id);
+      const playable = archive
+        ? {
+            variants: yield* Effect.try({
+              try: () => archiveVariants(channel, archive, Date.now()),
+              catch: failedWith,
+            }),
+          }
+        : channel;
+      const variants = streamsToPlay(playable, preferences, variant).map(({ id }) => id);
       if (variants.length > 0) return variants;
       return yield* new Failed({
         error: { kind: "channel-not-found", channelId: variant ?? channel.id },
@@ -711,7 +722,17 @@ async function start(): Promise<void> {
       "ondemand.tiles": ({ kind, of }) => onDemand.tiles(kind, of),
       "ondemand.collection": (query) => onDemand.collection(query),
       "playback.open": (
-        { channel: named, variant, decoders, repair, audio, audioLanguage, preview, measurement },
+        {
+          channel: named,
+          variant,
+          archive,
+          decoders,
+          repair,
+          audio,
+          audioLanguage,
+          preview,
+          measurement,
+        },
         frame,
       ) => {
         const token = analytics.admitPlayback("live", preview ? undefined : measurement, frame);
@@ -721,9 +742,10 @@ async function start(): Promise<void> {
           (turn) =>
             Effect.gen(function* () {
               const channel = yield* library.channel(named);
-              const variants = yield* streamsOf(channel, variant);
+              const variants = yield* streamsOf(channel, variant, archive);
               return yield* playback.open(ownedId(channel), decoders, {
                 variants,
+                archive: archive ?? null,
                 repair: repair ?? false,
                 audio: audio ?? null,
                 audioLanguage: audioLanguage ?? null,

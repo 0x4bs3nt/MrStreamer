@@ -30,6 +30,11 @@ export interface LiveChannel {
   /** Its streams, in the provider's order. */
   readonly variants: readonly ChannelVariant[];
   /**
+   * Catch-up: how many days back the provider keeps its programmes to play after they aired, the
+   * most any of its streams keeps. Null when none of them keeps any.
+   */
+  readonly catchupDays: number | null;
+  /**
    * For adults: one of its streams is marked so, or sits in a category named for adults. Shown
    * only in Live TV, and only while Settings shows titles for adults.
    */
@@ -81,6 +86,8 @@ export interface ChannelVariant {
   readonly tags: readonly string[];
   /** The quality its name says, or null when it says none or contradicts itself. */
   readonly quality: Quality | null;
+  /** How many days of catch-up the provider keeps of this stream; absent when it keeps none. */
+  readonly catchupDays?: number;
 }
 
 /**

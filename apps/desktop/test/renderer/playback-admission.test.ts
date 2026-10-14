@@ -51,6 +51,7 @@ const channel = {
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id: "fixture", name: "Fixture", tags: [], quality: null }],
 };
 const title = { kind: "movie" as const, subscriptionId: SUBSCRIPTION, id: "fixture" };

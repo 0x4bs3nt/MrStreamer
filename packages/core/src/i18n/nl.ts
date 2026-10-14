@@ -273,6 +273,11 @@ export const nl: Translation = {
     "De sleutelhanger van je systeem wilde je wachtwoord niet bewaren.",
   "This channel is no longer in the provider's list.":
     "Deze zender staat niet meer in de lijst van de provider.",
+  "This channel has no catch-up.": "Op deze zender kun je niet terugkijken.",
+  "Catch-up on this channel goes back {count} days.": {
+    one: "Terugkijken op deze zender gaat {count} dag terug.",
+    other: "Terugkijken op deze zender gaat {count} dagen terug.",
+  },
   "The provider no longer lists this title.": "De provider biedt deze titel niet meer aan.",
   "Your favourites changed.": "Je favorieten zijn gewijzigd.",
   "This can no longer be undone.": "Dit kan niet meer ongedaan worden gemaakt.",
@@ -576,6 +581,7 @@ export const nl: Translation = {
   "New series": "Nieuwe series",
   "All channels": "Alle zenders",
   "Until {time}": "Tot {time}",
+  "Aired {time}": "Uitgezonden {time}",
   Watch: "Kijken",
   Mute: "Geluid uit",
   Unmute: "Geluid aan",

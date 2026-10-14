@@ -26,6 +26,7 @@ const channel = (id: string, title: string, name = title): LiveChannel => ({
   number: Number(id),
   logoUrl: null,
   categoryIds: ["uk"],
+  catchupDays: null,
   variants: [{ id, name, tags: [], quality: null }],
 });
 

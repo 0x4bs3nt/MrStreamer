@@ -14,6 +14,7 @@ import type {
   PlaylistOmission,
   PlaylistSample,
 } from "@mrstreamer/contracts/playlist";
+import { playlistCatchup, type PlaylistCatchup } from "./catchup.ts";
 import type { PlaylistEntry } from "./m3u.ts";
 
 /** Where a channel streams from. The address can hold a login, so it stays in the main process. */
@@ -22,6 +23,8 @@ export interface PlaylistStream {
   readonly format: StreamFormat;
   /** The User-Agent and Referer the playlist asks for. */
   readonly headers: Readonly<Record<string, string>>;
+  /** Where its recordings play from, when its entry describes catch-up (see ./catchup.ts). */
+  readonly catchup?: PlaylistCatchup;
 }
 
 export interface PlaylistCatalogue extends LiveCatalogue {
@@ -55,6 +58,7 @@ export function playlistCatalogue(entries: Iterable<PlaylistEntry>): PlaylistCat
     }
     const logo = entry.attributes["tvg-logo"];
     const number = Number(entry.attributes["tvg-chno"]);
+    const catchup = playlistCatchup(entry);
     channels.push({
       id,
       name,
@@ -62,6 +66,7 @@ export function playlistCatalogue(entries: Iterable<PlaylistEntry>): PlaylistCat
       logoUrl: logo && /^https?:\/\//i.test(logo) ? logo : null,
       categoryIds: [...new Set(groups)],
       guideId,
+      catchupDays: catchup?.days ?? null,
     });
     streams.set(id, {
       url: entry.url,
@@ -70,6 +75,7 @@ export function playlistCatalogue(entries: Iterable<PlaylistEntry>): PlaylistCat
         ...(entry.userAgent ? { "User-Agent": entry.userAgent } : {}),
         ...(entry.referrer ? { Referer: entry.referrer } : {}),
       },
+      ...(catchup ? { catchup } : {}),
     });
   }
   return { categories: [...categories.values()], channels, streams };

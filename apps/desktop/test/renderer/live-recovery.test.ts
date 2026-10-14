@@ -34,6 +34,7 @@ const vrt: LiveChannel = {
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [
     { id: "vrt", name: "BE | VRT 1 FHD", tags: ["FHD"], quality: "fhd" },
     { id: "vrt-hd", name: "BE | VRT 1 HD", tags: ["HD"], quality: "hd" },
@@ -50,6 +51,7 @@ const een: LiveChannel = {
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id: "een", name: "BE | EEN", tags: [], quality: null }],
 };
 

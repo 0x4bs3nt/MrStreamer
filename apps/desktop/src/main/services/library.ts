@@ -68,7 +68,7 @@ const FETCHES_AT_ONCE = 2;
 // The cache stores the catalogue as the provider sent it, and display names are worked out on
 // load, so improved naming rules apply without fetching again. The newest stable release reads it
 // too (see docs/contributing/architecture.md), so fields are added without a new version: a file
-// written before guide ids or the adult flag still loads, and counts as outdated.
+// written before guide ids, the adult flag or catch-up still loads, and counts as outdated.
 const CachedCatalogue = type({
   version: "4",
   /** Which subscription produced this catalogue. */
@@ -84,12 +84,20 @@ const CachedCatalogue = type({
     categoryIds: "string[]",
     "guideId?": "string | null",
     "adult?": "boolean",
+    "catchupDays?": "number | null",
   }).array(),
 }).pipe((file) => ({
   ...file,
-  channels: file.channels.map((channel) => ({ ...channel, guideId: channel.guideId ?? null })),
+  channels: file.channels.map((channel) => ({
+    ...channel,
+    guideId: channel.guideId ?? null,
+    catchupDays: channel.catchupDays ?? null,
+  })),
   outdated: file.channels.some(
-    (channel) => channel.guideId === undefined || channel.adult === undefined,
+    (channel) =>
+      channel.guideId === undefined ||
+      channel.adult === undefined ||
+      channel.catchupDays === undefined,
   ),
 }));
 

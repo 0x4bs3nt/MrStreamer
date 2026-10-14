@@ -267,6 +267,11 @@ export const en = {
     "Your system's keychain would not store your password.",
   "This channel is no longer in the provider's list.":
     "This channel is no longer in the provider's list.",
+  "This channel has no catch-up.": "This channel has no catch-up.",
+  "Catch-up on this channel goes back {count} days.": {
+    one: "Catch-up on this channel goes back {count} day.",
+    other: "Catch-up on this channel goes back {count} days.",
+  },
   "The provider no longer lists this title.": "The provider no longer lists this title.",
   "Your favourites changed.": "Your favourites changed.",
   "This can no longer be undone.": "This can no longer be undone.",
@@ -570,6 +575,7 @@ export const en = {
   "New series": "New series",
   "All channels": "All channels",
   "Until {time}": "Until {time}",
+  "Aired {time}": "Aired {time}",
   Watch: "Watch",
   Mute: "Mute",
   Unmute: "Unmute",

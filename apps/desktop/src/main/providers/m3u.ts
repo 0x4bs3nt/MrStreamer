@@ -1,6 +1,9 @@
 // M3U playlists with optional explicit group mapping for live and on-demand entries;
-// the guide is the XMLTV document the playlist's first line names, when it names one.
+// the guide is the XMLTV document the playlist's first line names, when it names one, and a
+// channel's recordings play from where its entry's catch-up attributes say.
 import { AppFailure } from "@mrstreamer/contracts/errors";
+import { streamFormat, type PlaylistStream } from "@mrstreamer/core/playlist/catalogue";
+import { archiveAddress } from "@mrstreamer/core/playlist/catchup";
 import {
   importPlaylist,
   inspectPlaylist,
@@ -226,6 +229,16 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
     return { playlist: reader.playlist === true, guideUrl: reader.guideUrl };
   }
 
+  /** A channel's stream, from the last read or, for one it doesn't have, a fresh one. */
+  async function streamOf(channelId: string, signal?: AbortSignal): Promise<PlaylistStream> {
+    const known = last?.snapshot.live.streams.get(channelId);
+    if (known) return known;
+    // Channels loaded from disk after a restart, or added since the last read.
+    const stream = (await abortable(fresh(), signal)).snapshot.live.streams.get(channelId);
+    if (!stream) throw new AppFailure({ kind: "channel-not-found", channelId });
+    return stream;
+  }
+
   return {
     /** Checks that the link answers with a playlist, reading no more than its first line. */
     async authenticate(signal) {
@@ -249,13 +262,19 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
       return { categories, channels };
     },
 
-    async liveStream(channelId, signal) {
-      const known = last?.snapshot.live.streams.get(channelId);
-      if (known) return known;
-      // Channels loaded from disk after a restart, or added since the last read.
-      const stream = (await abortable(fresh(), signal)).snapshot.live.streams.get(channelId);
-      if (!stream) throw new AppFailure({ kind: "channel-not-found", channelId });
-      return stream;
+    liveStream: streamOf,
+
+    async archiveStream(channelId, window, signal) {
+      const stream = await streamOf(channelId, signal);
+      const recording = stream.catchup && archiveAddress(stream.catchup, window, Date.now());
+      if (!recording) throw new AppFailure({ kind: "catch-up", reason: "none" });
+      const { url, start } = recording;
+      return {
+        url,
+        start,
+        format: streamFormat(url) ?? stream.format,
+        headers: stream.headers,
+      };
     },
 
     request(url, init) {

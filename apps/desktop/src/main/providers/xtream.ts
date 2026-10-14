@@ -17,6 +17,7 @@ import {
   type ProviderOptions,
   type ProviderTitle,
 } from "@mrstreamer/core/provider";
+import { wallClock } from "@mrstreamer/core/catchup";
 import { t } from "@mrstreamer/core/i18n";
 
 export interface XtreamAccount {
@@ -207,6 +208,23 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
     request(params, timeoutMs, signal, async (response) => JSON.parse(await response.text()));
 
   /**
+   * The panel's time zone, which its timeshift addresses tell the time in: what the login's answer
+   * says, asked once, or null when it names none. A failed ask is asked again next time.
+   */
+  let timeZone: Promise<string | null> | null = null;
+  const serverTimeZone = (signal?: AbortSignal): Promise<string | null> =>
+    (timeZone ??= getJson("", AUTH_TIMEOUT_MS, signal).then(
+      (body) => {
+        const parsed = AuthResponse(body);
+        return parsed instanceof type.errors ? null : parsed.timeZone;
+      },
+      (cause: unknown) => {
+        timeZone = null;
+        throw cause;
+      },
+    ));
+
+  /**
    * A long list, parsed in one go: only the catalogue worker reads these, off the main thread,
    * where one parse is several times faster than reading row by row. A refused login is an
    * error, never an empty list that could replace the lists the app has.
@@ -228,6 +246,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
       if (body instanceof type.errors || !body.user_info || !isTruthy(body.user_info.auth)) {
         throw new AppFailure({ kind: "invalid-login" });
       }
+      timeZone = Promise.resolve(body.timeZone);
       const account = accountStatus(body.user_info);
       if (
         account.state === "expired" ||
@@ -373,6 +392,26 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
         format: "mpegts",
       };
     },
+
+    /**
+     * The panel's timeshift address: `/timeshift/user/pass/<minutes>/<YYYY-MM-DD:HH-MM>/<id>.ts`,
+     * the start on the panel's own clock (`server_info.timezone`), else in UTC. Panels start on a
+     * whole minute, so the recording starts on the minute before the window's start, which it
+     * says, and runs on to the window's end.
+     */
+    async archiveStream(channelId, window, signal) {
+      const user = encodeURIComponent(account.username);
+      const pass = encodeURIComponent(account.password);
+      const start = window.start - (window.start % 60_000);
+      const minutes = Math.ceil((window.end - start) / 60_000);
+      const at = wallClock(start, await serverTimeZone(signal));
+      const time = `${at.year}-${at.month}-${at.day}:${at.hour}-${at.minute}`;
+      return {
+        url: `${account.server}/timeshift/${user}/${pass}/${minutes}/${time}/${encodeURIComponent(channelId)}.ts`,
+        format: "mpegts",
+        start,
+      };
+    },
   };
 }
 
@@ -389,8 +428,15 @@ const UserInfo = type({
   "active_cons?": loose,
 });
 
-const AuthResponse = type({ "user_info?": UserInfo.or("unknown[]") }).pipe((body) => ({
+const AuthResponse = type({
+  "user_info?": UserInfo.or("unknown[]"),
+  "server_info?": type({ "timezone?": "string | null" }).or("unknown[] | null"),
+}).pipe((body) => ({
   user_info: Array.isArray(body.user_info) ? undefined : body.user_info,
+  /** The panel's IANA time zone, "Europe/Amsterdam", or null when it names none. */
+  timeZone:
+    (body.server_info && !Array.isArray(body.server_info) && body.server_info.timezone?.trim()) ||
+    null,
 }));
 
 const CategoryRow = type({ category_id: idLike, "category_name?": "string | null" });
@@ -404,6 +450,8 @@ const StreamRow = type({
   "category_ids?": "(string | number)[] | null",
   "epg_channel_id?": "string | null",
   "is_adult?": "number | string | boolean | null",
+  "tv_archive?": "number | string | boolean | null",
+  "tv_archive_duration?": loose,
 });
 
 /**
@@ -672,6 +720,7 @@ function toChannel(raw: unknown): ProviderChannel[] {
   const row = StreamRow(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.stream_id);
+  const archiveDays = toInteger(row.tv_archive_duration);
   return [
     {
       id,
@@ -681,6 +730,8 @@ function toChannel(raw: unknown): ProviderChannel[] {
       categoryIds: categoryIdsOf(row),
       guideId: row.epg_channel_id?.trim() || null,
       adult: isTruthy(row.is_adult),
+      // Catch-up where the panel keeps an archive of it, for as many days as it says.
+      catchupDays: isTruthy(row.tv_archive) ? Math.max(0, archiveDays ?? 0) || null : null,
     },
   ];
 }

@@ -95,6 +95,7 @@ const channel = (id: string): LiveChannel => ({
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id, name: `NL | ${id}`, tags: [], quality: null }],
 });
 const channelItem: RemoteItem = {

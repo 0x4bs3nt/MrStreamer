@@ -54,7 +54,7 @@ export function canRetry(problem: PlaybackProblem): boolean {
     return receiverProblem(problem.failure, problem.lost, outputs.failedOn(), null).retry;
   }
   if (problem.kind === "app") {
-    return problem.error.kind !== "invalid-login" && problem.error.kind !== "needs-secret";
+    return !["invalid-login", "needs-secret", "catch-up"].includes(problem.error.kind);
   }
   return problem.kind !== "unsupported";
 }
@@ -251,6 +251,7 @@ const QUOTES_NOTHING = new Set<AppError["kind"]>([
   "needs-secret",
   "keychain-refused",
   "channel-not-found",
+  "catch-up",
 ]);
 
 /** Why a channel's session didn't open, without what an error quotes: a server's name or an engine's words. */

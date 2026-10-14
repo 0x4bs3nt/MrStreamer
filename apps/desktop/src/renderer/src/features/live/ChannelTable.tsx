@@ -1,5 +1,6 @@
 // The guide's channel list: a row per channel with its number, logo and name, the qualities of a
-// channel with several streams, what's on now with progress and time left, and what's next. The chevron opens the rest of the day under the row.
+// channel with several streams, what's on now with progress and time left, and what's next. The chevron opens the rest of the day under the row,
+// after today's programmes so far that the provider's catch-up keeps, which play from their start.
 // Rows ask the guide for programmes only as they come into view.
 //   A search shows the same rows for the channels it found, with what matched underlined: the
 // name, the programme on now, or a later one, which then stands where what's next does, in white
@@ -24,12 +25,14 @@ import {
 import type { Listing, ListingMatch, Programme } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
+import { archiveHolds } from "@mrstreamer/core/catchup";
 import { matchRanges } from "@mrstreamer/core/text";
 import { t } from "@mrstreamer/core/i18n";
 import { ChannelLogo } from "../../components/ChannelLogo.tsx";
 import { Progress } from "../../components/Progress.tsx";
 import { useNow } from "../../lib/clock.ts";
-import { clockTime, endOfDay, progressOf, timeLeft } from "../../lib/format.ts";
+import { clockTime, endOfDay, pastTime, progressOf, timeLeft } from "../../lib/format.ts";
+import { useOutput } from "../../player/output.ts";
 import { qualitiesLine } from "../../lib/quality.ts";
 import { queries, useSearchSubscriptionNames, useSourceOf } from "../../lib/queries.ts";
 import { useRem } from "../../lib/use-rem.ts";
@@ -41,6 +44,8 @@ import type { RowPart } from "./reorder.ts";
 const ROW_REM = 3.75;
 /** Later programmes the schedule shows even when today has fewer left. */
 const MIN_LATER = 6;
+/** Earlier programmes from catch-up the schedule shows even when today has had fewer. */
+const MIN_EARLIER = 6;
 const NONE: readonly string[] = [];
 
 /** The list while its channels are being put in another order. */
@@ -80,6 +85,7 @@ export function ChannelTable({
   matches,
   order = null,
   onWatch,
+  onWatchArchive,
   onToggleSchedule,
   onToggleFavourite,
 }: {
@@ -108,6 +114,8 @@ export function ChannelTable({
   /** Set while `channels` are the favourites in an order being made. */
   order?: TableOrder | null;
   onWatch: (channel: LiveChannel, index: number) => void;
+  /** A programme of the channel's schedule that aired, to play from its catch-up archive. */
+  onWatchArchive: (channel: LiveChannel, index: number, programme: Programme) => void;
   onToggleSchedule: (channelKey: string) => void;
   onToggleFavourite: (channel: LiveChannel) => void;
 }) {
@@ -265,6 +273,7 @@ export function ChannelTable({
                   }
                 }
                 onWatch={() => onWatch(channel, item.index)}
+                onWatchArchive={(programme) => onWatchArchive(channel, item.index, programme)}
                 onToggleSchedule={() => onToggleSchedule(key)}
                 onToggleFavourite={() => onToggleFavourite(channel)}
               />
@@ -295,6 +304,7 @@ function ChannelRow({
   match,
   order,
   onWatch,
+  onWatchArchive,
   onToggleSchedule,
   onToggleFavourite,
 }: {
@@ -318,6 +328,7 @@ function ChannelRow({
   /** Set while the list is being put in another order: the row moves, and plays nothing. */
   order: RowOrder | null;
   onWatch: () => void;
+  onWatchArchive: (programme: Programme) => void;
   onToggleSchedule: () => void;
   onToggleFavourite: () => void;
 }) {
@@ -528,7 +539,14 @@ function ChannelRow({
         </span>
       </div>
       {expanded && (
-        <Schedule channel={channel} now={now} words={words} match={match} onWatch={onWatch} />
+        <Schedule
+          channel={channel}
+          now={now}
+          words={words}
+          match={match}
+          onWatch={onWatch}
+          onWatchArchive={onWatchArchive}
+        />
       )}
     </div>
   );
@@ -612,6 +630,10 @@ export function Marked({ text, words }: { text: string; words: readonly string[]
 /**
  * The rest of the day. The programme on now plays; a later one shows its description. It opens
  * on the later programme a search found, with its description, and marks what the search found.
+ *
+ * Before them, the programmes of today that aired and the provider's catch-up keeps, at least the
+ * last few early in the day, each playing from its start. Only those the guide still lists, and
+ * none while a receiver has playback: catch-up plays on this computer.
  */
 function Schedule({
   channel,
@@ -619,23 +641,39 @@ function Schedule({
   words,
   match,
   onWatch,
+  onWatchArchive,
 }: {
   channel: LiveChannel;
   now: number;
   words: readonly string[];
   match: ListingMatch | null;
   onWatch: () => void;
+  onWatchArchive: (programme: Programme) => void;
 }) {
   const schedule = useQuery(queries.schedule(channel));
+  const remote = useOutput((state) => state.status.output.kind !== "local");
   const found = match?.later?.start ?? null;
   const [open, setOpen] = useState(found);
   // The rest of today, and at least the next few when the day is nearly over.
   const programmes = useMemo(() => {
     const midnight = endOfDay(now);
-    return (schedule.data ?? [])
-      .filter((programme) => programme.stop > now)
-      .filter((programme, index) => programme.start < midnight || index < MIN_LATER);
-  }, [schedule.data, now]);
+    const today = new Date(now).setHours(0, 0, 0, 0);
+    const all = schedule.data ?? [];
+    const aired = remote
+      ? []
+      : all.filter(
+          (programme) =>
+            programme.stop <= now && archiveHolds(channel.catchupDays, programme.start, now),
+        );
+    return [
+      ...aired.filter(
+        (programme, index) => programme.start >= today || index >= aired.length - MIN_EARLIER,
+      ),
+      ...all
+        .filter((programme) => programme.stop > now)
+        .filter((programme, index) => programme.start < midnight || index < MIN_LATER),
+    ];
+  }, [schedule.data, now, remote, channel.catchupDays]);
   return (
     <div className="rounded-b-xl bg-white/5 py-2 pr-4 pl-[17.5rem]">
       {programmes.map((programme) => (
@@ -645,11 +683,18 @@ function Schedule({
           now={now}
           open={open === programme.start}
           found={programme.start === found}
-          words={(programme.start <= now ? match?.now : programme.start === found) ? words : NONE}
+          words={
+            programme.stop > now &&
+            (programme.start <= now ? match?.now : programme.start === found)
+              ? words
+              : NONE
+          }
           onClick={() =>
-            programme.start <= now
-              ? onWatch()
-              : setOpen((current) => (current === programme.start ? null : programme.start))
+            programme.stop <= now
+              ? onWatchArchive(programme)
+              : programme.start <= now
+                ? onWatch()
+                : setOpen((current) => (current === programme.start ? null : programme.start))
           }
         />
       ))}
@@ -674,10 +719,13 @@ function ScheduleLine({
   words: readonly string[];
   onClick: () => void;
 }) {
-  const onNow = programme.start <= now;
+  const aired = programme.stop <= now;
+  const onNow = !aired && programme.start <= now;
   const line = useRef<HTMLButtonElement>(null);
+  // The day opens on what's on now, below what aired before it, unless a search found later.
   useEffect(() => {
-    if (found) line.current?.scrollIntoView({ block: "nearest" });
+    if (found || onNow) line.current?.scrollIntoView({ block: "nearest" });
+    // Only when it opens, not as the programme on now changes.
   }, [found]);
   return (
     <button
@@ -690,7 +738,11 @@ function ScheduleLine({
       )}
     >
       <span className="w-[6.5rem] flex-none text-sm text-muted-foreground tabular-nums">
-        {onNow ? timeLeft(programme, now) : clockTime(programme.start, now)}
+        {aired
+          ? pastTime(programme.start, now)
+          : onNow
+            ? timeLeft(programme, now)
+            : clockTime(programme.start, now)}
       </span>
       <span className="min-w-0 flex-1">
         <span className={cn("block text-sm", onNow && "font-medium text-white")}>

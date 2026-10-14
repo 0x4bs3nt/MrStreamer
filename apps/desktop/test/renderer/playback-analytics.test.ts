@@ -94,6 +94,7 @@ it("counts different explicit channel selections, excluding previews, first sele
     number: null,
     logoUrl: null,
     categoryIds: [],
+    catchupDays: null,
     variants: [{ id, name: id, tags: [], quality: null }],
   });
   player.preview(channel("private-channel-a"));
@@ -123,6 +124,7 @@ it("ends the live measurement on reset and treats the next selection as the firs
     number: null,
     logoUrl: null,
     categoryIds: [],
+    catchupDays: null,
     variants: [{ id, name: id, tags: [], quality: null }],
   });
   player.watch(channel("first"));
@@ -160,6 +162,7 @@ it("reports a live mid-play network failure on its closed binding while recovery
     number: null,
     logoUrl: null,
     categoryIds: [],
+    catchupDays: null,
     variants: [{ id: "live", name: "Live", tags: [], quality: null }],
   };
   const open = ipc.hold("playback.open");

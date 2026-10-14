@@ -46,6 +46,7 @@ const channel = (title: string): LiveChannel => ({
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [],
 });
 

@@ -237,6 +237,12 @@ export const ipcInputs = {
        * is tried.
        */
       "variant?": "string",
+      /**
+       * Plays this stretch of the channel's past from the provider's catch-up archive instead of
+       * the channel live, through the streams that keep it. It fails with `catch-up` when the
+       * channel keeps none or not that far back. The stream ends where the provider's does.
+       */
+      "archive?": type({ start: "number.integer >= 0", end: "number.integer >= 0" }),
       decoders: decoders(),
       "repair?": "boolean",
       /** The chosen sound track id. MPEG-TS uses its PID; HLS selection happens in the engine. */

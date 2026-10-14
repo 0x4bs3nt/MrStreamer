@@ -280,6 +280,12 @@ export const es: Translation = {
     "El llavero de tu sistema no quiso guardar tu contraseña.",
   "This channel is no longer in the provider's list.":
     "Este canal ya no está en la lista del proveedor.",
+  "This channel has no catch-up.": "Este canal no permite ver programas ya emitidos.",
+  "Catch-up on this channel goes back {count} days.": {
+    one: "Este canal guarda los programas de {count} día.",
+    many: "Este canal guarda los programas de los últimos {count} de días.",
+    other: "Este canal guarda los programas de los últimos {count} días.",
+  },
   "The provider no longer lists this title.": "El proveedor ya no ofrece este título.",
   "Your favourites changed.": "Tus favoritos han cambiado.",
   "This can no longer be undone.": "Esto ya no se puede deshacer.",
@@ -609,6 +615,7 @@ export const es: Translation = {
   "New series": "Series nuevas",
   "All channels": "Todos los canales",
   "Until {time}": "Hasta las {time}",
+  "Aired {time}": "Emitido {time}",
   Watch: "Ver",
   Mute: "Silenciar",
   Unmute: "Activar sonido",

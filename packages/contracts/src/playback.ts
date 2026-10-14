@@ -35,6 +35,12 @@ export interface StreamSession {
   /** Loopback URL that proxies the provider stream. Carries no credentials. */
   readonly url: string;
   readonly format: StreamFormat;
+  /**
+   * For a recording from the catch-up archive, the stretch it plays: from where the provider's
+   * recording begins, which can be up to a minute before the start asked for when the provider
+   * counts in whole minutes, to the end asked for, where the stream stops.
+   */
+  readonly archive?: ArchiveWindow;
 }
 
 /**
@@ -58,6 +64,16 @@ export interface TitleSession {
   readonly audio: readonly AudioTrack[];
   /** Subtitle tracks in the file's order, whatever their format. */
   readonly subtitles: readonly SubtitleTrack[];
+}
+
+/**
+ * A stretch of a channel's past, in epoch milliseconds, to play from the provider's catch-up
+ * archive: a programme from its start, or from where playback reached in it. `end` may lie ahead
+ * for a programme still on; the provider sends what it has.
+ */
+export interface ArchiveWindow {
+  readonly start: number;
+  readonly end: number;
 }
 
 /**

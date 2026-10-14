@@ -281,6 +281,12 @@ export const fr: Translation = {
     "Le trousseau de votre système n'a pas voulu enregistrer votre mot de passe.",
   "This channel is no longer in the provider's list.":
     "Cette chaîne ne figure plus dans la liste du fournisseur.",
+  "This channel has no catch-up.": "Cette chaîne ne propose pas de replay.",
+  "Catch-up on this channel goes back {count} days.": {
+    one: "Le replay de cette chaîne remonte à {count} jour.",
+    many: "Le replay de cette chaîne remonte à {count} de jours.",
+    other: "Le replay de cette chaîne remonte à {count} jours.",
+  },
   "The provider no longer lists this title.": "Le fournisseur ne propose plus ce titre.",
   "Your favourites changed.": "Vos favoris ont changé.",
   "This can no longer be undone.": "Cette action ne peut plus être annulée.",
@@ -607,6 +613,7 @@ export const fr: Translation = {
   "New series": "Nouvelles séries",
   "All channels": "Toutes les chaînes",
   "Until {time}": "Jusqu'à {time}",
+  "Aired {time}": "Diffusé {time}",
   Watch: "Regarder",
   Mute: "Couper le son",
   Unmute: "Rétablir le son",

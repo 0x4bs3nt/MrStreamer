@@ -300,7 +300,9 @@ function joined(first: NormalizedStream, group: readonly NormalizedStream[]): Li
       name: stream.name,
       tags: stream.tags,
       quality: qualityOf(stream.tags),
+      ...(stream.catchupDays ? { catchupDays: stream.catchupDays } : {}),
     })),
+    catchupDays: Math.max(0, ...group.map((stream) => stream.catchupDays ?? 0)) || null,
   };
 }
 

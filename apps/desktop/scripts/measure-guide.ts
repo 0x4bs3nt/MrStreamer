@@ -86,6 +86,7 @@ try {
       logoUrl: null,
       categoryIds: [],
       variants: [{ id: String(index), name: `Channel ${index}`, tags: [], quality: null }],
+      catchupDays: null,
     })),
   );
   const catalogues = new Map<string, CatalogueChannels>();

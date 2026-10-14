@@ -31,6 +31,7 @@ function listed(
       logoUrl: null,
       categoryIds: (entry.categories ?? [entry.category]).map(String),
       guideId: entry.guide ?? null,
+      catchupDays: null,
     })),
   };
   return liveChannels(normalizeCatalogue(raw).streams).channels.map((channel) => ({

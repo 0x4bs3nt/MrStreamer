@@ -38,6 +38,7 @@ const channel: LiveChannel = {
   number: null,
   logoUrl: null,
   categoryIds: [],
+  catchupDays: null,
   variants: [{ id: "a", name: "NL | a", tags: [], quality: null }],
 };
 

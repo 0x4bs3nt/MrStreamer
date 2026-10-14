@@ -20,7 +20,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
-import { ownedKey } from "@mrstreamer/contracts/subscription";
+import { ownedKey, sameOwned } from "@mrstreamer/contracts/subscription";
 import { queries } from "../lib/queries.ts";
 import { useOutput } from "./output.ts";
 import { player, receiverState, usePlayer } from "./player.ts";
@@ -252,9 +252,9 @@ function useCarried(remote: boolean, playing: boolean): void {
 }
 
 /**
- * The channel in Watch in the system's controls: the programme on now, the channel and its logo.
- * Play starts a stopped channel, or has a receiver play on with one it holds paused; pause and
- * stop stop it.
+ * The channel in Watch in the system's controls: the programme on now, or the one it plays from
+ * catch-up, the channel and its logo. Play starts a stopped channel, or has a receiver play on
+ * with one it holds paused; pause and stop stop it.
  */
 export function useLiveSession(channel: LiveChannel | null): void {
   const phase = usePlayer((state) => state.phase.kind);
@@ -262,8 +262,11 @@ export function useLiveSession(channel: LiveChannel | null): void {
   // Only a receiver holds a channel that is on paused: the system shows what it said.
   const held = usePlayer((state) => receiverState(state.phase) === "paused");
   const playing = live && !held;
+  const archived = usePlayer((state) =>
+    channel && sameOwned(state.channel, channel) ? (state.archive?.title ?? null) : null,
+  );
   const listings = useQuery(queries.listings(channel ? [channel] : []));
-  const programme = (channel && listings.data?.[ownedKey(channel)]?.now?.title) ?? null;
+  const programme = archived ?? (channel && listings.data?.[ownedKey(channel)]?.now?.title) ?? null;
   const view = useView();
 
   useEffect(() => {

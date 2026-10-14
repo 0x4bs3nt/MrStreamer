@@ -38,6 +38,7 @@ const catalogue = liveChannels(
       logoUrl: null,
       categoryIds: [category!],
       guideId: guide!,
+      catchupDays: null,
     })),
   }).streams,
 ).channels;

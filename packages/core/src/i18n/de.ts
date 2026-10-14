@@ -274,6 +274,11 @@ export const de: Translation = {
     "Der Schlüsselbund deines Systems wollte dein Passwort nicht speichern.",
   "This channel is no longer in the provider's list.":
     "Dieser Sender ist nicht mehr in der Liste des Anbieters.",
+  "This channel has no catch-up.": "Dieser Sender bietet kein Replay.",
+  "Catch-up on this channel goes back {count} days.": {
+    one: "Das Replay dieses Senders reicht {count} Tag zurück.",
+    other: "Das Replay dieses Senders reicht {count} Tage zurück.",
+  },
   "The provider no longer lists this title.": "Der Anbieter führt diesen Titel nicht mehr.",
   "Your favourites changed.": "Deine Favoriten haben sich geändert.",
   "This can no longer be undone.": "Das lässt sich nicht mehr rückgängig machen.",
@@ -579,6 +584,7 @@ export const de: Translation = {
   "New series": "Neue Serien",
   "All channels": "Alle Sender",
   "Until {time}": "Bis {time}",
+  "Aired {time}": "Gesendet {time}",
   Watch: "Ansehen",
   Mute: "Stummschalten",
   Unmute: "Ton an",

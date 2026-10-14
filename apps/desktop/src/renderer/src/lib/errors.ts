@@ -52,6 +52,10 @@ export function describeError(error: AppError): string {
         : t("Your system's keychain would not store your password.");
     case "channel-not-found":
       return t("This channel is no longer in the provider's list.");
+    case "catch-up":
+      return error.reason === "none"
+        ? t("This channel has no catch-up.")
+        : t("Catch-up on this channel goes back {count} days.", { count: error.days });
     case "title-not-found":
       return t("The provider no longer lists this title.");
     case "stream":
