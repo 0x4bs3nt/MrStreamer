@@ -65,7 +65,7 @@ function make(files: NoticeFiles) {
   // Read on every call: the UI asks rarely, and a rebuild in development shows at once.
   const notices = Effect.tryPromise({
     try: async () => {
-      const manifest = NoticeManifest(JSON.parse(await readFile(files.manifest, "utf8")));
+      const manifest = NoticeManifest()(JSON.parse(await readFile(files.manifest, "utf8")));
       if (manifest instanceof type.errors) {
         throw new Error(`${files.manifest}: ${manifest.summary}`);
       }

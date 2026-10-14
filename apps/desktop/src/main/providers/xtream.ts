@@ -19,6 +19,7 @@ import {
 } from "@mrstreamer/core/provider";
 import { wallClock } from "@mrstreamer/core/catchup";
 import { t } from "@mrstreamer/core/i18n";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 export interface XtreamAccount {
   /** Normalised origin plus an optional path prefix, without a trailing slash. */
@@ -218,7 +219,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
   const serverTimeZone = (signal?: AbortSignal): Promise<string | null> =>
     (timeZone ??= getJson("", AUTH_TIMEOUT_MS, signal).then(
       (body) => {
-        const parsed = AuthResponse(body);
+        const parsed = AuthResponse()(body);
         return parsed instanceof type.errors ? null : parsed.timeZone;
       },
       (cause: unknown) => {
@@ -245,7 +246,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
 
   return {
     async authenticate(signal) {
-      const body = AuthResponse(await getJson("", AUTH_TIMEOUT_MS, signal));
+      const body = AuthResponse()(await getJson("", AUTH_TIMEOUT_MS, signal));
       if (body instanceof type.errors || !body.user_info || !isTruthy(body.user_info.auth)) {
         throw new AppFailure({ kind: "invalid-login" });
       }
@@ -420,42 +421,48 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
 
 // Panels disagree on types: numbers arrive as strings, empty strings stand in for null, and
 // fields go missing. The schemas accept all of that and the mappers below normalise it.
-const idLike = type("string | number");
-const loose = type("string | number | null");
+const idLike = "string | number";
+const loose = "string | number | null";
 
-const UserInfo = type({
-  "auth?": "number | string | boolean | null",
-  "status?": "string | null",
-  "exp_date?": loose,
-  "max_connections?": loose,
-  "active_cons?": loose,
-});
+const UserInfo = lazy(() =>
+  type({
+    "auth?": "number | string | boolean | null",
+    "status?": "string | null",
+    "exp_date?": loose,
+    "max_connections?": loose,
+    "active_cons?": loose,
+  }),
+);
 
-const AuthResponse = type({
-  "user_info?": UserInfo.or("unknown[]"),
-  "server_info?": type({ "timezone?": "string | null" }).or("unknown[] | null"),
-}).pipe((body) => ({
-  user_info: Array.isArray(body.user_info) ? undefined : body.user_info,
-  /** The panel's IANA time zone, "Europe/Amsterdam", or null when it names none. */
-  timeZone:
-    (body.server_info && !Array.isArray(body.server_info) && body.server_info.timezone?.trim()) ||
-    null,
-}));
+const AuthResponse = lazy(() =>
+  type({
+    "user_info?": UserInfo().or("unknown[]"),
+    "server_info?": type({ "timezone?": "string | null" }).or("unknown[] | null"),
+  }).pipe((body) => ({
+    user_info: Array.isArray(body.user_info) ? undefined : body.user_info,
+    /** The panel's IANA time zone, "Europe/Amsterdam", or null when it names none. */
+    timeZone:
+      (body.server_info && !Array.isArray(body.server_info) && body.server_info.timezone?.trim()) ||
+      null,
+  })),
+);
 
-const CategoryRow = type({ category_id: idLike, "category_name?": "string | null" });
+const CategoryRow = lazy(() => type({ category_id: idLike, "category_name?": "string | null" }));
 
-const StreamRow = type({
-  stream_id: idLike,
-  "name?": "string | null",
-  "num?": loose,
-  "stream_icon?": "string | null",
-  "category_id?": loose,
-  "category_ids?": "(string | number)[] | null",
-  "epg_channel_id?": "string | null",
-  "is_adult?": "number | string | boolean | null",
-  "tv_archive?": "number | string | boolean | null",
-  "tv_archive_duration?": loose,
-});
+const StreamRow = lazy(() =>
+  type({
+    stream_id: idLike,
+    "name?": "string | null",
+    "num?": loose,
+    "stream_icon?": "string | null",
+    "category_id?": loose,
+    "category_ids?": "(string | number)[] | null",
+    "epg_channel_id?": "string | null",
+    "is_adult?": "number | string | boolean | null",
+    "tv_archive?": "number | string | boolean | null",
+    "tv_archive_duration?": loose,
+  }),
+);
 
 /**
  * The movie and series schemas, built on first use: the catalogue worker needs them for the lists,
@@ -557,8 +564,7 @@ function defineTitleSchemas() {
 
   return { MovieRow, SeriesRow, Info, MovieInfo, EpisodeRow, SeriesInfo };
 }
-let definedTitleSchemas: ReturnType<typeof defineTitleSchemas> | null = null;
-const titleSchemas = () => (definedTitleSchemas ??= defineTitleSchemas());
+const titleSchemas = lazy(defineTitleSchemas);
 type Info = ReturnType<typeof titleSchemas>["Info"]["infer"];
 
 function toMovie(raw: unknown): ProviderTitle[] {
@@ -713,14 +719,14 @@ function notAnApi(server: string): AppFailure {
 }
 
 function toCategory(raw: unknown): ProviderCategory[] {
-  const row = CategoryRow(raw);
+  const row = CategoryRow()(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.category_id);
   return [{ id, name: row.category_name?.trim() || `Category ${id}` }];
 }
 
 function toChannel(raw: unknown): ProviderChannel[] {
-  const row = StreamRow(raw);
+  const row = StreamRow()(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.stream_id);
   const archiveDays = toInteger(row.tv_archive_duration);
@@ -739,7 +745,7 @@ function toChannel(raw: unknown): ProviderChannel[] {
   ];
 }
 
-function accountStatus(info: typeof UserInfo.infer): AccountStatus {
+function accountStatus(info: Infer<typeof UserInfo>): AccountStatus {
   const expiry = toInteger(info.exp_date);
   return {
     state: accountState(info.status),
@@ -766,7 +772,7 @@ function accountState(status: string | null | undefined): AccountState {
 
 /** Some panels answer catalogue actions with a login failure instead of an HTTP error. */
 function isRejectedLogin(body: unknown): boolean {
-  const parsed = AuthResponse(body);
+  const parsed = AuthResponse()(body);
   return (
     !(parsed instanceof type.errors) &&
     parsed.user_info !== undefined &&

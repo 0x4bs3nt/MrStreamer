@@ -17,19 +17,24 @@ import * as Semaphore from "effect/Semaphore";
 import { t } from "@mrstreamer/core/i18n";
 import { readJsonFile, writeJsonFile } from "../platform/json-file.ts";
 import type { Secrets } from "../platform/secrets.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
-const Stored = OnlineSubtitlePreferences.merge({
-  subdl: "string | null",
-  opensubtitles: "string | null",
-});
-type Stored = typeof Stored.infer;
-const SubDL = type({ apiKey: "0 < string <= 4096" });
-const OpenSubtitles = type({
-  apiKey: "0 < string <= 4096",
-  username: "0 < string <= 512",
-  password: "0 < string <= 4096",
-});
-type Credentials = typeof SubDL.infer | typeof OpenSubtitles.infer;
+const Stored = lazy(() =>
+  OnlineSubtitlePreferences().merge({
+    subdl: "string | null",
+    opensubtitles: "string | null",
+  }),
+);
+type Stored = Infer<typeof Stored>;
+const SubDL = lazy(() => type({ apiKey: "0 < string <= 4096" }));
+const OpenSubtitles = lazy(() =>
+  type({
+    apiKey: "0 < string <= 4096",
+    username: "0 < string <= 512",
+    password: "0 < string <= 4096",
+  }),
+);
+type Credentials = Infer<typeof SubDL> | Infer<typeof OpenSubtitles>;
 
 export class SubtitleAccounts extends Context.Service<
   SubtitleAccounts,
@@ -54,7 +59,7 @@ function make(dataDir: string, secrets: Secrets) {
     let current: Stored | null = null;
     const stored = Effect.tryPromise({
       try: async () => {
-        current ??= (await readJsonFile(path, Stored)) ?? {
+        current ??= (await readJsonFile(path, Stored())) ?? {
           enabled: false,
           languages: ["en"],
           service: "both",
@@ -82,13 +87,13 @@ function make(dataDir: string, secrets: Secrets) {
             const next = yield* Effect.try({
               try: () => ({
                 ...previous,
-                ...OnlineSubtitlePreferences.assert(preferences),
+                ...OnlineSubtitlePreferences().assert(preferences),
                 ...(credentials.subdl !== undefined
                   ? {
                       subdl:
                         credentials.subdl === null
                           ? null
-                          : secrets.seal(JSON.stringify(SubDL.assert(credentials.subdl))),
+                          : secrets.seal(JSON.stringify(SubDL().assert(credentials.subdl))),
                     }
                   : {}),
                 ...(credentials.opensubtitles !== undefined
@@ -97,7 +102,7 @@ function make(dataDir: string, secrets: Secrets) {
                         credentials.opensubtitles === null
                           ? null
                           : secrets.seal(
-                              JSON.stringify(OpenSubtitles.assert(credentials.opensubtitles)),
+                              JSON.stringify(OpenSubtitles().assert(credentials.opensubtitles)),
                             ),
                     }
                   : {}),
@@ -117,7 +122,7 @@ function make(dataDir: string, secrets: Secrets) {
             return yield* Effect.try({
               try: () => {
                 const plain: unknown = JSON.parse(secrets.open(saved));
-                return service === "subdl" ? SubDL.assert(plain) : OpenSubtitles.assert(plain);
+                return service === "subdl" ? SubDL().assert(plain) : OpenSubtitles().assert(plain);
               },
               catch: secretFailure,
             });

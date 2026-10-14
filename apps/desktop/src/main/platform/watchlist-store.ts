@@ -42,6 +42,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { attempt, Database, transaction, unavailable } from "./database.ts";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 /** The tables that hold an account's entries, each with an `account` column: erasing takes both. */
 export const WATCHLIST_TABLES = ["watchlist", "watchlist_versions"] as const;
@@ -75,17 +76,19 @@ const SCHEMA = `
     on watchlist_versions (account, kind, version_id);
 `;
 
-const EntryRow = type({
-  rowid: "number",
-  id: "string",
-  kind: type.enumerated(...TITLE_KINDS),
-  tmdb_id: "string | null",
-  name: "string",
-  year: "number | null",
-  adult: "number",
-  saved_at: "number",
-});
-const VersionRow = type({ entry_id: "string", version_id: "string" });
+const EntryRow = lazy(() =>
+  type({
+    rowid: "number",
+    id: "string",
+    kind: type.enumerated(...TITLE_KINDS),
+    tmdb_id: "string | null",
+    name: "string",
+    year: "number | null",
+    adult: "number",
+    saved_at: "number",
+  }),
+);
+const VersionRow = lazy(() => type({ entry_id: "string", version_id: "string" }));
 
 /** What an account saved of a title: a row of its own, under its own id. */
 export interface Membership extends SavedTitle {
@@ -200,13 +203,13 @@ function storeOn(db: DatabaseSync): WatchlistStore["Service"] {
   const read = (rows: readonly unknown[], versions: readonly unknown[]): SavedTitle[] => {
     const byEntry = Map.groupBy(
       versions.flatMap((raw) => {
-        const row = VersionRow(raw);
+        const row = VersionRow()(raw);
         return row instanceof type.errors ? [] : [row];
       }),
       (row) => row.entry_id,
     );
     return rows.flatMap((raw) => {
-      const row = EntryRow(raw);
+      const row = EntryRow()(raw);
       if (row instanceof type.errors) return [];
       return [
         {

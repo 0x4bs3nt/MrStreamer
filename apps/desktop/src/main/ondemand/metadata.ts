@@ -14,6 +14,7 @@ import {
 } from "@mrstreamer/core/metadata/tmdb";
 import { normalize } from "@mrstreamer/core/text";
 import { readJsonFile, writeJsonFile } from "../platform/json-file.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** Fetched again after this long, and no longer used after six months, TMDB's limit. */
 const KEEP_MS = 150 * 24 * 60 * 60_000;
@@ -42,33 +43,39 @@ const PROGRESS_EVERY_MS = 3000;
 const CONTENT_FIRST_MS = 3000;
 const CONTENT_LAST_MS = 30_000;
 
-const Entry = type({
-  at: "number",
-  "missing?": "true",
-  "genres?": "number[]",
-  "language?": "string | null",
-  "popularity?": "number",
-  "rating?": "number",
-  "votes?": "number",
-  "collection?": type({ id: "number", name: "string" }).or("null"),
-  "backdrop?": "string | null",
-  /** The name by ISO 639-1 language; null where TMDB has no translation. */
-  "names?": type({ "[string]": "string | null" }),
-  "original?": "string | null",
-});
-type Entry = typeof Entry.infer;
-const ServiceList = type({ id: "number", name: "string", priority: "number", ids: "string[]" });
-const MetadataFile = type({
-  version: "1",
-  entries: type({ "[string]": Entry }),
-  "services?": type({
-    region: "string",
+const Entry = lazy(() =>
+  type({
     at: "number",
-    movie: ServiceList.array(),
-    tv: ServiceList.array(),
-  }).or("null"),
-});
-type MetadataFile = typeof MetadataFile.infer;
+    "missing?": "true",
+    "genres?": "number[]",
+    "language?": "string | null",
+    "popularity?": "number",
+    "rating?": "number",
+    "votes?": "number",
+    "collection?": type({ id: "number", name: "string" }).or("null"),
+    "backdrop?": "string | null",
+    /** The name by ISO 639-1 language; null where TMDB has no translation. */
+    "names?": type({ "[string]": "string | null" }),
+    "original?": "string | null",
+  }),
+);
+type Entry = Infer<typeof Entry>;
+const ServiceList = lazy(() =>
+  type({ id: "number", name: "string", priority: "number", ids: "string[]" }),
+);
+const MetadataFile = lazy(() =>
+  type({
+    version: "1",
+    entries: type({ "[string]": Entry() }),
+    "services?": type({
+      region: "string",
+      at: "number",
+      movie: ServiceList().array(),
+      tv: ServiceList().array(),
+    }).or("null"),
+  }),
+);
+type MetadataFile = Infer<typeof MetadataFile>;
 
 /** A title the catalogue lists, as the store needs it. */
 export interface Wanted {
@@ -112,7 +119,7 @@ export function metadataStore(deps: MetadataDeps) {
   const now = deps.now ?? Date.now;
   let file: MetadataFile = { version: 1, entries: {}, services: null };
   // A file that can't be read is like none: everything is fetched again.
-  const loading = readJsonFile(deps.path, MetadataFile).then(
+  const loading = readJsonFile(deps.path, MetadataFile()).then(
     (found) => {
       if (!found) return;
       file = found;

@@ -84,6 +84,7 @@ import {
   SUBTITLE_RESULTS_TABLE,
 } from "./saved-subtitles.ts";
 import { WATCHLIST_TABLES } from "./watchlist-store.ts";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 const SCHEMA = `
   create table if not exists events (
@@ -146,78 +147,96 @@ const MARK_TABLES = ["marked_episodes", "marked_series"] as const;
 /** How many of an account's most recent titles Continue watching looks at. */
 const CONTINUE_WINDOW = 2000;
 
-const Ids = type("string.json.parse").pipe(type("string[]"));
-const EventRow = type({
-  sequence: "number",
-  account: "string",
-  type: "string",
-  version: "number",
-  channel_id: "string",
-  at: "number",
-  "payload?": "string | null",
-});
-const ChannelEventType = type("'favourite-added' | 'favourite-removed' | 'watched'");
-const TitlePayload = type("string.json.parse").pipe(
+const Ids = lazy(() => type("string.json.parse").pipe(type("string[]")));
+const EventRow = lazy(() =>
   type({
-    title: RawTitleRef,
-    "position?": "number >= 0",
-    "duration?": "number > 0",
-    "since?": "number",
+    sequence: "number",
+    account: "string",
+    type: "string",
+    version: "number",
+    channel_id: "string",
+    at: "number",
+    "payload?": "string | null",
   }),
 );
-const Listing = type({
-  number: "number.integer >= 0",
-  episodes: "(number.integer >= 0)[]",
-  "files?": "string[]",
-}).array();
-const EpisodeTitle = type({
-  kind: "'episode'",
-  id: "string > 0",
-  seriesId: "string > 0",
-  season: "number.integer >= 0",
-  episode: "number.integer >= 0",
-});
-const MarkPayload = type("string.json.parse").pipe(
+const ChannelEventType = lazy(() => type("'favourite-added' | 'favourite-removed' | 'watched'"));
+const TitlePayload = lazy(() =>
+  type("string.json.parse").pipe(
+    type({
+      title: RawTitleRef(),
+      "position?": "number >= 0",
+      "duration?": "number > 0",
+      "since?": "number",
+    }),
+  ),
+);
+const Listing = lazy(() =>
   type({
-    series: "string > 0",
-    "title?": EpisodeTitle,
-    "watched?": "boolean",
-    "versions?": "string[]",
-    "listing?": Listing,
-    "revision?": "number",
+    number: "number.integer >= 0",
+    episodes: "(number.integer >= 0)[]",
+    "files?": "string[]",
+  }).array(),
+);
+const EpisodeTitle = lazy(() =>
+  type({
+    kind: "'episode'",
+    id: "string > 0",
+    seriesId: "string > 0",
+    season: "number.integer >= 0",
+    episode: "number.integer >= 0",
   }),
+);
+const MarkPayload = lazy(() =>
+  type("string.json.parse").pipe(
+    type({
+      series: "string > 0",
+      "title?": EpisodeTitle(),
+      "watched?": "boolean",
+      "versions?": "string[]",
+      "listing?": Listing(),
+      "revision?": "number",
+    }),
+  ),
 );
 /** A mark as its row and an Undo keep it, whole. */
-const Mark = type({
-  series: "string",
-  title: EpisodeTitle,
-  season: "number",
-  episode: "number",
-  watched: "boolean",
-  at: "number",
-  revision: "number",
-});
-const MarkRow = type({ mark: type("string.json.parse").pipe(Mark) });
-const ListedRow = type({
-  series: "string",
-  versions: type("string.json.parse").pipe(type("string[]")),
-});
+const Mark = lazy(() =>
+  type({
+    series: "string",
+    title: EpisodeTitle(),
+    season: "number",
+    episode: "number",
+    watched: "boolean",
+    at: "number",
+    revision: "number",
+  }),
+);
+const MarkRow = lazy(() => type({ mark: type("string.json.parse").pipe(Mark()) }));
+const ListedRow = lazy(() =>
+  type({
+    series: "string",
+    versions: type("string.json.parse").pipe(type("string[]")),
+  }),
+);
 /** What a marked series keeps beside its episodes' marks. */
-const SeriesRow = type({
-  series: "string",
-  versions: type("string.json.parse").pipe(type("string[]")),
-  listing: type("string.json.parse").pipe(Listing),
-  hidden: "number",
-  left_at: "number | null",
-  changed: "number",
-  undo: type("null").or(
-    type("string.json.parse").pipe(
-      type({ revision: "number", prior: Mark.or("null"), hidden: "boolean" }),
+const SeriesRow = lazy(() =>
+  type({
+    series: "string",
+    versions: type("string.json.parse").pipe(type("string[]")),
+    listing: type("string.json.parse").pipe(Listing()),
+    hidden: "number",
+    left_at: "number | null",
+    changed: "number",
+    undo: type("null").or(
+      type("string.json.parse").pipe(
+        type({ revision: "number", prior: Mark().or("null"), hidden: "boolean" }),
+      ),
     ),
-  ),
-});
-const StateRow = type({ favourites: "string", recent: "string", sequence: "number" });
-const PlacedRow = type({ type: ChannelEventType, channel_id: "string", sequence: "number" });
+  }),
+);
+const StateRow = lazy(() => type({ favourites: "string", recent: "string", sequence: "number" }));
+const PlacedRow = lazy(() =>
+  type({ type: ChannelEventType(), channel_id: "string", sequence: "number" }),
+);
 
 /** One account's lists, titles and marks as stored, and how far its record has come. */
 interface AccountRecord {
@@ -339,16 +358,18 @@ function merged(
     .sort((a, b) => direction * (a.at - b.at) || a.rank - b.rank)
     .map(({ channel }) => channel);
 }
-const TitleRowShape = type({
-  title: type("string.json.parse").pipe(RawTitleRef),
-  position: "number",
-  duration: "number",
-  finished: "number",
-  at: "number",
-  hidden: "number",
-  "removed_at?": "number | null",
-  "since?": "number | null",
-});
+const TitleRowShape = lazy(() =>
+  type({
+    title: type("string.json.parse").pipe(RawTitleRef()),
+    position: "number",
+    duration: "number",
+    finished: "number",
+    at: "number",
+    hidden: "number",
+    "removed_at?": "number | null",
+    "since?": "number | null",
+  }),
+);
 
 /** The viewing store, on the database the runtime keeps open. */
 export const viewingStoreLayer = observedViewingStoreLayer();
@@ -427,10 +448,10 @@ function deleteForGood(db: DatabaseSync, tables: readonly string[], account: str
 function eventOf(
   raw: unknown,
 ): { account: string; sequence: number; at: number; event: ViewingEvent } | null {
-  const row = EventRow(raw);
+  const row = EventRow()(raw);
   if (row instanceof type.errors || row.version > EVENT_VERSION) return null;
   const base = { account: row.account, sequence: row.sequence, at: row.at };
-  const channelType = ChannelEventType(row.type);
+  const channelType = ChannelEventType()(row.type);
   if (!(channelType instanceof type.errors)) {
     return { ...base, event: { type: channelType, channelId: row.channel_id } };
   }
@@ -439,7 +460,7 @@ function eventOf(
     row.type === "episode-mark-undone" ||
     row.type === "series-listed"
   ) {
-    const said = row.payload ? MarkPayload(row.payload) : null;
+    const said = row.payload ? MarkPayload()(row.payload) : null;
     if (!said || said instanceof type.errors) return null;
     const { series, title, watched, versions, listing, revision } = said;
     if (row.type === "series-listed") {
@@ -457,7 +478,7 @@ function eventOf(
       ? null
       : { ...base, event: { type: row.type, series, title, watched, versions, listing } };
   }
-  const payload = row.payload ? TitlePayload(row.payload) : null;
+  const payload = row.payload ? TitlePayload()(row.payload) : null;
   if (!payload || payload instanceof type.errors) return null;
   if (row.type === "title-removed" || row.type === "series-finished") {
     return { ...base, event: { type: row.type, title: payload.title } };
@@ -586,7 +607,7 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
     if (placed) return placed;
     placed = { favourites: new Map(), recent: new Map() };
     for (const raw of statements.placed.all(account, EVENT_VERSION)) {
-      const row = PlacedRow(raw);
+      const row = PlacedRow()(raw);
       if (!(row instanceof type.errors)) place(placed, row.type, row.channel_id, row.sequence);
     }
     places.set(account, placed);
@@ -595,7 +616,7 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
 
   const titleRows = (rows: readonly unknown[]): TitleRow[] =>
     rows.flatMap((raw) => {
-      const row = TitleRowShape(raw);
+      const row = TitleRowShape()(raw);
       if (row instanceof type.errors) return [];
       return [
         {
@@ -626,11 +647,11 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
 
   /** What `account` keeps under a series' key, or null when nothing was ever marked under it. */
   const seriesOf = (account: string, key: string): SeriesMarks | null => {
-    const row = SeriesRow(statements.series.get(account, key));
+    const row = SeriesRow()(statements.series.get(account, key));
     if (row instanceof type.errors) return null;
     return {
       marks: statements.marks.all(account, key).flatMap((raw) => {
-        const mark = MarkRow(raw);
+        const mark = MarkRow()(raw);
         return mark instanceof type.errors ? [] : [mark.mark];
       }),
       versions: row.versions,
@@ -649,7 +670,7 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
   /** The keys of the series of `account` that listed one of these versions when last marked. */
   const seriesIn = (account: string, seriesIds: readonly string[]): string[] =>
     statements.listed.all(account).flatMap((raw) => {
-      const row = ListedRow(raw);
+      const row = ListedRow()(raw);
       if (row instanceof type.errors) return [];
       return row.versions.some((id) => seriesIds.includes(id)) ? [row.series] : [];
     });
@@ -711,10 +732,10 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
 
   /** An account's lists as stored, and how far its record has come. */
   const listsOf = (account: string): Pick<AccountRecord, "state" | "sequence"> => {
-    const row = StateRow(statements.state.get(account));
+    const row = StateRow()(statements.state.get(account));
     if (row instanceof type.errors) return { state: emptyState, sequence: 0 };
-    const favourites = Ids(row.favourites);
-    const recent = Ids(row.recent);
+    const favourites = Ids()(row.favourites);
+    const recent = Ids()(row.recent);
     return {
       state: {
         favourites: favourites instanceof type.errors ? [] : favourites,

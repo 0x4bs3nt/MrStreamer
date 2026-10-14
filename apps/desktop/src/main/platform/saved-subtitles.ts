@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { attempt, Database, transaction, unavailable } from "./database.ts";
 import type { FileProof } from "../playback/source-identity.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** Main-only identity resolved from the current playback session and provider catalogue. */
 export interface SubtitleFile {
@@ -47,8 +48,8 @@ export function subtitlesOfCopy(
   };
 }
 
-const Stored = SavedSubtitle.merge({ "resultKey?": "string <= 64" });
-type Stored = typeof Stored.infer;
+const Stored = lazy(() => SavedSubtitle().merge({ "resultKey?": "string <= 64" }));
+type Stored = Infer<typeof Stored>;
 export const SAVED_SUBTITLES_TABLE = "saved_subtitles";
 export const SUBTITLE_RESULTS_TABLE = "saved_subtitle_results";
 /** Which bytes each result was saved for, by `FileProof`; a copy takes it only for those. */
@@ -56,10 +57,12 @@ export const SUBTITLE_PROOFS_TABLE = "saved_subtitle_proofs";
 /** The proof key of a selected row without a result key, as a file track's timing. */
 const NO_RESULT = "";
 
-const Proof = type({
-  size: "number.integer >= 0",
-  marks: type({ resource: "string", mark: "string" }).array(),
-});
+const Proof = lazy(() =>
+  type({
+    size: "number.integer >= 0",
+    marks: type({ resource: "string", mark: "string" }).array(),
+  }),
+);
 
 /** Also prepared by account erasure when no playback service has run. */
 export function prepareSavedSubtitles(db: DatabaseSync): void {
@@ -182,7 +185,7 @@ export const savedSubtitlesLayer = Layer.effect(
         const row = selectProof.get(...identity(file), key);
         if (!row) return null;
         try {
-          const parsed = Proof(JSON.parse(String(row.proof)));
+          const parsed = Proof()(JSON.parse(String(row.proof)));
           return parsed instanceof type.errors ? null : parsed;
         } catch {
           return null;
@@ -204,7 +207,7 @@ export const savedSubtitlesLayer = Layer.effect(
         const row = select.get(...identity(file));
         if (!row) return null;
         try {
-          const parsed = Stored(JSON.parse(String(row.saved)));
+          const parsed = Stored()(JSON.parse(String(row.saved)));
           return parsed instanceof type.errors ? null : parsed;
         } catch {
           return null;
@@ -222,7 +225,7 @@ export const savedSubtitlesLayer = Layer.effect(
         const row = cached.get(...identity(file), key);
         if (!row) return null;
         try {
-          const parsed = SavedSubtitle(JSON.parse(String(row.saved)));
+          const parsed = SavedSubtitle()(JSON.parse(String(row.saved)));
           return parsed instanceof type.errors ? null : parsed;
         } catch {
           return null;
@@ -237,8 +240,8 @@ export const savedSubtitlesLayer = Layer.effect(
         saved: Stored,
         proved?: { readonly proof: FileProof | null },
       ) => {
-        const checked = Stored.assert(saved);
-        const proof = proved?.proof ? JSON.stringify(Proof.assert(proved.proof)) : null;
+        const checked = Stored().assert(saved);
+        const proof = proved?.proof ? JSON.stringify(Proof().assert(proved.proof)) : null;
         const key = checked.resultKey ?? NO_RESULT;
         transaction(db, () => {
           removeObsoleteResults.run(...identity(file));

@@ -11,6 +11,7 @@ import type {
 import { subtitleTextFile, SUBTITLE_TEXT_LIMIT } from "@mrstreamer/core/subtitles/text-file";
 import { type } from "arktype";
 import { Unzip, type UnzipDecoder, type UnzipFile } from "fflate";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 export type SubtitleQuery = {
   readonly tmdbId?: number;
@@ -48,82 +49,92 @@ export class SubtitleRequestFailure extends Error {
   }
 }
 
-const SubDLReply = type({
-  status: "boolean",
-  "results?": type({ "tmdb_id?": "number | null", type: "'movie' | 'tv'" })
-    .array()
-    .atMostLength(100),
-  "subtitles?": type({
-    "language?": "string <= 64",
-    "lang?": "string <= 64",
-    "release_name?": "string <= 1024",
-    "name?": "string <= 1024",
-    url: "string <= 8192",
-    "hi?": "boolean",
-    "full_season?": "boolean",
-    "season?": "number | null",
-    "episode?": "number | null",
-    "unpack_files?": type({
-      language: "string <= 64",
-      name: "string <= 1024",
+const SubDLReply = lazy(() =>
+  type({
+    status: "boolean",
+    "results?": type({ "tmdb_id?": "number | null", type: "'movie' | 'tv'" })
+      .array()
+      .atMostLength(100),
+    "subtitles?": type({
+      "language?": "string <= 64",
+      "lang?": "string <= 64",
       "release_name?": "string <= 1024",
-      season: "number",
-      episode: "number",
-      format: "string <= 16",
+      "name?": "string <= 1024",
       url: "string <= 8192",
       "hi?": "boolean",
+      "full_season?": "boolean",
+      "season?": "number | null",
+      "episode?": "number | null",
+      "unpack_files?": type({
+        language: "string <= 64",
+        name: "string <= 1024",
+        "release_name?": "string <= 1024",
+        season: "number",
+        episode: "number",
+        format: "string <= 16",
+        url: "string <= 8192",
+        "hi?": "boolean",
+      })
+        .array()
+        .atMostLength(1000),
+    })
+      .array()
+      .atMostLength(100),
+  }),
+);
+const OpenReply = lazy(() =>
+  type({
+    data: type({
+      attributes: {
+        language: "string <= 64",
+        release: "string <= 1024",
+        "hearing_impaired?": "boolean",
+        "download_count?": "number >= 0",
+        feature_details: {
+          "tmdb_id?": "number | null",
+          "parent_tmdb_id?": "number | null",
+          "season_number?": "number | null",
+          "episode_number?": "number | null",
+        },
+        files: type({ file_id: "number.integer > 0", file_name: "string <= 1024" })
+          .array()
+          .atMostLength(32),
+      },
     })
       .array()
       .atMostLength(1000),
-  })
-    .array()
-    .atMostLength(100),
-});
-const OpenReply = type({
-  data: type({
-    attributes: {
-      language: "string <= 64",
-      release: "string <= 1024",
-      "hearing_impaired?": "boolean",
-      "download_count?": "number >= 0",
-      feature_details: {
-        "tmdb_id?": "number | null",
-        "parent_tmdb_id?": "number | null",
-        "season_number?": "number | null",
-        "episode_number?": "number | null",
-      },
-      files: type({ file_id: "number.integer > 0", file_name: "string <= 1024" })
-        .array()
-        .atMostLength(32),
-    },
-  })
-    .array()
-    .atMostLength(1000),
-});
-const OpenLogin = type({
-  token: "0 < string <= 16384",
-  base_url: "'api.opensubtitles.com' | 'vip-api.opensubtitles.com'",
-});
-const OpenDownload = type({
-  link: "0 < string <= 8192",
-  remaining: "number >= 0",
-  reset_time_utc: "string <= 128",
-});
-const Query = type({
-  "tmdbId?": "number.integer > 0",
-  "title?": "0 < string <= 512",
-  "year?": "1800 <= number.integer <= 3000",
-  languages: "string[] <= 10",
-  kind: "'movie'",
-}).or({
-  "tmdbId?": "number.integer > 0",
-  "title?": "0 < string <= 512",
-  "year?": "1800 <= number.integer <= 3000",
-  languages: "string[] <= 10",
-  kind: "'episode'",
-  season: "number.integer >= 0",
-  episode: "number.integer > 0",
-});
+  }),
+);
+const OpenLogin = lazy(() =>
+  type({
+    token: "0 < string <= 16384",
+    base_url: "'api.opensubtitles.com' | 'vip-api.opensubtitles.com'",
+  }),
+);
+const OpenDownload = lazy(() =>
+  type({
+    link: "0 < string <= 8192",
+    remaining: "number >= 0",
+    reset_time_utc: "string <= 128",
+  }),
+);
+const Query = lazy(() =>
+  type({
+    "tmdbId?": "number.integer > 0",
+    "title?": "0 < string <= 512",
+    "year?": "1800 <= number.integer <= 3000",
+    languages: "string[] <= 10",
+    kind: "'movie'",
+  }).or({
+    "tmdbId?": "number.integer > 0",
+    "title?": "0 < string <= 512",
+    "year?": "1800 <= number.integer <= 3000",
+    languages: "string[] <= 10",
+    kind: "'episode'",
+    season: "number.integer >= 0",
+    episode: "number.integer > 0",
+  }),
+);
 const JSON_LIMIT = 2 * 1024 * 1024;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
@@ -207,7 +218,7 @@ export function subtitleServiceClient(options: { userAgent: string; fetch?: type
           }
         : {}),
     }).toString();
-    const reply = SubDLReply.assert(await api(url, {}, signal));
+    const reply = SubDLReply().assert(await api(url, {}, signal));
     if (!reply.status) throw new SubtitleRequestFailure("unavailable");
     // SubDL may broaden an unsuccessful match. Do not import another title's results.
     if (
@@ -280,7 +291,7 @@ export function subtitleServiceClient(options: { userAgent: string; fetch?: type
         : { season_number: String(query.season), episode_number: String(query.episode) }),
     }).toString();
     url.searchParams.sort();
-    const reply = OpenReply.assert(
+    const reply = OpenReply().assert(
       await api(
         url,
         {
@@ -332,7 +343,7 @@ export function subtitleServiceClient(options: { userAgent: string; fetch?: type
       const keys = credentials.opensubtitles;
       if (!keys) throw new SubtitleRequestFailure("not-configured");
       // Login and quota-consuming download are separate from search. No token on disk.
-      const login = OpenLogin.assert(
+      const login = OpenLogin().assert(
         await api(
           "https://api.opensubtitles.com/api/v1/login",
           {
@@ -343,7 +354,7 @@ export function subtitleServiceClient(options: { userAgent: string; fetch?: type
           signal,
         ),
       );
-      const reply = OpenDownload.assert(
+      const reply = OpenDownload().assert(
         await api(
           `https://${login.base_url}/api/v1/download`,
           {
@@ -421,7 +432,7 @@ export function subtitleServiceClient(options: { userAgent: string; fetch?: type
 }
 
 function checkedQuery(input: SubtitleQuery): SubtitleQuery {
-  const query = Query.assert(input);
+  const query = Query().assert(input);
   if (query.tmdbId === undefined && !query.title?.trim())
     throw new SubtitleRequestFailure("unsupported");
   const languages = [...new Set(query.languages.map((value) => value.trim().toLowerCase()))].sort();

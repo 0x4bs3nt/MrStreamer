@@ -48,6 +48,7 @@ import { type } from "arktype";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { removeFile } from "./json-file.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 const ID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 /** An index's name. */
@@ -61,59 +62,67 @@ const LEFT_OVER = new RegExp(
   `^guide-(download\\.${ID}\\.part|index\\.${ID}\\.sqlite\\.part|external\\.${ID}\\.xml\\.part)$`,
 );
 
-const GuideMeta = type({ key: "string", fetchedAt: "number", "index?": INDEX });
+const GuideMeta = lazy(() => type({ key: "string", fetchedAt: "number", "index?": INDEX }));
 
 /** Why a guide's download failed, of the kinds a download ends with. */
-const DownloadError = type({ kind: "'unreachable'", server: "string", detail: "string" })
-  .or({ kind: "'provider-error'", status: "number" })
-  .or({ kind: "'unexpected'", detail: "string" })
-  .or({
-    kind: "'guide'",
-    failure: type({ kind: "'not-xmltv' | 'incomplete' | 'empty' | 'ended'" })
-      .or({ kind: "'redirect'", reason: "'unencrypted' | 'too-many'" })
-      .or({ kind: "'too-large'", limit: "'bytes' | 'element' | 'channels'" }),
-  });
-const DownloadFailure = type({ at: "number", error: DownloadError });
+const DownloadError = lazy(() =>
+  type({ kind: "'unreachable'", server: "string", detail: "string" })
+    .or({ kind: "'provider-error'", status: "number" })
+    .or({ kind: "'unexpected'", detail: "string" })
+    .or({
+      kind: "'guide'",
+      failure: type({ kind: "'not-xmltv' | 'incomplete' | 'empty' | 'ended'" })
+        .or({ kind: "'redirect'", reason: "'unencrypted' | 'too-many'" })
+        .or({ kind: "'too-large'", limit: "'bytes' | 'element' | 'channels'" }),
+    }),
+);
+const DownloadFailure = lazy(() => type({ at: "number", error: DownloadError() }));
 
 /** A document as a record keeps it: the file, and when it was downloaded. */
-const KeptDocument = type({ file: type(INDEX).or(EXTERNAL_XMLTV), fetchedAt: "number" });
+const KeptDocument = lazy(() =>
+  type({ file: type(INDEX).or(EXTERNAL_XMLTV), fetchedAt: "number" }),
+);
 
 // guide-source.json. A later release adds fields rather than another version, as for the other
 // files: one kept a sealed address, which a file it can't read would lose. This release keeps an
 // address here only until it is safely among the sources, and the mappings, each naming its guide;
 // one without was made by a release before, against the guide in use then.
-const GuideSourceFile = type({
-  version: "1",
-  /** Which account this was set for. */
-  key: "string",
-  external: type({
-    origin: "string",
-    identity: "string",
-    sealedAddress: "string",
-    "since?": "number",
-    document: KeptDocument,
-    /** Read on its own: one this release can't read costs the address nothing. */
-    "failure?": "unknown",
-    /** The source it moved to: it stays here until that source's first download after. */
-    "source?": "string",
-  }).or("null"),
-  mappings: { "[string]": { guideId: "string", name: "string", "source?": "string" } },
-});
+const GuideSourceFile = lazy(() =>
+  type({
+    version: "1",
+    /** Which account this was set for. */
+    key: "string",
+    external: type({
+      origin: "string",
+      identity: "string",
+      sealedAddress: "string",
+      "since?": "number",
+      document: KeptDocument(),
+      /** Read on its own: one this release can't read costs the address nothing. */
+      "failure?": "unknown",
+      /** The source it moved to: it stays here until that source's first download after. */
+      "source?": "string",
+    }).or("null"),
+    mappings: { "[string]": { guideId: "string", name: "string", "source?": "string" } },
+  }),
+);
 
 // sources.json, in the sources' folder: the global sources in their order.
-const SourcesFile = type({
-  version: "1",
-  sources: type({
-    id: "string",
-    origin: "string",
-    identity: "string",
-    sealedAddress: "string",
-    document: KeptDocument.or("null"),
-    "failure?": "unknown",
-    /** The download a release before kept that it was copied from, until one of its own. */
-    "movedFrom?": { file: "string", fetchedAt: "number", bytes: "number" },
-  }).array(),
-});
+const SourcesFile = lazy(() =>
+  type({
+    version: "1",
+    sources: type({
+      id: "string",
+      origin: "string",
+      identity: "string",
+      sealedAddress: "string",
+      document: KeptDocument().or("null"),
+      "failure?": "unknown",
+      /** The download a release before kept that it was copied from, until one of its own. */
+      "movedFrom?": { file: "string", fetchedAt: "number", bytes: "number" },
+    }).array(),
+  }),
+);
 
 const metaPath = (store: string) => join(store, "guide.json");
 const sourcePath = (store: string) => join(store, "guide-source.json");
@@ -121,7 +130,7 @@ const sourcesPath = (store: string) => join(store, "sources.json");
 
 /** A failure as a record keeps it, or null for one this release can't read. */
 const failureOf = (kept: unknown) => {
-  const failure = DownloadFailure(kept);
+  const failure = DownloadFailure()(kept);
   return failure instanceof type.errors ? null : failure;
 };
 
@@ -194,7 +203,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
   own: ({ store, key }) =>
     Effect.tryPromise({
       try: async () => {
-        const meta = await readRecord(metaPath(store), GuideMeta);
+        const meta = await readRecord(metaPath(store), GuideMeta());
         if (meta?.key !== key) return null;
         if (meta.index) return documentOf(meta.index, meta.fetchedAt);
         // What a release before kept, while it is still there.
@@ -208,7 +217,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
       try: async () => {
         if (!document) return removeFile(metaPath(store));
         const index = document.kind === "index" ? { index: document.file } : {};
-        const meta: typeof GuideMeta.infer = { key, fetchedAt: document.fetchedAt, ...index };
+        const meta: Infer<typeof GuideMeta> = { key, fetchedAt: document.fetchedAt, ...index };
         await replaceFile(metaPath(store), JSON.stringify(meta));
       },
       catch: failedWith,
@@ -216,7 +225,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
   config: ({ store, key }) =>
     Effect.tryPromise({
       try: async (): Promise<StoredConfig | null> => {
-        const file = await readRecord(sourcePath(store), GuideSourceFile);
+        const file = await readRecord(sourcePath(store), GuideSourceFile());
         // Another account's, as after an older release connected one in this folder.
         if (file?.key !== key) return null;
         const mappings = Object.fromEntries(
@@ -245,7 +254,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
     Effect.tryPromise({
       try: async () => {
         if (!external && Object.keys(mappings).length === 0) return removeFile(sourcePath(store));
-        const file: typeof GuideSourceFile.infer = {
+        const file: Infer<typeof GuideSourceFile> = {
           version: 1,
           key,
           external: external && {
@@ -272,7 +281,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
   sources: ({ store }) =>
     Effect.tryPromise({
       try: async (): Promise<readonly StoredSource[]> => {
-        const file = await readRecord(sourcesPath(store), SourcesFile);
+        const file = await readRecord(sourcesPath(store), SourcesFile());
         return (file?.sources ?? []).map(({ document, failure, movedFrom, ...source }) => ({
           ...source,
           document: document && documentOf(document.file, document.fetchedAt),
@@ -286,7 +295,7 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
     Effect.tryPromise({
       try: async () => {
         await mkdir(store, { recursive: true });
-        const file: typeof SourcesFile.infer = {
+        const file: Infer<typeof SourcesFile> = {
           version: 1,
           sources: sources.map(({ document, failure, movedFrom, ...source }) => ({
             ...source,

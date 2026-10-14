@@ -3,6 +3,7 @@
 // receiver's extra fields and message types are ignored rather than trusted. A receiver may send
 // null for a field it has nothing to say in, so every optional field takes it.
 import { type } from "arktype";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 /** Who the app is on a channel, and the receiver itself, as opposed to an app running on it. */
 export const SENDER = "sender-0";
@@ -57,8 +58,8 @@ function defineMessages() {
     }),
   };
 }
-type Messages = ReturnType<typeof defineMessages>;
-let Messages: Messages | null = null;
+const Messages = lazy(defineMessages);
+type Messages = ReturnType<typeof Messages>;
 
 export type ReceiverMessage = Messages["Receiver"]["infer"];
 export type ReceiverStatus = NonNullable<ReceiverMessage["status"]>;
@@ -76,21 +77,18 @@ function json(payload: string): unknown {
 
 /** A message on the connection or heartbeat namespace, or null when it isn't one. */
 export function readPlatformMessage(payload: string): { readonly type: string } | null {
-  Messages ??= defineMessages();
-  const message = Messages.Platform(json(payload));
+  const message = Messages().Platform(json(payload));
   return message instanceof type.errors ? null : message;
 }
 
 /** A message on the receiver namespace, or null when it isn't one. */
 export function readReceiverMessage(payload: string): ReceiverMessage | null {
-  Messages ??= defineMessages();
-  const message = Messages.Receiver(json(payload));
+  const message = Messages().Receiver(json(payload));
   return message instanceof type.errors ? null : message;
 }
 
 /** A message on the media namespace, or null when it isn't one. */
 export function readMediaMessage(payload: string): MediaMessage | null {
-  Messages ??= defineMessages();
-  const message = Messages.Media(json(payload));
+  const message = Messages().Media(json(payload));
   return message instanceof type.errors ? null : message;
 }

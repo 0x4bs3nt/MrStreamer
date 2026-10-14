@@ -13,6 +13,8 @@ pnpm vitest list --filesOnly                                           # the fil
 
 [`test/suites.ts`](../../test/suites.ts) says where test files live: `*.test.ts` under `test/`, `packages/*/test/` and `apps/*/test/`. Vitest runs every one, and [CI](#ci) requires every one in its report, so a new test file needs no list of its own. CI's Check job runs `pnpm knip`, `pnpm lint`, `pnpm fmt:check`, `pnpm typecheck` and `pnpm build`.
 
+Before any test runs, Vitest's global setup, [`catalogue-worker-bundle.ts`](../../apps/desktop/test/catalogue-worker-bundle.ts), bundles the catalogue worker from its source, as the app's build does, and every app a test starts runs that bundle. Watch mode makes none, and starts the worker from its source, so a rerun runs the code as it is. Started from the source files, each worker found and read some 150 modules one by one, a third or more of its start.
+
 Eight files need `ffmpeg` and `ffprobe`: `playback`, `titles`, `receiver`, `output`, `playlist-playback`, `title-filter-playback`, `online-subtitle-playback` and `downloads` in `apps/desktop/test`. They use the ones on PATH, or `MR_STREAMER_FFMPEG` and the ffprobe beside it, and skip their media groups without them. That skip is for a laptop: CI installs both and fails a run where any of them skipped. The setup wizard's test types into a terminal that util-linux's `script` makes, so it runs on Linux and skips elsewhere. `airplay-helper-key.test.ts` runs only on macOS. Tests that run a workflow's bash step skip on Windows.
 
 ## What the suite covers

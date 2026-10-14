@@ -73,7 +73,7 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
   return {
     kind,
     async send(event, signal) {
-      const allowed = CaptureEvent(event);
+      const allowed = CaptureEvent()(event);
       if (allowed instanceof type.errors || signal.aborted) return "discard";
       // Reconstruct the boundary even after validation. No caller-owned object is spread here.
       const properties = {

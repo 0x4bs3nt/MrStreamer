@@ -47,7 +47,7 @@ const properties: BuildProperties = {
 
 /** Lifecycle clock tests keep persistence immediate; disk and failure cases use real files. */
 function memoryStore(): ReturnType<typeof analyticsStore> {
-  let current: typeof AnalyticsRecord.infer | null = null;
+  let current: AnalyticsRecord | null = null;
   return {
     async load() {
       return current && structuredClone(current);
@@ -90,7 +90,7 @@ async function start(
 }
 
 async function saved(dataDir: string) {
-  const record = AnalyticsRecord(
+  const record = AnalyticsRecord()(
     JSON.parse(await readFile(join(dataDir, "analytics.json"), "utf8")),
   );
   if (record instanceof type.errors) throw new Error("Invalid test analytics state.");
@@ -487,8 +487,8 @@ describe("analytics delivery and deadlines", () => {
     const { owner } = await start({ transport });
     owner.setForeground(true);
     await until(() => capture.payloads.length === 2);
-    const first = CaptureEvent(capture.payloads[0]);
-    const day = CaptureEvent(capture.payloads[1]);
+    const first = CaptureEvent()(capture.payloads[0]);
+    const day = CaptureEvent()(capture.payloads[1]);
     if (first instanceof type.errors || day instanceof type.errors)
       throw new Error("Invalid local payload.");
     expect(capture.payloads[0]).toEqual({ api_key: "mrstreamer-local-verification", ...first });
@@ -760,7 +760,7 @@ describe("completed daily product and reliability capture", () => {
       "failed",
       appFailure({ kind: "unreachable", server: "PRIVATE", detail: "SECRET" }),
     );
-    const summary = CaptureEvent(capture.payloads[3]);
+    const summary = CaptureEvent()(capture.payloads[3]);
     if (summary instanceof type.errors || summary.event !== "app_summary_day")
       throw new Error("No completed summary.");
     expect(summary.properties.summary_date).toBe("2026-10-11");

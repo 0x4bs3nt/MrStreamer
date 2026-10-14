@@ -28,22 +28,25 @@ import * as Layer from "effect/Layer";
 import * as Semaphore from "effect/Semaphore";
 import { readJsonFile, writeJsonFile } from "../platform/json-file.ts";
 import { Subscriptions, type SavedSubscription } from "./subscription.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /**
  * preferences.json as stored: the preferences, and what the viewer left the original subscription
  * at. Files from before the viewing record also carry its two lists; they stay in the file until
  * the record has imported them. Keys of newer versions are kept.
  */
-const Stored = Preferences.merge(SubscriptionPreferences).merge({
-  "favouriteChannelIds?": "string[]",
-  "recentChannelIds?": "string[]",
-  /**
-   * The interface language picked in Settings: a `Locale`, or "system". Any string, so a language
-   * a later release adds doesn't make this one drop the file. System default when absent.
-   */
-  "interfaceLanguage?": "string",
-});
-type Stored = typeof Stored.infer;
+const Stored = lazy(() =>
+  Preferences().merge(SubscriptionPreferences()).merge({
+    "favouriteChannelIds?": "string[]",
+    "recentChannelIds?": "string[]",
+    /**
+     * The interface language picked in Settings: a `Locale`, or "system". Any string, so a language
+     * a later release adds doesn't make this one drop the file. System default when absent.
+     */
+    "interfaceLanguage?": "string",
+  }),
+);
+type Stored = Infer<typeof Stored>;
 
 export class Settings extends Context.Service<
   Settings,
@@ -93,7 +96,7 @@ function make(dataDir: string, usage?: UsageObservers) {
 
     /** The file as last read or written. Only runs while holding `one`. */
     const stored = Effect.promise(async () => {
-      current ??= (await readJsonFile(path, Stored)) ?? {
+      current ??= (await readJsonFile(path, Stored())) ?? {
         ...defaultPreferences,
         ...defaultSubscriptionPreferences,
       };
@@ -141,7 +144,7 @@ function make(dataDir: string, usage?: UsageObservers) {
       Effect.promise(async () => {
         const kept =
           added.get(subscription.id) ??
-          (await readJsonFile(addedPath(subscription), SubscriptionPreferences)) ??
+          (await readJsonFile(addedPath(subscription), SubscriptionPreferences())) ??
           defaultSubscriptionPreferences;
         added.set(subscription.id, kept);
         return kept;

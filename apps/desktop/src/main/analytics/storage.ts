@@ -36,7 +36,7 @@ export function analyticsStore(dataDir: string) {
         throw new Error("Analytics state unavailable.");
       }
       try {
-        const record = AnalyticsRecord(JSON.parse(text));
+        const record = AnalyticsRecord()(JSON.parse(text));
         if (
           record instanceof type.errors ||
           record.firstSeen !== (record.installationId !== null) ||

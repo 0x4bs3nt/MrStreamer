@@ -104,26 +104,23 @@ describe.skipIf(process.platform === "win32")(
       expect(report.owned.map((each) => each.pid)).toEqual([app.pid]);
     });
 
-    // A child gets twenty seconds to end after the app before the stop fails.
-    it(
-      "fails, and stops nothing by id, when a child outlives the app",
-      { timeout: 60_000 },
-      async () => {
-        await shown([ours(app.pid!, 1, 0)]);
-        const tree = ownedTree(RUNNER, app);
-        await shown([ours(app.pid!, 1, 0), { ...ours(77, app.pid!, 1), name: "ffmpeg.exe" }]);
-        tree.sample();
+    // A child gets a grace period, twenty seconds on the runner, to end after the app before the
+    // stop fails.
+    it("fails, and stops nothing by id, when a child outlives the app", async () => {
+      await shown([ours(app.pid!, 1, 0)]);
+      const tree = ownedTree(RUNNER, app, 500);
+      await shown([ours(app.pid!, 1, 0), { ...ours(77, app.pid!, 1), name: "ffmpeg.exe" }]);
+      tree.sample();
 
-        const stopped = tree.stop(async () => {
-          app.kill();
-          await exit(app);
-          await shown([{ ...ours(77, app.pid!, 1), name: "ffmpeg.exe" }]);
-        });
+      const stopped = tree.stop(async () => {
+        app.kill();
+        await exit(app);
+        await shown([{ ...ours(77, app.pid!, 1), name: "ffmpeg.exe" }]);
+      });
 
-        await expect(stopped).rejects.toThrow(/did not all end.*: 77 ffmpeg\.exe\./);
-        expect(kills()).toEqual([]);
-      },
-    );
+      await expect(stopped).rejects.toThrow(/did not all end.*: 77 ffmpeg\.exe\./);
+      expect(kills()).toEqual([]);
+    });
 
     it("leaves alone a program that got a child's id after the child ended", async () => {
       await shown([ours(app.pid!, 1, 0)]);

@@ -46,6 +46,7 @@ import * as PubSub from "effect/PubSub";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { readJsonFile, writeJsonFile } from "../platform/json-file.ts";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 /** Downloads and installs releases: electron-updater in the app, a fake in tests. */
 export interface Installer {
@@ -150,7 +151,9 @@ export class Updates extends Context.Service<
 
 const SETTINGS_FILE = "updates.json";
 /** updates.json: the channel, and the version whose notice was closed. */
-const SettingsFile = type({ channel: "'stable' | 'nightly'", "dismissed?": "string | null" });
+const SettingsFile = lazy(() =>
+  type({ channel: "'stable' | 'nightly'", "dismissed?": "string | null" }),
+);
 
 /** Whether a channel receives `version`: each receives only its own releases. */
 function receives(channel: Channel, version: string): boolean {
@@ -174,7 +177,7 @@ function make(deps: UpdatesDeps & DirectUpdates) {
       nightly: null,
     };
 
-    const stored = yield* Effect.promise(() => readJsonFile(settingsPath, SettingsFile));
+    const stored = yield* Effect.promise(() => readJsonFile(settingsPath, SettingsFile()));
     let channel: Channel = stored?.channel ?? channelOf(installed);
     let dismissed: string | null = stored?.dismissed ?? null;
     let savedChannel = channel;

@@ -102,7 +102,7 @@ const cleanupErrors: string[] = [];
 
 /** Validate a clone, then compare the complete raw wire body before any unknown-key deletion. */
 function captured(payload: unknown): CaptureEvent {
-  const event = CaptureEvent(structuredClone(payload));
+  const event = CaptureEvent()(structuredClone(payload));
   if (event instanceof type.errors) throw new Error("Invalid capture event.");
   if (!isDeepStrictEqual(payload, { api_key: "mrstreamer-local-verification", ...event }))
     throw new Error("Unexpected raw capture fields.");
@@ -352,7 +352,7 @@ async function namedButton(selector: string, name: string, title = false) {
 }
 
 async function analyticsState() {
-  const state = AnalyticsRecord(
+  const state = AnalyticsRecord()(
     JSON.parse(await readFile(join(profile, "analytics.json"), "utf8")),
   );
   if (state instanceof type.errors) throw new Error("Invalid analytics checkpoint.");

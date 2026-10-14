@@ -66,6 +66,7 @@ import type {
   WorkerSetup,
   WorkerStatus,
 } from "./protocol.ts";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 const setup = workerData as WorkerSetup;
 
@@ -97,34 +98,38 @@ const metadata = metadataStore({
  */
 let adults = false;
 
-const Category = type({ id: "string", name: "string" });
-const ProviderTitle = type({
-  id: "string",
-  name: "string",
-  posterUrl: "string | null",
-  backdropUrl: "string | null",
-  rating: "number | null",
-  addedAt: "number | null",
-  releaseDate: "string | null",
-  categoryIds: "string[]",
-  adult: "boolean",
-  container: "string | null",
-  "tmdbId?": "string | null",
-  "metadata?": "'lazy'",
-  "episodeFiles?": "string[]",
-});
+const Category = lazy(() => type({ id: "string", name: "string" }));
+const ProviderTitle = lazy(() =>
+  type({
+    id: "string",
+    name: "string",
+    posterUrl: "string | null",
+    backdropUrl: "string | null",
+    rating: "number | null",
+    addedAt: "number | null",
+    releaseDate: "string | null",
+    categoryIds: "string[]",
+    adult: "boolean",
+    container: "string | null",
+    "tmdbId?": "string | null",
+    "metadata?": "'lazy'",
+    "episodeFiles?": "string[]",
+  }),
+);
 /** Version 1 came before TMDB ids: still shown, but refreshed as soon as the app can. */
-const CachedCatalogue = type({
-  version: "1 | 2",
-  /** Which subscription produced it. */
-  key: "string",
-  fetchedAt: "number",
-  "importRevision?": "string",
-  movieCategories: Category.array(),
-  movies: ProviderTitle.array(),
-  seriesCategories: Category.array(),
-  series: ProviderTitle.array(),
-});
+const CachedCatalogue = lazy(() =>
+  type({
+    version: "1 | 2",
+    /** Which subscription produced it. */
+    key: "string",
+    fetchedAt: "number",
+    "importRevision?": "string",
+    movieCategories: Category().array(),
+    movies: ProviderTitle().array(),
+    seriesCategories: Category().array(),
+    series: ProviderTitle().array(),
+  }),
+);
 
 /** One subscription's lists. */
 interface Loaded {
@@ -356,8 +361,8 @@ function current(owner: CatalogueOwner): Promise<Loaded | null> {
   readings.set(subscriptionId, token);
   const done = (async () => {
     const file =
-      (await readJsonFile(cachePath(owner), CachedCatalogue)) ??
-      (await readJsonFile(legacyCachePath(owner), CachedCatalogue));
+      (await readJsonFile(cachePath(owner), CachedCatalogue())) ??
+      (await readJsonFile(legacyCachePath(owner), CachedCatalogue()));
     // Forgotten while reading, when the subscription went.
     if (file?.key !== key || readings.get(subscriptionId) !== token) return null;
     return (

@@ -80,7 +80,7 @@ if (import.meta.main) {
     console.log(`${await sha256(path)}  ${source.file}  ${(size / 2 ** 20).toFixed(1)} MB`);
   }
 
-  const manifest = NoticeManifest.assert(
+  const manifest = NoticeManifest().assert(
     JSON.parse(await readFile(join(root, "out", "licences", "third-party.json"), "utf8")),
   );
   const files = await readdir(folder);

@@ -120,8 +120,9 @@ export type Started = Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "ki
  * run saw, so a reused id never makes another program, or its children, ours. An app that can't
  * be pinned is killed through its handle, which names nothing else, and refused. Nothing is ever
  * stopped by its id: an id read a moment ago may name another program by the time it is used.
+ * `childGraceMs` is how long the children get to end after the app; tests shorten it.
  */
-export function ownedTree(runner: Runner, app: Started) {
+export function ownedTree(runner: Runner, app: Started, childGraceMs = 20_000) {
   const exited = () => app.exitCode !== null || app.signalCode !== null;
   const root = processes().find((each) => each.pid === app.pid);
   if (!root || exited() || !same(root.path ?? "", runner.executable)) {
@@ -151,10 +152,10 @@ export function ownedTree(runner: Runner, app: Started) {
     sample: () => void alive(),
     /**
      * Ends the instance: the window closes as a user's would, then, only if that leaves the app
-     * running, the app is killed through its handle. Its children get twenty seconds to end with
-     * it. Fails when anything of the tree, or any other process from the install folder, is still
-     * there: the setup must not replace files in use. What is left runs on, with the profile, until
-     * the runner is thrown away.
+     * running, the app is killed through its handle. Its children get `childGraceMs`, twenty
+     * seconds by default, to end with it. Fails when anything of the tree, or any other process
+     * from the install folder, is still there: the setup must not replace files in use. What is
+     * left runs on, with the profile, until the runner is thrown away.
      */
     async stop(close: () => Promise<unknown>) {
       alive();
@@ -166,7 +167,7 @@ export function ownedTree(runner: Runner, app: Started) {
         app.kill("SIGKILL");
         for (let i = 0; i < 50 && !exited(); i++) await delay(100);
       }
-      const until = Date.now() + 20_000;
+      const until = Date.now() + childGraceMs;
       while (alive().length > 0 && Date.now() < until) await delay(200);
       const remaining = alive();
       const others = appProcesses(runner).filter((each) => !owned.has(key(each)));

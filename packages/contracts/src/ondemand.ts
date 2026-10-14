@@ -2,6 +2,7 @@
 import { type } from "arktype";
 import type { AppError } from "./errors.ts";
 import type { OwnedId } from "./subscription.ts";
+import { lazy, type Infer } from "./lazy.ts";
 
 export const TITLE_KINDS = ["movie", "series"] as const;
 export type TitleKind = (typeof TITLE_KINDS)[number];
@@ -305,21 +306,23 @@ export interface CollectionPage extends TitlePage {
  * A movie, or one episode of a series, by the provider's own ids: what the viewing record keeps
  * per account, and what a provider is asked for. Alone it names nothing: `TitleRef` says whose.
  */
-export const RawTitleRef = type({ kind: "'movie'", id: "string > 0" }, "|", {
-  kind: "'episode'",
-  id: "string > 0",
-  seriesId: "string > 0",
-  season: "number.integer >= 0",
-  episode: "number.integer >= 0",
-});
-export type RawTitleRef = typeof RawTitleRef.infer;
+export const RawTitleRef = lazy(() =>
+  type({ kind: "'movie'", id: "string > 0" }, "|", {
+    kind: "'episode'",
+    id: "string > 0",
+    seriesId: "string > 0",
+    season: "number.integer >= 0",
+    episode: "number.integer >= 0",
+  }),
+);
+export type RawTitleRef = Infer<typeof RawTitleRef>;
 
 /**
  * Something that plays on demand: a movie, or one episode of a series, of one subscription. An
  * episode's `seriesId` is in that subscription too.
  */
-export const TitleRef = RawTitleRef.and({ subscriptionId: "string > 0" });
-export type TitleRef = typeof TitleRef.infer;
+export const TitleRef = lazy(() => RawTitleRef().and({ subscriptionId: "string > 0" }));
+export type TitleRef = Infer<typeof TitleRef>;
 
 /** The series version an episode belongs to, in the episode's own subscription. */
 export function seriesOf(episode: {

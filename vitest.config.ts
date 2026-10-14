@@ -15,5 +15,6 @@ export default defineConfig({
     include,
     exclude,
     environment: "node",
+    globalSetup: ["apps/desktop/test/catalogue-worker-bundle.ts"],
   },
 });

@@ -109,7 +109,7 @@ export class Analytics {
     this.playbackReset = options.playbackReset;
     this.store = options.store ?? analyticsStore(options.dataDir);
     this.transport = options.transport;
-    const properties = BuildProperties(options.properties);
+    const properties = BuildProperties()(options.properties);
     // No raw values in errors or diagnostics, including invalid version strings.
     if (properties instanceof type.errors) throw new Error("Invalid analytics build properties.");
     this.properties = properties;

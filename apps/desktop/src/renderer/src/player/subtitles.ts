@@ -249,7 +249,7 @@ export function setSubtitleDelay(video: HTMLVideoElement, delay: number): void {
 
 /** Local downloaded text keeps its original clock, so timing edits never accumulate. */
 export function setDownloadedSubtitleTiming(video: HTMLVideoElement, timing: SubtitleTiming): void {
-  const valid = SubtitleTiming.assert(timing);
+  const valid = SubtitleTiming().assert(timing);
   applyTiming(video, valid.offset, valid.speed);
 }
 

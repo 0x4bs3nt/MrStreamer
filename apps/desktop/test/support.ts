@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Stream from "effect/Stream";
-import { afterEach } from "vitest";
+import { afterEach, inject } from "vitest";
 import type { Secrets } from "../src/main/platform/secrets.ts";
 import type { MainConfig } from "../src/main/runtime.ts";
 import { startFakeProvider, type FakeProvider, type FakeProviderOptions } from "./fake-provider.ts";
@@ -116,11 +116,16 @@ export const testSecrets: Secrets = {
 
 export const userAgent = "MrStreamer/test";
 
-/** The catalogue worker from its source file, as Node runs TypeScript without a build. */
+/**
+ * The catalogue worker, bundled once for the run as the app's build bundles it; in watch mode,
+ * from its source file, as Node runs TypeScript without a build.
+ */
 const catalogueWorker: MainConfig["catalogueWorker"] = (setup) =>
-  new Worker(new URL("../src/main/ondemand/catalogue-worker.ts", import.meta.url), {
-    workerData: setup,
-  });
+  new Worker(
+    inject("catalogueWorker") ??
+      new URL("../src/main/ondemand/catalogue-worker.ts", import.meta.url),
+    { workerData: setup },
+  );
 
 /** The guide's indexing worker from its source file, as Node runs TypeScript without a build. */
 export const guideIndexWorker: MainConfig["guideIndexWorker"] = (options) =>

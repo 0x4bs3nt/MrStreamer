@@ -6,6 +6,7 @@
 // the player holds. The helper also says `log` and `error` lines for a person to read, and every
 // line carries `t`, milliseconds since it started; neither is read here.
 import { type } from "arktype";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 import type { ScreenRect } from "../adapter.ts";
 
 /** What the helper must name in `hello`. A helper of another build may speak another. */
@@ -71,10 +72,9 @@ function defineEvent() {
       .or({ type: "'volume'", level: "0 <= number <= 1", muted: "boolean" })
   );
 }
-type Event = ReturnType<typeof defineEvent>;
-let Event: Event | null = null;
+const Event = lazy(defineEvent);
 
-export type HelperEvent = Event["infer"];
+export type HelperEvent = Infer<typeof Event>;
 
 /** The event on a line, or null for anything else: other JSON, other types, or no JSON at all. */
 export function readEvent(line: string): HelperEvent | null {
@@ -84,7 +84,6 @@ export function readEvent(line: string): HelperEvent | null {
   } catch {
     return null;
   }
-  Event ??= defineEvent();
-  const event = Event(parsed);
+  const event = Event()(parsed);
   return event instanceof type.errors ? null : event;
 }

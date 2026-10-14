@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { attempt, Database, unavailable } from "./database.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 export const VERIFIED_FILES_TABLE = "verified_files";
 
@@ -23,18 +24,20 @@ export function prepareVerifiedFiles(db: DatabaseSync): void {
   )`);
 }
 
-const Facts = type({
-  kind: "'movie' | 'episode'",
-  id: "string",
-  "seriesId?": "string",
-  fileKey: "string",
-  listingKey: "string",
-  audio: "(string | null)[]",
-  subtitles: "(string | null)[]",
-});
+const Facts = lazy(() =>
+  type({
+    kind: "'movie' | 'episode'",
+    id: "string",
+    "seriesId?": "string",
+    fileKey: "string",
+    listingKey: "string",
+    audio: "(string | null)[]",
+    subtitles: "(string | null)[]",
+  }),
+);
 
 /** Tracks from one successful playback probe, never combined with another version's tracks. */
-export type VerifiedFile = typeof Facts.infer;
+export type VerifiedFile = Infer<typeof Facts>;
 
 export class VerifiedFiles extends Context.Service<
   VerifiedFiles,
@@ -79,7 +82,7 @@ export const verifiedFilesLayer = Layer.effect(
           attempt(() =>
             read.all(account, sourceStamp).flatMap((row) => {
               try {
-                const facts = Facts(JSON.parse(String(row.facts)));
+                const facts = Facts()(JSON.parse(String(row.facts)));
                 return facts instanceof type.errors ? [] : [facts];
               } catch {
                 return [];
@@ -93,7 +96,7 @@ export const verifiedFilesLayer = Layer.effect(
               facts.kind,
               facts.id,
               sourceStamp,
-              JSON.stringify(Facts.assert(facts)),
+              JSON.stringify(Facts().assert(facts)),
             );
           }),
         forget: (account: string, title: TitleRef, fileKey: string) =>

@@ -1506,7 +1506,7 @@ export const titlePlayer = {
 
   /** Saves edits in order. An old response cannot move another file's subtitles. */
   async setDownloadedTiming(timing: SubtitleTiming): Promise<void> {
-    const valid = SubtitleTiming.assert(timing);
+    const valid = SubtitleTiming().assert(timing);
     const current = session;
     const saved = store.getState().savedSubtitle;
     if (!current || receiver || !saved?.subtitle) return;

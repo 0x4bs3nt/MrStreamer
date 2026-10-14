@@ -4,6 +4,7 @@
 // logo and notice in the app, data cached no longer than six months, and JustWatch named beside
 // streaming services.
 import { type } from "arktype";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 /** What the app keeps about one film or series. */
 export interface TitleMetadata {
@@ -151,43 +152,47 @@ export const GENRES: Readonly<Record<number, readonly string[]>> = {
 const API = "https://api.themoviedb.org/3";
 const REQUEST_MS = 15_000;
 
-const Details = type({
-  "title?": "string | null",
-  "name?": "string | null",
-  "original_title?": "string | null",
-  "original_name?": "string | null",
-  "genres?": type({ id: "number" }).array(),
-  "original_language?": "string | null",
-  "popularity?": "number",
-  "vote_average?": "number",
-  "vote_count?": "number",
-  "belongs_to_collection?": type({ id: "number", name: "string" }).or("null"),
-  "backdrop_path?": "string | null",
-});
-
-const About = type({
-  "original_title?": "string | null",
-  "original_name?": "string | null",
-  "original_language?": "string | null",
-  "overview?": "string | null",
-  "poster_path?": "string | null",
-  "backdrop_path?": "string | null",
-  "genres?": type({ id: "number" }).array(),
-  "runtime?": "number | null",
-  "episode_run_time?": "number[]",
-  "created_by?": type({ name: "string" }).array(),
-  "credits?": type({
-    "cast?": type({
-      name: "string",
-      "character?": "string | null",
-      "profile_path?": "string | null",
-    }).array(),
-    "crew?": type({ name: "string", "job?": "string | null" }).array(),
+const Details = lazy(() =>
+  type({
+    "title?": "string | null",
+    "name?": "string | null",
+    "original_title?": "string | null",
+    "original_name?": "string | null",
+    "genres?": type({ id: "number" }).array(),
+    "original_language?": "string | null",
+    "popularity?": "number",
+    "vote_average?": "number",
+    "vote_count?": "number",
+    "belongs_to_collection?": type({ id: "number", name: "string" }).or("null"),
+    "backdrop_path?": "string | null",
   }),
-});
+);
 
-/** A season's episodes, built on first use: the app starts without needing it. */
-const defineSeasonEpisodes = () =>
+const About = lazy(() =>
+  type({
+    "original_title?": "string | null",
+    "original_name?": "string | null",
+    "original_language?": "string | null",
+    "overview?": "string | null",
+    "poster_path?": "string | null",
+    "backdrop_path?": "string | null",
+    "genres?": type({ id: "number" }).array(),
+    "runtime?": "number | null",
+    "episode_run_time?": "number[]",
+    "created_by?": type({ name: "string" }).array(),
+    "credits?": type({
+      "cast?": type({
+        name: "string",
+        "character?": "string | null",
+        "profile_path?": "string | null",
+      }).array(),
+      "crew?": type({ name: "string", "job?": "string | null" }).array(),
+    }),
+  }),
+);
+
+/** A season's episodes. */
+const seasonEpisodes = lazy(() =>
   type({
     episodes: type({
       episode_number: "number",
@@ -205,24 +210,27 @@ const defineSeasonEpisodes = () =>
       }).array(),
       "crew?": type({ name: "string", "job?": "string | null" }).array(),
     }).array(),
-  });
-let definedSeasonEpisodes: ReturnType<typeof defineSeasonEpisodes> | null = null;
-const seasonEpisodes = () => (definedSeasonEpisodes ??= defineSeasonEpisodes());
+  }),
+);
 
-const Page = type({
-  page: "number",
-  total_pages: "number",
-  results: type({ id: "number" }).array(),
-});
+const Page = lazy(() =>
+  type({
+    page: "number",
+    total_pages: "number",
+    results: type({ id: "number" }).array(),
+  }),
+);
 
-const Services = type({
-  results: type({
-    provider_id: "number",
-    provider_name: "string",
-    "display_priorities?": "Record<string, number>",
-    "display_priority?": "number",
-  }).array(),
-});
+const Services = lazy(() =>
+  type({
+    results: type({
+      provider_id: "number",
+      provider_name: "string",
+      "display_priorities?": "Record<string, number>",
+      "display_priority?": "number",
+    }).array(),
+  }),
+);
 
 export interface TmdbOptions {
   /** A read access token (starts with "eyJ"), sent as a bearer token, or an API key. */
@@ -280,7 +288,7 @@ export function tmdb(options: TmdbOptions) {
       language: string,
       signal?: AbortSignal,
     ): Promise<TitleMetadata & TitleNames> {
-      const body = Details(await get(`/${kind}/${id}`, { language }, signal));
+      const body = Details()(await get(`/${kind}/${id}`, { language }, signal));
       if (body instanceof type.errors) {
         throw new TmdbError({ kind: "unavailable", detail: body.summary });
       }
@@ -310,7 +318,7 @@ export function tmdb(options: TmdbOptions) {
       language: string,
       signal?: AbortSignal,
     ): Promise<TitleAbout> {
-      const body = About(
+      const body = About()(
         await get(`/${kind}/${id}`, { language, append_to_response: "credits" }, signal),
       );
       if (body instanceof type.errors) {
@@ -384,7 +392,7 @@ export function tmdb(options: TmdbOptions) {
 
     /** The streaming services TMDB knows in a region, most prominent first. */
     async services(kind: TmdbKind, region: string, signal?: AbortSignal) {
-      const body = Services(
+      const body = Services()(
         await get(`/watch/providers/${kind}`, { watch_region: region }, signal),
       );
       if (body instanceof type.errors) {
@@ -408,7 +416,7 @@ export function tmdb(options: TmdbOptions) {
       page: number,
       signal?: AbortSignal,
     ): Promise<{ readonly ids: readonly string[]; readonly pages: number }> {
-      const body = Page(
+      const body = Page()(
         await get(
           `/discover/${kind}`,
           {

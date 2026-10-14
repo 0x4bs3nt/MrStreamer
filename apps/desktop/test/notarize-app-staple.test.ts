@@ -155,10 +155,10 @@ describe.skipIf(process.platform === "win32")("stapling the notarized release ap
 
   it("kills a hanging stapler that ignores SIGTERM at its deadline", async () => {
     process.env.STAPLE_SCENARIO = "hang";
-    // Each clock reading jumps 295 s, so the deadline read just before the first attempt leaves
-    // it 5 s of the five minutes: the hang is cut there, as it would be at a minute.
+    // Each clock reading jumps 299 s, so the deadline read just before the first attempt leaves
+    // it 1 s of the five minutes: the hang is cut there, as it would be at a minute.
     let now = Date.now();
-    vi.spyOn(Date, "now").mockImplementation(() => (now += 295_000));
+    vi.spyOn(Date, "now").mockImplementation(() => (now += 299_000));
     const started = performance.now();
     await expect(run()).rejects.toThrow("code: unknown");
     const elapsed = performance.now() - started;

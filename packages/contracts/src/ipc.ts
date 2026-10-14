@@ -109,7 +109,7 @@ export const ipcInputs = {
       limit: "0 < number.integer <= 100",
     }),
   "playlist.map": () =>
-    type({ subscriptionId: "string > 0", group: "string <= 512", mode: PlaylistMode }),
+    type({ subscriptionId: "string > 0", group: "string <= 512", mode: PlaylistMode() }),
   "subscription.add": loginInput,
   /**
    * Changes what a saved subscription is called, and its password or playlist link when `secret`
@@ -129,7 +129,7 @@ export const ipcInputs = {
   /** What the viewer left a subscription at: where Live TV opens, and the picks made in it. */
   "subscription.preferences": () => type({ subscriptionId: "string > 0" }),
   "subscription.updatePreferences": () =>
-    type({ subscriptionId: "string > 0", patch: SubscriptionPreferences.partial() }),
+    type({ subscriptionId: "string > 0", patch: SubscriptionPreferences().partial() }),
   "library.status": none,
   "library.categories": none,
   /** Display-only full-catalogue joins. Unlisted owned channel keys stand alone. */
@@ -235,7 +235,7 @@ export const ipcInputs = {
   "ondemand.search": () => type({ query: "string" }),
   /** Movies or series only, for the field in their tab bar. */
   "ondemand.searchKind": () =>
-    type({ kind: titleKind(), query: "string", "filters?": TitleFilters }),
+    type({ kind: titleKind(), query: "string", "filters?": TitleFilters() }),
   "ondemand.filterOptions": () => type({ kind: titleKind() }),
   /** `like` names a title by one of its versions. */
   "ondemand.rows": () =>
@@ -246,7 +246,7 @@ export const ipcInputs = {
       kind: titleKind(),
       id: type("string").narrow(isCollectionId),
       "sort?": type.enumerated(...COLLECTION_SORTS),
-      "filters?": TitleFilters,
+      "filters?": TitleFilters(),
       offset: "number.integer >= 0",
       limit: "1 <= number.integer <= 500",
     }),
@@ -284,25 +284,25 @@ export const ipcInputs = {
        */
       "preview?": "boolean",
       /** Transient gameplay intent, independent of optional analytics replies. Never captured. */
-      "measurement?": PlaybackControl,
+      "measurement?": PlaybackControl(),
     }),
   "subtitles.settings": none,
   "subtitles.configure": () =>
-    type({ preferences: OnlineSubtitlePreferences, "credentials?": SubtitleCredentialInput }),
+    type({ preferences: OnlineSubtitlePreferences(), "credentials?": SubtitleCredentialInput() }),
   "subtitles.search": () => type({ sessionId: "string > 0", "languages?": "string[] <= 10" }),
   "subtitles.choose": () => type({ sessionId: "string > 0", resultId: "string > 0" }),
   "subtitles.saved": () => type({ sessionId: "string > 0" }),
   "subtitles.timing": () =>
-    type({ sessionId: "string > 0", timing: SubtitleTiming, "selection?": "0 < string <= 64" }),
+    type({ sessionId: "string > 0", timing: SubtitleTiming(), "selection?": "0 < string <= 64" }),
   "subtitles.show": () => type({ sessionId: "string > 0", "selection?": "0 < string <= 64" }),
   "subtitles.hide": () => type({ sessionId: "string > 0" }),
   "subtitles.forget": () => type({ sessionId: "string > 0" }),
   "subtitles.cancel": () => type({ sessionId: "string > 0" }),
   "playback.openTitle": () =>
-    type({ title: TitleRef, decoders: decoders(), "measurement?": PlaybackControl }),
+    type({ title: TitleRef(), decoders: decoders(), "measurement?": PlaybackControl() }),
   /** A downloaded copy by its id, from this computer: no subscription or network is asked. */
   "playback.openCopy": () =>
-    type({ copy: "string > 0", decoders: decoders(), "measurement?": PlaybackControl }),
+    type({ copy: "string > 0", decoders: decoders(), "measurement?": PlaybackControl() }),
   "playback.close": () => type({ sessionId: "string" }),
   "playback.closeAll": none,
   "playback.failure": () => type({ sessionId: "string" }),
@@ -339,7 +339,7 @@ export const ipcInputs = {
       "audioLanguage?": "string",
       /** What the receiver may show about it: the channel's name. */
       name: "string",
-      "measurement?": PlaybackControl,
+      "measurement?": PlaybackControl(),
     }),
   /**
    * `since` is when the viewer began this play of the title, in epoch milliseconds, which its
@@ -347,11 +347,11 @@ export const ipcInputs = {
    * play it was.
    */
   "output.openTitle": () =>
-    type({ title: TitleRef, since: "number", "measurement?": PlaybackControl }),
+    type({ title: TitleRef(), since: "number", "measurement?": PlaybackControl() }),
   "output.playTitle": () =>
     type({
       sessionId: "string",
-      "measurement?": PlaybackControl,
+      "measurement?": PlaybackControl(),
       /** Seconds into the title to start at. */
       position: "number >= 0",
       audio: "number.integer >= 0 | null",
@@ -371,10 +371,11 @@ export const ipcInputs = {
   "output.playingTitle": none,
   "analytics.action": () =>
     type.enumerated("channel_changed", "epg_opened", "search_used", "update_seen"),
-  "analytics.playbackBegin": () => type({ kind: "'live' | 'vod'", measurement: PlaybackControl }),
-  "analytics.playbackResume": () => type({ kind: "'live' | 'vod'", measurement: PlaybackControl }),
+  "analytics.playbackBegin": () => type({ kind: "'live' | 'vod'", measurement: PlaybackControl() }),
+  "analytics.playbackResume": () =>
+    type({ kind: "'live' | 'vod'", measurement: PlaybackControl() }),
   "analytics.playbackBind": () =>
-    type({ kind: "'live' | 'vod'", measurement: PlaybackControl, sessionId: "string" }),
+    type({ kind: "'live' | 'vod'", measurement: PlaybackControl(), sessionId: "string" }),
   "analytics.playbackState": () =>
     type({
       token: "string.uuid",
@@ -393,7 +394,7 @@ export const ipcInputs = {
   "analytics.feature": () => type.enumerated(...analyticsFeatures),
   "preferences.get": none,
   // Only the preferences' own keys: the interface language changes through `language.set` alone.
-  "preferences.update": () => Preferences.partial().onUndeclaredKey("delete"),
+  "preferences.update": () => Preferences().partial().onUndeclaredKey("delete"),
   "language.get": none,
   "language.set": () => type({ choice: type.enumerated("system", ...LOCALES) }),
   "viewing.get": none,
@@ -410,7 +411,7 @@ export const ipcInputs = {
   "viewing.recordProgress": () =>
     type({
       commandId: "string",
-      title: TitleRef,
+      title: TitleRef(),
       position: "number >= 0",
       duration: "number > 0",
       /** When this play of the title began: epoch milliseconds. */
@@ -459,7 +460,7 @@ export const ipcInputs = {
   "watchlist.remove": () => type({ entry: owned() }),
   "downloads.list": none,
   /** A movie or one episode, by the exact version the viewer chose, at the end of the queue. */
-  "downloads.add": () => type({ title: TitleRef }),
+  "downloads.add": () => type({ title: TitleRef() }),
   /**
    * Cancels an unfinished download, or deletes a copy from this computer, with what was kept of
    * it: its file, details, artwork, progress and saved subtitles.

@@ -58,58 +58,65 @@ import {
   parseLogin,
   type TcpConnect,
 } from "../providers/xtream.ts";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
-const AccountRecord = type({
-  state: "'active' | 'expired' | 'banned' | 'disabled' | 'unknown'",
-  expiresAt: "string | null",
-  maxConnections: "number | null",
-  activeConnections: "number | null",
-});
+const AccountRecord = lazy(() =>
+  type({
+    state: "'active' | 'expired' | 'banned' | 'disabled' | 'unknown'",
+    expiresAt: "string | null",
+    maxConnections: "number | null",
+    activeConnections: "number | null",
+  }),
+);
 
 // A playlist is a kind releases before it don't know: they read the file as no subscription, show
 // Connect and leave the file alone until another login replaces it.
-const StoredSubscription = type({
-  version: "1",
-  kind: "'xtream'",
-  server: "string",
-  username: "string",
-  sealedPassword: "string",
-  account: AccountRecord,
-}).or({
-  version: "1",
-  kind: "'m3u'",
-  /** Where the playlist comes from, to show: its origin. The link itself is sealed. */
-  server: "string",
-  /**
-   * Tells playlists apart without the link: `m3u:` and part of the SHA-256 of the link it was
-   * added with. A link entered again later keeps it, so the playlist stays the same account.
-   */
-  key: "string",
-  sealedLink: "string",
-  "mapping?": PlaylistMapping,
-  account: AccountRecord,
-});
-type StoredSubscription = typeof StoredSubscription.infer;
+const StoredSubscription = lazy(() =>
+  type({
+    version: "1",
+    kind: "'xtream'",
+    server: "string",
+    username: "string",
+    sealedPassword: "string",
+    account: AccountRecord(),
+  }).or({
+    version: "1",
+    kind: "'m3u'",
+    /** Where the playlist comes from, to show: its origin. The link itself is sealed. */
+    server: "string",
+    /**
+     * Tells playlists apart without the link: `m3u:` and part of the SHA-256 of the link it was
+     * added with. A link entered again later keeps it, so the playlist stays the same account.
+     */
+    key: "string",
+    sealedLink: "string",
+    "mapping?": PlaylistMapping(),
+    account: AccountRecord(),
+  }),
+);
+type StoredSubscription = Infer<typeof StoredSubscription>;
 
 /** What an added subscription's folder is named by, and so the only ids one may have. */
 const FOLDER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The registry's entry for the subscription whose login subscription.json holds. */
-const OriginalEntry = type({
-  /** What the app names the subscription by: made up once, and never the login. */
-  id: "string > 0",
-  original: "true",
-  /** The account the id was given to, as `keyOf` names it. Another account gets another id. */
-  key: "string",
-  /** What the viewer calls it, when they named it. */
-  "name?": "string",
-});
+const OriginalEntry = lazy(() =>
+  type({
+    /** What the app names the subscription by: made up once, and never the login. */
+    id: "string > 0",
+    original: "true",
+    /** The account the id was given to, as `keyOf` names it. Another account gets another id. */
+    key: "string",
+    /** What the viewer calls it, when they named it. */
+    "name?": "string",
+  }),
+);
 
 /** The registry's entry for a subscription added beside it, whose login its folder holds. */
-const AddedEntry = type({ id: FOLDER, key: "string", "name?": "string" });
+const AddedEntry = lazy(() => type({ id: FOLDER, key: "string", "name?": "string" }));
 
 /** subscriptions.json. Entries are read one by one, so one this build can't read costs no other. */
-const Registry = type({ version: "1", subscriptions: "object[]" });
+const Registry = lazy(() => type({ version: "1", subscriptions: "object[]" }));
 
 /**
  * A saved subscription as other services know it, whether or not its password or link can be
@@ -326,7 +333,7 @@ function make(deps: SubscriptionDeps) {
      */
     const addedLogin = async (id: string) => {
       const file = join(folderOf(id), "subscription.json");
-      const stored = await readJsonFile(file, StoredSubscription);
+      const stored = await readJsonFile(file, StoredSubscription());
       if (stored) return stored;
       return (await stat(file).catch(() => null)) ? ("unreadable" as const) : ("missing" as const);
     };
@@ -345,7 +352,7 @@ function make(deps: SubscriptionDeps) {
      */
     const settle = async (): Promise<readonly Saved[]> => {
       const [stored, registry, folders] = await Promise.all([
-        readJsonFile(path, StoredSubscription),
+        readJsonFile(path, StoredSubscription()),
         readRegistry(registryPath),
         readdir(addedDir).then(
           (names) => names.filter((name) => FOLDER.test(name)).sort(),
@@ -372,7 +379,7 @@ function make(deps: SubscriptionDeps) {
        * already is left as it is, with the entry `listed` it has.
        */
       const keepAdded = async (
-        entry: typeof AddedEntry.infer,
+        entry: Infer<typeof AddedEntry>,
         login: StoredSubscription,
         listed: object | null,
       ) => {
@@ -393,7 +400,7 @@ function make(deps: SubscriptionDeps) {
           continue;
         }
         if ("id" in raw && typeof raw.id === "string") named.add(raw.id);
-        const entry = "original" in raw ? null : AddedEntry(raw);
+        const entry = "original" in raw ? null : AddedEntry()(raw);
         if (!entry || entry instanceof type.errors) {
           entries.push(raw);
           continue;
@@ -875,11 +882,11 @@ function sealedOf(stored: StoredSubscription): string {
 async function readRegistry(path: string): Promise<{
   readonly entries: readonly object[];
   readonly at: number;
-  readonly original: typeof OriginalEntry.infer | null;
+  readonly original: Infer<typeof OriginalEntry> | null;
 }> {
-  const entries = (await readJsonFile(path, Registry))?.subscriptions ?? [];
+  const entries = (await readJsonFile(path, Registry()))?.subscriptions ?? [];
   for (const [at, entry] of entries.entries()) {
-    const original = OriginalEntry(entry);
+    const original = OriginalEntry()(entry);
     if (!(original instanceof type.errors)) return { entries, at, original };
   }
   return { entries, at: -1, original: null };

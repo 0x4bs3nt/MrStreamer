@@ -8,6 +8,7 @@
 // the subtitles that began before it, the proxy reads from the file itself and has ffmpeg read
 // from a small file of the track's packets alone (see matroska.ts and subtitle-history.ts).
 import { type } from "arktype";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 import type { Codec, SubtitleFormat } from "@mrstreamer/contracts/playback";
 import type { AudioFacts, SubtitleFacts } from "@mrstreamer/core/ondemand/tracks";
 import type { SubtitleCodec } from "@mrstreamer/core/subtitles/decoder";
@@ -86,8 +87,8 @@ function defineProbe() {
     "frames?": Frame.array(),
   });
 }
-let Probe: ReturnType<typeof defineProbe> | null = null;
-type Stream = NonNullable<ReturnType<typeof defineProbe>["infer"]["streams"]>[number];
+const Probe = lazy(defineProbe);
+type Stream = NonNullable<Infer<typeof Probe>["streams"]>[number];
 
 /** The subtitle codecs the app shows, by how they are carried. Others aren't listed. */
 const SUBTITLE_FORMATS: Readonly<Record<string, SubtitleFormat>> = {
@@ -108,8 +109,7 @@ const SUBTITLE_FORMATS: Readonly<Record<string, SubtitleFormat>> = {
 
 /** What ffprobe's JSON says about a file, or null when it isn't ffprobe's JSON. */
 export function readProbe(json: unknown): TitleProbe | null {
-  Probe ??= defineProbe();
-  const probe = Probe(json);
+  const probe = Probe()(json);
   if (probe instanceof type.errors) return null;
   const streams = probe.streams ?? [];
   const duration = Number(probe.format?.duration);

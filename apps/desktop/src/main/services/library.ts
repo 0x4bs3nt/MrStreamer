@@ -53,6 +53,7 @@ import {
   type Source,
   type PlaylistRefresh,
 } from "./subscription.ts";
+import { lazy } from "@mrstreamer/contracts/lazy";
 
 /** How many results a search returns. Enough to scroll, small enough to send per keystroke. */
 const SEARCH_LIMIT = 200;
@@ -69,37 +70,39 @@ const FETCHES_AT_ONCE = 2;
 // load, so improved naming rules apply without fetching again. The newest stable release reads it
 // too (see docs/contributing/architecture.md), so fields are added without a new version: a file
 // written before guide ids, the adult flag or catch-up still loads, and counts as outdated.
-const CachedCatalogue = type({
-  version: "4",
-  /** Which subscription produced this catalogue. */
-  key: "string",
-  fetchedAt: "number",
-  "importRevision?": "string",
-  categories: type({ id: "string", name: "string" }).array(),
-  channels: type({
-    id: "string",
-    name: "string",
-    number: "number | null",
-    logoUrl: "string | null",
-    categoryIds: "string[]",
-    "guideId?": "string | null",
-    "adult?": "boolean",
-    "catchupDays?": "number | null",
-  }).array(),
-}).pipe((file) => ({
-  ...file,
-  channels: file.channels.map((channel) => ({
-    ...channel,
-    guideId: channel.guideId ?? null,
-    catchupDays: channel.catchupDays ?? null,
+const CachedCatalogue = lazy(() =>
+  type({
+    version: "4",
+    /** Which subscription produced this catalogue. */
+    key: "string",
+    fetchedAt: "number",
+    "importRevision?": "string",
+    categories: type({ id: "string", name: "string" }).array(),
+    channels: type({
+      id: "string",
+      name: "string",
+      number: "number | null",
+      logoUrl: "string | null",
+      categoryIds: "string[]",
+      "guideId?": "string | null",
+      "adult?": "boolean",
+      "catchupDays?": "number | null",
+    }).array(),
+  }).pipe((file) => ({
+    ...file,
+    channels: file.channels.map((channel) => ({
+      ...channel,
+      guideId: channel.guideId ?? null,
+      catchupDays: channel.catchupDays ?? null,
+    })),
+    outdated: file.channels.some(
+      (channel) =>
+        channel.guideId === undefined ||
+        channel.adult === undefined ||
+        channel.catchupDays === undefined,
+    ),
   })),
-  outdated: file.channels.some(
-    (channel) =>
-      channel.guideId === undefined ||
-      channel.adult === undefined ||
-      channel.catchupDays === undefined,
-  ),
-}));
+);
 
 /** What the disk cache holds. */
 interface CatalogueFile extends LiveCatalogue {
@@ -254,7 +257,7 @@ function make(options: LibraryOptions) {
         const kept = catalogues.get(subscription.id);
         if (kept) return kept;
         const file = yield* Effect.promise(() =>
-          readJsonFile(cachePath(subscription), CachedCatalogue),
+          readJsonFile(cachePath(subscription), CachedCatalogue()),
         );
         if (file?.key !== subscription.key) return null;
         // Read by another call meanwhile, or fetched: that one stands.

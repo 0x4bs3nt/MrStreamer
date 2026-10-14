@@ -19,6 +19,7 @@ import {
   type Channel,
   type Version,
 } from "@mrstreamer/contracts/version";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** A release this platform can update to. */
 export interface Offer {
@@ -179,7 +180,12 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
       "github",
       signal,
       answers,
-      async (response) => offersOf(GitHubRelease.array().assert(await response.json())),
+      async (response) =>
+        offersOf(
+          GitHubRelease()
+            .array()
+            .assert(await response.json()),
+        ),
       `${base}/releases?per_page=100`,
     );
     if (!page.ok) return page;
@@ -187,7 +193,7 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
       "github",
       signal,
       answers,
-      async (response) => offersOf([GitHubRelease.assert(await response.json())]),
+      async (response) => offersOf([GitHubRelease().assert(await response.json())]),
       `${base}/releases/latest`,
     );
     // No stable release yet answers 404; the page alone has everything then. Any other failure
@@ -202,7 +208,7 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
     };
   }
 
-  function offersOf(releases: readonly (typeof GitHubRelease.infer)[]): Offer[] {
+  function offersOf(releases: readonly Infer<typeof GitHubRelease>[]): Offer[] {
     return releases.flatMap((release): Offer[] => {
       const version = parseVersion(release.tag_name);
       if (!version || release.draft) return [];
@@ -222,14 +228,16 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
   }
 }
 
-const GitHubRelease = type({
-  tag_name: "string",
-  prerelease: "boolean",
-  draft: "boolean",
-  "body?": "string | null",
-  "html_url?": "string",
-  assets: type({ name: "string", browser_download_url: "string" }).array(),
-});
+const GitHubRelease = lazy(() =>
+  type({
+    tag_name: "string",
+    prerelease: "boolean",
+    draft: "boolean",
+    "body?": "string | null",
+    "html_url?": "string",
+    assets: type({ name: "string", browser_download_url: "string" }).array(),
+  }),
+);
 
 function answerOf(source: SourceAnswer["source"], response: Response): SourceAnswer {
   const number = (name: string) => {

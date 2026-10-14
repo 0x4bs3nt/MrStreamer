@@ -311,7 +311,7 @@ function make(deps: Parameters<typeof subtitleServiceClient>[0]) {
           const session = yield* current(id);
           yield* storage.timing(
             session.file,
-            SubtitleTiming.assert(timing),
+            SubtitleTiming().assert(timing),
             selection,
             session.proof(),
           );
