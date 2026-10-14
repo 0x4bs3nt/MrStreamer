@@ -55,6 +55,10 @@ import { castAdapter } from "./receivers/cast/adapter.ts";
 // lint plugin reads the source file, which has no default export.
 // oxlint-disable-next-line import/default
 import createCatalogueWorker from "./ondemand/catalogue-worker.ts?nodeWorker";
+// oxlint-disable-next-line import/default
+import createGuideIndexWorker from "./guide/index-worker.ts?nodeWorker";
+// oxlint-disable-next-line import/default
+import createGuideSearchWorker from "./guide/search-worker.ts?nodeWorker";
 import { mainLayer } from "./runtime.ts";
 import { Downloads } from "./services/downloads.ts";
 import { Library } from "./services/library.ts";
@@ -435,6 +439,8 @@ async function start(): Promise<void> {
       ffmpeg: toolPath("ffmpeg"),
       ffprobe: toolPath("ffprobe"),
       catalogueWorker: (setup) => createCatalogueWorker({ workerData: setup }),
+      guideIndexWorker: (options) => createGuideIndexWorker(options),
+      guideSearchWorker: (options) => createGuideSearchWorker(options),
       output: {
         adapters: receiverAdapters(),
         observePlayback: (kind, control) => analytics.remotePlayback(kind, control),
@@ -670,7 +676,10 @@ async function start(): Promise<void> {
             : yield* library.refresh(subscriptionId);
         }),
       "guide.listings": ({ channels }) => guide.listings(channels),
-      "guide.schedule": ({ channel }) => guide.schedule(channel),
+      "guide.schedule": ({ channel, from, until }) => guide.schedule(channel, from, until),
+      "guide.range": ({ channels, from, to }) => guide.range(channels, from, to),
+      "guide.programme": ({ channel, guide: guideId, start }) =>
+        guide.programme(channel, guideId, start),
       "guide.search": ({ query }) => guide.search(query),
       "guide.searchList": ({ query, until, ...list }) =>
         Effect.flatMap(library.channels(list), (channels) =>

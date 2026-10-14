@@ -724,6 +724,8 @@ describe("real search components with two subscriptions", () => {
     await settled();
     expect(ipc.argsOf("guide.schedule").at(-1)).toEqual({
       channel: { subscriptionId: SUBSCRIPTION, id: "1" },
+      from: expect.any(Number),
+      until: expect.any(Number),
     });
     expect(p.rows()[1]!.parentElement?.textContent).toContain("Evening news");
     await p.press("ArrowDown");
@@ -881,6 +883,8 @@ describe("real search components with two subscriptions", () => {
     await settled();
     expect(ipc.argsOf("guide.schedule").at(-1)).toEqual({
       channel: { subscriptionId: GREEN, id: "3" },
+      from: expect.any(Number),
+      until: expect.any(Number),
     });
     expect(p.rows()[4]!.parentElement?.textContent).toContain("From this copy's guide.");
   });

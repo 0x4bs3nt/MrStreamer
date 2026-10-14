@@ -7,10 +7,13 @@
 import { AppFailure } from "@mrstreamer/contracts/errors";
 import type { GuideFailure } from "@mrstreamer/contracts/guide";
 import type { ProviderOptions } from "@mrstreamer/core/provider";
-import { describeNetworkError } from "./xtream.ts";
+import { bodySize, describeNetworkError } from "./xtream.ts";
 
-/** The whole guide download: the answer, every redirect before it and the document itself. */
-const GUIDE_TIMEOUT_MS = 5 * 60_000;
+/**
+ * The whole guide download: the answer, every redirect before it and the document itself,
+ * before it is indexed.
+ */
+const GUIDE_TIMEOUT_MS = 15 * 60_000;
 /** How many redirects a guide's address may take. A guide is one file, a hop or two away. */
 const MAX_REDIRECTS = 5;
 const REDIRECTS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
@@ -20,14 +23,17 @@ function refused(failure: GuideFailure): AppFailure {
 }
 
 /**
- * Requests the documents at guide addresses, each as it downloads. It follows redirects itself,
- * `MAX_REDIRECTS` of them at most, and never from https to http: the key in an address typed
- * with https doesn't travel unencrypted. `signal` and the five minutes a guide gets end the
- * request and the download alike.
+ * Requests the documents at guide addresses, each as it downloads, with its size when the server
+ * says. It follows redirects itself, `MAX_REDIRECTS` of them at most, and never from https to
+ * http: the key in an address typed with https doesn't travel unencrypted. `signal` and the fifteen
+ * minutes a guide gets end the request and the download alike.
  */
 export function xmltvFetch(options: ProviderOptions) {
   const fetchImpl = options.fetch ?? fetch;
-  return async (address: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> => {
+  return async (
+    address: string,
+    signal: AbortSignal,
+  ): Promise<{ body: AsyncIterable<Uint8Array>; size: number | null }> => {
     const within = AbortSignal.any([signal, AbortSignal.timeout(GUIDE_TIMEOUT_MS)]);
     let target = new URL(address);
     for (let redirects = 0; ; redirects++) {
@@ -51,7 +57,12 @@ export function xmltvFetch(options: ProviderOptions) {
       }
       const location = REDIRECTS.has(response.status) ? response.headers.get("location") : null;
       if (location === null) {
-        if (response.ok && response.body) return arriving(response.body, target.origin, signal);
+        if (response.ok && response.body) {
+          return {
+            body: arriving(response.body, target.origin, signal),
+            size: bodySize(response),
+          };
+        }
         void response.body?.cancel().catch(() => {});
         throw new AppFailure({ kind: "provider-error", status: response.status });
       }

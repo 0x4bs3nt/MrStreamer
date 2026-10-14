@@ -9,15 +9,11 @@
 // playlist that names no end yet. The playlist host's record of the parts asked for is the proof
 // that it plays from its first part, not from near its newest as a live playlist would.
 //
-// The guide keeps no programme that has ended until its on-disk index lands, so the window's own
-// clock runs `CLOCK_LEAD_MS` ahead of the main process's: the programme on now has aired by the
-// window's clock, which is what lists it, and the main process asks for it on its own clock,
-// which accepts a programme that has started.
+// Both run on the real clock: the fake guides list half hours from a couple of hours back, and the
+// guide keeps what aired, so the rest of the day lists programmes that have ended.
 import type { ArchiveRequest } from "../../../../apps/desktop/test/fake-provider.ts";
 import type { Driver } from "./language.ts";
 
-/** How far the window's clock runs ahead of the main process's. */
-export const CLOCK_LEAD_MS = 45 * 60 * 1000;
 /** The time zone the fake panel names, whose clock its timeshift addresses tell. */
 const PANEL_ZONE = "Europe/Amsterdam";
 
@@ -27,15 +23,6 @@ export interface CatchupFake {
   breakNextArchive(pieces: number): void;
   streams(): { readonly requests: number; readonly active: number };
 }
-
-const SHIFTED_CLOCK = `(() => {
-  const lead = ${CLOCK_LEAD_MS};
-  const Real = Date;
-  globalThis.Date = class extends Real {
-    constructor(...args) { super(...(args.length ? args : [Real.now() + lead])); }
-    static now() { return Real.now() + lead; }
-  };
-})();`;
 
 const video = `(() => {
   const v = document.querySelector('video');
@@ -66,9 +53,8 @@ const expect = (ok: boolean, message: string) => {
 };
 
 /**
- * Runs the window's clock ahead, opens Live TV's `category` and the rest of the day of the channel
- * whose name has `channel` in it, and gives the first programme that aired, with the steps that
- * play and watch it.
+ * Opens Live TV's `category` and the rest of the day of the channel whose name has `channel` in
+ * it, and gives the first programme that aired, with the steps that play and watch it.
  */
 async function airedProgramme(d: Driver, category: string, channel: string) {
   const row = `[...document.querySelectorAll('[data-index]')].find(r => r.querySelector('[title]')?.firstElementChild?.textContent.includes(${JSON.stringify(channel)}))`;
@@ -87,19 +73,7 @@ async function airedProgramme(d: Driver, category: string, channel: string) {
     }
   };
 
-  d.action(`Run the window's clock ${CLOCK_LEAD_MS / 60_000} min ahead and reload it`);
-  await d.send("Page.enable");
-  await d.send("Page.addScriptToEvaluateOnNewDocument", { source: SHIFTED_CLOCK });
-  await d.send("Page.reload");
-  const lead = () =>
-    d.evaluate<number>("Math.round(Date.now() - performance.timeOrigin - performance.now())");
-  await d.wait(
-    async () =>
-      (await d.exists("document.querySelector('header')")) &&
-      (await lead()) > CLOCK_LEAD_MS - 60_000,
-  );
-  d.observed["clockLeadMs"] = await lead();
-
+  await d.wait(() => d.exists("document.querySelector('header')"));
   await d.click(
     "Open Live TV",
     "[...document.querySelectorAll('header button')].find(b => b.textContent.trim() === 'Live TV')",
@@ -176,8 +150,11 @@ export async function catchupScenario(d: Driver, fake: CatchupFake): Promise<voi
     const read = await window.mrStreamer.invoke('library.channels', { query: ${JSON.stringify(channel)} });
     const channel = read.ok ? read.value[0] : null;
     if (!channel) return [];
+    // The day Live TV reads: from its start to its end.
+    const from = new Date().setHours(0, 0, 0, 0);
+    const until = new Date().setHours(24, 0, 0, 0);
     const day = await window.mrStreamer.invoke('guide.schedule',
-      { channel: { subscriptionId: channel.subscriptionId, id: channel.id } });
+      { channel: { subscriptionId: channel.subscriptionId, id: channel.id }, from, until });
     return day.ok ? day.value : [];
   })()`);
   const programme = schedule.find((each) => each.title === aired.title);

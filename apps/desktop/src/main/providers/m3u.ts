@@ -13,7 +13,7 @@ import type { PlaylistMapping } from "@mrstreamer/contracts/playlist";
 import { m3uReader, type PlaylistEntry } from "@mrstreamer/core/playlist/m3u";
 import { providerFetch, type Provider, type ProviderOptions } from "@mrstreamer/core/provider";
 import { t } from "@mrstreamer/core/i18n";
-import { describeNetworkError } from "./xtream.ts";
+import { bodySize, describeNetworkError } from "./xtream.ts";
 
 export interface PlaylistAccount {
   /** The playlist's address as the user gave it. It can hold a token, so it is sealed on disk. */
@@ -25,8 +25,8 @@ export interface PlaylistAccount {
 const CHECK_TIMEOUT_MS = 15_000;
 /** The whole playlist: a few megabytes for iptv-org's 11,000 channels. */
 const PLAYLIST_TIMEOUT_MS = 90_000;
-/** The whole guide download. */
-const GUIDE_TIMEOUT_MS = 5 * 60_000;
+/** The whole guide download, before it is indexed. */
+const GUIDE_TIMEOUT_MS = 15 * 60_000;
 /** Mapping is bounded; existing unmapped Live playlists keep their original load limits. */
 const MAPPING_BYTES = 64 * 1024 * 1024;
 
@@ -81,7 +81,7 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
     url: string,
     timeoutMs: number,
     signal?: AbortSignal,
-  ): Promise<ReadableStream<Uint8Array>> {
+  ): Promise<{ body: ReadableStream<Uint8Array>; size: number | null }> {
     const timeout = AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
@@ -101,7 +101,7 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
       void response.body?.cancel().catch(() => {});
       throw new AppFailure({ kind: "provider-error", status: response.status });
     }
-    return response.body;
+    return { body: response.body, size: bodySize(response) };
   }
 
   /** A timeout or a connection lost while the playlist arrived, as the error the UI explains. */
@@ -127,7 +127,7 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
     }
     const promise = (async () => {
       try {
-        const text = (await open(account.link, PLAYLIST_TIMEOUT_MS)).pipeThrough(
+        const text = (await open(account.link, PLAYLIST_TIMEOUT_MS)).body.pipeThrough(
           new TextDecoderStream(),
         );
         const reader = m3uReader();
@@ -198,7 +198,7 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
   async function firstLine(
     signal?: AbortSignal,
   ): Promise<{ readonly playlist: boolean; readonly guideUrl: string | null }> {
-    const text = (await open(account.link, CHECK_TIMEOUT_MS, signal)).pipeThrough(
+    const text = (await open(account.link, CHECK_TIMEOUT_MS, signal)).body.pipeThrough(
       new TextDecoderStream(),
     );
     const reader = m3uReader();
@@ -296,7 +296,7 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
       if (!playlist) throw notAPlaylist(account.link);
       if (!guideUrl) return { kind: "none" };
       // As it comes: the guide service unpacks one that is gzip, as guides named .xml.gz are.
-      return { kind: "document", body: await open(guideUrl, GUIDE_TIMEOUT_MS, signal) };
+      return { kind: "document", ...(await open(guideUrl, GUIDE_TIMEOUT_MS, signal)) };
     },
 
     async onDemandCatalogue(signal) {

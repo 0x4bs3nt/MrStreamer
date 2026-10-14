@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { catchupHlsScenario, catchupScenario, CLOCK_LEAD_MS } from "./catchup.ts";
+import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
 import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
@@ -771,7 +771,6 @@ async function run(scenario: Scenario) {
             "No hardware acceleration, TV receiver or performance claim",
             ...(scenario === "catch-up" || scenario === "catch-up-hls"
               ? [
-                  `Window clock ${CLOCK_LEAD_MS / 60_000} min ahead of the main process: the guide keeps no ended programme yet, so the one on now counts as aired`,
                   scenario === "catch-up"
                     ? "Xtream timeshift only; playlist conventions are covered by apps/desktop/test/catchup.test.ts"
                     : "Playlist Flussonic HLS only; Xtream timeshift is the catch-up scenario",

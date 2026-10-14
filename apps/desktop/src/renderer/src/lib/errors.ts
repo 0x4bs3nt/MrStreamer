@@ -164,7 +164,5 @@ function tooLarge(limit: Extract<GuideFailure, { kind: "too-large" }>["limit"]):
       });
     case "channels":
       return t("over {count} channels", { count: GUIDE_LIMITS.channels });
-    case "programmes":
-      return t("over {count} programmes still to come", { count: GUIDE_LIMITS.programmes });
   }
 }

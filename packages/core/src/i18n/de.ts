@@ -324,7 +324,6 @@ export const de: Translation = {
   "over {size} unpacked": "entpackt über {size}",
   "one of its entries is over {size}": "einer der Einträge ist größer als {size}",
   "over {count} channels": "über {count} Sender",
-  "over {count} programmes still to come": "über {count} kommende Sendungen",
   "{count} channels": { one: "{count} Sender", other: "{count} Sender" },
   Name: "Name",
   "optional, the host without one": "optional, sonst der Host",

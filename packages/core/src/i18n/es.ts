@@ -330,7 +330,6 @@ export const es: Translation = {
   "over {size} unpacked": "más de {size} sin comprimir",
   "one of its entries is over {size}": "una de sus entradas supera {size}",
   "over {count} channels": "más de {count} canales",
-  "over {count} programmes still to come": "más de {count} programas por venir",
   "{count} channels": {
     one: "{count} canal",
     many: "{count} de canales",

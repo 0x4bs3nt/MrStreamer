@@ -6,6 +6,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vitest";
 import { mainLayer } from "../src/main/runtime.ts";
 import { Library } from "../src/main/services/library.ts";
+import { Playback } from "../src/main/services/playback.ts";
 import { Settings } from "../src/main/services/preferences.ts";
 import { Roster } from "../src/main/services/roster.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
@@ -17,6 +18,10 @@ import {
   type FakeProviderOptions,
 } from "./fake-provider.ts";
 import { fakeProvider, promised, runtimeFor, tempDir, testConfig } from "./support.ts";
+
+// Each guide download is indexed in a worker thread started from source, which strips the types
+// of what it imports anew: a few hundred milliseconds each on a busy machine.
+vi.setConfig({ testTimeout: 20_000 });
 
 const HOUR = 60 * 60 * 1000;
 const QUARTER = HOUR / 4;
@@ -73,7 +78,11 @@ async function connectedGuide(options: FakeProviderOptions = {}) {
       refreshIfStale: () => run(guide.refreshIfStale(owner)),
       listings: async (channelIds: readonly string[]) =>
         byId(await run(guide.listings(channelIds.map(own)))),
-      schedule: (channelId: string) => run(guide.schedule(own(channelId))),
+      /** The channel's programmes over [from, until), as Live TV asks for a day. */
+      day: (channelId: string, from: number, until: number) =>
+        run(guide.schedule(own(channelId), from, until)),
+      playback: await promised(runtime, Playback),
+      schedule: (channelId: string) => run(guide.schedule(own(channelId), NOW, NOW + 24 * HOUR)),
       search: (query: string) => run(guide.search(query)),
       searchChannels: async (query: string, channelIds: readonly string[], until: number) =>
         byId(await run(guide.searchChannels(query, channelIds.map(own), until))),
@@ -131,6 +140,30 @@ const programme = (id: string, from: string, to: string, title: string) =>
 const slot = (id: string, title: string) => programme(id, "2000", "2100", title);
 
 describe("programme guide", () => {
+  it("lists what aired since the start of the day, and plays one from the panel's archive for its window", async () => {
+    const { provider, guide, guided } = await connectedGuide();
+    await guide.refresh();
+    const morning = new Date(NOW).setHours(0, 0, 0, 0);
+    const midnight = new Date(NOW).setHours(24, 0, 0, 0);
+
+    // The fake guide begins at 18:00: what aired since then comes first, then what is on now.
+    const day = await guide.day(guided, morning, midnight);
+    const aired = day.find((programme) => programme.stop <= NOW);
+    expect(aired).toMatchObject({ start: at("18:00"), stop: at("18:30") });
+    expect(day.find((programme) => programme.stop > NOW)).toMatchObject({ start: at("20:00") });
+
+    // Played from the panel's archive: its window on the panel's clock, and nothing live.
+    const session = await guide.playback.open(guide.own(guided), ["h264", "aac", "mp3", "opus"], {
+      variants: [guided],
+      archive: { start: aired!.start, end: aired!.stop },
+    });
+    await (await fetch(session.url)).arrayBuffer();
+    expect(provider.archiveRequests()).toEqual([
+      { streamId: guided, minutes: 30, start: "2026-10-02:18-00" },
+    ]);
+    expect(provider.streamRequests()).toBe(0);
+  });
+
   it("answers for each channel by its subscription, and has nothing for another's", async () => {
     const { guide, guided } = await connectedGuide();
     await guide.refresh();
@@ -244,6 +277,7 @@ describe("programme guide", () => {
       unresolved: 0,
       failure: null,
       failedAt: null,
+      processing: { state: "empty" },
     });
 
     await guide.refresh();
@@ -602,7 +636,13 @@ describe("the guides of several subscriptions", () => {
       return [channel(a), channel(b)].map((each) => listings[ownedKey(each)]?.now?.title);
     };
     expect(await shows(guide)).toEqual(["Journaal", "Journal"]);
-    expect(await run(guide.schedule(channel(b)))).toMatchObject([{ title: "Journal" }]);
+    expect(await run(guide.schedule(channel(b), NOW, NOW + 24 * HOUR))).toMatchObject([
+      { title: "Journal" },
+    ]);
+    expect(await run(guide.range([channel(a), channel(b)], at("19:00"), at("23:00")))).toEqual({
+      [ownedKey(channel(a))]: [expect.objectContaining({ title: "Journaal" })],
+      [ownedKey(channel(b))]: [expect.objectContaining({ title: "Journal" })],
+    });
     expect(await run(guide.searchChannels("jour", [channel(a), channel(b)], at("23:00")))).toEqual({
       [ownedKey(channel(a))]: { now: true, later: null },
       [ownedKey(channel(b))]: { now: true, later: null },

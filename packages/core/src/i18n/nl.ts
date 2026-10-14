@@ -321,7 +321,6 @@ export const nl: Translation = {
   "over {size} unpacked": "uitgepakt meer dan {size}",
   "one of its entries is over {size}": "een van de vermeldingen is groter dan {size}",
   "over {count} channels": "meer dan {count} zenders",
-  "over {count} programmes still to come": "meer dan {count} programma's die nog komen",
   "{count} channels": { one: "{count} zender", other: "{count} zenders" },
   Name: "Naam",
   "optional, the host without one": "optioneel, anders de host",

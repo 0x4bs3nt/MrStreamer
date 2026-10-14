@@ -320,7 +320,8 @@ it("small public workloads create nested destinations and reject incomplete reta
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}, 30000);
+  // The guide workload indexes in a worker thread started from source.
+}, 60000);
 
 it("reports separated slowdowns, overlapping ranges and insufficient samples", () => {
   // Two samples are enough to inspect ranges, but do not claim repeated-comparison confidence.

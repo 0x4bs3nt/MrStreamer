@@ -9,6 +9,37 @@ export interface Programme {
   readonly description: string | null;
 }
 
+/**
+ * A programme as a grid places it: without its description, which `guide.programme` reads with
+ * the slot's `guide`.
+ */
+export interface GuideSlot extends Omit<Programme, "description"> {
+  /**
+   * The guide channel the slot is of, among those its channel's guide ids name: opaque, to hand
+   * back to `guide.programme` as it is.
+   */
+  readonly guide: string;
+}
+
+/**
+ * How much a grid reads at once with `guide.range`: a page of channels over a few hours. A grid
+ * shows about 25 channels by six hours and reads the next page as it scrolls.
+ */
+export const GUIDE_RANGE = { channels: 30, hours: 12 } as const;
+
+/**
+ * What `guide.schedule` answers of a channel: the programmes over [from, until), never more than
+ * `most`; where that holds fewer, at least `atLeast` on now or to come, from past `until`, and,
+ * when `from` has passed, at least `atLeast` that have ended, from before `from`. The guide keeps
+ * no programme shorter than a minute, so `most` holds the longest day with the one on at its
+ * start: over a day it never cuts one short. That is a day of 26 hours, as where the clocks go
+ * back two hours (Antarctica/Troll), `GUIDE_DAY_MS`.
+ */
+export const GUIDE_SCHEDULE = { atLeast: 6, most: 26 * 60 + 1 } as const;
+
+/** The longest day a clock can have, which `guide.schedule` may be asked for: 26 hours. */
+export const GUIDE_DAY_MS = 26 * 60 * 60 * 1000;
+
 /** What a channel shows now and next. Either is null where the guide has a gap or ends. */
 export interface Listing {
   readonly now: Programme | null;
@@ -60,6 +91,38 @@ export type GuideSource =
       readonly locked: boolean;
     };
 
+/**
+ * What a subscription's guide is doing, for a Settings row to show: each state holds all such a
+ * row needs. The guide it had keeps answering throughout, until a new one is read whole.
+ *   - `downloading`: `bytes` of the document have arrived, of `total` when the server says.
+ *   - `reading`: the document is being indexed, `programmes` of it so far, since `since`.
+ *   - `ready`: nothing is under way and a guide is in use: `channels` of the catalogue it covers,
+ *     the `programmes` it keeps, until when they run, and when it was downloaded.
+ *   - `failed`: nothing is under way, and downloads have failed `since` then, for `reason`. The
+ *     last download that worked stays in use: `kept` says when it arrived, or null without one.
+ *   - `empty`: nothing is under way, no guide is in use and none failed. Whether one is to come
+ *     is `GuideStatus.availability`.
+ */
+export type GuideProcessing =
+  | { readonly state: "downloading"; readonly bytes: number; readonly total: number | null }
+  | { readonly state: "reading"; readonly programmes: number; readonly since: number }
+  | {
+      readonly state: "ready";
+      readonly channels: number;
+      readonly programmes: number;
+      /** Epoch milliseconds its last programme ends, or null without one. */
+      readonly until: number | null;
+      readonly fetchedAt: number;
+    }
+  | {
+      readonly state: "failed";
+      readonly reason: AppError;
+      readonly since: number;
+      /** Epoch milliseconds the guide still in use was downloaded, or null without one. */
+      readonly kept: number | null;
+    }
+  | { readonly state: "empty" };
+
 /** A subscription's guide as Settings shows it: where from, what it covers, and since when. */
 export interface GuideStatus {
   /** The subscription whose guide this is. */
@@ -83,6 +146,11 @@ export interface GuideStatus {
   readonly failure: AppError | null;
   /** Since when downloads have failed: the first failure after the last that worked. */
   readonly failedAt: number | null;
+  /**
+   * What is under way and how the latest download ended, as it goes: `guide.updated` tells each
+   * step at once, and progress within one a few times a second at most.
+   */
+  readonly processing: GuideProcessing;
 }
 
 /** Why a guide can't be used, or why a change to one no longer applies. */
@@ -102,10 +170,7 @@ export type GuideFailure =
   /** Every programme it lists has ended. */
   | { readonly kind: "ended" }
   /** The document is larger than the app reads: nothing of it is used. */
-  | {
-      readonly kind: "too-large";
-      readonly limit: "bytes" | "element" | "channels" | "programmes";
-    }
+  | { readonly kind: "too-large"; readonly limit: "bytes" | "element" | "channels" }
   /**
    * The guide, its source or its subscription changed since this was asked: a check that is no
    * longer the latest, or a mapping made from a list that no longer holds.

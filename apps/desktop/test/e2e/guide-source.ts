@@ -160,10 +160,11 @@ async function play(page: Page): Promise<void> {
   );
 }
 
-/** What is kept of guides in the profile, by name. */
+/** What is kept of guides in the profile, by name, each index's id as "*". */
 const guideFiles = () =>
   readdirSync(profile)
     .filter((name) => name.startsWith("guide"))
+    .map((name) => name.replace(/\.[0-9a-f-]{36}\./, ".*."))
     .sort();
 
 const hostName = new URL(host.origin).host;
@@ -333,9 +334,12 @@ try {
     if ((await nowOn(page, subscriptionId, picked.id)) !== undefined) {
       back.push("the channel that was mapped still shows programmes");
     }
-    if (guideFiles().join() !== "guide.json,guide.xml") {
-      back.push(`the profile keeps ${guideFiles().join(", ")}`);
+    // The address's index goes once nothing reads it: a few seconds at most.
+    const kept = ["guide-index.*.sqlite", "guide.json"].join();
+    for (let waited = 0; guideFiles().join() !== kept && waited < 5000; waited += 100) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    if (guideFiles().join() !== kept) back.push(`the profile keeps ${guideFiles().join(", ")}`);
     report("Use provider guide goes back, and drops the address", back);
   }
   page.close();

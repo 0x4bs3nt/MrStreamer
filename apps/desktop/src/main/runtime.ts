@@ -4,7 +4,13 @@ import type { UsageObservers } from "./analytics/observers.ts";
 // closes streams and the proxy, and closes the database. Their diagnostics go to a log in the
 // data folder, and disposing waits for the lines still being written.
 import { failedWith } from "@mrstreamer/core/failure";
-import { Guide, GuideAddresses, GuideCatalogue, GuideSource } from "@mrstreamer/core/guide/service";
+import {
+  Guide,
+  GuideAddresses,
+  GuideCatalogue,
+  GuideSource,
+  GUIDE_ARCHIVE_MS,
+} from "@mrstreamer/core/guide/service";
 import { seriesEpisodeSeasons } from "@mrstreamer/core/ondemand/details";
 import { seriesIdentity } from "@mrstreamer/core/viewing/marks";
 import {
@@ -19,6 +25,8 @@ import * as Layer from "effect/Layer";
 import { databaseLayer } from "./platform/database.ts";
 import { diagnosticsLogLayer } from "./platform/diagnostics-log.ts";
 import { downloadStoreLayer } from "./platform/downloads-store.ts";
+import { guideIndexerLayer } from "./platform/guide-indexer.ts";
+import { guideSearcherLayer } from "./platform/guide-searcher.ts";
 import { guideStoreLayer } from "./platform/guide-store.ts";
 import type { Secrets } from "./platform/secrets.ts";
 import { VerifiedFiles, verifiedFilesLayer } from "./platform/verified-files.ts";
@@ -53,6 +61,10 @@ export interface MainConfig {
   readonly updates: UpdatesConfig;
   /** Starts the movie and series catalogue's worker thread. */
   readonly catalogueWorker: OnDemandDeps["worker"];
+  /** Starts a worker thread that indexes one guide document. */
+  readonly guideIndexWorker: Parameters<typeof guideIndexerLayer>[0];
+  /** Starts the worker thread that searches guides. */
+  readonly guideSearchWorker: Parameters<typeof guideSearcherLayer>[0];
   /** The app's TMDB key, or null in builds without one. */
   readonly tmdbKey: string | null;
   /** The country whose streaming services to follow. */
@@ -199,6 +211,8 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
                   revision,
                   key,
                   store: dir,
+                  // Until providers say how far back their catch-up reaches.
+                  archive: GUIDE_ARCHIVE_MS,
                   download: provider ? (signal: AbortSignal) => provider.liveGuide(signal) : null,
                 };
               });
@@ -210,6 +224,8 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
           Effect.map(Library, (library) => ({ channels: library.guideChannels })),
         ),
         guideStoreLayer,
+        guideIndexerLayer(config.guideIndexWorker),
+        guideSearcherLayer(config.guideSearchWorker),
         // An address a viewer gave for a guide is sealed as a login's secret is, and requested
         // as the app, never as a provider's login.
         Layer.succeed(GuideAddresses, {

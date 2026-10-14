@@ -315,7 +315,6 @@ export const en = {
   "over {size} unpacked": "over {size} unpacked",
   "one of its entries is over {size}": "one of its entries is over {size}",
   "over {count} channels": "over {count} channels",
-  "over {count} programmes still to come": "over {count} programmes still to come",
   "{count} channels": { one: "{count} channel", other: "{count} channels" },
   Name: "Name",
   "optional, the host without one": "optional, the host without one",

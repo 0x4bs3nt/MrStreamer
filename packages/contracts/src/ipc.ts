@@ -18,9 +18,12 @@ import type { Result } from "./errors.ts";
 import type { DiagnosticsPreview } from "./diagnostics.ts";
 import type { CopySession, Download, DownloadList } from "./downloads.ts";
 import {
+  GUIDE_DAY_MS,
+  GUIDE_RANGE,
   MAP_FILTERS,
   type GuideCandidate,
   type GuideChannelPage,
+  type GuideSlot,
   type GuideStatus,
   type Listing,
   type ListingMatch,
@@ -141,7 +144,27 @@ export const ipcInputs = {
   /** Fetches one subscription's channels again. */
   "library.refresh": () => type({ subscriptionId: "string > 0" }),
   "guide.listings": () => type({ channels: owned().array() }),
-  "guide.schedule": () => type({ channel: owned() }),
+  /**
+   * A channel's programmes over [from, until), at most the longest day (`GUIDE_DAY_MS`), as `GUIDE_SCHEDULE`
+   * bounds them: from the start of the viewer's day, aired ones among them for catch-up.
+   */
+  "guide.schedule": () =>
+    type({ channel: owned(), from: "number", until: "number" }).narrow(
+      ({ from, until }) => until > from && until - from <= GUIDE_DAY_MS,
+    ),
+  /**
+   * Programmes over a stretch of time, past ones the guide still keeps among them, for a page of
+   * a grid's channels: `GUIDE_RANGE.channels` of them and `GUIDE_RANGE.hours` at most, a grid
+   * reading one page at a time as it scrolls.
+   */
+  "guide.range": () =>
+    type({
+      channels: owned().array().atMostLength(GUIDE_RANGE.channels),
+      from: "number",
+      to: "number",
+    }).narrow(({ from, to }) => to > from && to - from <= GUIDE_RANGE.hours * 60 * 60 * 1000),
+  /** One programme of a channel, by a slot's `guide` and `start`: what the slot leaves out. */
+  "guide.programme": () => type({ channel: owned(), guide: "string", start: "number" }),
   "guide.search": () => type({ query: "string" }),
   /**
    * Searches the programmes of one list's channels, named as `library.channels` names a list: a
@@ -492,8 +515,19 @@ export interface IpcOutputs {
   "library.refresh": CatalogueStatus;
   /** Now and next per channel, by its `ownedKey`, for the channels the guide covers. */
   "guide.listings": Readonly<Record<string, Listing>>;
-  /** The channel's programme on now and the rest the guide knows, in time order. */
+  /** The channel's programmes over the stretch asked for, as `GUIDE_SCHEDULE` says, in time order. */
   "guide.schedule": readonly Programme[];
+  /**
+   * Per channel asked for, by its `ownedKey`, the programmes that overlap the stretch, in time
+   * order, without descriptions. Channels without guide data are left out.
+   */
+  "guide.range": Readonly<Record<string, readonly GuideSlot[]>>;
+  /**
+   * The programme of the slot's guide channel that starts at `start`, with its description; null
+   * when the channel no longer names that guide channel, or it has none starting then, as after
+   * the guide was replaced.
+   */
+  "guide.programme": Programme | null;
   /** Programmes on now or later whose title matches, on now first. */
   "guide.search": readonly ProgrammeMatch[];
   /**

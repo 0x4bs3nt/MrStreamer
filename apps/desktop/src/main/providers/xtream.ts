@@ -31,8 +31,11 @@ const AUTH_TIMEOUT_MS = 15_000;
 const CATALOGUE_TIMEOUT_MS = 90_000;
 /** One movie's or series' details. */
 const DETAILS_TIMEOUT_MS = 20_000;
-/** The whole guide download. Tens of megabytes on large panels. */
-const GUIDE_TIMEOUT_MS = 5 * 60_000;
+/**
+ * The whole guide download, before it is indexed: tens of megabytes on large panels, and up to
+ * the 2 GiB a guide may unpack to.
+ */
+const GUIDE_TIMEOUT_MS = 15 * 60_000;
 
 /** What the user typed, as an account. */
 export interface ParsedLogin {
@@ -298,7 +301,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
       if (!response.ok || !response.body) {
         throw new AppFailure({ kind: "provider-error", status: response.status });
       }
-      return { kind: "document", body: response.body };
+      return { kind: "document", body: response.body, size: bodySize(response) };
     },
 
     async onDemandCatalogue(signal): Promise<OnDemandCatalogue> {
@@ -786,6 +789,17 @@ function toInteger(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined || value === "") return null;
   const number = typeof value === "number" ? value : Number(value);
   return Number.isInteger(number) ? number : null;
+}
+
+/**
+ * How many bytes a response's body is, when the server says so and the connection doesn't
+ * unpack it on the way: a guide's download tells how far it got against that.
+ */
+export function bodySize(response: Response): number | null {
+  if (response.headers.has("content-encoding")) return null;
+  const length = response.headers.get("content-length");
+  const size = length === null ? Number.NaN : Number(length);
+  return Number.isSafeInteger(size) && size >= 0 ? size : null;
 }
 
 /** Why a request to a provider failed, in a sentence that names no address beyond its origin. */

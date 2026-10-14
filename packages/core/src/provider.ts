@@ -130,8 +130,15 @@ export interface ArchiveStream extends LiveStream {
 
 /** What a subscription answers when asked for its programme guide. */
 export type LiveGuide =
-  /** An XMLTV document, as it downloads. */
-  | { readonly kind: "document"; readonly body: ReadableStream<Uint8Array> }
+  /**
+   * An XMLTV document, as it downloads, and how many bytes it is when the server says: null
+   * when it doesn't, or when the connection unpacks it on the way.
+   */
+  | {
+      readonly kind: "document";
+      readonly body: ReadableStream<Uint8Array>;
+      readonly size: number | null;
+    }
   /**
    * The subscription has no guide: a playlist whose first line names none. An answer, not a
    * failure, which a guide that can't be reached or read is.
