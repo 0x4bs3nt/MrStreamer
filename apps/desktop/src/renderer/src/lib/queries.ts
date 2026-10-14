@@ -10,7 +10,7 @@ import {
   type QueryFilters,
 } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
-import type { GuideStatus, MapFilter } from "@mrstreamer/contracts/guide";
+import type { GuideSlot, GuideStatus, MapFilter } from "@mrstreamer/contracts/guide";
 import type { IpcInput, IpcOutput } from "@mrstreamer/contracts/ipc";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import type {
@@ -152,6 +152,30 @@ export const queries = {
       queryKey: ["guide", "schedule", ownedKey(channel), from, until],
       queryFn: () => call("guide.schedule", { channel: ownedId(channel), from, until }),
       staleTime: LISTINGS_REFRESH_MS,
+    }),
+  /**
+   * The slots of a page of channels that overlap [from, to), past ones the guide keeps among
+   * them, by each channel's `ownedKey`, without descriptions. Channels without guide data are missing. A guide
+   * grid reads the page it shows this way; a new guide reads it again.
+   */
+  range: (channels: readonly OwnedId[], from: number, to: number) =>
+    queryOptions({
+      queryKey: ["guide", "range", from, to, ...channels.map(ownedKey)],
+      queryFn: () => call("guide.range", { channels: channels.map(ownedId), from, to }),
+      enabled: channels.length > 0,
+      staleTime: Infinity,
+    }),
+  /** A grid slot's programme with its description, read with the slot's guide channel. */
+  programme: (channel: OwnedId, slot: Pick<GuideSlot, "guide" | "start">) =>
+    queryOptions({
+      queryKey: ["guide", "programme", ownedKey(channel), slot.guide, slot.start],
+      queryFn: () =>
+        call("guide.programme", {
+          channel: ownedId(channel),
+          guide: slot.guide,
+          start: slot.start,
+        }),
+      staleTime: Infinity,
     }),
   programmes: (query: string) =>
     queryOptions({
@@ -674,10 +698,16 @@ export function syncOnDemand(client: QueryClient): () => void {
   };
 }
 
-/** Asks for programmes again once the main process has a new guide. */
+/**
+ * Asks for programmes again once the main process has a new guide. A read still under way asked
+ * the guide before, so it is dropped first: a first read would otherwise be waited for rather
+ * than asked again, and its answer kept as fresh.
+ */
 export function syncGuideUpdates(client: QueryClient): () => void {
   return listen("guide.updated", () => {
-    void client.invalidateQueries({ queryKey: ["guide"] });
+    void client
+      .cancelQueries({ queryKey: ["guide"] })
+      .then(() => client.invalidateQueries({ queryKey: ["guide"] }));
   });
 }
 

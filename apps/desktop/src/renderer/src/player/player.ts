@@ -1116,6 +1116,16 @@ export const player = {
     player.play(channel);
   },
 
+  /**
+   * Plays a channel live to watch it, as the viewer asked for its live picture: a preview of it
+   * that shows it live goes on, and a recording of it gives way to the channel live, as `play`
+   * does.
+   */
+  watchLive(channel: LiveChannel): void {
+    if (store.getState().archive) player.play(channel);
+    else player.watch(channel);
+  },
+
   /** Starts a muted preview of a channel, unless it already plays or the viewer stopped playback. */
   preview(channel: LiveChannel): void {
     const { channel: current, phase, stopped } = store.getState();

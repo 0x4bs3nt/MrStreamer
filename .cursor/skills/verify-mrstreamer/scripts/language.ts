@@ -18,7 +18,8 @@ export interface Driver {
   readonly observed: Record<string, unknown>;
   evaluate<T>(expression: string): Promise<T>;
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
-  wait(check: () => Promise<boolean>): Promise<void>;
+  /** Waits for `check`, 30 seconds unless `timeout` says otherwise. */
+  wait(check: () => Promise<boolean>, timeout?: number): Promise<void>;
   exists(expression: string): Promise<boolean>;
   click(label: string, element: string): Promise<void>;
   key(name: string, code: number): Promise<void>;

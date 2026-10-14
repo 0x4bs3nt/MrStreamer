@@ -1,13 +1,19 @@
 import { useSearchUsage } from "../../app/analytics.ts";
 // Live TV: the lists on the left, the chosen list's channels with what's on now and next, and the
 // current stream, muted, on top. A click on a channel opens Watch; Back returns here unchanged.
+//   Guide beside Watch, or G, shows the same channels as a grid by time instead, and List, G or
+// Escape goes back: see ./GuideGrid.tsx for its keys, which take the place of the list's. Which of
+// the two shows is a preference, kept across restarts. A search shows one row per channel it
+// found in the grid, its copies folded into the one Enter plays in the list.
 //   Up and Down move the selection; PageUp, PageDown, Home and End jump. Enter watches. Right opens
 //   the rest of the day and Left closes it; Left again moves to the lists and Right comes back.
+//   The focus going into the lists, or into the grid, gives them the keys too.
 //   A programme that aired, listed before it where the provider's catch-up keeps it, plays from
 //   its start in Watch.
 //   Search folds safe matches for display. Right opens their canonical copies; Left returns to
 //   the group. Enter on a group uses a favourite copy, then saved subscription order.
-//   Digits jump to a channel number, S stars, Escape goes Home.
+//   Digits jump to a channel number, S stars, Escape goes Home. A button that has the focus takes
+//   its own Enter and Space.
 //   The field at the end of the list's title searches that list, by channel name and by the
 // programmes on now and later today, and shows the channels it finds in the list's order. / goes
 // to it; Down or Enter there hands the keys to the channels found. Escape clears a search before
@@ -16,11 +22,20 @@ import { useSearchUsage } from "../../app/analytics.ts";
 // ./reorder.ts for its keys, which replace these until the order is saved or cancelled.
 //   The lists hold every saved subscription's channels. One that can't be reached keeps the
 // channels it loaded, and a line under the title says so, with Retry.
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, Search, Volume2, VolumeX, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { automaticSearchCopy } from "@mrstreamer/core/catalogue/search";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
+import type { LiveView } from "@mrstreamer/contracts/preferences";
 import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { t } from "@mrstreamer/core/i18n";
 import { hasModifier, isMac, isTyping } from "../../app/platform.ts";
@@ -51,21 +66,45 @@ import { player, usePlayer } from "../../player/player.ts";
 import { numberEntry, NumberEntry } from "../watch/NumberEntry.tsx";
 import { rowPlays, searchChannelRows } from "./search-rows.ts";
 import { ChannelTable } from "./ChannelTable.tsx";
+import { GuideGrid, type GridKeys } from "./GuideGrid.tsx";
 import { ListPicker, listKey } from "./ListPicker.tsx";
 import { listTitle, useListChannels, useListPicker, useListSearch, useShowList } from "./lists.ts";
 import { orderKey, useFavouriteOrder, waits } from "./reorder.ts";
 
 const PAGE_ROWS = 10;
 const NO_CHANNELS: readonly LiveChannel[] = [];
+/** The keys the grid takes while it has the keyboard. */
+const GRID_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "PageUp",
+  "PageDown",
+  "Home",
+  "End",
+  "Enter",
+]);
 
-/** Plays a channel and opens Watch on it. */
+/** Plays a channel and opens Watch on it, on what already plays of it, a recording's too. */
 export function watchChannel(channel: LiveChannel): void {
   player.watch(channel);
   openWatch();
 }
 
+/**
+ * Plays a channel live and opens Watch on it, for a channel or programme the viewer picked to
+ * watch live: a recording of it gives way to the channel live.
+ */
+function watchLive(channel: LiveChannel): void {
+  player.watchLive(channel);
+  openWatch();
+}
+
 export function GuidePage({ active }: { active: boolean }) {
   const list = useUi((state) => state.list);
+  const [liveView, setLiveView] = useLiveView();
+  const grid = useRef<GridKeys>(null);
   const categories = useQuery(queries.categories());
   const categoryMap = useCategoryMap();
   const { channels: listed, error } = useListChannels(list);
@@ -138,6 +177,13 @@ export function GuidePage({ active }: { active: boolean }) {
     () => draft?.order ?? searchRows?.map((row) => row.channel) ?? search.channels,
     [draft?.order, searchRows, search.channels],
   );
+  // The grid's rows: what a search found, each channel once, as the copy Enter plays in the list.
+  const gridRows = useMemo(
+    () =>
+      search.groups?.map((group) => automaticSearchCopy(group, favourites, subscriptions)) ??
+      search.channels,
+    [search.groups, search.channels, favourites, subscriptions],
+  );
   const toggleCopies = (key: string) => {
     const index = searchRows?.findIndex((row) => row.group.key === key && !row.copy) ?? -1;
     if (index >= 0) setChosen({ index, channel: rows[index] ?? null, searchKey: key });
@@ -157,7 +203,7 @@ export function GuidePage({ active }: { active: boolean }) {
     const row = searchRows?.[index];
     const channel =
       row && !row.copy ? automaticSearchCopy(row.group, favourites, subscriptions) : rows[index];
-    if (channel) watchChannel(channel);
+    if (channel) watchLive(channel);
   };
   // Reorder was asked for while a search hides favourites, which it never clears by itself.
   const [refused, setRefused] = useState(false);
@@ -203,7 +249,7 @@ export function GuidePage({ active }: { active: boolean }) {
   };
   /** Starts ordering the favourites, or asks for a search to be cleared first. */
   const reorder = () => {
-    if (!order.available || draft) return;
+    if (!order.available || draft || liveView === "grid") return;
     if (text.trim() !== "") setRefused(true);
     else begin();
   };
@@ -226,6 +272,12 @@ export function GuidePage({ active }: { active: boolean }) {
     if (from === "button") reorderButton.current?.focus();
     else if (focused instanceof HTMLElement && page.current?.contains(focused)) focused.blur();
   }, [movedKey]);
+
+  /** Shows the grid instead of the list, or the list again; not while favourites are ordered. */
+  const toggleView = () => {
+    if (draft) return;
+    setLiveView(liveView === "grid" ? "list" : "grid");
+  };
 
   // A new list, or another search of it, selects its playing channel, or its first.
   const loaded = listed !== undefined;
@@ -270,6 +322,8 @@ export function GuidePage({ active }: { active: boolean }) {
     expandedCopies,
     toggleCopies,
     playRow,
+    liveView,
+    toggleView,
   });
   state.current = {
     picker,
@@ -290,6 +344,8 @@ export function GuidePage({ active }: { active: boolean }) {
     expandedCopies,
     toggleCopies,
     playRow,
+    liveView,
+    toggleView,
   };
 
   useEffect(() => {
@@ -324,10 +380,36 @@ export function GuidePage({ active }: { active: boolean }) {
         setSearchFocus((asked) => asked + 1);
       };
 
+      // A button that has the focus, as Tab gives it, takes its own Enter and Space, unless they
+      // end a typed channel number.
+      if (
+        (event.key === "Enter" || event.key === " ") &&
+        !numberEntry.active() &&
+        event.target instanceof Element &&
+        event.target.closest("button, a[href], select")
+      )
+        return;
       if (/^[0-9]$/.test(event.key)) {
         numberEntry.type(event.key);
         event.preventDefault();
         return;
+      }
+      // The grid has the keys that move and watch while it shows; a typed number is still the
+      // page's to commit.
+      if (now.liveView === "grid" && now.focus === "channels" && GRID_KEYS.has(event.key)) {
+        const done =
+          event.key === "Enter" && (event.repeat || numberEntry.commit())
+            ? "handled"
+            : (grid.current?.key(event.key) ?? "ignored");
+        if (done === "lists") {
+          setFocus("lists");
+          const focused = document.activeElement;
+          if (focused instanceof HTMLElement && page.current?.contains(focused)) focused.blur();
+        }
+        if (done !== "ignored") {
+          event.preventDefault();
+          return;
+        }
       }
       switch (event.key) {
         case "ArrowUp":
@@ -400,6 +482,7 @@ export function GuidePage({ active }: { active: boolean }) {
         case "Escape":
           if (numberEntry.active()) numberEntry.cancel();
           else if (now.text !== "") now.setText("");
+          else if (now.liveView === "grid") now.toggleView();
           else openView("home");
           break;
         case "/":
@@ -410,11 +493,20 @@ export function GuidePage({ active }: { active: boolean }) {
           break;
         case "s":
         case "S": {
+          if (now.liveView === "grid") {
+            const shown = grid.current?.channel();
+            if (shown) toggleFavourite(shown);
+            break;
+          }
           const row = now.searchRows?.[now.selected];
           if (channel && (!row || row.copy || row.group.copies.length === 1))
             toggleFavourite(channel);
           break;
         }
+        case "g":
+        case "G":
+          now.toggleView();
+          break;
         case "r":
         case "R":
           now.reorder();
@@ -433,6 +525,15 @@ export function GuidePage({ active }: { active: boolean }) {
   const waiting = waits(draft);
   /** The order was refused: its favourites changed, and are read again when the viewer says so. */
   const changed = draft?.status === "changed" || draft?.status === "reading";
+  const viewSwitch = (
+    <Button
+      title={liveView === "grid" ? t("List (G)") : t("Guide (G)")}
+      disabled={draft !== null}
+      onClick={toggleView}
+    >
+      {liveView === "grid" ? t("List") : t("Guide")}
+    </Button>
+  );
   return (
     // Until an order being saved is answered, the page takes no input: nothing leaves it.
     <div ref={page} className="flex h-full flex-col" inert={waiting ? true : undefined}>
@@ -452,6 +553,7 @@ export function GuidePage({ active }: { active: boolean }) {
             }
             selected={list}
             onChannels={() => setFocus("channels")}
+            onFocus={() => setFocus("lists")}
             highlight={keyboard && focus === "lists" ? entry : null}
             onPick={(picked) => {
               setRemovedCategory(null);
@@ -461,7 +563,8 @@ export function GuidePage({ active }: { active: boolean }) {
             className="w-[16rem] flex-none border-r border-border px-3 pt-3 pb-6"
           />
           <main className="flex min-w-0 flex-1 flex-col">
-            <NowStrip active={active} />
+            {/* The switch sits beside Watch, or at the end of the title while nothing plays. */}
+            <NowStrip active={active} viewSwitch={viewSwitch} />
             <div className="flex h-14 flex-none items-center gap-3 px-9 pt-2 pb-3">
               <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{title}</h1>
               {draft ? (
@@ -505,7 +608,8 @@ export function GuidePage({ active }: { active: boolean }) {
                     </span>
                   )}
                   <div className="ml-auto flex flex-none items-center gap-2">
-                    {order.available && (
+                    {playingKey === null && viewSwitch}
+                    {order.available && liveView === "list" && (
                       <Button
                         ref={reorderButton}
                         variant="ghost"
@@ -569,6 +673,22 @@ export function GuidePage({ active }: { active: boolean }) {
                       }
                 }
               />
+            ) : liveView === "grid" ? (
+              listed && (
+                <GuideGrid
+                  key={`${key}\n${search.query}`}
+                  ref={grid}
+                  channels={gridRows}
+                  playingKey={playingKey}
+                  showCursor={keyboard && focus === "channels"}
+                  onWatch={watchLive}
+                  onKeys={() => setFocus("channels")}
+                  onPlayArchive={(channel, programme) => {
+                    player.playArchive(channel, programme);
+                    openWatch();
+                  }}
+                />
+              )
             ) : (
               <ChannelTable
                 categories={categoryMap}
@@ -619,7 +739,7 @@ export function GuidePage({ active }: { active: boolean }) {
           </main>
         </div>
       )}
-      {active && <NumberEntry onChannel={watchChannel} />}
+      {active && <NumberEntry onChannel={watchLive} />}
     </div>
   );
 }
@@ -768,10 +888,11 @@ function NothingFound({
 }
 
 /**
- * The stream that plays, muted, with what it shows and a way back to it. While a receiver on the
- * network is connected, the channel stands still and a line says why.
+ * The stream that plays, muted, with what it shows and a way back to it, then `viewSwitch`, from
+ * the list to the grid and back. While a receiver on the network is connected, the channel stands
+ * still and a line says why.
  */
-function NowStrip({ active }: { active: boolean }) {
+function NowStrip({ active, viewSwitch }: { active: boolean; viewSwitch: ReactNode }) {
   const channel = usePlayer((state) => state.channel);
   const audible = usePlayer((state) => state.audible && !state.muted);
   const waits = usePreviewWaits();
@@ -819,8 +940,26 @@ function NowStrip({ active }: { active: boolean }) {
               {audible ? <Volume2 /> : <VolumeX />}
             </Button>
           )}
+          {viewSwitch}
         </div>
       </div>
     </section>
   );
+}
+
+/**
+ * How Live TV shows its lists, the list or the grid, as the preferences keep it, and a way to
+ * change it: at once on screen, then saved. The list until the preferences are read.
+ */
+function useLiveView(): [LiveView, (view: LiveView) => void] {
+  const client = useQueryClient();
+  const view = useQuery(queries.preferences()).data?.liveView ?? "list";
+  const set = (liveView: LiveView) => {
+    const key = queries.preferences().queryKey;
+    client.setQueryData(key, (saved) => saved && { ...saved, liveView });
+    void call("preferences.update", { liveView })
+      .then((saved) => client.setQueryData(key, saved))
+      .catch(() => {});
+  };
+  return [view, set];
 }

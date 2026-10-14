@@ -86,6 +86,11 @@ export interface FakeProviderOptions {
   readonly live?: boolean;
   /** The guide id the channel list sends for a channel, in place of its own. */
   readonly guideIdOf?: (channel: FakeChannel) => string | null;
+  /**
+   * Serves `gridGuide` over these hours around each request in place of the default guide: what a
+   * guide grid scrolls through, past and ahead.
+   */
+  readonly guideHours?: { readonly past: number; readonly ahead: number };
   /** About how many movies and series to list, besides the test titles. */
   readonly titles?: number;
   /**
@@ -599,7 +604,11 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     }
     if (guideAnswer === "hold") return;
     if (typeof guideAnswer === "number") return void response.writeHead(guideAnswer).end();
-    const document = guideAnswer ?? fakeGuide(catalogue, Date.now());
+    const document =
+      guideAnswer ??
+      (options.guideHours
+        ? gridGuide(catalogue, Date.now(), options.guideHours)
+        : fakeGuide(catalogue, Date.now()));
     response.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
     if (!guidePieceBytes) return void response.end(document);
     const bytes = Buffer.from(document, "utf8");
@@ -880,6 +889,49 @@ export function fakeGuide(catalogue: FakeCatalogue, around: number): string {
         `<programme start="${xmltvTime(start)}" stop="${xmltvTime(start + SLOT_MS)}" channel="${id}">` +
           `<title lang="en">${word} News ${slot}</title>${description}</programme>`,
       );
+    }
+  }
+  parts.push("</tv>");
+  return parts.join("\n");
+}
+
+/** Programme lengths a grid guide mixes, in minutes. */
+const LENGTHS = [15, 30, 45, 60, 90, 120];
+const SHOWS = ["Journal", "Report", "Live", "Weekly", "Tonight", "Classics", "Kids", "Film"];
+
+/**
+ * An XMLTV document for the catalogue's guide channels over `hours` before and after `around`, as
+ * a guide grid shows it: programmes of 15 minutes to two hours, in a mix that differs per channel,
+ * and on every fifth channel two hours without any, from three hours before `around`. Titles
+ * name the channel's word and a show, "Harbour Weekly"; every third has no description.
+ */
+function gridGuide(
+  catalogue: FakeCatalogue,
+  around: number,
+  hours: { readonly past: number; readonly ahead: number },
+): string {
+  const hour = 60 * 60 * 1000;
+  const first = Math.floor(around / hour) * hour - hours.past * hour;
+  const last = around + hours.ahead * hour;
+  const missing = Math.floor(around / hour) * hour - 3 * hour;
+  const ids = [...new Set(catalogue.channels.flatMap((channel) => channel.guideId ?? []))];
+  const parts = ['<?xml version="1.0" encoding="utf-8" ?><tv generator-info-name="fake">'];
+  for (const id of ids)
+    parts.push(`<channel id="${id}"><display-name>${id}</display-name></channel>`);
+  for (const [index, id] of ids.entries()) {
+    const word = WORDS[index % WORDS.length] ?? "Earth";
+    for (let slot = 0, start = first; start < last; slot++) {
+      const minutes = LENGTHS[(index * 7 + slot * 13) % LENGTHS.length] ?? 30;
+      const stop = start + minutes * 60 * 1000;
+      if (index % 5 !== 4 || stop <= missing || start >= missing + 2 * hour) {
+        const show = SHOWS[(index + slot) % SHOWS.length] ?? "Journal";
+        const description = slot % 3 === 0 ? "" : `<desc>${word} ${show}, part ${slot}.</desc>`;
+        parts.push(
+          `<programme start="${xmltvTime(start)}" stop="${xmltvTime(stop)}" channel="${id}">` +
+            `<title lang="en">${word} ${show}</title>${description}</programme>`,
+        );
+      }
+      start = stop;
     }
   }
   parts.push("</tv>");

@@ -11,6 +11,7 @@ import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
 import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
+import { guideGridScenario, guideGridScrollScenario } from "./guide-grid.ts";
 import { homeScenario } from "./home.ts";
 import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
@@ -39,6 +40,8 @@ const scenarios = [
   "catch-up",
   "catch-up-hls",
   "live-categories",
+  "guide-grid",
+  "guide-grid-scroll",
   "titles",
   "watchlist",
   "downloads",
@@ -127,9 +130,30 @@ async function run(scenario: Scenario) {
     profile = await mkdtemp(join(tmpdir(), "mrstreamer-verify-"));
     const stage = scenario === "home-stage" || scenario === "home-stage-live-only";
     provider = await startFakeProvider({
-      channels: scenario === "live-categories" ? 64000 : 60,
+      channels:
+        scenario === "live-categories" ? 64000 : scenario === "guide-grid-scroll" ? 20000 : 60,
       titles: 30,
       live: true,
+      ...(scenario === "guide-grid"
+        ? {
+            guideHours: { past: 6, ahead: 24 },
+            // The playable test channels get guides of their own, but for the third.
+            channelOf: (channel) =>
+              channel.fixture && channel.streamId !== 1002
+                ? { ...channel, guideId: channel.guideId ?? `test${channel.streamId}.grid` }
+                : channel,
+          }
+        : {}),
+      ...(scenario === "guide-grid-scroll"
+        ? {
+            guideHours: { past: 24, ahead: 24 },
+            // Every second listed channel has a guide channel of its own.
+            channelOf: (channel) =>
+              channel.fixture || channel.streamId < 2000
+                ? channel
+                : { ...channel, guideId: channel.streamId % 2 ? null : `grid${channel.streamId}` },
+          }
+        : {}),
       ...(scenario === "live-categories"
         ? {
             channelOf: (channel) =>
@@ -279,7 +303,8 @@ async function run(scenario: Scenario) {
     const livePage = {
       evaluate: <T>(expression: string) => live().evaluate<T>(expression),
     };
-    const wait = (check: () => Promise<boolean>) => until(check, abort.signal);
+    const wait = (check: () => Promise<boolean>, timeout?: number) =>
+      until(check, abort.signal, timeout);
     const exists = (expression: string) => livePage.evaluate<boolean>(`!!(${expression})`);
     const action = (label: string) => actions.push({ action: label, at: new Date().toISOString() });
     const capture = async (name: string) => {
@@ -587,6 +612,30 @@ async function run(scenario: Scenario) {
         },
         playlist!,
       );
+    } else if (scenario === "guide-grid" || scenario === "guide-grid-scroll") {
+      const driver = {
+        profile,
+        observed,
+        evaluate: livePage.evaluate,
+        send,
+        wait,
+        exists,
+        click,
+        key,
+        capture,
+        action,
+        launch,
+        quit,
+      };
+      if (scenario === "guide-grid")
+        await guideGridScenario(driver, {
+          streams: () => ({
+            requests: provider!.streamRequests(),
+            active: provider!.activeStreams(),
+          }),
+          archiveRequests: () => provider!.archiveRequests(),
+        });
+      else await guideGridScrollScenario(driver);
     } else if (scenario === "live-tv") {
       await click("Open global Search", "document.querySelector('button[aria-label=Search]')");
       action("Search TEST | H.264 + AAC");

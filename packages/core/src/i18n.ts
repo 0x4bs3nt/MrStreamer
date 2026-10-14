@@ -265,6 +265,8 @@ const DATE_STYLES = {
   weekday: { weekday: "short" },
   /** "2 Oct", "Oct 2" */
   day: { day: "numeric", month: "short" },
+  /** "Fri 2 Oct", "Fri, Oct 2" */
+  weekdayDay: { weekday: "short", day: "numeric", month: "short" },
   /** "2 Oct 2026", "Oct 2, 2026" */
   date: { day: "numeric", month: "short", year: "numeric" },
   /** As the language writes a medium date: "2 Oct 2026", "2 oct. 2026" */

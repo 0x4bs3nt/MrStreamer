@@ -48,9 +48,15 @@ export const Preferences = type({
    * new key, as for `subtitleLook`.
    */
   "liveQuality?": type.enumerated(...QUALITIES),
+  /**
+   * How Live TV shows a list: a row per channel, or the guide grid of channels by time. The list
+   * when absent. A new view needs a new key, as for `subtitleLook`.
+   */
+  "liveView?": "'list' | 'grid'",
 });
 export type Preferences = typeof Preferences.infer;
 export type SubtitleLook = NonNullable<Preferences["subtitleLook"]>;
+export type LiveView = NonNullable<Preferences["liveView"]>;
 
 /**
  * What the viewer left one subscription at: where Live TV opens, and the versions and streams

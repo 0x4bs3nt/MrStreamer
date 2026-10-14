@@ -103,7 +103,7 @@ export function endOfDay(at: number): number {
 }
 
 /** "34 min left", "1 h 20 min left". */
-export function timeLeft(programme: Programme, now: number): string {
+export function timeLeft(programme: Pick<Programme, "start" | "stop">, now: number): string {
   return minutesLeft(Math.max(1, Math.ceil((programme.stop - now) / 60_000)));
 }
 
@@ -118,7 +118,7 @@ export function minutesLeft(minutes: number): string {
 }
 
 /** How far a programme has run, from 0 to 1. */
-export function progressOf(programme: Programme, now: number): number {
+export function progressOf(programme: Pick<Programme, "start" | "stop">, now: number): number {
   const length = programme.stop - programme.start;
   return length > 0 ? Math.min(1, Math.max(0, (now - programme.start) / length)) : 0;
 }

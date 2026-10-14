@@ -6,7 +6,7 @@ Source of truth for desktop and website verification paths. Run the relevant bas
 | ------------------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | [Home](home.md)                      | `home`                                        | Recommendations, permanent full Watchlist, empty/hidden row controls, move/reset/restart        |
 | [Subscriptions](subscriptions.md)    | `subscriptions`                               | M3U, multiple subscriptions, credential repair, refresh, removal                                |
-| [Live TV](live-tv.md)                | `live-tv`                                     | Live TV list, guide, favourites, recovery, codecs, captions, catch-up (`catch-up`, `-hls`)      |
+| [Live TV](live-tv.md)                | `live-tv`                                     | List, guide grid (`guide-grid`), favourites, recovery, codecs, captions, catch-up (`catch-up`)  |
 | [Movies and series](titles.md)       | `titles`                                      | Search, filters, version selection, movie/episode playback, languages                           |
 | [Watchlist](watchlist.md)            | `watchlist`                                   | Toggle removal, Home entry, restart persistence, keyboard, unavailable titles                   |
 | [Downloads](downloads.md)            | `downloads`                                   | Preemption, cancel/retry/delete, offline restart, removed subscription, network record          |

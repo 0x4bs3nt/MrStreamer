@@ -1,6 +1,6 @@
 // Stands in for the main process in the renderer's tests, which run with happy-dom. Every call is
 // recorded; a call the test holds answers when the test says, and a method the test gave a
-// standing answer, or failure, answers with it each time. The preferences otherwise answer with the defaults
+// standing answer, or failure, or a reply made from its input, answers with it each time. The preferences otherwise answer with the defaults
 // and what the test says the viewer saved, a subscription's with nothing left in it, how a
 // series' episodes stand with nothing played and nothing marked, and anything else never answers.
 // Like the main process, it refuses a call whose input the contract doesn't allow, so a view
@@ -41,6 +41,7 @@ export const SAVED: SubscriptionSummary = {
 
 const held = new Map<IpcMethod, Promise<Result<unknown>>[]>();
 const standing = new Map<IpcMethod, Result<unknown>>();
+const replies = new Map<IpcMethod, (args: unknown) => unknown>();
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
 const calls: { readonly method: IpcMethod; readonly args: unknown }[] = [];
 let preferences = defaultPreferences;
@@ -68,6 +69,13 @@ export const ipc = {
   always<M extends IpcMethod>(method: M, value: IpcOutput<M>): void {
     standing.set(method, { ok: true, value });
   },
+  /**
+   * Answers every call to `method` that isn't held with what `reply` makes of its input, as the
+   * main process answers a read by what it asks for.
+   */
+  answer<M extends IpcMethod>(method: M, reply: (args: IpcInput<M>) => IpcOutput<M>): void {
+    replies.set(method, (args) => reply(args as IpcInput<M>));
+  },
   /** Fails every call to `method` that isn't held with `error`, until `always` gives it an answer. */
   refuse(method: IpcMethod, error: AppError): void {
     standing.set(method, { ok: false, error });
@@ -85,6 +93,7 @@ export const ipc = {
     calls.length = 0;
     held.clear();
     standing.clear();
+    replies.clear();
     preferences = defaultPreferences;
   },
 };
@@ -114,6 +123,8 @@ const bridge = {
     if (answer) return answer;
     const always = standing.get(method);
     if (always) return Promise.resolve(always);
+    const reply = replies.get(method);
+    if (reply) return Promise.resolve({ ok: true, value: reply(args) });
     if (method.startsWith("analytics.")) return Promise.resolve({ ok: true, value: null });
     if (method === "viewing.episodes") {
       return Promise.resolve({ ok: true, value: { progress: [], marks: [], undoable: null } });

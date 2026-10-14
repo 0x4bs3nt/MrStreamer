@@ -14,6 +14,7 @@ export function ListPicker({
   onPick,
   onChannels,
   notice,
+  onFocus,
   className,
 }: {
   picker: ListPickerState;
@@ -23,6 +24,8 @@ export function ListPicker({
   onChannels: () => void;
   /** A removed category falls back to All channels; keep its explanation beside that row. */
   notice?: string | null;
+  /** The focus went into the picker, as with Tab or a click on its field: it has the keys. */
+  onFocus?: () => void;
   className?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -59,6 +62,7 @@ export function ListPicker({
       role="navigation"
       aria-label={t("Channel categories")}
       className={cn("flex flex-col", className)}
+      onFocus={onFocus}
       onKeyDown={(event) => {
         if (event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return;
         const control =
