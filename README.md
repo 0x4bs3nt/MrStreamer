@@ -21,7 +21,7 @@ A clean, fast, open-source IPTV player for macOS, Windows and Linux. Bring your 
 
 <img src="docs/assets/readme-live-tv.webp" alt="Live TV: channels with what's on now and next" width="100%">
 
-A programme guide with [search](docs/user/live-tv.md#the-guide), favourites in [the order you want](docs/user/live-tv.md#the-guide), and the channels you watched last. The guide can also come from [an XMLTV address of your own](docs/user/subscriptions.md#a-guide-from-another-address).
+A programme guide with [search](docs/user/live-tv.md#the-guide), favourites in [the order you want](docs/user/live-tv.md#the-guide), and the channels you watched last. XMLTV guides of [your own](docs/user/subscriptions.md#guides-from-other-addresses) fill in the channels it doesn't cover.
 
 ### Movies and series
 
@@ -112,14 +112,14 @@ VLC is a general media player. Kodi is compared with its official [IPTV Simple](
 
 ### Getting set up
 
-|                   | Platforms                                                                             | Xtream / M3U                                     | Guide (XMLTV)                                                                        | Movies and series                                            |
-| ----------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| **Mr. Streamer**  | macOS (Apple silicon), Windows, Linux                                                 | Xtream login, M3U link                           | Provider or playlist guide, or your own XMLTV address; grid and catch-up from 0.0.13 | Library with TMDB details; M3U after mapping groups          |
-| **TiviMate**      | Android TV                                                                            | Xtream Codes, M3U, Stalker Portal                | TV guide (EPG) grid; XMLTV source not stated                                         | Movies and shows                                             |
-| **IPTV Smarters** | Android, Android TV, iPhone, iPad, Apple TV, macOS, Windows, LG and Samsung TVs       | M3U, provider API login (Xtream not named)       | EPG from your source; XMLTV address not stated                                       | Movies and series                                            |
-| **IPTVX**         | iPhone, iPad, Apple TV, Apple Vision, Apple silicon Mac, Android, Android TV, Fire OS | Xtream, M3U, also Plex and SMB                   | Server EPG, or your own EPG URL                                                      | Movies and TV shows                                          |
-| **VLC**           | Windows, macOS, Linux, Android, iOS, Apple TV                                         | Opens M3U playlists; Xtream login not documented | Not stated                                                                           | Plays playlist entries                                       |
-| **Kodi**          | Windows, macOS, Linux, Android, iOS, tvOS, webOS, Raspberry Pi                        | M3U file or URL; Xtream login not documented     | XMLTV file or URL                                                                    | VOD from M3U media entries, listed as recordings or channels |
+|                   | Platforms                                                                             | Xtream / M3U                                     | Guide (XMLTV)                                                                         | Movies and series                                            |
+| ----------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **Mr. Streamer**  | macOS (Apple silicon), Windows, Linux                                                 | Xtream login, M3U link                           | Provider or playlist guide, then your own XMLTV guides; grid and catch-up from 0.0.13 | Library with TMDB details; M3U after mapping groups          |
+| **TiviMate**      | Android TV                                                                            | Xtream Codes, M3U, Stalker Portal                | TV guide (EPG) grid; XMLTV source not stated                                          | Movies and shows                                             |
+| **IPTV Smarters** | Android, Android TV, iPhone, iPad, Apple TV, macOS, Windows, LG and Samsung TVs       | M3U, provider API login (Xtream not named)       | EPG from your source; XMLTV address not stated                                        | Movies and series                                            |
+| **IPTVX**         | iPhone, iPad, Apple TV, Apple Vision, Apple silicon Mac, Android, Android TV, Fire OS | Xtream, M3U, also Plex and SMB                   | Server EPG, or your own EPG URL                                                       | Movies and TV shows                                          |
+| **VLC**           | Windows, macOS, Linux, Android, iOS, Apple TV                                         | Opens M3U playlists; Xtream login not documented | Not stated                                                                            | Plays playlist entries                                       |
+| **Kodi**          | Windows, macOS, Linux, Android, iOS, tvOS, webOS, Raspberry Pi                        | M3U file or URL; Xtream login not documented     | XMLTV file or URL                                                                     | VOD from M3U media entries, listed as recordings or channels |
 
 ### Watching later and elsewhere
 

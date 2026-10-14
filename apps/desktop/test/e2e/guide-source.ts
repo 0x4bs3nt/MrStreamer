@@ -1,20 +1,21 @@
-// Checks a guide from an address of the viewer's own in a built app, against the fake provider
-// and a fake host for guides: what the suite can't, because the window, the player and the main
+// Checks the XMLTV sources of Settings > Guides in a built app, against the fake provider and a
+// fake host for guides: what the suite can't, because the window, the player and the main
 // process meet only there. It connects, plays a channel, then checks, in order:
 //
-// - In Settings > Subscriptions, Guide takes an address, Check reads it without changing the
-//   guide, and Use this guide switches to it. The channel that plays keeps the one connection
-//   it had meanwhile, and nothing shows or is saved of the address but its host.
-// - The channels the new guide lists show its programmes.
-// - Map opens the sheet, and the keyboard maps a channel without programmes to the guide channel
-//   picked: its programmes show at once, on the same connection still, and it leaves the
-//   channels without programmes for those mapped by hand.
-// - A download that fails keeps the guide, says why under the Guide row, and asks the provider
+// - In Settings > Guides, Add saves an address at once and it downloads in the background. The
+//   channel that plays keeps the one connection it had meanwhile, and nothing shows or is saved
+//   of the address but its host.
+// - The subscription's own guide comes first: the channel it covers keeps its programmes.
+// - Map opens the sheet, and the keyboard maps a channel without programmes to the source's
+//   guide channel picked: its programmes show at once, on the same connection still, and it
+//   leaves the channels without programmes for those mapped by hand. The Guide row says a
+//   channel comes from the source.
+// - A download that fails keeps the source's guide, says why on its row, and asks the provider
 //   for nothing in its place.
-// - After a restart the address, the mapping, the listings and the failure are as they were,
+// - After a restart the source, the mapping, the listings and the failure are as they were,
 //   with nothing asked of the guide's host.
-// - Use provider guide goes back: the provider's programmes show, and the address, its guide and
-//   the mapping are gone from the profile.
+// - Removing the source drops what it downloaded from the profile, and the channel mapped to it
+//   shows nothing, its mapping counted as leading nowhere.
 //
 //   node test/e2e/guide-source.ts <app executable> [-- extra app arguments]
 //
@@ -23,7 +24,12 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GuideStatus, Listing, MapChannelPage } from "@mrstreamer/contracts/guide";
+import type {
+  GuideSourceStatus,
+  GuideStatus,
+  Listing,
+  MapChannelPage,
+} from "@mrstreamer/contracts/guide";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { GUIDE_KEY, startGuideHost } from "../fake-guide-host.ts";
 import { startFakeProvider } from "../fake-provider.ts";
@@ -160,15 +166,36 @@ async function play(page: Page): Promise<void> {
   );
 }
 
-/** What is kept of guides in the profile, by name, each index's id as "*". */
-const guideFiles = () =>
-  readdirSync(profile)
-    .filter((name) => name.startsWith("guide"))
+/** What is kept of the sources in the profile, by name, each index's id as "*". */
+const sourceFiles = () =>
+  readdirSync(join(profile, "guides"))
     .map((name) => name.replace(/\.[0-9a-f-]{36}\./, ".*."))
     .sort();
 
 const hostName = new URL(host.origin).host;
-const guideButton = `document.querySelector('[aria-label^="Guide for"]')`;
+
+/** The global sources, as Settings > Guides is told. */
+const sources = (page: Page) => invoke<GuideSourceStatus[]>(page, "guide.sources");
+
+/** Opens the tab of Settings called `name`, from anywhere in Settings. */
+async function openTab(page: Page, name: "Guides" | "Subscriptions"): Promise<void> {
+  await click(
+    page,
+    `[...document.querySelectorAll("nav button")].find((b) => b.textContent.trim() === "${name}")`,
+  );
+}
+
+/** Opens Settings > Guides, from anywhere in Settings, and waits for its field. */
+async function openGuides(page: Page): Promise<void> {
+  await openTab(page, "Guides");
+  await waitFor(
+    () =>
+      page.evaluate<boolean>(
+        `!!document.querySelector('input[aria-label="Address of an XMLTV guide"]')`,
+      ),
+    10_000,
+  );
+}
 
 try {
   let page = await connect(port);
@@ -188,56 +215,60 @@ try {
   await openSubscriptions(page);
   await waitFor(async () => (await status(page)).fetchedAt !== null, 60_000);
   const { subscriptionId } = await status(page);
-  const own = await nowOn(page, subscriptionId, CHANNEL.id);
+  /** Whether `title` is the fake provider's own, "Earth News 3", which changes each half hour. */
+  const own = (title: string | undefined) => title !== undefined && / News \d+$/.test(title);
 
   {
     const problems: string[] = [];
-    await click(page, guideButton);
-    await waitFor(() => page.evaluate<boolean>(`!!document.querySelector("form input")`), 10_000);
-    await type(page, `document.querySelector("form input")`, host.address());
-    await click(page, `document.querySelector('form button[type="submit"]')`);
-    const said = () => shown(page, 'form [role="status"]');
-    await waitFor(async () => (await said()).startsWith("Checked:"), 30_000);
-    if (!(await said()).includes("3 channels in this guide, 1 of your")) {
-      problems.push(`the check said "${await said()}"`);
-    }
-    // Checked only: the guide in use is still the provider's.
-    const before = await status(page);
-    if (before.source.kind !== "own" || (await nowOn(page, subscriptionId, CHANNEL.id)) !== own) {
-      problems.push("the guide changed before Use this guide");
-    }
-    await click(page, buttonNamed("Use this guide"));
-    await waitFor(async () => (await status(page)).source.kind === "external", 30_000);
-    const after = await status(page);
-    if (after.source.kind !== "external" || after.source.origin !== host.origin) {
-      problems.push(`the guide's source is ${JSON.stringify(after.source)}`);
-    }
-    await waitFor(async () => (await shown(page)).includes(`Guide · ${hostName} · `), 10_000).catch(
-      () => problems.push("the Guide row doesn't name the address's host"),
+    await openGuides(page);
+    await type(
+      page,
+      `document.querySelector('input[aria-label="Address of an XMLTV guide"]')`,
+      host.address(),
     );
+    await click(page, buttonNamed("Add"));
+    // Saved at once, its row there before its download is done.
+    await waitFor(async () => (await sources(page)).length === 1, 10_000).catch(() =>
+      problems.push("Add saved no source"),
+    );
+    await waitFor(async () => (await sources(page))[0]?.processing.state === "ready", 60_000).catch(
+      () => problems.push("the source never became ready"),
+    );
+    await waitFor(
+      async () => (await shown(page, "main")).includes(`${hostName}\nReady`),
+      10_000,
+    ).catch(async () => problems.push(`the row says "${await shown(page, "main")}"`));
+    const field = await page.evaluate<string>(
+      `document.querySelector('input[aria-label="Address of an XMLTV guide"]').value`,
+    );
+    if (field !== "") problems.push("the field still holds the address");
     // Nothing of the address but its host: not in the window, and not in what is told or kept.
-    const told = `${await shown(page)}\n${JSON.stringify(await invoke(page, "guide.status"))}`;
-    const kept = readFileSync(join(profile, "guide-source.json"), "utf8");
+    const told = `${await shown(page)}\n${JSON.stringify(await sources(page))}`;
+    const kept = readFileSync(join(profile, "guides", "sources.json"), "utf8");
     for (const secret of [GUIDE_KEY, "guide.xml?"]) {
       if (told.includes(secret)) problems.push(`the window was told "${secret}"`);
-      if (kept.includes(secret)) problems.push(`guide-source.json holds "${secret}"`);
+      if (kept.includes(secret)) problems.push(`sources.json holds "${secret}"`);
     }
     if (host.requests().length !== 1)
       problems.push(`the host was asked ${host.requests().length} times`);
     problems.push(...stream());
-    report("An address is checked first, then used, while the channel plays on", problems);
+    report(
+      "A source is added at once and downloads in the background, while the channel plays on",
+      problems,
+    );
   }
 
   {
     const title = await nowOn(page, subscriptionId, CHANNEL.id);
     report(
-      "The channels the guide lists show its programmes",
-      title === "Elsewhere AAC" ? [] : [`${CHANNEL.name} shows "${title}"`],
+      "The subscription's own guide comes first, the source after it",
+      own(title) ? [] : [`${CHANNEL.name} shows "${title}", not its own guide's`],
     );
   }
 
   {
     const problems: string[] = [];
+    await openTab(page, "Subscriptions");
     await click(page, `document.querySelector('[aria-label^="Map channels of"]')`);
     const sheet = '[role="dialog"]';
     await waitFor(async () => (await shown(page, sheet)).includes("no id match"), 20_000);
@@ -250,9 +281,13 @@ try {
     });
     const [picked] = without.channels;
     if (!picked) throw new Error("Every channel has programmes");
-    // The first channel is picked. Its guide channels are searched, and one mapped, by the keys.
+    // The first channel is picked. The guides' channels are searched, and one of the source's
+    // mapped, by the keys.
     await type(page, `document.querySelectorAll('${sheet} input')[1]`, SPARE.name);
-    await waitFor(async () => (await shown(page, sheet)).includes(SPARE.id), 20_000);
+    await waitFor(
+      async () => (await shown(page, sheet)).includes(`${hostName} · ${SPARE.id}`),
+      20_000,
+    );
     await key(page, "ArrowDown", 40);
     await key(page, "ArrowDown", 40);
     await key(page, "Enter", 13);
@@ -270,7 +305,7 @@ try {
       filter.dispatchEvent(new Event("change", { bubbles: true }));
     })()`);
     await waitFor(
-      async () => (await shown(page, channels)).includes(`mapped · ${SPARE.id}`),
+      async () => (await shown(page, channels)).includes(`mapped · ${hostName} · ${SPARE.id}`),
       20_000,
     ).catch(() => problems.push("the channel doesn't say what it is mapped to"));
     const title = await nowOn(page, subscriptionId, picked.id);
@@ -278,24 +313,29 @@ try {
     problems.push(...stream());
     await click(page, buttonNamed("Done"));
     await waitFor(() => page.evaluate<boolean>(`!document.querySelector('${sheet}')`), 10_000);
-    report("The keyboard maps a channel to the guide channel picked", problems);
+    // The Guide row says where its channels' programmes come from.
+    await waitFor(async () => (await shown(page)).includes(`1 ${hostName}`), 10_000).catch(
+      async () => problems.push(`the Guide row says "${await shown(page)}"`),
+    );
+    report("The keyboard maps a channel to the source's guide channel picked", problems);
 
     const failures: string[] = [];
     const asked = provider.guideRequests();
     host.serve("/guide.xml", 503);
-    await click(page, `document.querySelector('[aria-label="Refresh guide"]')`);
+    await openGuides(page);
+    await click(page, `document.querySelector('[aria-label="Refresh ${hostName}"]')`);
     const line = `${hostName} answered with an error (HTTP 503).`;
-    await waitFor(async () => (await shown(page)).includes(line), 30_000).catch(() =>
+    await waitFor(async () => (await shown(page, "main")).includes(line), 30_000).catch(() =>
       failures.push("no line says why the download failed"),
     );
-    if (!(await shown(page)).includes("the provider's guide isn't used")) {
-      failures.push("nothing says the provider's guide isn't used");
+    if (!(await shown(page, "main")).includes("stay in use")) {
+      failures.push("nothing says its last download stays in use");
     }
-    if ((await nowOn(page, subscriptionId, CHANNEL.id)) !== "Elsewhere AAC") {
+    if ((await nowOn(page, subscriptionId, picked.id)) !== `Elsewhere ${SPARE.name}`) {
       failures.push("the listings changed");
     }
     if (provider.guideRequests() !== asked) failures.push("the provider's guide was asked for");
-    report("A download that fails keeps the guide and says why", failures);
+    report("A download that fails keeps the source's guide and says why", failures);
 
     page.close();
     app.kill("SIGKILL");
@@ -308,39 +348,39 @@ try {
     await openSubscriptions(page);
     await waitFor(async () => (await status(page)).fetchedAt !== null, 60_000);
     const restarted = await status(page);
+    const [source] = await sources(page);
     const after: string[] = [];
-    if (restarted.source.kind !== "external" || restarted.source.origin !== host.origin) {
-      after.push(`the guide's source is ${JSON.stringify(restarted.source)}`);
+    if (source?.origin !== host.origin)
+      after.push(`the sources are ${JSON.stringify(await sources(page))}`);
+    if (source?.processing.state !== "failed") {
+      after.push(`the source is ${JSON.stringify(source?.processing)}`);
     }
     if (restarted.mapped !== 1) after.push(`${restarted.mapped} channels are mapped`);
-    if (restarted.failure?.kind !== "provider-error") {
-      after.push(`the failure is ${JSON.stringify(restarted.failure)}`);
-    }
     if ((await nowOn(page, subscriptionId, picked.id)) !== `Elsewhere ${SPARE.name}`) {
       after.push("the mapped channel lost its programmes");
     }
     if (host.requests().length !== hostAsked) after.push("the guide's host was asked again");
-    report("A restart keeps the address, the mapping, the listings and the failure", after);
+    report("A restart keeps the source, the mapping, the listings and the failure", after);
 
-    const back: string[] = [];
-    await click(page, guideButton);
-    await click(page, buttonNamed("Use provider guide"));
-    await waitFor(async () => (await status(page)).source.kind === "own", 30_000);
-    await waitFor(async () => (await status(page)).fetchedAt !== null, 60_000);
-    const restored = await status(page);
-    if (restored.mapped !== 0) back.push(`${restored.mapped} channels are still mapped`);
-    const again = await nowOn(page, subscriptionId, CHANNEL.id);
-    if (!again || again.startsWith("Elsewhere")) back.push(`${CHANNEL.name} shows "${again}"`);
+    const gone: string[] = [];
+    await openGuides(page);
+    await click(page, `document.querySelector('[aria-label="Remove ${hostName}"]')`);
+    await waitFor(async () => (await sources(page)).length === 0, 10_000).catch(() =>
+      gone.push("the source stayed"),
+    );
     if ((await nowOn(page, subscriptionId, picked.id)) !== undefined) {
-      back.push("the channel that was mapped still shows programmes");
+      gone.push("the channel that was mapped to it still shows programmes");
     }
-    // The address's index goes once nothing reads it: a few seconds at most.
-    const kept = ["guide-index.*.sqlite", "guide.json"].join();
-    for (let waited = 0; guideFiles().join() !== kept && waited < 5000; waited += 100) {
+    if ((await status(page)).unresolved !== 1)
+      gone.push("its mapping doesn't say it leads nowhere");
+    if (!own(await nowOn(page, subscriptionId, CHANNEL.id))) gone.push("the own guide changed");
+    // The source's index goes once nothing reads it: a few seconds at most.
+    for (let waited = 0; sourceFiles().join() !== "sources.json" && waited < 5000; waited += 100) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (guideFiles().join() !== kept) back.push(`the profile keeps ${guideFiles().join(", ")}`);
-    report("Use provider guide goes back, and drops the address", back);
+    if (sourceFiles().join() !== "sources.json")
+      gone.push(`the profile keeps ${sourceFiles().join(", ")}`);
+    report("Removing the source drops what it downloaded, and its mapping leads nowhere", gone);
   }
   page.close();
 } catch (error) {

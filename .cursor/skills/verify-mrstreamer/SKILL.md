@@ -34,6 +34,7 @@ Every scenario also runs a live doctor before driving and after success. It chec
 pnpm verify:desktop --help
 pnpm verify:desktop subscriptions
 pnpm verify:desktop live-tv
+pnpm verify:desktop guides
 pnpm verify:desktop catch-up
 pnpm verify:desktop catch-up-hls
 pnpm verify:desktop guide-grid

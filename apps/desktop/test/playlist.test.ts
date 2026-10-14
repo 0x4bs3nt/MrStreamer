@@ -393,7 +393,12 @@ describe("playlist subscriptions", () => {
     await guide.refreshIfStale();
 
     // An answer, not a failure: nothing is reported as one.
-    const none = { channels: 0, fetchedAt: null, availability: "none", failure: null };
+    const none = {
+      channels: 0,
+      fetchedAt: null,
+      availability: "none",
+      processing: { state: "empty" },
+    };
     expect(await guide.status()).toMatchObject(none);
     const read = host.requests("/other.m3u");
     // The checks the app makes on its own leave the playlist alone from then on.

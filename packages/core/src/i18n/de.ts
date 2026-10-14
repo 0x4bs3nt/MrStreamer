@@ -426,57 +426,47 @@ export const de: Translation = {
   "just now": "gerade eben",
   "{minutes} min ago": "vor {minutes} Min.",
   "{hours} h ago": "vor {hours} Std.",
-  "{channels} of {listed} channels": "{channels} von {listed} Sendern",
   "none in this playlist": "keiner in dieser Playlist",
-  "needs its address again": "braucht die Adresse erneut",
   Guide: "Programmführer",
-  "Enter the guide address for {name}": "Adresse des Programmführers für {name} eingeben",
-  "Enter address": "Adresse eingeben",
-  "Retry guide": "Programmführer erneut versuchen",
-  "Refresh guide": "Programmführer aktualisieren",
+  Guides: "Programmführer",
+  "{host} answered with an error (HTTP {status}).":
+    "{host} hat mit einem Fehler geantwortet (HTTP {status}).",
+  "Refresh guide of {name}": "Programmführer von {name} aktualisieren",
+  "Since {time}.": "Seit {time}.",
+  "{count} own": { one: "{count} eigene", other: "{count} eigene" },
+  "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
+  "{count} without": { one: "{count} ohne", other: "{count} ohne" },
+  "Address of an XMLTV guide": "Adresse eines XMLTV-Programmführers",
+  "Address of an XMLTV guide, .xml or .xml.gz":
+    "Adresse eines XMLTV-Programmführers, .xml oder .xml.gz",
+  "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
+    "Der eigene Programmführer eines Abonnements kommt zuerst, danach diese, in dieser Reihenfolge. Der erste mit Sendungen für einen Sender liefert ihn. Die Verarbeitung läuft im Hintergrund weiter.",
+  "Refresh {name}": "{name} aktualisieren",
+  "Needs its address again: add it once more":
+    "Braucht seine Adresse erneut: noch einmal hinzufügen",
+  "programmes from {time} stay in use": "Sendungen von {time} bleiben in Gebrauch",
+  "Downloading · {size} so far": "Wird geladen · bisher {size}",
+  "Downloading · {size} of {total}": "Wird geladen · {size} von {total}",
+  "Reading · {count} programmes so far · since {time}": {
+    one: "Wird gelesen · bisher {count} Sendung · seit {time}",
+    other: "Wird gelesen · bisher {count} Sendungen · seit {time}",
+  },
+  Ready: "Bereit",
+  "{count} programmes": { one: "{count} Sendung", other: "{count} Sendungen" },
+  "until {time}": "bis {time}",
+  "updated {time}": "aktualisiert {time}",
+  "Failed since {time}": "Fehlgeschlagen seit {time}",
+  "Not downloaded yet": "Noch nicht geladen",
   "Guide for {name}": "Programmführer für {name}",
   "Mapped channels": "Zugeordnete Sender",
   "{count} by hand": { one: "{count} von Hand", other: "{count} von Hand" },
   "{count} unresolved": { one: "{count} ungelöst", other: "{count} ungelöst" },
-  "{count} without programmes": { one: "{count} ohne Sendungen", other: "{count} ohne Sendungen" },
   "Map channels of {name}": "Sender von {name} zuordnen",
   Map: "Zuordnen",
   "Listings are from {time}.": "Das Programm stammt von {time}.",
-  "{host} answered with an error (HTTP {status}).":
-    "{host} hat mit einem Fehler geantwortet (HTTP {status}).",
-  "The playlist's guide isn't used.": "Der Programmführer der Playlist wird nicht verwendet.",
-  "The provider's guide isn't used.": "Der Programmführer des Anbieters wird nicht verwendet.",
-  "In use": "In Verwendung",
-  "key hidden": "Schlüssel verborgen",
-  "since {day}": "seit {day}",
-  "Playlist guide": "Programmführer der Playlist",
-  "Provider guide": "Programmführer des Anbieters",
-  "Your keychain no longer gives Mr. Streamer the saved address from {host}.":
-    "Dein Schlüsselbund gibt Mr. Streamer die gespeicherte Adresse von {host} nicht mehr.",
-  "XMLTV address": "XMLTV-Adresse",
   "Not encrypted. The address, and any key in it, travels as plain text.":
     "Nicht verschlüsselt. Die Adresse und ein enthaltener Schlüssel werden als Klartext übertragen.",
-  "Using it clears your {count} mapped channels.": {
-    one: "Damit wird dein {count} zugeordneter Sender gelöscht.",
-    other: "Damit werden deine {count} zugeordneten Sender gelöscht.",
-  },
-  "Switching…": "Wird gewechselt…",
-  "Use this guide": "Diesen Programmführer verwenden",
   "Check again": "Erneut prüfen",
-  Check: "Prüfen",
-  "Going back…": "Zurück…",
-  "Your playlist's guide isn't used while this address is set.":
-    "Der Programmführer deiner Playlist wird nicht verwendet, solange diese Adresse eingestellt ist.",
-  "Your provider's guide isn't used while this address is set.":
-    "Der Programmführer deines Anbieters wird nicht verwendet, solange diese Adresse eingestellt ist.",
-  "Times follow the guide's own offsets.":
-    "Zeiten folgen den eigenen Zeitzonen des Programmführers.",
-  "Check downloads the guide and says what it covers. Nothing changes until you choose Use this guide.":
-    "Prüfen lädt den Programmführer und zeigt, was er abdeckt. Nichts ändert sich, bis du Diesen Programmführer verwenden wählst.",
-  "Checked: {channels} channels in this guide, {matched} of your {listed} match by id. Programmes until {until}.":
-    "Geprüft: {channels} Sender in diesem Programmführer, {matched} von deinen {listed} stimmen per ID überein. Sendungen bis {until}.",
-  "Checked: {channels} channels in this guide. Programmes until {until}.":
-    "Geprüft: {channels} Sender in diesem Programmführer. Sendungen bis {until}.",
   "Without programmes": "Ohne Sendungen",
   "Mapped by hand": "Von Hand zugeordnet",
   "Map channels": "Sender zuordnen",
@@ -1021,20 +1011,6 @@ export const de: Translation = {
   Volume: "Lautstärke",
   "Waiting for data": "Warte auf Daten",
   "Live subtitles play here only": "Live-Untertitel gibt es nur hier",
-  "Listings are from {time}; the playlist's guide isn't used.":
-    "Das Programm stammt von {time}; der Programmführer der Playlist wird nicht verwendet.",
-  "Listings are from {time}; the provider's guide isn't used.":
-    "Das Programm stammt von {time}; der Programmführer des Anbieters wird nicht verwendet.",
-  "Use playlist guide": "Programmführer der Playlist verwenden",
-  "Use provider guide": "Programmführer des Anbieters verwenden",
-  "Use playlist guide also clears your {count} mapped channels.": {
-    one: "Der Programmführer der Playlist löscht auch deinen {count} zugeordneten Sender.",
-    other: "Der Programmführer der Playlist löscht auch deine {count} zugeordneten Sender.",
-  },
-  "Use provider guide also clears your {count} mapped channels.": {
-    one: "Der Programmführer des Anbieters löscht auch deinen {count} zugeordneten Sender.",
-    other: "Der Programmführer des Anbieters löscht auch deine {count} zugeordneten Sender.",
-  },
   "{names}'s lists haven't loaded.": "Die Listen von {names} sind nicht geladen.",
   "A receiver has playback.": "Ein Empfänger spielt gerade.",
   "Movies and series haven't loaded yet.": "Filme und Serien sind noch nicht geladen.",

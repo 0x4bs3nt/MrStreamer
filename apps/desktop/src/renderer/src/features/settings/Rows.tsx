@@ -21,21 +21,31 @@ export function Section({
   );
 }
 
-/** One setting: its name, a few words beside it, and its control on the right. */
+/**
+ * One setting: its name, a few words beside it, and its control on the right. A `wrap` note goes
+ * on a line of its own under the name, and wraps there rather than be cut off.
+ */
 export function Row({
   label,
   note,
+  wrap = false,
   children,
 }: {
   label: ReactNode;
   note?: ReactNode;
+  wrap?: boolean;
   children?: ReactNode;
 }) {
   return (
     <div className="flex min-h-13 items-center gap-6 border-b border-white/8 py-2">
-      <div className="min-w-0 flex-1 truncate">
+      <div className={cn("min-w-0 flex-1", !wrap && "truncate")}>
         {label}
-        {note && <span className="text-muted-foreground"> · {note}</span>}
+        {note &&
+          (wrap ? (
+            <div className="mt-0.5 text-[0.8125rem] text-muted-foreground">{note}</div>
+          ) : (
+            <span className="text-muted-foreground"> · {note}</span>
+          ))}
       </div>
       {children && <div className="flex flex-none items-center gap-2">{children}</div>}
     </div>

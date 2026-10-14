@@ -4,7 +4,7 @@ Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. Brin
 
 ## What it plays
 
-- Live TV from Xtream Codes or an M3U playlist, with a programme guide when your provider or playlist supplies one, as a list or a grid by time. You can also give it an XMLTV guide address. Programmes that aired play from their start when your provider keeps catch-up.
+- Live TV from Xtream Codes or an M3U playlist, with a programme guide when your provider or playlist supplies one, as a list or a grid by time. You can add XMLTV guides of your own, which fill in the channels it doesn't cover. Programmes that aired play from their start when your provider keeps catch-up.
 - Movies and series from Xtream Codes or a playlist whose groups you mapped in Settings, with a watchlist and saved progress. Playlist movies and episodes need finished files; HLS entries stay out.
 - The sound and subtitle tracks your provider sends. See [What plays](user/playback.md) for formats, playback on a TV and limits.
 

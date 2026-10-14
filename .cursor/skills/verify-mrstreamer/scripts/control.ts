@@ -9,9 +9,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
+import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
 import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
 import { guideGridScenario, guideGridScrollScenario } from "./guide-grid.ts";
+import { startGuideHost, type GuideHost } from "../../../../apps/desktop/test/fake-guide-host.ts";
 import { homeScenario } from "./home.ts";
 import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
@@ -37,6 +39,7 @@ const scenarios = [
   "subscriptions",
   "background-refresh",
   "live-tv",
+  "guides",
   "catch-up",
   "catch-up-hls",
   "live-categories",
@@ -120,6 +123,7 @@ async function run(scenario: Scenario) {
   let provider: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
   let playlist: Awaited<ReturnType<typeof startFakePlaylist>> | undefined;
   let other: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
+  let guideHosts: { north: GuideHost; south: GuideHost } | undefined;
   let releaseGuide: (() => void) | undefined;
   let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
   let app: ChildProcess | undefined;
@@ -163,7 +167,14 @@ async function run(scenario: Scenario) {
           }
         : {}),
       ...(stage ? { channelOf: stageChannel, logoSvg: stageLogo, adultChannels: true } : {}),
+      ...(scenario === "guides"
+        ? { guideIdOf: (channel) => sourcedGuideId(channel.name) ?? channel.guideId }
+        : {}),
     });
+    if (scenario === "guides") {
+      guideHosts = { north: await startGuideHost(), south: await startGuideHost() };
+      serveGuides(guideHosts.north, guideHosts.south);
+    }
     if (scenario === "live-categories")
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
     if (scenario === "live-categories")
@@ -294,6 +305,9 @@ async function run(scenario: Scenario) {
           Number(new URL(tmdb!.url).port),
           ...(playlist ? [Number(new URL(playlist.origin).port)] : []),
           ...(other ? [Number(new URL(other.url).port)] : []),
+          ...(guideHosts
+            ? [guideHosts.north, guideHosts.south].map((host) => Number(new URL(host.origin).port))
+            : []),
         ],
         url,
         ...build,
@@ -530,6 +544,24 @@ async function run(scenario: Scenario) {
         launch,
         quit,
       });
+    } else if (scenario === "guides") {
+      await guidesScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        guideHosts!,
+      );
     } else if (scenario === "live-categories") {
       await liveCategoriesScenario(
         {
@@ -779,6 +811,10 @@ async function run(scenario: Scenario) {
     if (other) {
       const ownedOther = other;
       await clean(() => ownedOther.close());
+    }
+    if (guideHosts) {
+      const owned = guideHosts;
+      await clean(() => Promise.all([owned.north.close(), owned.south.close()]));
     }
     if (tmdb) {
       const ownedTmdb = tmdb;

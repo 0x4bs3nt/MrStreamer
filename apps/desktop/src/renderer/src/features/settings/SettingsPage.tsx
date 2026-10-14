@@ -11,6 +11,7 @@ import { Message } from "../../lib/message.tsx";
 import tmdbLogo from "../../assets/tmdb.svg";
 import { CustomizeHome } from "../home/CustomizeHome.tsx";
 import { GeneralSection } from "./GeneralSection.tsx";
+import { GuidesSection } from "./GuidesSection.tsx";
 import { DiagnosticsExport } from "./DiagnosticsExport.tsx";
 import { Licences } from "./Licences.tsx";
 import { SubscriptionSection } from "./SubscriptionSection.tsx";
@@ -20,6 +21,7 @@ const TABS = [
   { value: "general", label: "General" },
   { value: "home", label: "Home" },
   { value: "subscriptions", label: "Subscriptions" },
+  { value: "guides", label: "Guides" },
   { value: "about", label: "About" },
 ] as const satisfies readonly { value: SettingsTab; label: PlainKey }[];
 
@@ -88,6 +90,7 @@ export function SettingsPage() {
               {tab === "general" && <GeneralSection />}
               {tab === "home" && <CustomizeHome />}
               {tab === "subscriptions" && <SubscriptionSection />}
+              {tab === "guides" && <GuidesSection />}
               {tab === "about" && <About />}
             </div>
           </main>

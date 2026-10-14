@@ -49,7 +49,7 @@ Providers often list a channel once per quality: "VRT 1 FHD", "VRT 1 HD", "VRT 1
 
 Channels your provider marks for adults, or files in a category named for adults, stay hidden until you turn on **For adults** in Settings > General. Then they show in Live TV's lists and the guide, where the field beside a list's name finds them, but never on Home or in ⌘K's search.
 
-Programme information comes from your provider. Many providers only cover some channels, and some cover none; those channels show their name and category instead. Some providers file unrelated channels under one channel's guide; Mr. Streamer leaves those channels without programmes rather than show the wrong ones. The guide updates every six hours. To use a guide from another address, or to give a channel the guide channel you pick, see [A guide from another address](subscriptions.md#a-guide-from-another-address).
+Programme information comes from your provider. Many providers only cover some channels, and some cover none; those channels show their name and category instead. Some providers file unrelated channels under one channel's guide; Mr. Streamer leaves those channels without programmes rather than show the wrong ones. The guide updates every six hours. To add guides from other addresses, or to give a channel the guide channel you pick, see [Guides from other addresses](subscriptions.md#guides-from-other-addresses).
 
 ## Watching
 

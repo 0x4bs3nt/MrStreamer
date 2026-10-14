@@ -148,8 +148,6 @@ function describeGuideFailure(failure: GuideFailure): string {
       });
     case "changed":
       return t("The guide changed meanwhile, so nothing was changed.");
-    case "cancelled":
-      return t("Stopped.");
   }
 }
 

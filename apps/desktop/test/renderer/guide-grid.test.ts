@@ -132,16 +132,14 @@ async function gridPage(
   ipc.always("guide.status", [
     {
       subscriptionId: SUBSCRIPTION,
-      source: { kind: "own" },
       channels: 3,
+      supplied: [{ source: null, channels: 3 }],
       listed: channels.length,
       guideChannels: 3,
       fetchedAt: 1,
       availability: "available",
       mapped: 0,
       unresolved: 0,
-      failure: null,
-      failedAt: null,
       processing:
         until === null
           ? { state: "reading", programmes: 10, since: 1 }

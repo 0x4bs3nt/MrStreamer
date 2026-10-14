@@ -3,9 +3,9 @@
 // inspect and never to choose; adding one beside the others, renaming one, entering a password or
 // link again where the keychain lost it, and retrying one that didn't answer. A playlist's Guide
 // row tells a playlist that names no guide, which is no failure, from a guide that couldn't be
-// had, and its refresh asks again either way. A subscription's guide can come from an XMLTV
-// address of the viewer's own: its row says where from, what it covers and why a download
-// failed, and its form checks an address before anything changes.
+// had, and its refresh asks again either way. A subscription's Guide row says where its channels'
+// programmes come from, its own guide and each XMLTV source of Settings > Guides, why its own
+// guide's download failed, and leads to the sources.
 import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -17,7 +17,7 @@ import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { SubscriptionSection } from "../../src/renderer/src/features/settings/SubscriptionSection.tsx";
 import { formatDate } from "@mrstreamer/core/i18n";
-import { clockTime, comingTime, pastTime } from "../../src/renderer/src/lib/format.ts";
+import { clockTime, pastTime } from "../../src/renderer/src/lib/format.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
 
 let unmount = () => {};
@@ -68,16 +68,14 @@ const playlist: SubscriptionSummary = {
 
 const guideOf = (subscription: SubscriptionSummary, status: Partial<GuideStatus>): GuideStatus => ({
   subscriptionId: subscription.id,
-  source: { kind: "own" },
   channels: 0,
+  supplied: [],
   listed: 0,
   guideChannels: 0,
   fetchedAt: null,
   availability: "none",
   mapped: 0,
   unresolved: 0,
-  failure: null,
-  failedAt: null,
   processing: { state: "empty" },
   ...status,
 });
@@ -182,18 +180,17 @@ async function section(
     await settled();
   };
   /**
-   * The Guide row: its words, when it last downloaded, its Refresh, which is Retry once a
-   * download failed, and the line under it that says why one did.
+   * The Guide row: its name and the line under it, as "Guide · …", its Refresh, and the line
+   * under the row that says why a download failed.
    */
   const guideRow = () => {
-    const refresh = container.querySelector(
-      '[aria-label="Refresh guide"], [aria-label="Retry guide"]',
-    );
+    const refresh = container.querySelector('[aria-label^="Refresh guide of"]');
     const line = refresh?.parentElement?.parentElement;
     return {
       refresh,
-      text: line?.firstElementChild?.textContent ?? "",
-      when: refresh?.parentElement?.firstElementChild?.textContent ?? "",
+      text: [...(line?.firstElementChild?.childNodes ?? [])]
+        .map((each) => each.textContent)
+        .join(" · "),
       failure: line?.nextElementSibling?.querySelector("p")?.textContent ?? null,
     };
   };
@@ -662,13 +659,18 @@ describe("the Guide row of a playlist", () => {
     const answer = ipc.hold("guide.refresh");
     await act(async () => (guideRow().refresh as HTMLElement).click());
     answer.resolve(
-      guideOf(playlist, { channels: 8310, fetchedAt: Date.now(), availability: "available" }),
+      guideOf(playlist, {
+        channels: 8310,
+        supplied: [{ source: null, channels: 8310 }],
+        listed: 9000,
+        fetchedAt: Date.now(),
+        availability: "available",
+      }),
     );
     await settled();
 
     expect(guideRow()).toMatchObject({
-      text: `Guide · ${(8310).toLocaleString()} channels`,
-      when: pastTime(Date.now(), Date.now()),
+      text: `Guide · ${(8310).toLocaleString()} own · 690 without`,
       failure: null,
     });
   });
@@ -688,7 +690,6 @@ describe("the Guide row of a playlist", () => {
     expect(guideRow()).toEqual({
       refresh: expect.anything(),
       text: "Guide · none in this playlist",
-      when: "",
       failure: "Can't reach lists.openlist.example. The server did not answer.",
     });
   });
@@ -705,256 +706,72 @@ describe("the Guide row of a playlist", () => {
 describe("a subscription's guide", () => {
   const HOUR = 60 * 60 * 1000;
   const ORIGIN = "https://guide.example.org";
-  const ADDRESS = "http://guide.example.org/xmltv.gz?key=a81f";
-  const listed = { listed: 1180, guideChannels: 1204, availability: "available" as const };
-  /** Holiday house on the provider's own guide. */
-  const own = guideOf(holiday, { ...listed, channels: 1044, fetchedAt: Date.now() - 2 * HOUR });
-  /** Holiday house on a guide from an address of the viewer's own. */
-  const external = guideOf(holiday, {
-    ...listed,
-    source: { kind: "external", origin: ORIGIN, since: Date.now() - 5 * 24 * HOUR, locked: false },
-    channels: 412,
-    fetchedAt: Date.now() - 30 * HOUR,
-    mapped: 9,
-  });
-  const candidate = {
-    id: "check-1",
-    origin: ORIGIN,
+  /** Holiday house: 25 channels from its own guide, 9 from a source, 3 without. */
+  const combined = guideOf(holiday, {
+    listed: 37,
+    channels: 34,
+    supplied: [
+      { source: null, channels: 25 },
+      { source: { id: "source-1", origin: ORIGIN }, channels: 9 },
+    ],
     guideChannels: 1204,
-    matched: 412,
-    listed: 1180,
-    until: Date.now() + 50 * HOUR,
-    sameSource: false,
-  };
+    availability: "available",
+    fetchedAt: Date.now() - 2 * HOUR,
+    mapped: 2,
+    processing: {
+      state: "ready",
+      channels: 25,
+      programmes: 4000,
+      until: Date.now() + 40 * HOUR,
+      fetchedAt: Date.now() - 2 * HOUR,
+    },
+  });
   const single = (guide: GuideStatus, subscription = holiday) =>
     section([subscription], { guides: [{ ...guide, subscriptionId: subscription.id }] });
 
-  it("says where it comes from, what it covers and since when, and how many channels are mapped", async () => {
-    const { guideRow, container } = await single(external);
+  it("says where its channels' programmes come from, its own guide first, and leads to the sources", async () => {
+    const { guideRow, button, click, container } = await single(combined);
 
     expect(guideRow()).toEqual({
       refresh: expect.anything(),
-      text: `Guide · guide.example.org · 412 of ${(1180).toLocaleString()} channels`,
-      when: pastTime(external.fetchedAt ?? 0, Date.now()),
+      text: "Guide · 25 own · 9 guide.example.org · 3 without",
       failure: null,
     });
-    expect(container.textContent).toContain("Mapped channels · 9 by hand · 768 without programmes");
-    // The provider's own guide says the same of itself, without a host.
-    unmount();
-    expect((await single(own)).guideRow().text).toBe(
-      `Guide · ${(1044).toLocaleString()} of ${(1180).toLocaleString()} channels`,
-    );
+    expect(container.textContent).toContain("Mapped channels · 2 by hand");
+    // No address of its own to give: the sources are in Settings > Guides.
+    expect(container.querySelector("form")).toBeNull();
+    await click(button("Guides"));
+    expect(useUi.getState().settings).toBe("guides");
   });
 
-  it("says since when its host hasn't answered, what shows meanwhile, and tries again alone", async () => {
-    const failedAt = Date.now() - 3 * HOUR;
-    const { guideRow, button, click, container } = await single({
-      ...external,
-      failure: {
-        kind: "unreachable",
-        server: ORIGIN,
-        detail: "The server did not answer in time.",
+  it("says why its own guide's download failed, since when, and from when the listings are, and tries again alone", async () => {
+    const since = Date.now() - 3 * HOUR;
+    const kept = Date.now() - 30 * HOUR;
+    const { guideRow, click } = await single({
+      ...combined,
+      processing: {
+        state: "failed",
+        reason: {
+          kind: "unreachable",
+          server: holiday.server,
+          detail: "The server did not answer in time.",
+        },
+        since,
+        kept,
       },
-      failedAt,
     });
-    const kept = pastTime(external.fetchedAt ?? 0, Date.now());
 
     expect(guideRow().failure).toBe(
-      `guide.example.org hasn't answered since ${pastTime(failedAt, Date.now())}. Listings are from ${kept}; the provider's guide isn't used.`,
+      `Can't reach tv.sunhouse.example:8080. The server did not answer in time. Since ${pastTime(since, Date.now())}. Listings are from ${pastTime(kept, Date.now())}.`,
     );
-    expect(button("Retry")).toBeDefined();
 
     const answer = ipc.hold("guide.refresh");
-    await click(button("Retry"));
+    await click(guideRow().refresh);
     expect(ipc.argsOf("guide.refresh")).toEqual([{ subscriptionId: holiday.id }]);
-    answer.resolve({ ...external, fetchedAt: Date.now() });
+    answer.resolve(combined);
     await settled();
 
     expect(guideRow().failure).toBeNull();
-    expect(button("Retry")).toBeUndefined();
-    expect(container.querySelector('[aria-label="Refresh guide"]')).not.toBeNull();
-    // A host that refuses says how, and a playlist's guide is named as the playlist's.
-    unmount();
-    const refused = await single(
-      { ...external, failure: { kind: "provider-error", status: 403 }, failedAt },
-      playlist,
-    );
-    expect(refused.guideRow().failure).toBe(
-      `guide.example.org answered with an error (HTTP 403). Listings are from ${kept}; the playlist's guide isn't used.`,
-    );
-  });
-
-  it("checks an address before anything changes, and switches only on Use this guide", async () => {
-    const { row, button, click, type, submit, form, guideRow, container } = await single(own);
-    await click(button("Guide"));
-
-    expect(form().text).toContain("Guide for Holiday house");
-    expect(form().text).toContain("In useProvider guide");
-    expect(form().field?.value).toBe("");
-    expect(document.activeElement).toBe(form().field);
-    // Nothing to check yet, and nothing to go back to.
-    expect(form().buttons).toEqual([{ text: "Check", disabled: true }]);
-
-    await type([ADDRESS]);
-    // Said before anything is sent.
-    expect(form().text).toContain(
-      "Not encrypted. The address, and any key in it, travels as plain text.",
-    );
-    const checking = ipc.hold("guide.check");
-    await submit();
-    expect(form().buttons).toEqual([{ text: "Checking…", disabled: true }]);
-    // A check can be called off.
-    expect(row("Holiday house").buttons).toEqual(["Cancel"]);
-    expect(button("Cancel", row("Holiday house").element)?.disabled).toBe(false);
-    checking.resolve(candidate);
-    await settled();
-
-    expect(ipc.argsOf("guide.check")).toEqual([{ subscriptionId: holiday.id, address: ADDRESS }]);
-    expect(form().said).toBe(
-      `Checked: ${(1204).toLocaleString()} channels in this guide, 412 of your ${(1180).toLocaleString()} match by id. Programmes until ${comingTime(candidate.until, Date.now())}.`,
-    );
-    expect(form().buttons).toEqual([
-      { text: "Use this guide", disabled: false },
-      { text: "Check again", disabled: false },
-    ]);
-    expect(ipc.methods()).not.toContain("guide.use");
-
-    const switching = ipc.hold("guide.use");
-    await submit();
-    expect(form().buttons[0]).toEqual({ text: "Switching…", disabled: true });
-    // The switch itself can't be called back.
-    expect(button("Cancel", row("Holiday house").element)?.disabled).toBe(true);
-    switching.resolve({
-      ...external,
-      source: { kind: "external", origin: ORIGIN, since: Date.now(), locked: false },
-      fetchedAt: Date.now(),
-      mapped: 0,
-    });
-    await settled();
-
-    expect(ipc.argsOf("guide.use")).toEqual([{ subscriptionId: holiday.id, candidate: "check-1" }]);
-    // Back to its details, which say where the guide comes from now.
-    expect(form().open).toBe(false);
-    expect(guideRow().text).toContain("guide.example.org · 412 of");
-    // Nothing shows of the address but its host.
-    expect(container.textContent).not.toContain("a81f");
-    expect(container.textContent).not.toContain("xmltv.gz");
-  });
-
-  it("maps no channels while a switch its form was closed on is on its way, then those of the guide switched to", async () => {
-    const { row, button, click, type, submit, form } = await single(own);
-    await click(button("Guide"));
-    await type([ADDRESS]);
-    ipc.hold("guide.check").resolve(candidate);
-    await submit();
-    const switching = ipc.hold("guide.use");
-    await submit();
-    const sheet = () => document.body.querySelector('[role="dialog"]');
-
-    // The row closes the form over its details; the switch that was sent goes on.
-    await click(row("Holiday house").toggle);
-    expect(form().open).toBe(false);
-    expect(button("Map")?.disabled).toBe(true);
-    await click(button("Map"));
-    expect(sheet()).toBeNull();
-    expect(ipc.methods()).not.toContain("guide.mapChannels");
-
-    switching.resolve({ ...external, fetchedAt: Date.now(), mapped: 0 });
-    await settled();
-    expect(button("Map")?.disabled).toBe(false);
-    await click(button("Map"));
-
-    expect(sheet()?.textContent).toContain(
-      "Holiday house · guide.example.org · 768 channels without programmes",
-    );
-    expect(ipc.argsOf("guide.mapChannels")).toHaveLength(1);
-  });
-
-  it("drops what a check found once the field changes, says why one failed, and stops one on Cancel", async () => {
-    const { row, button, click, type, submit, form } = await single(own);
-    await click(button("Guide"));
-    await type([ADDRESS]);
-    ipc.hold("guide.check").resolve(candidate);
-    await submit();
-    expect(form().said).not.toBeNull();
-
-    // Another address: the answer was about the one before.
-    await type(["https://other.example.net/guide.xml"]);
-    expect(form().said).toBeNull();
-    expect(form().buttons).toEqual([{ text: "Check", disabled: false }]);
-
-    ipc.hold("guide.check").reject({ kind: "guide", failure: { kind: "not-xmltv" } });
-    await submit();
-    expect(form().alert).toBe("The address answered, but not with an XMLTV guide.");
-    expect(form().field?.value).toBe("https://other.example.net/guide.xml");
-    expect(form().buttons).toEqual([{ text: "Check", disabled: false }]);
-
-    // A check that no longer counts when it is used says so, and has to be made again.
-    ipc.hold("guide.check").resolve(candidate);
-    await submit();
-    ipc.hold("guide.use").reject({ kind: "guide", failure: { kind: "changed" } });
-    await submit();
-    expect(form().alert).toBe("The guide changed meanwhile, so nothing was changed.");
-    expect(form().buttons).toEqual([{ text: "Check", disabled: false }]);
-
-    // By the keyboard, as Tab says: closing the form puts it back on the row.
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
-    });
-    const before = ipc.argsOf("guide.cancelCheck").length;
-    await click(button("Cancel", row("Holiday house").element));
-    expect(form().open).toBe(false);
-    expect(ipc.argsOf("guide.cancelCheck").slice(before)).toEqual([{ subscriptionId: holiday.id }]);
-    expect(document.activeElement).toBe(row("Holiday house").toggle);
-  });
-
-  it("checks the address in use again with nothing typed, and goes back to the own guide when asked", async () => {
-    const { button, click, submit, form, guideRow } = await single(external, playlist);
-    await click(button("Guide"));
-
-    expect(form().text).toContain("In useguide.example.org · key hidden · since ");
-    expect(form().text).toContain("XMLTV address · leave empty to keep");
-    expect(form().text).toContain("Use playlist guide also clears your 9 mapped channels.");
-    expect(form().buttons).toEqual([
-      { text: "Check", disabled: false },
-      { text: "Use playlist guide", disabled: false },
-    ]);
-    ipc.hold("guide.check").resolve({ ...candidate, sameSource: true });
-    await submit();
-    expect(ipc.argsOf("guide.check")).toEqual([{ subscriptionId: playlist.id }]);
-    // The same address keeps its mappings, so nothing is said of losing them.
-    expect(form().said).not.toContain("clears");
-
-    const restoring = ipc.hold("guide.restore");
-    await click(button("Use playlist guide"));
-    expect(form().buttons.at(-1)).toEqual({ text: "Going back…", disabled: true });
-    restoring.resolve(guideOf(playlist, {}));
-    await settled();
-
-    expect(ipc.argsOf("guide.restore")).toEqual([{ subscriptionId: playlist.id }]);
-    expect(form().open).toBe(false);
-    expect(guideRow().text).toBe("Guide · none in this playlist");
-  });
-
-  it("asks for an address the keychain lost, on its row, and checks nothing until one is typed", async () => {
-    const { button, click, type, form, guideRow, container } = await single({
-      ...external,
-      source: { kind: "external", origin: ORIGIN, since: Date.now(), locked: true },
-    });
-
-    expect(container.textContent).toContain("Guide · guide.example.org · needs its address again");
-    expect(guideRow().refresh).toBeNull();
-    await click(button("Enter address"));
-
-    expect(form().text).toContain(
-      "Your keychain no longer gives Mr. Streamer the saved address from guide.example.org.",
-    );
-    expect(form().text).not.toContain("leave empty to keep");
-    expect(form().buttons).toEqual([
-      { text: "Check", disabled: true },
-      { text: "Use provider guide", disabled: false },
-    ]);
-    await type([ADDRESS]);
-    expect(form().buttons[0]).toEqual({ text: "Check", disabled: false });
+    expect(guideRow().text).toBe("Guide · 25 own · 9 guide.example.org · 3 without");
   });
 });

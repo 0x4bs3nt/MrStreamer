@@ -16,7 +16,7 @@ export function withoutTitles(view: View): boolean {
 }
 
 /** The tabs of the Settings page, and the licences About opens. */
-export type SettingsTab = "general" | "home" | "subscriptions" | "about" | "licences";
+export type SettingsTab = "general" | "home" | "subscriptions" | "guides" | "about" | "licences";
 
 /**
  * A subscription Settings > Subscriptions opens on, and what of it shows: its details, the form

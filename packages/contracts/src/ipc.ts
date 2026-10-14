@@ -21,9 +21,9 @@ import {
   GUIDE_DAY_MS,
   GUIDE_RANGE,
   MAP_FILTERS,
-  type GuideCandidate,
   type GuideChannelPage,
   type GuideSlot,
+  type GuideSourceStatus,
   type GuideStatus,
   type Listing,
   type ListingMatch,
@@ -184,27 +184,30 @@ export const ipcInputs = {
    * the subscription has no guide, which is no failure.
    */
   "guide.refresh": () => type({ subscriptionId: "string > 0" }),
+  /** The global XMLTV sources, in the order every subscription reads them after its own guide. */
+  "guide.sources": none,
   /**
-   * Downloads and reads the XMLTV guide at `address` for a subscription, changing nothing. The
-   * address can hold a key: it goes to the main process here and never comes back. Without one,
-   * the address saved for the subscription is checked again.
+   * Adds the XMLTV guide at `address` after the other sources, at once, and downloads it in the
+   * background. The address can hold a key: it goes to the main process here and never comes
+   * back. One already added stays where it is.
    */
-  "guide.check": () => type({ subscriptionId: "string > 0", "address?": "string <= 4096" }),
-  /** Stops a subscription's check and drops what it found, as when its form closes. */
-  "guide.cancelCheck": () => type({ subscriptionId: "string > 0" }),
-  /** Makes what a check found the subscription's guide, by the check's `GuideCandidate.id`. */
-  "guide.use": () => type({ subscriptionId: "string > 0", candidate: "string > 0" }),
-  /** Goes back to the subscription's own guide: its provider's, or its playlist's. */
-  "guide.restore": () => type({ subscriptionId: "string > 0" }),
+  "guide.addSource": () => type({ address: "string <= 4096" }),
+  /** Removes a source, with what it downloaded and the mappings made to it. */
+  "guide.removeSource": () => type({ id: "string > 0" }),
+  /** Moves a source one place earlier (-1) or later (1) in the order. */
+  "guide.moveSource": () => type({ id: "string > 0", by: "-1 | 1" }),
+  /** Downloads a source again now. */
+  "guide.refreshSource": () => type({ id: "string > 0" }),
   /**
-   * Maps one of a subscription's channels to a guide channel by its exact id, or back to
-   * automatic with null. `revision` is the `MapChannelPage.revision` the choice was made from.
+   * Maps one of a subscription's channels to a guide channel by its `GuideChannelRef.ref`, or
+   * back to automatic with null. `revision` is the `MapChannelPage.revision` the choice was made
+   * from.
    */
   "guide.map": () =>
     type({
       subscriptionId: "string > 0",
       channelId: "string > 0",
-      guideId: "string > 0 | null",
+      guide: "string > 0 | null",
       revision: "string",
     }),
   /** A page of a subscription's channels, with how each gets its programmes. */
@@ -216,7 +219,10 @@ export const ipcInputs = {
       offset: "number.integer >= 0",
       limit: "1 <= number.integer <= 200",
     }),
-  /** A page of the channels a subscription's guide lists, to map one of its channels to. */
+  /**
+   * A page of the channels a subscription's guides list, its own and then each source's, to map
+   * one of its channels to.
+   */
   "guide.mapOptions": () =>
     type({
       subscriptionId: "string > 0",
@@ -539,22 +545,13 @@ export interface IpcOutputs {
   /** Each saved subscription's guide, in the subscriptions' order. */
   "guide.status": readonly GuideStatus[];
   "guide.refresh": GuideStatus;
-  /**
-   * Resolves once the guide is read, with what it lists and how many of the subscription's
-   * channels it covers. Fails, and keeps the guide in use, when it can't be had or read.
-   */
-  "guide.check": GuideCandidate;
-  "guide.cancelCheck": null;
-  /**
-   * The subscription's guide from then on, its address sealed. Fails with `changed`, switching
-   * nothing, when the check is no longer the latest or the subscription changed since.
-   */
-  "guide.use": GuideStatus;
-  /**
-   * The own guide's status: loaded from what was kept of it, or asked for now. One that can't
-   * be had says why in `failure`. The viewer's mappings were for the other guide, and go.
-   */
-  "guide.restore": GuideStatus;
+  "guide.sources": readonly GuideSourceStatus[];
+  /** The source as it was added, its download under way. Fails with `address` for no http(s) one. */
+  "guide.addSource": GuideSourceStatus;
+  "guide.removeSource": null;
+  "guide.moveSource": null;
+  /** Once the download is done: the source's status, which says why when it failed. */
+  "guide.refreshSource": GuideSourceStatus;
   /** The channel as it is mapped now, or null when the provider no longer lists it. */
   "guide.map": MapChannel | null;
   /**

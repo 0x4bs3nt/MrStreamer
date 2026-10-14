@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-// Settings > Subscriptions > Map: the sheet that maps a subscription's channels to its guide's
-// by hand. Its channels are read a page at a time and drawn only where in view, the guide's
-// channels are searched by name or id, a mapping is made for the exact guide channel picked, the
-// channels are read again after it, and the keyboard goes through both lists.
+// Settings > Subscriptions > Map: the sheet that maps a subscription's channels to its guides'
+// by hand. Its channels are read a page at a time and drawn only where in view, the guides'
+// channels are searched by name or id, a mapping is made for the exact guide channel of the exact
+// guide picked, the channels are read again after it, and the keyboard goes through both lists.
 import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -36,27 +36,30 @@ const holiday: SubscriptionSummary = {
   account: { state: "active", expiresAt: null, maxConnections: 2, activeConnections: 0 },
   needsSecret: false,
 };
+/** A source of Settings > Guides, whose channels the sheet lists after the own guide's. */
+const ORIGIN = "https://guide.example.org";
 const guide: GuideStatus = {
   subscriptionId: holiday.id,
-  source: { kind: "external", origin: "https://guide.example.org", since: 0, locked: false },
   channels: 412,
+  supplied: [{ source: { id: "source-1", origin: ORIGIN }, channels: 412 }],
   listed: 1180,
   guideChannels: 1204,
   fetchedAt: Date.now(),
   availability: "available",
   mapped: 1,
   unresolved: 0,
-  failure: null,
-  failedAt: null,
   processing: { state: "ready", channels: 412, programmes: 80_000, until: null, fetchedAt: 0 },
 };
+
+/** A guide channel of the source, as the main process names it. */
+const sourced = (id: string) => ({ ref: `source-1:${id}`, id, origin: ORIGIN });
 
 const channel = (id: string, title: string, mappedTo: string | null = null): MapChannel => ({
   id,
   number: Number(id),
   title,
-  guideId: mappedTo,
-  mappedTo,
+  shown: mappedTo === null ? null : sourced(mappedTo),
+  mapped: mappedTo === null ? null : sourced(mappedTo),
   listed: true,
 });
 /** The channels a search of those without programmes found. */
@@ -71,10 +74,11 @@ const WITHOUT: MapChannelPage = {
 };
 const OPTIONS: GuideChannelPage = {
   total: 3,
+  listed: 1204,
   channels: [
-    { id: "canalnord.ex", name: "Canal Nord", programmes: true },
-    { id: "canalnord-plus1.ex", name: "Canal Nord +1", programmes: false },
-    { id: "canalnordsport.ex", name: "Canal Nord Sport", programmes: true },
+    { ...sourced("canalnord.ex"), name: "Canal Nord", programmes: true },
+    { ...sourced("canalnord-plus1.ex"), name: "Canal Nord +1", programmes: false },
+    { ...sourced("canalnordsport.ex"), name: "Canal Nord Sport", programmes: true },
   ],
 };
 
@@ -177,9 +181,7 @@ describe("mapping channels to a guide's by hand", () => {
     const { dialog, channels, options, fields } = await sheet();
 
     expect(dialog()?.textContent).toContain("Map channels");
-    expect(dialog()?.textContent).toContain(
-      "Holiday house · guide.example.org · 768 channels without programmes",
-    );
+    expect(dialog()?.textContent).toContain("Holiday house · 768 channels without programmes");
     // Asked for by the page, never all at once.
     expect(ipc.argsOf("guide.mapChannels")).toEqual([
       { subscriptionId: holiday.id, filter: "without", query: "", offset: 0, limit: 120 },
@@ -187,7 +189,7 @@ describe("mapping channels to a guide's by hand", () => {
     expect(channels()).toEqual([
       "> 12Canal Nord Sportno id match",
       "14Canal Nord HDno id match",
-      "22News 24mapped · news24.ex",
+      "22News 24mapped · guide.example.org · news24.ex",
     ]);
     // The first channel is picked, and its name is where the search of the guide starts.
     expect(dialog()?.textContent).toContain("Guide for Canal Nord Sport");
@@ -198,9 +200,9 @@ describe("mapping channels to a guide's by hand", () => {
     // Each guide channel shows its name and its id; none is picked for the viewer.
     expect(options()).toEqual([
       "> Automatic · no id matchCurrent",
-      "Canal Nordcanalnord.exMap",
-      "Canal Nord +1 · no programmescanalnord-plus1.exMap",
-      "Canal Nord Sportcanalnordsport.exMap",
+      "Canal Nordguide.example.org · canalnord.exMap",
+      "Canal Nord +1 · no programmesguide.example.org · canalnord-plus1.exMap",
+      "Canal Nord Sportguide.example.org · canalnordsport.exMap",
     ]);
     expect(dialog()?.textContent).toContain(`3 of ${(1204).toLocaleString()} shown`);
     expect(ipc.methods()).not.toContain("guide.map");
@@ -232,21 +234,27 @@ describe("mapping channels to a guide's by hand", () => {
     await click(button("Map", optionList()?.querySelectorAll('[role="option"]')[3]));
     await ready(() => expect(ipc.argsOf("guide.map")).toHaveLength(1));
     mapped.resolve(sport);
-    await ready(() => expect(channels()[0]).toBe("> 12Canal Nord Sportmapped · canalnordsport.ex"));
+    await ready(() =>
+      expect(channels()[0]).toBe(
+        "> 12Canal Nord Sportmapped · guide.example.org · canalnordsport.ex",
+      ),
+    );
 
     expect(ipc.argsOf("guide.map")).toEqual([
       {
         subscriptionId: holiday.id,
         channelId: "12",
-        guideId: "canalnordsport.ex",
+        guide: "source-1:canalnordsport.ex",
         revision: "7.2",
       },
     ]);
     // The list shows what the main process answers once it is mapped, not what was read before.
     expect(ipc.argsOf("guide.mapChannels")).toHaveLength(2);
-    expect(channels()[0]).toBe("> 12Canal Nord Sportmapped · canalnordsport.ex");
+    expect(channels()[0]).toBe(
+      "> 12Canal Nord Sportmapped · guide.example.org · canalnordsport.ex",
+    );
     expect(options()[0]).toBe("> AutomaticRestore");
-    expect(options()[3]).toBe("Canal Nord Sportcanalnordsport.exCurrent");
+    expect(options()[3]).toBe("Canal Nord Sportguide.example.org · canalnordsport.exCurrent");
 
     const restored = ipc.hold("guide.map");
     readAgain(channel("12", "Canal Nord Sport"));
@@ -255,7 +263,7 @@ describe("mapping channels to a guide's by hand", () => {
     restored.resolve(channel("12", "Canal Nord Sport"));
     await ready(() => expect(channels()[0]).toBe("> 12Canal Nord Sportno id match"));
 
-    expect(ipc.argsOf("guide.map")[1]).toMatchObject({ channelId: "12", guideId: null });
+    expect(ipc.argsOf("guide.map")[1]).toMatchObject({ channelId: "12", guide: null });
     expect(ipc.argsOf("guide.mapChannels")).toHaveLength(3);
     expect(channels()[0]).toBe("> 12Canal Nord Sportno id match");
   });
@@ -341,7 +349,7 @@ describe("mapping channels to a guide's by hand", () => {
     await ready(() => expect(document.activeElement).toBe(optionList()));
     expect(document.activeElement).toBe(optionList());
     await press(optionList(), "ArrowDown");
-    expect(options()[1]).toBe("> Canal Nordcanalnord.exMap");
+    expect(options()[1]).toBe("> Canal Nordguide.example.org · canalnord.exMap");
 
     const mapped = ipc.hold("guide.map");
     const hd = channel("14", "Canal Nord HD", "canalnord.ex");
@@ -353,16 +361,21 @@ describe("mapping channels to a guide's by hand", () => {
     await ready(() => expect(ipc.argsOf("guide.map")).toHaveLength(1));
     mapped.resolve(hd);
     await ready(() => {
-      expect(channels()[1]).toBe("> 14Canal Nord HDmapped · canalnord.ex");
+      expect(channels()[1]).toBe("> 14Canal Nord HDmapped · guide.example.org · canalnord.ex");
       expect(document.activeElement).toBe(channelList());
     });
 
     expect(ipc.argsOf("guide.map")).toEqual([
-      { subscriptionId: holiday.id, channelId: "14", guideId: "canalnord.ex", revision: "7.2" },
+      {
+        subscriptionId: holiday.id,
+        channelId: "14",
+        guide: "source-1:canalnord.ex",
+        revision: "7.2",
+      },
     ]);
     // The keyboard is back in the channels, to go on to the next.
     expect(document.activeElement).toBe(channelList());
-    expect(channels()[1]).toBe("> 14Canal Nord HDmapped · canalnord.ex");
+    expect(channels()[1]).toBe("> 14Canal Nord HDmapped · guide.example.org · canalnord.ex");
     // Up from the first guide channel leaves for the channels too.
     await press(optionList(), "ArrowUp");
     await press(optionList(), "ArrowUp");
@@ -386,13 +399,21 @@ describe("mapping channels to a guide's by hand", () => {
     await ready(() => expect(channels()).toEqual(["> 14Canal Nord HDno id match"]));
     expect(channels()).toEqual(["> 14Canal Nord HDno id match"]);
 
-    ipc.hold("guide.mapOptions").resolve({ total: 1, channels: OPTIONS.channels.slice(0, 1) });
+    ipc
+      .hold("guide.mapOptions")
+      .resolve({ total: 1, listed: 1204, channels: OPTIONS.channels.slice(0, 1) });
     await type(fields()[1], "canalnord.ex");
     expect(ipc.argsOf("guide.mapOptions").at(-1)).toMatchObject({ query: "canalnord.ex" });
     await ready(() =>
-      expect(options()).toEqual(["> Automatic · no id matchCurrent", "Canal Nordcanalnord.exMap"]),
+      expect(options()).toEqual([
+        "> Automatic · no id matchCurrent",
+        "Canal Nordguide.example.org · canalnord.exMap",
+      ]),
     );
-    expect(options()).toEqual(["> Automatic · no id matchCurrent", "Canal Nordcanalnord.exMap"]);
+    expect(options()).toEqual([
+      "> Automatic · no id matchCurrent",
+      "Canal Nordguide.example.org · canalnord.exMap",
+    ]);
 
     const select = dialog()?.querySelector("select");
     ipc.hold("guide.mapChannels").resolve({ total: 0, channels: [], revision: "7.2" });
@@ -438,7 +459,7 @@ describe("mapping channels to a guide's by hand", () => {
     const gone: MapChannel = {
       ...channel("77", "Old Channel", "old.ex"),
       number: null,
-      guideId: null,
+      shown: null,
       listed: false,
     };
     const { click, button, channels, options, dialog, fields } = await sheet({
@@ -456,7 +477,7 @@ describe("mapping channels to a guide's by hand", () => {
     cleared.resolve(null);
     await ready(() => expect(channels()).toEqual([]));
     expect(ipc.argsOf("guide.map")).toEqual([
-      { subscriptionId: holiday.id, channelId: "77", guideId: null, revision: "7.2" },
+      { subscriptionId: holiday.id, channelId: "77", guide: null, revision: "7.2" },
     ]);
     // Nothing is left of it once its mapping is gone.
     expect(channels()).toEqual([]);

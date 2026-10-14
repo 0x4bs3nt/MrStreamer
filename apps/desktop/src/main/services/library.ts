@@ -486,7 +486,6 @@ function make(options: LibraryOptions) {
             // Of the whole catalogue: a channel the lists only hide is still the provider's.
             listed: (channelId) => catalogues.get(subscriptionId)?.byId.has(channelId) ?? false,
             guideIdsOf: member.guide.guideIdsOf,
-            channelsOf: (guideId) => member.guide.channelsOf(guideId).map(lists.shown),
           };
           views.set(subscriptionId, view);
           return view;
@@ -582,15 +581,9 @@ function index(file: CatalogueFile, subscriptionId: string, outdated: boolean): 
       : { subscriptionId, ...channel },
   );
   const byId = new Map<string, LiveChannel>();
-  const byGuideId = new Map<string, LiveChannel[]>();
   for (const channel of channels) {
     byId.set(channel.id, channel);
     for (const variant of channel.variants) byId.set(variant.id, channel);
-    for (const guideId of guideIds.get(channel.id) ?? []) {
-      const list = byGuideId.get(guideId);
-      if (list) list.push(channel);
-      else byGuideId.set(guideId, [channel]);
-    }
   }
   // A channel shows in each of its streams' categories, once, where its first stream there is.
   const byCategory = new Map<string, LiveChannel[]>();
@@ -629,7 +622,6 @@ function index(file: CatalogueFile, subscriptionId: string, outdated: boolean): 
     titles: channels.map((channel) => normalize(channel.title)),
     guide: {
       guideIdsOf: (channelId) => guideIds.get(byId.get(channelId)?.id ?? channelId) ?? [],
-      channelsOf: (guideId) => byGuideId.get(guideId) ?? [],
     },
   };
 }
@@ -660,7 +652,6 @@ function withoutAdults(found: IndexedCatalogue): IndexedCatalogue {
     guide: {
       guideIdsOf: (channelId) =>
         kept(found.byId.get(channelId)) ? found.guide.guideIdsOf(channelId) : [],
-      channelsOf: (guideId) => found.guide.channelsOf(guideId).filter(kept),
     },
   };
   adultless.set(found, made);

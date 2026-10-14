@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { UsageObservers } from "./analytics/observers.ts";
 // The main process's services, assembled once from Layers. The app makes one runtime from
 // `mainLayer` at start and disposes of it when quitting: that stops background work and downloads,
@@ -200,6 +201,8 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
         Layer.effect(
           GuideSource,
           Effect.map(Subscriptions, (subscriptions) => ({
+            // The global sources of Settings > Guides, for every subscription.
+            sources: join(dataDir, "guides"),
             saved: Effect.gen(function* () {
               const sources = new Map(
                 (yield* subscriptions.sources).map((each) => [each.id, each]),

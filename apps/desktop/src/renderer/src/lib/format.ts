@@ -74,7 +74,7 @@ function daysFrom(now: number, at: number): number {
 }
 
 /** "2 Oct" */
-export function shortDay(at: number): string {
+function shortDay(at: number): string {
   return formatDate(at, "day");
 }
 

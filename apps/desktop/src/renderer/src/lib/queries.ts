@@ -84,11 +84,18 @@ export const queries = {
       staleTime: Infinity,
     }),
   /**
-   * For each subscription, where its guide comes from, how many channels it covers and since
-   * when, why its latest download failed, or that it has none. Read again on `guide.updated`.
+   * For each subscription, how many channels its guides cover and from which, what its own guide
+   * is doing and how its latest download ended, or that it has none. Read again on
+   * `guide.updated`.
    */
   guideStatus: () =>
     queryOptions({ queryKey: ["guide", "status"], queryFn: () => call("guide.status") }),
+  /**
+   * The XMLTV sources of Settings > Guides, in their order, each with what it is doing. Read
+   * again on `guide.updated`.
+   */
+  guideSources: () =>
+    queryOptions({ queryKey: ["guide", "sources"], queryFn: () => call("guide.sources") }),
   libraryStatus: () =>
     queryOptions({ queryKey: ["library", "status"], queryFn: () => call("library.status") }),
   categories: () =>

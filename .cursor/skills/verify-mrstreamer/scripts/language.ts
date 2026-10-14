@@ -131,6 +131,7 @@ export async function languageScenario(d: Driver): Promise<void> {
             translate(locale, "General"),
             translate(locale, "Home"),
             translate(locale, "Subscriptions"),
+            translate(locale, "Guides"),
             translate(locale, "About"),
           ].join(),
       `Settings in ${locale}`,

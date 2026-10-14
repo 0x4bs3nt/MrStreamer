@@ -5,7 +5,8 @@
 // writes of the store it can hold or fail.
 import { chmod, mkdtemp, readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { basename, join } from "node:path";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
@@ -106,18 +107,12 @@ function catalogue(
   });
   const guideIdOf = (id: string) => (id === "1" ? "one.test" : `c${id}.test`);
   const byId = new Map(all.map((channel) => [channel.id, channel]));
-  const byGuideId = new Map(all.map((channel) => [guideIdOf(channel.id), channel]));
   return {
     all,
     searchNames: all.map((channel) => channel.title.toLowerCase()),
     channel: (id) => byId.get(id),
     listed: (id) => byId.has(id),
     guideIdsOf: (id) => (byId.has(id) ? [...(before[id] ?? []), guideIdOf(id)] : []),
-    channelsOf: (guideId) => {
-      const channel = byGuideId.get(guideId);
-      if (channel) return [channel];
-      return all.filter((each) => before[each.id]?.includes(guideId));
-    },
   };
 }
 
@@ -179,6 +174,8 @@ async function standalone({
   readonly searchTimeout?: number;
 } = {}) {
   const dir = await tempDir();
+  /** Where the sources are kept. */
+  const sourcesDir = await tempDir();
   /** What the own guide answers next: a document's bytes as the test sends them, or a failure. */
   let answer: () => Promise<{ body: ReadableStream<Uint8Array>; size: number | null }>;
   /** What the address answers. */
@@ -188,14 +185,22 @@ async function standalone({
   let listing: ReturnType<typeof held> | null = null;
   let writesFail = false;
   let ownWriting: ReturnType<typeof held> | null = null;
-  let sealing: ReturnType<typeof held> | null = null;
   let sweeping: ReturnType<typeof held> | null = null;
   let stubborn: { hold: ReturnType<typeof held>; any: boolean } | null = null;
   let discarding: ReturnType<typeof held> | null = null;
+  let starting: (ReturnType<typeof held> & { target: string }) | null = null;
   const indexer = Layer.effect(
     GuideIndexer,
     Effect.map(GuideIndexer, (worker) => ({
       build: async (...args: Parameters<typeof worker.build>) => {
+        // The next build the test holds has its file begun, as a worker's is, and waits.
+        const begun = starting;
+        if (begun) {
+          starting = null;
+          begun.target = args[0].target;
+          await writeFile(`${args[0].target}.part`, "begun");
+          await begun.wait();
+        }
         // The next build that reads the past from an index waits before it begins.
         const waiting = args[0].previous === null ? null : carrying;
         if (waiting) {
@@ -234,6 +239,10 @@ async function standalone({
         writesFail
           ? Effect.fail(new Failed({ error: { kind: "unexpected", detail: "ENOSPC" } }))
           : kept.setConfig(...write),
+      setSources: (...write: Parameters<typeof kept.setSources>) =>
+        writesFail
+          ? Effect.fail(new Failed({ error: { kind: "unexpected", detail: "ENOSPC" } }))
+          : kept.setSources(...write),
       setOwn: (...write: Parameters<typeof kept.setOwn>) =>
         Effect.andThen(
           Effect.suspend(() => once(ownWriting, () => (ownWriting = null))),
@@ -262,6 +271,7 @@ async function standalone({
     indexer,
     guideSearcherLayer(searchWorker, searchTimeout),
     Layer.succeed(GuideSource, {
+      sources: sourcesDir,
       saved: Effect.succeed([
         {
           id: ID,
@@ -284,11 +294,7 @@ async function standalone({
         ),
     }),
     Layer.succeed(GuideAddresses, {
-      seal: (address) =>
-        Effect.andThen(
-          Effect.suspend(() => once(sealing, () => (sealing = null))),
-          Effect.succeed(address),
-        ),
+      seal: (address) => Effect.succeed(address),
       open: (sealed) => Effect.succeed(sealed),
       fetch: async () => ({ body: new Blob([elsewhere]).stream(), size: elsewhere.length }),
     }),
@@ -312,20 +318,18 @@ async function standalone({
   const one: OwnedId = { subscriptionId: ID, id: "1" };
   return {
     dir,
+    sourcesDir,
     runtime,
     run,
     guide,
     one,
     told,
+    /** Adds the address as a source, and waits for its download to be done. */
+    addSource: async () => run(guide.refreshSource((await run(guide.addSource(ADDRESS))).id)),
     /** Holds the next write of the own guide kept, until `release`. */
     holdOwnWrite() {
       ownWriting = held();
       return ownWriting;
-    },
-    /** Holds the next sealing of an address, until `release`. */
-    holdSeal() {
-      sealing = held();
-      return sealing;
     },
     /** Holds the next sweep of the guide's folder, before it begins, until `release`. */
     holdSweep() {
@@ -342,12 +346,21 @@ async function standalone({
       stubborn = { hold, any };
       return hold;
     },
+    /**
+     * Holds the next build once the file it writes into is begun, until `release`; `target` is
+     * the index it builds.
+     */
+    holdBuildStart() {
+      const hold = { ...held(), target: "" };
+      starting = hold;
+      return hold;
+    },
     /** Holds the next removal of a download, once it is read, until `release`. */
     holdDiscard() {
       discarding = held();
       return discarding;
     },
-    /** What the address answers from now on. */
+    /** What the source's address answers from now on. */
     serveElsewhere(document: string) {
       elsewhere = document;
     },
@@ -457,7 +470,6 @@ describe("a guide as it downloads and is indexed", () => {
         fetchedAt: NOW,
       },
       availability: "available",
-      failure: null,
     });
     expect(await nowOn()).toBe("After");
     // Each step was told as it came, for Settings to show it live.
@@ -476,15 +488,13 @@ describe("a guide as it downloads and is indexed", () => {
     expect(await status()).toMatchObject({
       // The guide downloaded before stays in use, and says since when.
       processing: { state: "failed", reason: failure, since: NOW, kept: NOW },
-      failure,
-      failedAt: NOW,
       fetchedAt: NOW,
     });
     expect(await nowOn()).toBe("Kept");
 
     serve(tv(programme("one.test", "2000", "2100", "Back")));
     await run(guide.refresh(ID));
-    expect(await status()).toMatchObject({ processing: { state: "ready" }, failure: null });
+    expect(await status()).toMatchObject({ processing: { state: "ready" } });
     expect(await nowOn()).toBe("Back");
   });
 
@@ -589,45 +599,43 @@ describe("the files of a guide while it is read", () => {
     await vi.waitFor(async () => expect(await indexesIn(dir)).toHaveLength(1));
   });
 
-  it("keeps the past a check of the address in use reads from, while a refresh replaces it", async () => {
-    const { run, guide, serveElsewhere, holdCarrying, titles } = await standalone();
+  it("brings along the past a source's next download no longer lists", async () => {
+    const { run, guide, serveElsewhere, titles, addSource } = await standalone();
     serveElsewhere(
       tv(
         programme("one.test", "1800", "1900", "Past"),
         programme("one.test", "1900", "2100", "Current"),
       ),
     );
-    await run(guide.use(ID, (await run(guide.check(ID, ADDRESS))).id));
+    const source = await addSource();
     expect(await titles()).toEqual(["Past", "Current"]);
 
-    // The address no longer lists the past. A check of it waits to read it from the guide in
-    // use while a refresh replaces that guide.
+    // The address no longer lists the past: the source keeps it all the same.
     serveElsewhere(tv(programme("one.test", "1900", "2100", "Current")));
-    const carrying = holdCarrying();
-    const checked = run(guide.check(ID, ""));
-    await carrying.arrived;
-    await run(guide.refresh(ID));
-    expect(await titles()).toEqual(["Past", "Current"]);
-    carrying.release();
-    await run(guide.use(ID, (await checked).id));
+    await run(guide.refreshSource(source.id));
 
     expect(await titles()).toEqual(["Past", "Current"]);
   });
 
-  it("closes a checked guide that what is set can't name, and takes it once it can", async () => {
-    const { dir, run, guide, nowOn, serveElsewhere, failWrites, status } = await standalone();
+  it("closes a source's download that the sources can't name, and takes the next once they can", async () => {
+    const { sourcesDir, run, guide, nowOn, serveElsewhere, failWrites } = await standalone();
     serveElsewhere(tv(programme("one.test", "2000", "2100", "Elsewhere")));
-    const { id } = await run(guide.check(ID, ADDRESS));
+    const added = await run(guide.addSource(ADDRESS));
 
     failWrites(true);
-    await expect(run(guide.use(ID, id))).rejects.toMatchObject({
-      error: { kind: "unexpected", detail: "ENOSPC" },
+    expect((await run(guide.refreshSource(added.id))).processing).toEqual({
+      state: "failed",
+      reason: { kind: "unexpected", detail: "ENOSPC" },
+      since: NOW,
+      kept: null,
     });
 
-    expect(await status()).toMatchObject({ source: { kind: "own" } });
-    expect(await openIn(dir)).toEqual([]);
+    expect(await openIn(sourcesDir)).toEqual([]);
+    await vi.waitFor(async () => expect(await indexesIn(sourcesDir)).toEqual([]));
     failWrites(false);
-    expect(await run(guide.use(ID, id))).toMatchObject({ source: { kind: "external" } });
+    expect((await run(guide.refreshSource(added.id))).processing).toMatchObject({
+      state: "ready",
+    });
     expect(await nowOn()).toBe("Elsewhere");
   });
 
@@ -732,85 +740,107 @@ describe("the files of a guide while it is read", () => {
 });
 
 describe("which guide is current, as changes to it meet", () => {
-  it("lets an own guide being kept finish before an address takes its place, and keeps what each names", async () => {
-    const { dir, run, guide, serve, serveElsewhere, holdOwnWrite, nowOn, status } =
-      await standalone();
-    serve(tv(programme("one.test", "2000", "2100", "Before")));
-    await run(guide.refresh(ID));
+  it("keeps an own guide being kept and a source that lands meanwhile, each where it is kept, its own guide first", async () => {
+    const {
+      dir,
+      sourcesDir,
+      run,
+      guide,
+      serve,
+      serveElsewhere,
+      holdOwnWrite,
+      addSource,
+      nowOn,
+      status,
+    } = await standalone();
+    serve(tv(programme("one.test", "2000", "2100", "Own")));
     serveElsewhere(tv(programme("one.test", "2000", "2100", "External")));
-    const { id } = await run(guide.check(ID, ADDRESS));
 
-    // A later download of the own guide is being kept as the address is used.
-    serve(tv(programme("one.test", "2000", "2100", "Own late")));
     const keeping = holdOwnWrite();
     const refreshed = run(guide.refresh(ID));
     await keeping.arrived;
-    const used = run(guide.use(ID, id));
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(await nowOn()).toBe("Before");
+    await addSource();
     keeping.release();
     await refreshed;
-    await used;
 
-    expect(await nowOn()).toBe("External");
+    expect(await nowOn()).toBe("Own");
     expect(await status()).toMatchObject({
-      source: { kind: "external" },
+      supplied: [{ source: null, channels: 1 }],
       processing: { state: "ready" },
     });
-    // What is kept names files that are there, the own guide's among them.
+    // What is kept names files that are there, each in its own folder.
     const own: { index: string } = JSON.parse(await readFile(join(dir, "guide.json"), "utf8"));
-    const set: { external: { document: { file: string } } } = JSON.parse(
-      await readFile(join(dir, "guide-source.json"), "utf8"),
+    const kept: { sources: { document: { file: string } }[] } = JSON.parse(
+      await readFile(join(sourcesDir, "sources.json"), "utf8"),
     );
+    await vi.waitFor(async () => expect(await indexesIn(dir)).toEqual([own.index]));
     await vi.waitFor(async () =>
-      expect((await indexesIn(dir)).sort()).toEqual([own.index, set.external.document.file].sort()),
+      expect(await indexesIn(sourcesDir)).toEqual(kept.sources.map((each) => each.document.file)),
     );
-    await run(guide.restore(ID));
-    expect(await nowOn()).toBe("Own late");
   });
 
-  it("keeps a checked guide that a use has open, though the check is called off meanwhile", async () => {
-    const { dir, run, guide, serve, serveElsewhere, holdSeal } = await standalone();
-    serve(tv(programme("one.test", "2000", "2100", "Own")));
-    await run(guide.refresh(ID));
+  it("keeps a source's index while a read has it open, though the source is removed meanwhile", async () => {
+    const { sourcesDir, run, guide, one, serveElsewhere, holdChannels, addSource } =
+      await standalone();
     serveElsewhere(tv(programme("one.test", "2000", "2100", "External")));
-    const { id } = await run(guide.check(ID, ADDRESS));
+    const source = await addSource();
 
-    const sealing = holdSeal();
-    const used = failureOf(run(guide.use(ID, id)));
-    await sealing.arrived;
-    await run(guide.cancelCheck(ID));
-    // The use has it open: it stays until the use lets go.
-    expect(await indexesIn(dir)).toHaveLength(2);
-    sealing.release();
+    const reading = holdChannels();
+    const listed = run(guide.listings([one]));
+    await reading.arrived;
+    await run(guide.removeSource(source.id));
+    // The read has it open: it stays until the read lets go.
+    expect(await indexesIn(sourcesDir)).toHaveLength(1);
+    reading.release();
 
-    expect(await used).toEqual({ kind: "guide", failure: { kind: "changed" } });
-    await vi.waitFor(async () => expect(await indexesIn(dir)).toHaveLength(1));
-    expect(await openIn(dir)).toEqual(await indexesIn(dir));
+    expect((await listed)[ownedKey(one)]?.now?.title).toBe("External");
+    await vi.waitFor(async () => expect(await indexesIn(sourcesDir)).toEqual([]));
+    expect(await openIn(sourcesDir)).toEqual([]);
   });
 
   it("keeps the index a stopped build reads the past from until its worker has ended", async () => {
-    const { dir, run, guide, serveElsewhere, holdStubborn } = await standalone();
+    const { sourcesDir, run, guide, serveElsewhere, holdStubborn, addSource } = await standalone();
     serveElsewhere(tv(programme("one.test", "1900", "2100", "Current")));
-    await run(guide.use(ID, (await run(guide.check(ID, ADDRESS))).id));
-    const [inUse] = await indexesIn(dir);
+    const source = await addSource();
+    const [inUse] = await indexesIn(sourcesDir);
 
-    // A check of the same address reads the past from the guide in use, in a worker that is
-    // slow to end once stopped. A check of another address stops it and is used at once.
+    // The next download reads the past from the source's index, in a worker that is slow to end
+    // once stopped, and the source is removed meanwhile.
     const ending = holdStubborn();
-    const checking = failureOf(run(guide.check(ID, "")));
+    const refreshing = failureOf(run(guide.refreshSource(source.id)));
     await ending.arrived;
-    const other = (async () =>
-      run(guide.use(ID, (await run(guide.check(ID, "https://other.example.org/xmltv.xml"))).id)))();
-    await Promise.race([other, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    const removed = run(guide.removeSource(source.id));
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // Not before that worker has ended: the guide in use, which it reads, stays until then.
-    expect(await indexesIn(dir)).toContain(inUse);
+    // Not before that worker has ended: the index it reads stays until then.
+    expect(await indexesIn(sourcesDir)).toContain(inUse);
     ending.release();
-    expect(await checking).toEqual({ kind: "guide", failure: { kind: "cancelled" } });
-    await other;
-    await vi.waitFor(async () => expect(await indexesIn(dir)).not.toContain(inUse));
+    await removed;
+    expect(await refreshing).toEqual({ kind: "guide", failure: { kind: "changed" } });
+    await vi.waitFor(async () => expect(await indexesIn(sourcesDir)).toEqual([]));
+  });
+
+  it("leaves an index being written to its build, though the sweep comes meanwhile", async () => {
+    const { dir, runtime, run, guide, serve, holdSweep, holdBuildStart, nowOn } =
+      await standalone();
+    serve(tv(programme("one.test", "2000", "2100", "Built")));
+    // Left by a run before: what shows the sweep ran.
+    const left = `guide-index.${randomUUID()}.sqlite`;
+    await writeFile(join(dir, left), "");
+    const sweeping = holdSweep();
+    const building = holdBuildStart();
+
+    const refreshed = run(guide.refresh(ID));
+    await building.arrived;
+    runtime.runFork(guide.status);
+    await sweeping.arrived;
+    sweeping.release();
+    await vi.waitFor(async () => expect(await readdir(dir)).not.toContain(left));
+    expect(await readdir(dir)).toContain(`${basename(building.target)}.part`);
+    building.release();
+    await refreshed;
+
+    expect(await nowOn()).toBe("Built");
   });
 
   it("finishes the first sweep of a guide's folder before anything uses its files, though what asked for it was stopped", async () => {
@@ -827,7 +857,114 @@ describe("which guide is current, as changes to it meet", () => {
     await refreshed;
 
     expect(await nowOn()).toBe("Swept");
-    expect(await status()).toMatchObject({ availability: "available", failure: null });
+    expect(await status()).toMatchObject({
+      availability: "available",
+      processing: { state: "ready" },
+    });
+  });
+});
+
+describe("the guide that supplies a channel, as time passes", () => {
+  const MINUTE = 60 * 1000;
+  /** Lets the work a step of the clock woke run. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+  /**
+   * Channel 1's own guide ends at 20:30, and the source's runs to 23:00: the channel changes hands
+   * at 20:30. Counts each time the window is told from then on.
+   */
+  async function handover() {
+    const harness = await standalone();
+    const { runtime, run, guide, serve, serveElsewhere, addSource, nowOn } = harness;
+    serve(tv(programme("one.test", "2000", "2030", "Own")));
+    serveElsewhere(tv(programme("one.test", "2000", "2300", "Elsewhere")));
+    await run(guide.refresh(ID));
+    await addSource();
+    expect(await nowOn()).toBe("Own");
+    await settle();
+    let told = 0;
+    runtime.runFork(Stream.runForEach(guide.changes, () => Effect.sync(() => void told++)));
+    await settle();
+    return {
+      ...harness,
+      told: () => told,
+      /** Moves the clock on a minute at a time, as the checks each minute see it. */
+      minutes: async (count: number) => {
+        for (let minute = 0; minute < count; minute++) {
+          await run(TestClock.adjust(MINUTE));
+          await settle();
+        }
+      },
+      /** Sets the clock, as a sleep or a new time does, without the minutes between. */
+      setTime: async (time: number) => {
+        await run(TestClock.setTime(time));
+        await settle();
+      },
+    };
+  }
+
+  it("tells the window once when a guide's last programme on a channel ends, and not before or after", async () => {
+    const { minutes, told, nowOn } = await handover();
+
+    await minutes(19);
+    expect(told()).toBe(0);
+    await minutes(1);
+    await vi.waitFor(() => expect(told()).toBe(1));
+    await minutes(5);
+
+    expect(told()).toBe(1);
+    expect(await nowOn()).toBe("Elsewhere");
+  });
+
+  it("tells the window once when the clock jumps forward, as after a sleep", async () => {
+    const { run, holdChannels, setTime, minutes, told, nowOn } = await handover();
+
+    // A sleep: the check of 20:11 begins, and nothing runs while the clock moves to 20:25.
+    const asleep = holdChannels();
+    await run(TestClock.adjust(MINUTE));
+    await settle();
+    await setTime(at("20:25"));
+    asleep.release();
+    await vi.waitFor(() => expect(told()).toBe(1));
+    await minutes(3);
+
+    expect(told()).toBe(1);
+    expect(await nowOn()).toBe("Own");
+  });
+
+  it("tells the window once when the clock goes back, with the guide that supplied the channel then", async () => {
+    const { run, guide, minutes, setTime, told, nowOn } = await handover();
+    await minutes(21);
+    await vi.waitFor(() => expect(told()).toBe(1));
+    expect(await nowOn()).toBe("Elsewhere");
+
+    await setTime(at("20:12"));
+    // As the app checks when the computer wakes.
+    await run(guide.checkTime);
+    expect(told()).toBe(2);
+    await run(guide.checkTime);
+
+    expect(told()).toBe(2);
+    expect(await nowOn()).toBe("Own");
+  });
+
+  it("tells the window once of a handover that passed while the guides were read", async () => {
+    const { run, holdChannels, minutes, told } = await handover();
+    await minutes(19);
+    expect(told()).toBe(0);
+
+    // The check of 20:30 reads the guides as they stood at 20:29, slowly, while 20:30 passes.
+    const reading = holdChannels();
+    await run(TestClock.adjust(MINUTE));
+    await settle();
+    await run(TestClock.adjust(MINUTE));
+    await settle();
+    expect(told()).toBe(0);
+    reading.release();
+    await vi.waitFor(() => expect(told()).toBe(1));
+    await minutes(3);
+
+    expect(told()).toBe(1);
   });
 });
 
@@ -914,25 +1051,6 @@ describe("work stopped on its way to becoming the guide", () => {
       expect(await guideFilesIn(dir)).toEqual([]);
     },
   );
-
-  it("hands an address its turn while a download kept before it is still being cleaned up, and forgets both", async () => {
-    const { dir, run, guide, serve, serveElsewhere, holdDiscard, nowOn } = await standalone();
-    serveElsewhere(tv(programme("one.test", "2000", "2100", "External")));
-    const { id } = await run(guide.check(ID, ADDRESS));
-    serve(tv(programme("one.test", "2000", "2100", "Own")));
-    const removing = holdDiscard();
-    const refreshed = failureOf(run(guide.refresh(ID)));
-    await removing.arrived;
-    const used = run(guide.use(ID, id));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    removing.release();
-    await used;
-    await refreshed;
-
-    expect(await nowOn()).toBe("External");
-    await run(guide.forget({ id: ID, store: dir }));
-    expect(await guideFilesIn(dir)).toEqual([]);
-  });
 
   it("keeps the document an older release left while the build reading it is stopped, until its worker has ended", async () => {
     const { dir, run, guide, holdStubborn } = await standalone();

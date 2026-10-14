@@ -1,10 +1,11 @@
-// The sheet that maps a subscription's channels to its guide's by hand, over Settings >
+// The sheet that maps a subscription's channels to its guides' by hand, over Settings >
 // Subscriptions. On the left, the subscription's channels: those without programmes, those
 // mapped by hand, or all, searched by name or number. On the right, for the channel picked
-// there, the channels its guide lists, searched by name or id, each with both: nothing is ever
-// matched by name, so the viewer picks the exact guide channel. Map takes effect at once, in
-// every list; Automatic takes a mapping away again, and the channel goes back to the guide
-// channel its own guide id names, or to none.
+// there, the channels its guides list, its own guide's and then each source's of Settings >
+// Guides, searched by name or id, each with both and a source's host: nothing is ever matched by
+// name, so the viewer picks the exact guide channel of the exact guide. Map takes effect at
+// once, in every list, whatever the order of the guides; Automatic takes a mapping away again,
+// and the channel goes back to the first guide channel its own guide ids name, or to none.
 //   Both lists are drawn only where in view and read a page at a time. Once a channel is mapped
 // the channels are read again, since a mapping changes which of them a filter shows and so where
 // every page begins: among those without programmes the next one moves up to where the keyboard
@@ -24,7 +25,13 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { GuideChannel, GuideStatus, MapChannel, MapFilter } from "@mrstreamer/contracts/guide";
+import type {
+  GuideChannel,
+  GuideChannelRef,
+  GuideStatus,
+  MapChannel,
+  MapFilter,
+} from "@mrstreamer/contracts/guide";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { searchWords } from "@mrstreamer/core/text";
 import { formatNumber, type PlainKey, t } from "@mrstreamer/core/i18n";
@@ -87,7 +94,6 @@ export function GuideMap({
   const optionField = useRef<HTMLInputElement>(null);
   const failed = loaded.find((each) => each.error)?.error;
 
-  const source = guide.source.kind === "external" ? hostOf(guide.source.origin) : null;
   const without = Math.max(0, guide.listed - guide.channels);
   return (
     <Sheet onClose={onClose} overSettings initialFocus={channelList}>
@@ -98,7 +104,6 @@ export function GuideMap({
         <p className="mt-1 text-[0.9375rem] text-muted-foreground">
           {[
             subscriptionName(subscription),
-            source,
             t("{count} channels without programmes", { count: without }),
           ]
             .filter(Boolean)
@@ -178,7 +183,6 @@ export function GuideMap({
               subscriptionId={subscriptionId}
               channel={picked}
               revision={first?.revision ?? ""}
-              guideChannels={guide.guideChannels}
               field={optionField}
               onMapped={() => {
                 // Every page of them that was read, as the main process has them now.
@@ -207,25 +211,31 @@ export function GuideMap({
   );
 }
 
+/** A guide channel by its id, after its source's host when it isn't the subscription's own guide's. */
+function nameOf(guideChannel: GuideChannelRef): string {
+  return guideChannel.origin
+    ? `${hostOf(guideChannel.origin)} · ${guideChannel.id}`
+    : guideChannel.id;
+}
+
 /** How a channel gets its programmes, in a few words beside its name. */
 function stateOf(channel: MapChannel): string {
   if (!channel.listed) return t("no longer listed");
-  if (channel.mappedTo === null) return channel.guideId ?? t("no id match");
-  return channel.guideId === null
-    ? `${t("mapped")} · ${channel.mappedTo} · ${t("not in this guide")}`
-    : `${t("mapped")} · ${channel.mappedTo}`;
+  if (channel.mapped === null) return channel.shown ? nameOf(channel.shown) : t("no id match");
+  return channel.shown === null
+    ? `${t("mapped")} · ${nameOf(channel.mapped)} · ${t("not in this guide")}`
+    : `${t("mapped")} · ${nameOf(channel.mapped)}`;
 }
 
 /**
- * The guide channels to map one channel to: Automatic first, then the guide's own, those the
- * field finds. The field starts with the channel's name, as a search to begin from; whatever it
+ * The guide channels to map one channel to: Automatic first, then the guides', those the field
+ * finds. The field starts with the channel's name, as a search to begin from; whatever it
  * finds, the viewer picks.
  */
 function Picker({
   subscriptionId,
   channel,
   revision,
-  guideChannels,
   field,
   onMapped,
   onChanged,
@@ -233,10 +243,8 @@ function Picker({
 }: {
   subscriptionId: string;
   channel: MapChannel;
-  /** Names the guide the channel was read from, which a mapping is refused without. */
+  /** Names the guides the channel was read from, which a mapping is refused without. */
   revision: string;
-  /** How many channels the guide lists in all. */
-  guideChannels: number;
   field: RefObject<HTMLInputElement | null>;
   /** The channel is mapped as asked, so the channels no longer stand as they were read. */
   onMapped: () => void;
@@ -254,7 +262,7 @@ function Picker({
   });
   const byPage = new Map(pages.map((page, index) => [page, loaded[index]?.data]));
   const total = byPage.get(0)?.total ?? 0;
-  /** Automatic is the first option; the guide's channels follow it. */
+  /** Automatic is the first option; the guides' channels follow it. */
   const optionAt = (index: number): GuideChannel | undefined =>
     byPage.get(Math.floor((index - 1) / PAGE))?.channels[(index - 1) % PAGE];
   const visible = useCallback(
@@ -267,8 +275,8 @@ function Picker({
   const words = searchWords(query);
 
   const map = useMutation({
-    mutationFn: (guideId: string | null) =>
-      call("guide.map", { subscriptionId, channelId: channel.id, guideId, revision }),
+    mutationFn: (ref: string | null) =>
+      call("guide.map", { subscriptionId, channelId: channel.id, guide: ref, revision }),
     onSuccess: () => onMapped(),
     onError: (cause) => {
       const error = appError(cause);
@@ -279,11 +287,11 @@ function Picker({
   /** Maps the channel to the option at `index`, or back to automatic at the first. */
   const choose = (index: number) => {
     if (map.isPending) return;
-    const guideId = index === 0 ? null : optionAt(index)?.id;
-    if (guideId === undefined || guideId === channel.mappedTo) return;
+    const ref = index === 0 ? null : optionAt(index)?.ref;
+    if (ref === undefined || ref === (channel.mapped?.ref ?? null)) return;
     // Only a channel the provider still lists can be mapped anew.
-    if (guideId !== null && !channel.listed) return;
-    map.mutate(guideId);
+    if (ref !== null && !channel.listed) return;
+    map.mutate(ref);
   };
 
   return (
@@ -315,12 +323,12 @@ function Picker({
             return (
               <>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {channel.mappedTo === null
-                    ? `${t("Automatic")} · ${channel.guideId ?? t("no id match")}`
+                  {channel.mapped === null
+                    ? `${t("Automatic")} · ${channel.shown ? nameOf(channel.shown) : t("no id match")}`
                     : t("Automatic")}
                 </span>
                 <Choice
-                  current={channel.mappedTo === null}
+                  current={channel.mapped === null}
                   offered={isActive}
                   pending={map.isPending}
                   label={t("Restore")}
@@ -340,10 +348,10 @@ function Picker({
                   )}
                 </span>
                 <span className="max-w-[45%] flex-none truncate font-mono text-xs text-muted-foreground">
-                  {option.id}
+                  {nameOf(option)}
                 </span>
                 <Choice
-                  current={option.id === channel.mappedTo}
+                  current={option.ref === channel.mapped?.ref}
                   offered={isActive && channel.listed}
                   pending={map.isPending}
                   label={t("Map")}
@@ -360,7 +368,7 @@ function Picker({
             {describeError(appError(map.error))}
           </span>
         ) : query ? (
-          t("{shown} of {total} shown", { shown: total, total: guideChannels })
+          t("{shown} of {total} shown", { shown: total, total: byPage.get(0)?.listed ?? 0 })
         ) : null}
       </div>
     </section>

@@ -100,6 +100,8 @@ async function connectedGuide(options: FakeProviderOptions = {}) {
       reconnect: () => run(connect),
       library: { ...library, refresh: () => library.refresh(owner) },
       settings: await promised(runtime, Settings),
+      /** Quits this start: one app runs per folder, so another goes on only once it has. */
+      close: () => runtime.dispose(),
       /**
        * Moves the clock on a quarter of an hour at a time, letting each check the guide runs on
        * its own finish before the next.
@@ -267,16 +269,14 @@ describe("programme guide", () => {
     const { guide } = await connectedGuide();
     const listed = (await guide.library.channels({})).length;
     expect(await guide.status()).toEqual({
-      source: { kind: "own" },
       channels: 0,
+      supplied: [],
       listed,
       guideChannels: 0,
       fetchedAt: null,
       availability: "unknown",
       mapped: 0,
       unresolved: 0,
-      failure: null,
-      failedAt: null,
       processing: { state: "empty" },
     });
 
@@ -286,12 +286,12 @@ describe("programme guide", () => {
     const shown = Object.keys(await guide.listings(ids)).length;
     expect(shown).toBeGreaterThan(0);
     expect(await guide.status()).toMatchObject({
-      source: { kind: "own" },
       channels: shown,
+      supplied: [{ source: null, channels: shown }],
       listed,
       fetchedAt: NOW,
       availability: "available",
-      failure: null,
+      processing: { state: "ready", channels: shown, fetchedAt: NOW },
     });
   });
 
@@ -441,8 +441,12 @@ describe("programme guide", () => {
     // the guide in use is.
     expect(await guide.status()).toMatchObject({
       fetchedAt: NOW,
-      failure: { kind: "guide", failure: { kind: "empty" } },
-      failedAt: NOW + 6 * HOUR,
+      processing: {
+        state: "failed",
+        reason: { kind: "guide", failure: { kind: "empty" } },
+        since: NOW + 6 * HOUR,
+        kept: NOW,
+      },
     });
   });
 
@@ -570,7 +574,9 @@ describe("programme guide", () => {
     provider.serveChannels((all) => all.toReversed());
     await guide.library.refresh();
     expect(await shown(guide)).toEqual(one("Journaal"));
-    expect(await shown(await create())).toEqual(one("Journaal"));
+    const restarted = await create();
+    expect(await shown(restarted)).toEqual(one("Journaal"));
+    await restarted.close();
 
     // A guide that knows both spellings shows, counts and finds the channel once.
     provider.serveGuide(

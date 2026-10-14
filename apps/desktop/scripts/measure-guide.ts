@@ -1,19 +1,21 @@
 // Measures the programme guide against its budgets: no main-process stall over 50 ms while it
 // downloads, indexes, opens or answers, now and next for a screen of channels under 5 ms, under
 // 80 MB of heap and 150 MB of resident memory added once loaded. How long a guide takes to be
-// ready in the background, downloaded and indexed, is reported without a budget. Indexing runs in a worker thread, as in the app, so its own memory shows in the peak
-// resident memory added while indexing, not in what stays. Uses a generated guide the size of a
-// large subscription, or a real XMLTV file, packed with gzip or not. It also times what Settings
-// asks to map channels by hand: a page of the 13,000 channels, a search of the guide's channels,
-// and now and next with a few hundred of them mapped; and a page of a grid, 30 channels by 6
-// hours.
+// ready in the background, downloaded and indexed, is reported without a budget. Indexing runs
+// in a worker thread, as in the app, so its own memory shows in the peak resident memory added
+// while indexing, not in what stays. Uses a generated guide the size of a large subscription, or
+// a real XMLTV file, packed with gzip or not, as each subscription's own guide, or with
+// --source as one global source every subscription reads, indexed once. It also times what
+// Settings asks to map channels by hand: a page of the 13,000 channels, a search of the guide's
+// channels, and now and next with a few hundred of them mapped; and a page of a grid, 30
+// channels by 6 hours.
 //
-//   node --expose-gc scripts/measure-guide.ts [--file guide.xml[.gz]]
+//   node --expose-gc scripts/measure-guide.ts [--file guide.xml[.gz]] [--source]
 //       [--guide-channels 1300] [--programmes 70] [--subscriptions 1] [--json results.json]
 //
-// The last two size the generated guide, which is written to a temporary file as it is made, so
-// one as large as a real 512 MiB guide fits. The file stays local: provider guides are not
-// committed.
+// --guide-channels and --programmes size the generated guide, which is written to a temporary
+// file as it is made, so one as large as a real 512 MiB guide fits. The file stays local:
+// provider guides are not committed.
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,7 +28,8 @@ import { Worker } from "node:worker_threads";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { xmltvDocument } from "@mrstreamer/core/guide/document";
 import { GUIDE_LIMITS } from "@mrstreamer/core/guide/limits";
-import type { CatalogueChannels } from "@mrstreamer/core/guide/programmes";
+import { guideRef, OWN_GUIDE, type CatalogueChannels } from "@mrstreamer/core/guide/programmes";
+import type { LiveGuide } from "@mrstreamer/core/provider";
 import {
   Guide,
   GuideAddresses,
@@ -68,8 +71,16 @@ const { values } = parseArgs({
     subscriptions: { type: "string", default: "1" },
     "guide-channels": { type: "string", default: "1300" },
     programmes: { type: "string", default: "70" },
+    source: { type: "boolean", default: false },
   },
 });
+/**
+ * The guide measured is a global source every subscription reads, downloaded and indexed once,
+ * in place of each subscription's own.
+ */
+const AS_SOURCE = values.source;
+/** What the measured source is added as: its download reads the document. */
+const SOURCE_ADDRESS = "https://guide.example.org/measured.xml";
 const GUIDE_CHANNELS = positiveCount(values["guide-channels"], "guide-channels", 50000);
 const PROGRAMMES_PER_CHANNEL = positiveCount(
   values.programmes,
@@ -121,12 +132,9 @@ try {
   for (const subscription of subscriptions) {
     const ownChannels = channels.filter((channel) => channel.subscriptionId === subscription);
     const guideIdsOf = new Map<string, readonly string[]>();
-    const byGuideId = new Map<string, LiveChannel[]>();
     for (const [index, channel] of ownChannels.entries()) {
       const guideId = index % 6 === 0 ? guideIds[(index / 6) % guideIds.length] : undefined;
-      if (!guideId) continue;
-      guideIdsOf.set(channel.id, [guideId]);
-      byGuideId.set(guideId, [...(byGuideId.get(guideId) ?? []), channel]);
+      if (guideId) guideIdsOf.set(channel.id, [guideId]);
     }
     const byId = new Map(ownChannels.map((channel) => [channel.id, channel]));
     const guideChannels: CatalogueChannels = {
@@ -135,7 +143,6 @@ try {
       channel: (id) => byId.get(id),
       listed: (id) => byId.has(id),
       guideIdsOf: (id) => guideIdsOf.get(id) ?? [],
-      channelsOf: (id) => byGuideId.get(id) ?? [],
     };
 
     catalogues.set(subscription, guideChannels);
@@ -150,6 +157,7 @@ try {
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(GuideSource, {
+              sources: join(dataDir, "guides"),
               saved: Effect.succeed(
                 subscriptions.map((subscription) => ({
                   id: subscription,
@@ -157,13 +165,16 @@ try {
                   key: subscription,
                   store: join(dataDir, subscription),
                   archive: GUIDE_ARCHIVE_MS,
-                  download: async () => ({
-                    kind: "document" as const,
-                    body: Readable.toWeb(
-                      createReadStream(documentPath, { highWaterMark: CHUNK_BYTES }),
-                    ) as ReadableStream<Uint8Array>,
-                    size: (await stat(documentPath)).size,
-                  }),
+                  download: async (): Promise<LiveGuide> =>
+                    AS_SOURCE
+                      ? { kind: "none" }
+                      : {
+                          kind: "document",
+                          body: Readable.toWeb(
+                            createReadStream(documentPath, { highWaterMark: CHUNK_BYTES }),
+                          ) as ReadableStream<Uint8Array>,
+                          size: (await stat(documentPath)).size,
+                        },
                 })),
               ),
             }),
@@ -181,7 +192,7 @@ try {
               (options) =>
                 new Worker(new URL("../src/main/guide/index-worker.ts", import.meta.url), options),
             ),
-            // The measured guide is the subscription's own: no address is sealed or requested.
+            // With --source, the measured guide's address: nothing is sealed, the document is read.
             Layer.succeed(GuideAddresses, {
               seal: (address) => Effect.succeed(address),
               open: (sealed) => Effect.succeed(sealed),
@@ -206,10 +217,20 @@ try {
         for (const subscription of subscriptions) {
           const started = performance.now();
           await runtime.runPromise(guide.refresh(subscription));
+          if (!AS_SOURCE) samples.push(performance.now() - started);
+        }
+        if (AS_SOURCE) {
+          // Added once for every subscription, and ready once its download is indexed.
+          const started = performance.now();
+          const added = await runtime.runPromise(guide.addSource(SOURCE_ADDRESS));
+          await runtime.runPromise(guide.refreshSource(added.id));
           samples.push(performance.now() - started);
         }
         return samples;
       },
+      /** The guide measured: the subscriptions' own, or the source. */
+      guideOf: async () =>
+        AS_SOURCE ? ((await runtime.runPromise(guide.sources))[0]?.id ?? OWN_GUIDE) : OWN_GUIDE,
       listings: (asked: readonly LiveChannel[]) => runtime.runPromise(guide.listings(asked)),
       range: (asked: readonly LiveChannel[], from: number, to: number) =>
         runtime.runPromise(guide.range(asked, from, to)),
@@ -230,8 +251,8 @@ try {
         runtime.runPromise(
           guide.mapOptions({ subscriptionId: subscriptions[0]!, query, offset: 0, limit: 120 }),
         ),
-      map: (channelId: string, guideId: string, revision: string) =>
-        runtime.runPromise(guide.map(subscriptions[0]!, channelId, guideId, revision)),
+      map: (channelId: string, ref: string, revision: string) =>
+        runtime.runPromise(guide.map(subscriptions[0]!, channelId, ref, revision)),
     };
   }
 
@@ -405,6 +426,7 @@ try {
     await turn();
   }
   const unmatched = await restarted.mapChannels("");
+  const measured = await restarted.guideOf();
   // Channels without a guide id of their own, each mapped to one of the guide's channels.
   const byHand = channels
     .filter((channel) => channel.subscriptionId === subscriptions[0])
@@ -412,7 +434,7 @@ try {
     .slice(0, MAPPED);
   for (const [at, channel] of byHand.entries()) {
     const guideId = guideIds[at % guideIds.length];
-    if (guideId) await restarted.map(channel.id, guideId, unmatched.revision);
+    if (guideId) await restarted.map(channel.id, guideRef(measured, guideId), unmatched.revision);
     await turn();
   }
   const mappedListingsSamples: number[] = [];
@@ -458,6 +480,7 @@ try {
       programmesPerChannel: PROGRAMMES_PER_CHANNEL,
       documentBytes: (await stat(documentPath)).size,
       source: values.file ? "local-file" : "synthetic",
+      guideAs: AS_SOURCE ? "source" : "own",
       screenChannels: 60,
       mappedChannels: byHand.length,
     },

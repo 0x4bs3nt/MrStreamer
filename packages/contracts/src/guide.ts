@@ -70,30 +70,36 @@ export interface ListingMatch {
  */
 export type GuideAvailability = "unknown" | "available" | "none";
 
-/** Where a subscription's programmes come from. */
-export type GuideSource =
-  /** Its own guide: its provider's, or the one its playlist's first line names. */
-  | { readonly kind: "own" }
+/**
+ * An XMLTV guide the viewer added in Settings > Guides. Every subscription reads the sources
+ * after its own guide, in their order. The address can hold a key, so it stays in the main
+ * process, sealed on disk: this says only where it leads.
+ */
+export interface GuideSourceStatus {
+  /** Names the source for `guide.removeSource`, `guide.moveSource` and `guide.refreshSource`. */
+  readonly id: string;
+  /** The address's scheme, host and port: "https://guide.example.org". */
+  readonly origin: string;
   /**
-   * An XMLTV address the viewer gave for it. The address can hold a key, so it stays in the main
-   * process, sealed on disk: this says only where it leads.
+   * The keychain no longer opens the saved address. What was downloaded from it still shows, and
+   * nothing refreshes until the viewer adds it again.
    */
-  | {
-      readonly kind: "external";
-      /** The address's scheme, host and port: "https://guide.example.org". */
-      readonly origin: string;
-      /** Epoch milliseconds since it is the subscription's guide. */
-      readonly since: number;
-      /**
-       * The keychain no longer opens the saved address. What was downloaded from it still shows,
-       * and nothing refreshes until the viewer enters it again or goes back to the own guide.
-       */
-      readonly locked: boolean;
-    };
+  readonly locked: boolean;
+  /** Its work and its guide, `ready.channels` counting the channels it supplies in every subscription. */
+  readonly processing: GuideProcessing;
+}
+
+/** How many of a subscription's channels one of its guides supplies. */
+export interface GuideSupply {
+  /** The global source, or null for the subscription's own guide. */
+  readonly source: { readonly id: string; readonly origin: string } | null;
+  readonly channels: number;
+}
 
 /**
- * What a subscription's guide is doing, for a Settings row to show: each state holds all such a
- * row needs. The guide it had keeps answering throughout, until a new one is read whole.
+ * What a guide is doing, a subscription's own or a global source, for a Settings row to show:
+ * each state holds all such a row needs. The guide it had keeps answering throughout, until a
+ * new one is read whole.
  *   - `downloading`: `bytes` of the document have arrived, of `total` when the server says.
  *   - `reading`: the document is being indexed, `programmes` of it so far, since `since`.
  *   - `ready`: nothing is under way and a guide is in use: `channels` of the catalogue it covers,
@@ -123,39 +129,46 @@ export type GuideProcessing =
     }
   | { readonly state: "empty" };
 
-/** A subscription's guide as Settings shows it: where from, what it covers, and since when. */
+/**
+ * A subscription's guide as Settings shows it: what its own guide and the global sources cover,
+ * and what its own guide is doing.
+ */
 export interface GuideStatus {
   /** The subscription whose guide this is. */
   readonly subscriptionId: string;
-  readonly source: GuideSource;
-  /** Channels of its catalogue with programmes in the guide. */
+  /** Channels of its catalogue with programmes in any of its guides. */
   readonly channels: number;
+  /**
+   * Of those, how many each guide supplies, in order: its own, then each global source that
+   * supplies any.
+   */
+  readonly supplied: readonly GuideSupply[];
   /** Channels of its catalogue as the lists show it, which `channels` is counted among. */
   readonly listed: number;
-  /** Channels the guide itself lists. */
+  /** Channels its own guide lists. */
   readonly guideChannels: number;
-  /** Epoch milliseconds of the last download that worked, or null before one, or without a guide. */
+  /** Epoch milliseconds of its own guide's last download that worked, or null without one. */
   readonly fetchedAt: number | null;
-  /** Whether there is one. Where the own guide comes from stays in the main process. */
+  /** Whether it has a guide of its own. Where that comes from stays in the main process. */
   readonly availability: GuideAvailability;
   /** Channels the viewer mapped to a guide channel by hand. */
   readonly mapped: number;
-  /** Of those, the ones whose channel the provider, or whose guide channel the guide, no longer lists. */
-  readonly unresolved: number;
-  /** Why the latest download failed, when it did. The guide from `fetchedAt` stays in use. */
-  readonly failure: AppError | null;
-  /** Since when downloads have failed: the first failure after the last that worked. */
-  readonly failedAt: number | null;
   /**
-   * What is under way and how the latest download ended, as it goes: `guide.updated` tells each
-   * step at once, and progress within one a few times a second at most.
+   * Of those, the ones whose channel the provider, or whose guide channel its guide, no longer
+   * lists, or whose source went.
+   */
+  readonly unresolved: number;
+  /**
+   * What is under way with its own guide and how the latest download ended, as it goes:
+   * `guide.updated` tells each step at once, and progress within one a few times a second at
+   * most.
    */
   readonly processing: GuideProcessing;
 }
 
 /** Why a guide can't be used, or why a change to one no longer applies. */
 export type GuideFailure =
-  /** Nothing to check: no http(s) address was typed, and none is saved. */
+  /** Nothing to add: what was typed isn't an http(s) address. */
   | { readonly kind: "address" }
   /** The keychain no longer opens the saved address. */
   | { readonly kind: "locked" }
@@ -172,34 +185,24 @@ export type GuideFailure =
   /** The document is larger than the app reads: nothing of it is used. */
   | { readonly kind: "too-large"; readonly limit: "bytes" | "element" | "channels" }
   /**
-   * The guide, its source or its subscription changed since this was asked: a check that is no
-   * longer the latest, or a mapping made from a list that no longer holds.
+   * The guide, its source or its subscription changed since this was asked: a source that was
+   * removed, or a mapping made from a list that no longer holds.
    */
-  | { readonly kind: "changed" }
-  /** The check was stopped: by Cancel, or by a later check. */
-  | { readonly kind: "cancelled" };
-
-/** What a check of an XMLTV address found. Nothing changed yet: `guide.use` switches to it. */
-export interface GuideCandidate {
-  /** Names this check. It counts only while it is the subscription's latest. */
-  readonly id: string;
-  /** The address's scheme, host and port. */
-  readonly origin: string;
-  /** Channels the guide lists. */
-  readonly guideChannels: number;
-  /** Channels of the subscription whose guide id the guide has programmes for. */
-  readonly matched: number;
-  /** Channels the subscription lists. */
-  readonly listed: number;
-  /** When the guide's last programme ends. */
-  readonly until: number;
-  /** The address is the one in use, so the viewer's mappings stay. Another address starts without. */
-  readonly sameSource: boolean;
-}
+  | { readonly kind: "changed" };
 
 /** Which of a subscription's channels the mapping list shows. */
 export const MAP_FILTERS = ["without", "mapped", "all"] as const;
 export type MapFilter = (typeof MAP_FILTERS)[number];
+
+/** A guide channel of one of a subscription's guides: which guide, and its id there. */
+export interface GuideChannelRef {
+  /** Opaque: names the guide and the channel, for `guide.map`. */
+  readonly ref: string;
+  /** The id programmes name it by, exactly as the guide writes it. */
+  readonly id: string;
+  /** The global source's origin, or null for the subscription's own guide. */
+  readonly origin: string | null;
+}
 
 /** One of a subscription's channels, with how it gets its programmes. */
 export interface MapChannel {
@@ -207,12 +210,13 @@ export interface MapChannel {
   readonly number: number | null;
   readonly title: string;
   /** The guide channel whose programmes it shows, or null without any. */
-  readonly guideId: string | null;
+  readonly shown: GuideChannelRef | null;
   /**
-   * The guide channel the viewer mapped it to, which the guide may no longer list. Null on
-   * automatic: it then shows the guide channel its own guide id names, if the guide has it.
+   * The guide channel the viewer mapped it to, which its guide may no longer list. Null on
+   * automatic: it then shows the first guide channel its own guide ids name, its own guide first
+   * and then the sources in order.
    */
-  readonly mappedTo: string | null;
+  readonly mapped: GuideChannelRef | null;
   /** False once the provider no longer lists it, and only its mapping is left. */
   readonly listed: boolean;
 }
@@ -224,10 +228,8 @@ export interface MapChannelPage {
   readonly revision: string;
 }
 
-/** A channel as the guide lists it. */
-export interface GuideChannel {
-  /** The id programmes name it by, exactly as the guide writes it. */
-  readonly id: string;
+/** A channel as one of a subscription's guides lists it. */
+export interface GuideChannel extends GuideChannelRef {
   /** The name the guide gives it, or its id where the guide names none. */
   readonly name: string;
   /** Whether the guide has programmes for it that haven't ended. */
@@ -235,6 +237,9 @@ export interface GuideChannel {
 }
 
 export interface GuideChannelPage {
+  /** The channels the query finds. */
   readonly total: number;
+  /** The channels the guides list in all, found or not. */
+  readonly listed: number;
   readonly channels: readonly GuideChannel[];
 }

@@ -62,47 +62,45 @@ Settings > **Subscriptions** lists each one with its kind and how it stands: whe
 
 - **Edit** changes the name, and the password or the playlist link when you type a new one. The server and username can't be changed: another server, username or playlist is another subscription, which you add.
 - The refresh buttons beside **Channels**, **Guide** and **Movies and series** fetch that list again, for that subscription alone.
-- **Guide** sets where that subscription's programme guide comes from, and **Map** gives a channel the guide channel you pick; see [A guide from another address](#a-guide-from-another-address).
+- **Guide** says where that subscription's channels' programmes come from: how many from its own guide, from each of yours in Settings > Guides, and how many have none. **Guides** there opens Settings > Guides, and **Map** gives a channel the guide channel you pick; see [Guides from other addresses](#guides-from-other-addresses).
 - **Retry** shows on a subscription whose provider didn't answer, with the time it stopped answering. Its lists stay as they were then, and the other subscriptions carry on. Live TV says the same in one line above the channels.
 - **Enter password**, or **Enter link**, shows on a subscription whose saved password or link your system no longer gives back. What was loaded from it still shows; it plays again once you've entered it. See [troubleshooting](troubleshooting.md#mr-streamer-asks-for-my-password-or-playlist-link-again).
 
-## A guide from another address
+## Guides from other addresses
 
-A subscription's programme guide comes from its provider, or from the guide its playlist names. You can give a subscription a guide from an XMLTV address of your own instead, such as a paid guide service's. It replaces the guide for that subscription only.
+A subscription's programme guide comes from its provider, or from the guide its playlist names. Settings > **Guides** adds XMLTV guides of your own, such as a paid guide service's. Every subscription reads them after its own guide, in the order listed.
 
-Open the subscription's row and choose **Guide**:
-
-1. Type the address in **XMLTV address**. Plain XML and gzip both work.
-2. **Check** downloads the guide and reads it. It says how many channels the guide lists, how many of your channels match it by id, and how far ahead its programmes run. Nothing has changed yet.
-3. **Use this guide** switches to it. **Cancel** on the row stops a check and leaves everything as it was.
-
-A guide that can't be downloaded, isn't XMLTV, stops before its end, lists no programmes still to come or is larger than Mr. Streamer reads is refused, and the guide you had stays in use.
-
-- **The address is kept like a password.** It often holds a key, so it is encrypted on your computer and never shown again: Settings names only its host, and the field starts empty each time. Leave it empty and **Check** reads the saved address again. An address starting with `http://` travels unencrypted, key included, and the form says so before anything is sent.
-- **Nothing falls back.** When the guide's server stops answering, the listings stay as they were at the last download, and the Guide row says since when, with **Retry**. Your provider's guide isn't used in its place until you choose **Use provider guide**, or **Use playlist guide**, in the same form. That also forgets the address.
+- Type an address in the field and choose **Add**. Plain XML and gzip both work. It is saved at once and downloads in the background, and its row says how far it got: downloading, reading, then ready, with how many of your channels it supplies, how many programmes it has, how far ahead they run and when it was last updated.
+- **For each channel, the first guide with programmes for it supplies all of them.** A subscription's own guide comes first, then yours from the top. The arrows move a guide up or down, and the cross removes it with what it downloaded.
+- **The address is kept like a password.** It often holds a key, so it is encrypted on your computer and never shown again: Settings names only its host, and the field starts empty once it is added. An address starting with `http://` travels unencrypted, key included, and the field says so before anything is sent.
+- **Nothing falls back.** When a guide's server stops answering, or answers with something else, its row says why in red and since when, with **Retry**, and the programmes it last downloaded stay in use. Guides are downloaded again about every six hours.
 - **Times** follow the offset each programme carries, such as `+0200`, and count as UTC without one. They show in your computer's time zone. There is no setting to shift them.
+
+A guide that isn't XMLTV, stops before its end, lists no programmes still to come or is larger than Mr. Streamer reads fails the same way, and the programmes it had stay in use.
+
+From 0.0.13, a guide address you gave a subscription before is in Settings > Guides, with the channels you mapped to it. The same address given to several subscriptions is one guide there. It downloads again straight after the update. Until then it uses the newest of what your subscriptions had downloaded, and a channel you mapped to what only an older download listed shows programmes again once that download is in.
 
 ### Channels without programmes
 
 A channel shows programmes when the guide id your provider gives it is one the guide lists, exactly. Mr. Streamer never matches by name: two channels called the same are often not the same channel. **Map**, beside **Mapped channels**, is for the rest:
 
 - The left list has your channels: those without programmes, those you mapped, or all. The field searches them by name or number.
-- Pick a channel and the right list has the guide's channels, each with its name and its id. Its field starts with the channel's name; change it to search by another name or by id.
+- Pick a channel and the right list has the guides' channels, its own guide's first, each with its name, the host of the guide it is from and its id. Its field starts with the channel's name; change it to search by another name or by id.
 - **Map** gives the channel that guide channel's programmes, at once, in Live TV, on Home and in search. A mapped channel uses its mapping alone, and moves from the channels without programmes to those you mapped. **Restore**, on the **Automatic** row, takes it away again.
 
 The arrow keys move through either list. Enter goes from a channel to its guide channels, and maps there.
 
-Mappings stay through restarts and new channel lists. If the guide stops listing a channel you mapped to, or your provider stops listing the channel, the mapping is counted as unresolved and shows no programmes, rather than another channel's. Mappings belong to the guide they were made for: another address, or going back to the provider's guide, starts without them. Entering the same address again keeps them.
+Mappings stay through restarts, new channel lists and a new order in Settings > Guides. If the guide stops listing a channel you mapped to, or your provider stops listing the channel, the mapping is counted as unresolved and shows no programmes, rather than another channel's. Removing the guide you mapped a channel to counts its mapping as unresolved too, and the channel reads the guides in order again until you map it again or restore it.
 
 ## Removing one
 
 Open its row and choose **Remove**. Mr. Streamer asks first, and says what happens:
 
 - What plays from it stops. What plays from another subscription carries on.
-- Its login, its lists and its guide are deleted from this computer, with a guide address you gave it and the channels you mapped. The other subscriptions keep theirs.
+- Its login, its lists and its own guide are deleted from this computer, with the channels you mapped. The other subscriptions keep theirs, and the guides of Settings > Guides stay.
 - Its favourites, watchlist, history and progress stay, and come back when you add the same account again. Tick **Also delete favourites, watchlist, history and progress** to delete them too. A title on the watchlist that another subscription saved as well stays there either way.
 - Removing your only subscription returns to the Connect screen.
 
 ## Going back to an older version
 
-Versions before several subscriptions know one: the first you added. Going back to one of them shows that subscription alone and leaves the others on your computer untouched, so they are there again after updating. A version from before guides from another address shows the provider's guide, without your mapped channels, and leaves your address and mappings where they are for the version that knows them. If you removed that first one since, the older version asks you to connect. An account you connect there that you had added here shows once after updating, with its favourites, watchlist, history and progress.
+Versions before several subscriptions know one: the first you added. Going back to one of them shows that subscription alone and leaves the others on your computer untouched, so they are there again after updating. A version from before 0.0.13 shows each subscription's own guide and not those of Settings > Guides, which stay on your computer for when you update again. If you removed that first one since, the older version asks you to connect. An account you connect there that you had added here shows once after updating, with its favourites, watchlist, history and progress.

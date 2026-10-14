@@ -415,11 +415,10 @@ export interface GuideIndex {
    */
   schedule(channel: IndexedChannel, at: number, from: number, until: number): readonly Programme[];
   /**
-   * The programmes on `channel` that overlap [from, to), in time order, without descriptions,
-   * each naming `channel` as its guide: a minute long at least, so a stretch of
-   * `GUIDE_RANGE.hours` holds a few hundred.
+   * The programmes on `channel` that overlap [from, to), in time order, without descriptions: a
+   * minute long at least, so a stretch of `GUIDE_RANGE.hours` holds a few hundred.
    */
-  range(channel: IndexedChannel, from: number, to: number): readonly GuideSlot[];
+  range(channel: IndexedChannel, from: number, to: number): readonly Omit<GuideSlot, "guide">[];
   /** The programme on `channel` that starts at `start`, with its description, or null. */
   programme(channel: IndexedChannel, start: number): Programme | null;
   close(): void;
@@ -564,7 +563,7 @@ function reader(
     range: (channel, at, to) =>
       range
         .all({ channel: channel.key, at, to })
-        .map((row) => ({ ...slotOf(row), guide: channel.id }))
+        .map(slotOf)
         .filter((slot) => slot.stop > at),
     programme(channel, start) {
       const row = detail.get(channel.key, start);

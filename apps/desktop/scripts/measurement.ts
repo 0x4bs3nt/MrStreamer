@@ -254,7 +254,11 @@ export function validateMeasurement(input: unknown): Measurement {
     const counts = result.tool === "guide" ? GUIDE_SAMPLE_COUNTS : VIEWING_SAMPLE_COUNTS;
     for (const [name, measure] of Object.entries(result.metrics)) {
       const expectedCount =
-        name === "time to ready per subscription" ? subscriptions : counts[name];
+        name === "time to ready per subscription"
+          ? result.workload["guideAs"] === "source"
+            ? 1
+            : subscriptions
+          : counts[name];
       if (measure.samples.length !== expectedCount) throw new Error(`Incomplete samples: ${name}`);
     }
   }

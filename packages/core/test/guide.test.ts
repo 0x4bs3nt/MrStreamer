@@ -21,18 +21,29 @@ import {
 } from "../src/guide/index-file.ts";
 import { GUIDE_KEPT, GUIDE_LIMITS } from "../src/guide/limits.ts";
 import {
-  channelsCovered,
+  coverage,
+  guideChannelsAt,
+  guideRef,
+  guidesOf,
   listingsAt,
+  mapChannel,
   mappedChannels,
+  OWN_GUIDE,
+  programmeAt,
   rangeAt,
+  scheduleAt,
   searchAt,
-  type CatalogueChannels,
+  searchChannelsAt,
+  unresolvedMappings,
+  type GuideMapping,
+  type MappedChannels,
 } from "../src/guide/programmes.ts";
 import { xmltvReader, type XmltvChannel, type XmltvProgramme } from "../src/guide/xmltv.ts";
 
 /** Noon on a day in October 2026, in UTC. */
 const NOON = Date.UTC(2026, 9, 2, 12);
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** `bytes` as a sender splits them: in pieces of `size`. */
@@ -237,6 +248,29 @@ const liveChannel = (id: string): LiveChannel => ({
   variants: [{ id, name: `Channel ${id}`, tags: [], quality: null }],
   catchupDays: null,
 });
+
+/** Catalogue channels by their ids, each with the guide ids `ids` gives it, and `mappings`. */
+function catalogueOf(
+  ids: Readonly<Record<string, readonly string[]>>,
+  mappings: Readonly<Record<string, GuideMapping>> = {},
+): MappedChannels {
+  const all = Object.keys(ids).map(liveChannel);
+  const byId = new Map(all.map((channel) => [channel.id, channel]));
+  return mappedChannels(
+    {
+      all,
+      searchNames: all.map((channel) => channel.title.toLowerCase()),
+      channel: (id) => byId.get(id),
+      listed: (id) => byId.has(id),
+      guideIdsOf: (id) => ids[id] ?? [],
+    },
+    mappings,
+  );
+}
+
+/** `index` as a subscription's one guide, its own. */
+const ownGuide = (index: GuideIndex, path = "") =>
+  guidesOf([{ source: OWN_GUIDE, origin: null, index, path }], new Map());
 
 /** A search that nothing stops. */
 const stopNever = new AbortController().signal;
@@ -477,7 +511,6 @@ describe("indexing a guide", () => {
       start: NOON,
       stop: NOON + minute,
       title: "Minute 0",
-      guide: "one.test",
     });
     expect(guide.programme(channel, NOON + 5 * minute)).toEqual({
       start: NOON + 5 * minute,
@@ -665,7 +698,7 @@ describe("indexing a guide", () => {
     ]);
   });
 
-  it("shows each channel from a guide id with programmes still to come, and a stretch of the past from the one that had them then", async () => {
+  it("shows each channel from a guide id with programmes still to come, its past from that id too, and nothing of an id that only keeps the past", async () => {
     const { guide, target } = await index(
       tv(
         programme("past.test", stamp(NOON - 2 * HOUR), stamp(NOON - HOUR), "Old news"),
@@ -674,40 +707,25 @@ describe("indexing a guide", () => {
         programme("over.test", stamp(NOON - 3 * HOUR), stamp(NOON - 2 * HOUR), "Ended news"),
       ),
     );
-    const one = liveChannel("1");
-    const two = liveChannel("2");
     // One names an id that ended before the one on now; Two names only an ended one.
-    const ids: Record<string, readonly string[]> = {
-      "1": ["past.test", "future.test"],
-      "2": ["over.test"],
-    };
-    const catalogue = {
-      guideIdsOf: (id: string) => ids[id] ?? [],
-      channelsOf: (guideId: string) =>
-        guideId === "over.test"
-          ? [two]
-          : guideId === "past.test" || guideId === "future.test"
-            ? [one]
-            : [],
-    };
+    const catalogue = catalogueOf({ "1": ["past.test", "future.test"], "2": ["over.test"] });
+    const guides = ownGuide(guide, target);
 
-    expect(listingsAt(guide, catalogue, ["1", "2"], NOON)).toEqual({
+    expect(listingsAt(guides, catalogue, ["1", "2"], NOON)).toEqual({
       "1": { now: expect.objectContaining({ title: "Current news" }), next: null },
     });
     expect(
-      (await searchAt(guide, target, catalogue, "news", NOON, inProcess, stopNever)).map(
+      (await searchAt(guides, catalogue, "news", NOON, inProcess, stopNever)).map(
         (match) => match.programme.title,
       ),
     ).toEqual(["Current news"]);
     // Only what has programmes to come is covered.
-    expect(await channelsCovered(guide, catalogue, NOON)).toBe(1);
+    expect((await coverage(guides, catalogue, NOON)).covered).toBe(1);
     // Two and a half hours ago, both ended ids still had programmes to come.
-    expect(await channelsCovered(guide, catalogue, NOON - 2.5 * HOUR)).toBe(2);
-    expect(
-      await rangeAt(guide, catalogue, ["1", "2"], NOON - 2.5 * HOUR, NOON - 1.5 * HOUR),
-    ).toMatchObject({
-      "1": [{ title: "Old news" }],
-      "2": [{ title: "Ended news" }],
+    expect((await coverage(guides, catalogue, NOON - 2.5 * HOUR)).covered).toBe(2);
+    // A stretch of the past reads the id on now, whatever another id had then.
+    expect(await rangeAt(guides, catalogue, ["1", "2"], NOON, NOON - 2.5 * HOUR, NOON)).toEqual({
+      "1": [expect.objectContaining({ title: "Current news" })],
     });
   });
 
@@ -716,23 +734,25 @@ describe("indexing a guide", () => {
     const { guide } = await index(
       tv(...ids.map((id) => programme(id, stamp(NOON), stamp(NOON + HOUR), "Show"))),
     );
+    const base = catalogueOf(Object.fromEntries(ids.map((_, n) => [String(n), [`c${n}.test`]])));
     let asked = 0;
-    const catalogue = {
-      guideIdsOf: (id: string) => [`c${id}.test`],
-      channelsOf: (guideId: string) => {
+    const catalogue: MappedChannels = {
+      ...base,
+      guideIdsOf: (id) => {
         asked++;
-        return [liveChannel(guideId.slice(1, -".test".length))];
+        return base.guideIdsOf(id);
       },
     };
+    const guides = ownGuide(guide);
 
     const answers = await Promise.all([
-      channelsCovered(guide, catalogue, NOON),
-      channelsCovered(guide, catalogue, NOON),
+      coverage(guides, catalogue, NOON),
+      coverage(guides, catalogue, NOON),
     ]);
-    expect(answers).toEqual([3_000, 3_000]);
+    expect(answers.map((each) => each.covered)).toEqual([3_000, 3_000]);
     expect(asked).toBe(3_000);
     // Once worked out, it is kept.
-    expect(await channelsCovered(guide, catalogue, NOON + 1)).toBe(3_000);
+    expect((await coverage(guides, catalogue, NOON + 1)).covered).toBe(3_000);
     expect(asked).toBe(3_000);
   });
 
@@ -743,20 +763,36 @@ describe("indexing a guide", () => {
         programme("own.test", stamp(NOON), stamp(NOON + HOUR), "Own"),
       ),
     );
-    const channelsOf = (guideId: string) =>
-      guideId === "shared.test" ? ["1", "2", "3"].map(liveChannel) : [liveChannel("4")];
-    const catalogue = {
-      guideIdsOf: (id: string) => (id === "4" ? ["own.test"] : ["shared.test"]),
-      channelsOf,
-    };
+    const catalogue = catalogueOf({
+      "1": ["shared.test"],
+      "2": ["shared.test"],
+      "3": ["shared.test"],
+      "4": ["own.test"],
+    });
 
-    const page = await rangeAt(guide, catalogue, ["1", "2", "3", "4"], NOON, NOON + HOUR);
-    const shared = [{ start: NOON, stop: NOON + HOUR, title: "Shared", guide: "shared.test" }];
+    const page = await rangeAt(
+      ownGuide(guide),
+      catalogue,
+      ["1", "2", "3", "4"],
+      NOON,
+      NOON,
+      NOON + HOUR,
+    );
+    const shared = [
+      {
+        start: NOON,
+        stop: NOON + HOUR,
+        title: "Shared",
+        guide: guideRef(OWN_GUIDE, "shared.test"),
+      },
+    ];
     expect(page).toEqual({
       "1": shared,
       "2": shared,
       "3": shared,
-      "4": [{ start: NOON, stop: NOON + HOUR, title: "Own", guide: "own.test" }],
+      "4": [
+        { start: NOON, stop: NOON + HOUR, title: "Own", guide: guideRef(OWN_GUIDE, "own.test") },
+      ],
     });
   });
 
@@ -929,69 +965,343 @@ describe("indexing a guide", () => {
   });
 });
 
-describe("mappings over a catalogue's guide ids", () => {
-  const channel = (id: string, title: string): LiveChannel => ({
-    subscriptionId: "s",
-    id,
-    name: title,
-    title,
-    tags: [],
-    number: null,
-    logoUrl: null,
-    categoryIds: [],
-    variants: [{ id, name: title, tags: [], quality: null }],
-    catchupDays: null,
-  });
-  const [one, two, three] = [channel("1", "One"), channel("2", "Two"), channel("3", "Three")];
-  // One and Two name the guide channel "a" themselves; Three names none, and is also found by
-  // its second stream's id, "30". "8" is a channel the lists hide for now.
-  const byId = new Map([
-    ["1", one],
-    ["2", two],
-    ["3", three],
-    ["30", three],
-  ]);
-  const catalogue: CatalogueChannels = {
-    all: [one, two, three],
-    searchNames: ["one", "two", "three"],
-    channel: (id) => byId.get(id),
-    listed: (id) => byId.has(id) || id === "8",
-    guideIdsOf: (id) => (byId.get(id) === three ? [] : byId.has(id) ? ["a"] : []),
-    channelsOf: (guideId) => (guideId === "a" ? [one, two] : []),
+describe("a subscription's guides in order", () => {
+  /** Indexes `document` as of NOON into a file of its own, and opens it. */
+  const indexed = async (document: string) => {
+    const dir = await mkdtemp(join(tmpdir(), "mr-streamer-guide-index-"));
+    const target = join(dir, "index.sqlite");
+    await writeFile(join(dir, "document"), document);
+    await buildGuideIndex(
+      {
+        document: join(dir, "document"),
+        target,
+        previous: null,
+        since: NOON,
+        archive: DAY,
+        strict: false,
+      },
+      () => {},
+    );
+    const guide = await openGuideIndex(target);
+    if (!guide) throw new Error("The index can't be opened.");
+    return { guide, target };
+  };
+  /**
+   * The subscription's own guide, then the sources "early" and "late": three guides that each
+   * know "shared.test", with programmes for it in the last two only, and one that only "late"
+   * has programmes for.
+   */
+  const guides = async () => {
+    const own = await indexed(
+      tv(
+        '<channel id="shared.test"/>',
+        programme("own.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Own news"),
+      ),
+    );
+    const early = await indexed(
+      tv(
+        programme("shared.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Early news"),
+        programme("shared.test", stamp(NOON + 3 * HOUR), stamp(NOON + 4 * HOUR), "Early late"),
+      ),
+    );
+    const late = await indexed(
+      tv(
+        programme("shared.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Late news"),
+        // Where the early source has a gap: still none of it fills the early one's channel.
+        programme("shared.test", stamp(NOON + HOUR), stamp(NOON + 2 * HOUR), "Late gap"),
+        programme("late.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Only late news"),
+      ),
+    );
+    return guidesOf(
+      [
+        { source: OWN_GUIDE, origin: null, index: own.guide, path: own.target },
+        {
+          source: "early",
+          origin: "https://early.example",
+          index: early.guide,
+          path: early.target,
+        },
+        { source: "late", origin: "https://late.example", index: late.guide, path: late.target },
+      ],
+      new Map([
+        ["early", "https://early.example"],
+        ["late", "https://late.example"],
+        ["waiting", "https://waiting.example"],
+      ]),
+    );
   };
 
-  it("gives a mapped channel its guide channel alone, and each guide channel the channels that show it, in the lists' order", () => {
-    const mapped = mappedChannels(catalogue, {
-      "2": { guideId: "b", name: "Two" },
-      // Made under another of its streams' ids: still this channel's.
-      "30": { guideId: "a", name: "Three" },
-      "9": { guideId: "b", name: "Gone" },
-      "8": { guideId: "b", name: "Hidden" },
+  it("takes each channel whole from the first guide with programmes for it, its own guide first", async () => {
+    const ordered = await guides();
+    const catalogue = catalogueOf({
+      "1": ["own.test"],
+      "2": ["shared.test"],
+      "3": ["late.test"],
+      "4": ["missing.test"],
     });
 
-    expect(["1", "2", "3", "30"].map((id) => mapped.guideIdsOf(id))).toEqual([
-      ["a"],
-      ["b"],
-      ["a"],
-      ["a"],
+    const now = listingsAt(ordered, catalogue, ["1", "2", "3", "4"], NOON);
+    expect(
+      Object.fromEntries(Object.entries(now).map(([id, { now: on }]) => [id, on?.title])),
+    ).toEqual({ "1": "Own news", "2": "Early news", "3": "Only late news" });
+    // The whole channel from the early source: its gap stays a gap.
+    expect(
+      scheduleAt(ordered, catalogue, "2", NOON, NOON, NOON + 6 * HOUR).map(({ title }) => title),
+    ).toEqual(["Early news", "Early late"]);
+    expect(
+      (await rangeAt(ordered, catalogue, ["2"], NOON, NOON, NOON + 6 * HOUR))["2"],
+    ).toMatchObject([
+      { title: "Early news", guide: guideRef("early", "shared.test") },
+      { title: "Early late" },
     ]);
-    // Two left "a" for "b"; Three joined it, after One as the lists have them.
-    expect(mapped.channelsOf("a")).toEqual([one, three]);
-    expect(mapped.channelsOf("b")).toEqual([two]);
-    expect([...mapped.mapped]).toEqual([
-      ["2", "b"],
-      ["3", "a"],
+    // A search finds each channel's programmes from the guide that supplies it, from all of them.
+    expect(
+      (await searchAt(ordered, catalogue, "news", NOON, inProcess, stopNever)).map(
+        ({ channel, programme }) => [channel.id, programme.title],
+      ),
+    ).toEqual([
+      ["1", "Own news"],
+      ["2", "Early news"],
+      ["3", "Only late news"],
     ]);
-    // Only the one the provider no longer lists is left over; a hidden one is neither.
-    expect([...mapped.unlisted]).toEqual([["9", { guideId: "b", name: "Gone" }]]);
+    expect(
+      await searchChannelsAt(
+        ordered,
+        catalogue,
+        ["1", "2", "3"],
+        "news",
+        NOON,
+        NOON + DAY,
+        inProcess,
+        stopNever,
+      ),
+    ).toEqual({
+      "1": { now: true, later: null },
+      "2": { now: true, later: null },
+      "3": { now: true, later: null },
+    });
+    const covered = await coverage(ordered, catalogue, NOON);
+    expect(covered.covered).toBe(3);
+    expect([...covered.bySource]).toEqual([
+      [OWN_GUIDE, 1],
+      ["early", 1],
+      ["late", 1],
+    ]);
   });
 
-  it("changes nothing without mappings", () => {
-    const plain = mappedChannels(catalogue, {});
+  it("reads every stretch of a channel from the guide that supplies it now, so pages of a grid agree however they are cut", async () => {
+    // The own guide's last programme ended ten minutes ago; the source has one on now.
+    const own = await indexed(
+      tv(
+        programme("shared.test", stamp(NOON - 3 * HOUR), stamp(NOON - 2 * HOUR), "Own earlier"),
+        programme("shared.test", stamp(NOON - 2 * HOUR), stamp(NOON - 10 * MINUTE), "Own ended"),
+      ),
+    );
+    const source = await indexed(
+      tv(
+        programme(
+          "shared.test",
+          stamp(NOON - 4 * HOUR),
+          stamp(NOON - 90 * MINUTE),
+          "Source earlier",
+        ),
+        programme(
+          "shared.test",
+          stamp(NOON - 90 * MINUTE),
+          stamp(NOON + 2 * HOUR),
+          "Source current",
+        ),
+        programme("shared.test", stamp(NOON + 2 * HOUR), stamp(NOON + 3 * HOUR), "Source later"),
+      ),
+    );
+    const ordered = guidesOf(
+      [
+        { source: OWN_GUIDE, origin: null, index: own.guide, path: own.target },
+        {
+          source: "source",
+          origin: "https://source.example",
+          index: source.guide,
+          path: source.target,
+        },
+      ],
+      new Map([["source", "https://source.example"]]),
+    );
+    const catalogue = catalogueOf({ "1": ["shared.test"] });
+    const fromSource = guideRef("source", "shared.test");
 
-    expect(plain.channelsOf("a")).toEqual([one, two]);
-    expect(plain.guideIdsOf("2")).toEqual(["a"]);
-    expect(plain.mapped.size + plain.unlisted.size).toBe(0);
+    expect(listingsAt(ordered, catalogue, ["1"], NOON)["1"]?.now?.title).toBe("Source current");
+    expect(
+      scheduleAt(ordered, catalogue, "1", NOON, NOON - 5 * HOUR, NOON + 5 * HOUR).map(
+        ({ title }) => title,
+      ),
+    ).toEqual(["Source earlier", "Source current", "Source later"]);
+    expect(
+      (await searchAt(ordered, catalogue, "current", NOON, inProcess, stopNever)).map(
+        ({ programme: found }) => found.title,
+      ),
+    ).toEqual(["Source current"]);
+
+    /** The slots of the stretch, read a page at a time between `cuts`, as a grid reads them. */
+    const paged = async (...cuts: number[]) => {
+      const pages = await Promise.all(
+        cuts
+          .slice(1)
+          .map(
+            async (to, at) =>
+              (await rangeAt(ordered, catalogue, ["1"], NOON, cuts[at] ?? to, to))["1"] ?? [],
+          ),
+      );
+      const seen = new Map(pages.flat().map((slot) => [`${slot.guide} ${slot.start}`, slot]));
+      return [...seen.values()].toSorted((one, other) => one.start - other.start);
+    };
+    const whole = await paged(NOON - 6 * HOUR, NOON + 6 * HOUR);
+    expect(whole.map(({ title, guide }) => [title, guide])).toEqual([
+      ["Source earlier", fromSource],
+      ["Source current", fromSource],
+      ["Source later", fromSource],
+    ]);
+    // Pages side by side, one wholly past and one with now, or cut anywhere: the same slots.
+    expect(await paged(NOON - 6 * HOUR, NOON - HOUR, NOON + 6 * HOUR)).toEqual(whole);
+    expect(await paged(NOON - 6 * HOUR, NOON - 2 * HOUR, NOON, NOON + 6 * HOUR)).toEqual(whole);
+    expect(
+      await paged(
+        NOON - 6 * HOUR,
+        NOON - 100 * MINUTE,
+        NOON - 5 * MINUTE,
+        NOON + 150 * MINUTE,
+        NOON + 6 * HOUR,
+      ),
+    ).toEqual(whole);
+    // The own guide's past isn't shown beside the source's: one guide supplies the channel.
+    expect(
+      (await rangeAt(ordered, catalogue, ["1"], NOON, NOON - 3 * HOUR, NOON - 2 * HOUR))["1"],
+    ).toMatchObject([{ title: "Source earlier", guide: fromSource }]);
+    // A slot's details come from where it came from, while that guide supplies the channel.
+    const current = whole.find((slot) => slot.title === "Source current");
+    expect(
+      programmeAt(ordered, catalogue, "1", current?.guide ?? "", current?.start ?? 0, NOON)?.title,
+    ).toBe("Source current");
+    // A slot the own guide gave before the source took over has no details any more.
+    const ownEnded = guideRef(OWN_GUIDE, "shared.test");
+    expect(
+      programmeAt(ordered, catalogue, "1", ownEnded, NOON - 2 * HOUR, NOON - 30 * MINUTE)?.title,
+    ).toBe("Own ended");
+    expect(programmeAt(ordered, catalogue, "1", ownEnded, NOON - 2 * HOUR, NOON)).toBeNull();
+    // Coverage says when the supplier can next change: the end of the source's channel.
+    expect((await coverage(ordered, catalogue, NOON)).changes).toBe(NOON + 3 * HOUR);
+    expect((await coverage(ordered, catalogue, NOON - 30 * MINUTE)).changes).toBe(
+      NOON - 10 * MINUTE,
+    );
+  });
+
+  it("shows a mapped channel the guide channel of the guide it names, alone, and its slot's details from there", async () => {
+    const ordered = await guides();
+    const catalogue = catalogueOf(
+      { "1": ["shared.test"], "2": [], "3": ["shared.test"] },
+      {
+        // Past the early source, to the late one's.
+        "1": { source: "late", guideId: "shared.test", name: "One" },
+        "2": { source: "late", guideId: "late.test", name: "Two" },
+        // To a source whose download is still to come: nothing until it is.
+        "3": { source: "waiting", guideId: "shared.test", name: "Three" },
+        // To a source that went: back to automatic.
+        "9": { source: "gone", guideId: "x", name: "Nine" },
+      },
+    );
+
+    const now = listingsAt(ordered, catalogue, ["1", "2", "3"], NOON);
+    expect(now["1"]?.now?.title).toBe("Late news");
+    expect(now["2"]?.now?.title).toBe("Only late news");
+    expect(now["3"]).toBeUndefined();
+    const [slot] = (await rangeAt(ordered, catalogue, ["1"], NOON, NOON, NOON + HOUR))["1"] ?? [];
+    expect(slot?.guide).toBe(guideRef("late", "shared.test"));
+    expect(programmeAt(ordered, catalogue, "1", slot?.guide ?? "", NOON - HOUR, NOON)?.title).toBe(
+      "Late news",
+    );
+    // The same id in another guide isn't the channel's, nor is another channel's.
+    expect(
+      programmeAt(ordered, catalogue, "1", guideRef("early", "shared.test"), NOON - HOUR, NOON),
+    ).toBeNull();
+    expect(
+      programmeAt(ordered, catalogue, "1", guideRef("late", "late.test"), NOON - HOUR, NOON),
+    ).toBeNull();
+    expect(mapChannel(ordered, catalogue, liveChannel("1"), NOON)).toEqual({
+      id: "1",
+      number: null,
+      title: "Channel 1",
+      shown: {
+        ref: guideRef("late", "shared.test"),
+        id: "shared.test",
+        origin: "https://late.example",
+      },
+      mapped: {
+        ref: guideRef("late", "shared.test"),
+        id: "shared.test",
+        origin: "https://late.example",
+      },
+      listed: true,
+    });
+    // Only the one whose channel the provider no longer lists leads nowhere.
+    expect(unresolvedMappings(ordered, catalogue)).toBe(1);
+  });
+
+  it("lists the guides' channels to map to, each guide's in turn, with the guide it is of", async () => {
+    const page = guideChannelsAt(await guides(), "shared", 0, 10, NOON);
+
+    expect(page.channels).toEqual([
+      {
+        ref: guideRef(OWN_GUIDE, "shared.test"),
+        id: "shared.test",
+        origin: null,
+        name: "shared.test",
+        programmes: false,
+      },
+      {
+        ref: guideRef("early", "shared.test"),
+        id: "shared.test",
+        origin: "https://early.example",
+        name: "shared.test",
+        programmes: true,
+      },
+      {
+        ref: guideRef("late", "shared.test"),
+        id: "shared.test",
+        origin: "https://late.example",
+        name: "shared.test",
+        programmes: true,
+      },
+    ]);
+  });
+});
+
+describe("mappings over a catalogue", () => {
+  it("finds a mapping's channel by any of its streams' ids, and keeps those of channels the provider no longer lists apart", () => {
+    const three = liveChannel("3");
+    const byId = new Map([
+      ["3", three],
+      ["30", three],
+    ]);
+    const mapped = mappedChannels(
+      {
+        all: [three],
+        searchNames: ["three"],
+        channel: (id) => byId.get(id),
+        listed: (id) => byId.has(id) || id === "8",
+        guideIdsOf: () => [],
+      },
+      {
+        // Made under another of its streams' ids: still this channel's.
+        "30": { source: OWN_GUIDE, guideId: "a", name: "Three" },
+        "9": { source: OWN_GUIDE, guideId: "b", name: "Gone" },
+        // One the lists hide for now is neither.
+        "8": { source: OWN_GUIDE, guideId: "b", name: "Hidden" },
+      },
+    );
+
+    expect([...mapped.mapped]).toEqual([["3", { source: OWN_GUIDE, guideId: "a", name: "Three" }]]);
+    expect([...mapped.unlisted]).toEqual([
+      ["9", { source: OWN_GUIDE, guideId: "b", name: "Gone" }],
+    ]);
   });
 });
 

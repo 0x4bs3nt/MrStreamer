@@ -368,6 +368,8 @@ async function start(): Promise<void> {
   }
   const dataDir = app.getPath("userData");
   await removeUnfinishedWrites(dataDir);
+  // And in the folder of the guides of Settings > Guides.
+  await removeUnfinishedWrites(join(dataDir, "guides"));
   const userAgent = `MrStreamer/${app.getVersion()}`;
 
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
@@ -516,6 +518,10 @@ async function start(): Promise<void> {
       downloads: Downloads,
     }),
   );
+
+  // Back from sleep or unlocked, the clock may have moved past where a guide hands a channel on.
+  powerMonitor.on("resume", () => void runtime.runFork(guide.checkTime));
+  powerMonitor.on("unlock-screen", () => void runtime.runFork(guide.checkTime));
 
   // mrstreamer://download/<id>/<poster|wide>: a download's kept picture, from its own folder.
   // Nothing else answers: no other host, path or file.
@@ -695,13 +701,13 @@ async function start(): Promise<void> {
           // Removed while its guide downloaded.
           return status ?? (yield* new Failed({ error: { kind: "no-subscription" } }));
         }),
-      "guide.check": ({ subscriptionId, address }) => guide.check(subscriptionId, address ?? ""),
-      "guide.cancelCheck": ({ subscriptionId }) =>
-        Effect.as(guide.cancelCheck(subscriptionId), null),
-      "guide.use": ({ subscriptionId, candidate }) => guide.use(subscriptionId, candidate),
-      "guide.restore": ({ subscriptionId }) => guide.restore(subscriptionId),
-      "guide.map": ({ subscriptionId, channelId, guideId, revision }) =>
-        guide.map(subscriptionId, channelId, guideId, revision),
+      "guide.sources": () => guide.sources,
+      "guide.addSource": ({ address }) => guide.addSource(address),
+      "guide.removeSource": ({ id }) => Effect.as(guide.removeSource(id), null),
+      "guide.moveSource": ({ id, by }) => Effect.as(guide.moveSource(id, by), null),
+      "guide.refreshSource": ({ id }) => guide.refreshSource(id),
+      "guide.map": ({ subscriptionId, channelId, guide: ref, revision }) =>
+        guide.map(subscriptionId, channelId, ref, revision),
       "guide.mapChannels": (query) => guide.mapChannels(query),
       "guide.mapOptions": (query) => guide.mapOptions(query),
       "ondemand.status": () => onDemand.status,

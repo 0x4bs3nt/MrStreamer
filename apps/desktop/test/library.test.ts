@@ -456,14 +456,14 @@ describe("live library", () => {
     await expect(library.channel(own("4000"))).rejects.toMatchObject({
       error: { kind: "channel-not-found" },
     });
-    expect((await guideChannels()).channelsOf("afterhours.adult")).toEqual([]);
+    expect((await guideChannels()).guideIdsOf("4000")).toEqual([]);
 
     await settings.update({ adultTitles: true });
 
     expect((await all()).filter((name) => names.includes(name))).toEqual(names);
     expect(await adultCategory()).toMatchObject({ channelCount: 2 });
     expect((await library.channels({ channels })).map((channel) => channel.adult)).toEqual([true]);
-    expect((await guideChannels()).channelsOf("afterhours.adult")).toHaveLength(1);
+    expect((await guideChannels()).guideIdsOf("4000")).toEqual(["afterhours.adult"]);
     expect(await library.channels({ query: "night club" })).toEqual([]);
     expect(await library.channels({ query: "after hours" })).toEqual([]);
   });

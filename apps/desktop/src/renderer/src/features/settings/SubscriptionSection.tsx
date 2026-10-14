@@ -2,17 +2,18 @@
 // account stands. Everything they list shows together in the app, so a row is inspected here,
 // never chosen: opening one shows its account and what was loaded from it, each list with its own
 // refresh, and changes nothing outside Settings. Add, Edit, the field that asks for a password or
-// link the keychain lost, the form that sets where its guide comes from (./GuideSource.tsx) and
-// Remove's question are forms in the list, one at a time. What a form sent to the main process
-// can't be called back: until it is answered its Cancel, or Remove's Keep, is not offered, and
-// the rest of the list stays in reach. A subscription's channels are mapped to its guide's by
-// hand in a sheet over the list (./GuideMap.tsx).
+// link the keychain lost, and Remove's question are forms in the list, one at a time. What a form
+// sent to the main process can't be called back: until it is answered its Cancel, or Remove's
+// Keep, is not offered, and the rest of the list stays in reach. Where a subscription's
+// programmes come from shows in its details (./GuideSource.tsx), the XMLTV guides every
+// subscription reads after its own being Settings > Guides' (./GuidesSection.tsx); its channels
+// are mapped to its guides' by hand in a sheet over the list (./GuideMap.tsx).
 //   A server shows, with a note when the login travels over plain http; a password never does,
 // nor a playlist's link beyond its host.
 import { Checkbox } from "@base-ui/react/checkbox";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronRight, RotateCw } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import type { GuideStatus } from "@mrstreamer/contracts/guide";
 import type { CatalogueStatus } from "@mrstreamer/contracts/library";
@@ -24,7 +25,6 @@ import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { clockTime, hostOf } from "../../lib/format.ts";
-import { useKeyboardMode } from "../../lib/input-mode.ts";
 import { useDownloads } from "../../lib/downloads.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries, subscriptionName, useSubscriptions } from "../../lib/queries.ts";
@@ -34,7 +34,7 @@ import { titlePlayer, useTitlePlayer } from "../../player/title-player.ts";
 import { Field, LoginForm } from "../connect/LoginForm.tsx";
 import { PlaylistMap, PlaylistRows } from "./PlaylistMap.tsx";
 import { GuideMap } from "./GuideMap.tsx";
-import { GuideForm, guideKey, GuideRows } from "./GuideSource.tsx";
+import { GuideRows } from "./GuideSource.tsx";
 import { Row, RowForm } from "./Rows.tsx";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -42,7 +42,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SOON_DAYS = 30;
 
 /** A form under a subscription's row. */
-type RowFormKind = "edit" | "secret" | "guide" | "remove";
+type RowFormKind = "edit" | "secret" | "remove";
 
 /** The one form open in the list: a row's, or the one that adds a subscription. */
 type Form = { readonly kind: "add" } | { readonly kind: RowFormKind; readonly id: string };
@@ -134,8 +134,8 @@ export function SubscriptionSection() {
             onClose={() => setPlaylistMapping(null)}
           />
         ))}
-      {/* Gone with its subscription, or with the guide its channels were mapped to. */}
-      {mapped && mappedGuide?.availability === "available" && (
+      {/* Gone with its subscription. */}
+      {mapped && mappedGuide && (
         <GuideMap subscription={mapped} guide={mappedGuide} onClose={() => setMapping(null)} />
       )}
       {form?.kind === "add" ? (
@@ -240,23 +240,8 @@ function SubscriptionRow({
   const playlist = kind === "m3u";
   const rowId = useId();
   // The form that asks for its password or link has its Cancel here on the row, which waits
-  // while a change to the subscription is on its way. So has the form for its guide: its Cancel
-  // stops a check, and waits only while the guide is being switched.
+  // while a change to the subscription is on its way.
   const saving = useIsMutating({ mutationKey: updateKey(id) }) > 0;
-  const switching = useIsMutating({ mutationKey: guideKey(id) }) > 0;
-  // Whoever works by the keyboard is back on the row once its guide's form closes, where the
-  // field that had the keyboard went with it.
-  const keyboard = useKeyboardMode();
-  const toggle = useRef<HTMLButtonElement>(null);
-  const hadGuideForm = useRef(false);
-  useEffect(() => {
-    const closed = hadGuideForm.current && form !== "guide";
-    hadGuideForm.current = form === "guide";
-    const held = document.activeElement;
-    if (closed && keyboard && (!held?.isConnected || held === document.body)) {
-      toggle.current?.focus();
-    }
-  }, [form, keyboard]);
   const retry = useMutation({
     mutationFn: () => call("library.refresh", { subscriptionId: id }),
     onSuccess: (status) =>
@@ -287,7 +272,6 @@ function SubscriptionRow({
         )}
       >
         <button
-          ref={toggle}
           id={rowId}
           aria-expanded={expanded}
           onMouseDown={(event) => event.preventDefault()}
@@ -303,13 +287,8 @@ function SubscriptionRow({
           </span>
         </button>
         <div className="flex flex-none items-center gap-2">
-          {form === "secret" || form === "guide" ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={form === "guide" ? switching : saving}
-              onClick={() => onForm(null)}
-            >
+          {form === "secret" ? (
+            <Button variant="ghost" size="sm" disabled={saving} onClick={() => onForm(null)}>
               {t("Cancel")}
             </Button>
           ) : (
@@ -365,9 +344,6 @@ function SubscriptionRow({
           onAdd={onAdd}
         />
       )}
-      {form === "guide" && (
-        <GuideForm subscription={subscription} guide={guide} onDone={() => onForm(null)} />
-      )}
       {form === "remove" && (
         <Remove
           subscription={subscription}
@@ -387,7 +363,6 @@ function SubscriptionRow({
             catalogue={catalogue}
             guide={guide}
             titles={titles}
-            onGuide={() => onForm("guide")}
             onMap={onMap}
             onPlaylistMap={onPlaylistMap}
           />
@@ -432,7 +407,6 @@ function Details({
   catalogue,
   guide,
   titles,
-  onGuide,
   onMap,
   onPlaylistMap,
 }: {
@@ -440,8 +414,6 @@ function Details({
   catalogue: CatalogueStatus | undefined;
   guide: GuideStatus | undefined;
   titles: TitleListsStatus | undefined;
-  /** Opens the form that sets where its guide comes from. */
-  onGuide: () => void;
   onMap: () => void;
   onPlaylistMap: () => void;
 }) {
@@ -491,7 +463,7 @@ function Details({
         refreshing={refreshChannels.isPending}
         onRefresh={() => refreshChannels.mutate()}
       />
-      <GuideRows subscription={subscription} guide={guide} onEdit={onGuide} onMap={onMap} />
+      <GuideRows subscription={subscription} guide={guide} onMap={onMap} />
       {kind === "m3u" && <PlaylistRows subscription={subscription} onMap={onPlaylistMap} />}
       {kind === "xtream" && (
         <List
