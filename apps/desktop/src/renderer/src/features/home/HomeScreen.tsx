@@ -21,7 +21,14 @@ import { Button } from "../../components/ui/button.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { useNow } from "../../lib/clock.ts";
 import { appError, describeError } from "../../lib/errors.ts";
-import { categoryOf, channelLine, clockTime, progressOf, timeLeft } from "../../lib/format.ts";
+import {
+  categoryOf,
+  channelLine,
+  clockTime,
+  pastTime,
+  progressOf,
+  timeLeft,
+} from "../../lib/format.ts";
 import {
   queries,
   useCategoryMap,
@@ -499,7 +506,11 @@ function Hero({
   // A receiver on the network is connected, so the backdrop stands still and says why.
   const waits = usePreviewWaits();
   const hue = channel ? hueOf(channel.title) : 220;
-  const current = listing?.now ?? null;
+  // The channel's recording that plays says when it aired, as Watch does.
+  const archive = usePlayer((state) =>
+    channel && sameOwned(state.channel, channel) ? state.archive : null,
+  );
+  const current = archive ? null : (listing?.now ?? null);
   return (
     <section
       className="relative aspect-video min-w-0 overflow-hidden rounded-2xl"
@@ -525,18 +536,22 @@ function Hero({
       {channel && (
         <div className="absolute inset-x-6 bottom-5">
           <h2 className="line-clamp-2 text-[1.375rem] leading-tight font-semibold tracking-tight text-balance">
-            {current?.title ?? channel.title}
+            {(archive ?? current)?.title ?? channel.title}
           </h2>
           <div className="mt-2 flex min-w-0 items-center gap-2 text-sm text-foreground/85">
             <ChannelLogo channel={channel} className="h-6 w-9" />
             <span className="truncate" title={channel.title}>
-              {current
-                ? [
-                    channel.title,
-                    t("Until {time}", { time: clockTime(current.stop, now) }),
-                    timeLeft(current, now),
-                  ].join(" · ")
-                : [channelLine(channel, categories), ...channel.tags].filter(Boolean).join(" · ")}
+              {archive
+                ? [channel.title, t("Aired {time}", { time: pastTime(archive.start, now) })].join(
+                    " · ",
+                  )
+                : current
+                  ? [
+                      channel.title,
+                      t("Until {time}", { time: clockTime(current.stop, now) }),
+                      timeLeft(current, now),
+                    ].join(" · ")
+                  : [channelLine(channel, categories), ...channel.tags].filter(Boolean).join(" · ")}
             </span>
           </div>
           {current && (

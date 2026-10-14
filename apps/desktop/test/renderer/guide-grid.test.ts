@@ -480,6 +480,30 @@ describe("the guide grid", () => {
     await ready(() => expect(page.rows()).toEqual(["One"]));
   });
 
+  it("names the recording that plays in the strip, as Watch does, and the programme on now once live", async () => {
+    const one = channel("1", "One", 3);
+    const programmes = guide.get("1") ?? guide.set("1", programmesOf("1")).get("1")!;
+    const now = programmes.find((p) => p.start <= Date.now() && Date.now() < p.stop)!;
+    const next = programmes.find((p) => p.start === now.stop)!;
+    const aired = programmes.find((p) => p.stop === now.start)!;
+    const page = await gridPage([one], "grid", null, () =>
+      ipc.always("guide.listings", { [ownedKey(one)]: { now, next } }),
+    );
+    const strip = () => document.querySelector("main > section")?.textContent ?? "";
+    await ready(() => expect(page.cell(aired.title)).toBeDefined());
+    await act(async () => page.cell(aired.title)!.click());
+    await page.click("Play from start");
+    await act(async () => useUi.setState({ watching: false }));
+    await ready(() => expect(strip()).toContain(aired.title));
+    expect(strip()).toContain("Aired");
+    expect(strip()).not.toContain(now.title);
+
+    await page.click("Watch live");
+    await act(async () => useUi.setState({ watching: false }));
+    await ready(() => expect(strip()).toContain(now.title));
+    expect(strip()).not.toContain("Aired");
+  });
+
   it("watches the channel live from a recording of it, by Watch live, Enter on now and the channel", async () => {
     const page = await gridPage([channel("1", "One", 3), channel("2", "Two")]);
     await ready(() => expect(page.cell(titleAt("1", Date.now())!)).toBeDefined());

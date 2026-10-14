@@ -1,9 +1,11 @@
 // Live TV's guide grid through the built window, on the real clock: Guide beside Watch opens it,
 // the keys move between programmes and channels and open a programme's details, an aired
 // programme on a channel without catch-up only watches live, and one on "TEST | H.264 + AAC",
-// which keeps three days, plays from the panel's archive with Enter. Watch live watches, Escape
-// goes back to the list, the grid is still the view after a restart, and it fits 1280 and 900 px. `guideGridScrollScenario` scrolls a catalogue of
-// 20,000 channels and a guide of two days, in the list and then in the grid, and records frames.
+// which keeps three days, plays from the panel's archive with Enter, and the preview then names
+// that recording in the grid, the list and Home. Watch live watches, Escape goes back to the
+// list, the grid is still the view after a restart, and it fits 1280 and 900 px.
+// `guideGridScrollScenario` scrolls a catalogue of 20,000 channels and a guide of two days, in
+// the list and then in the grid, and records frames.
 import type { ArchiveRequest } from "../../../../apps/desktop/test/fake-provider.ts";
 import type { Driver } from "./language.ts";
 
@@ -165,9 +167,24 @@ export async function guideGridScenario(d: Driver, fixture: GridFixture) {
   // Enter, with the grid's focus, plays it from the panel's archive in Watch, which says it aired.
   await d.key("ArrowRight", 39);
   await d.key("ArrowLeft", 37);
-  await playAired(d, fixture, "1280");
+  const aired = await playAired(d, fixture, "1280");
   await d.key("Escape", 27);
   await d.wait(() => d.exists(GRID));
+
+  // The preview goes on with the recording, and names it as Watch does: in the grid's strip, the
+  // list's, which is the same, and Home's. Back in the grid, Home puts the cursor on its channel.
+  await previewNamesRecording(d, "main section", aired, "grid-recording-preview-1280");
+  await d.key("g", 71);
+  await d.wait(async () => !(await d.exists(GRID)) && (await d.exists(guideButton)));
+  await previewNamesRecording(d, "main section", aired, "list-recording-preview-1280");
+  await d.key("Escape", 27);
+  await previewNamesRecording(d, "[data-home-preview]", aired, "home-recording-preview-1280");
+  await d.click("Open Live TV from Home", named("header button", "Live TV"));
+  await d.wait(() => d.exists(guideButton));
+  await d.key("g", 71);
+  await d.wait(() => d.exists(GRID));
+  await d.key("Home", 36);
+  await d.wait(() => d.exists(DETAILS));
 
   // Watch live on the channel whose recording plays: the recording gives way to the channel live.
   await d.capture("grid-recording-before-watch-live-1280");
@@ -362,10 +379,34 @@ async function leftUntilEnded(d: Driver) {
 }
 
 /**
+ * The preview in `area` names the recording of `title`: its title and when it aired, not the
+ * programme on now and its time left. The fake recording lasts about three seconds, so it may
+ * have played out by now and stand still with the same name; the picture is recorded, not
+ * required.
+ */
+async function previewNamesRecording(d: Driver, area: string, title: string, capture: string) {
+  const shown = `document.querySelector(${JSON.stringify(area)})?.innerText ?? ''`;
+  // Labelled either way, so a preview naming the programme on now fails with what it shows.
+  await d.wait(async () => /Aired| left/.test(await d.evaluate<string>(shown)));
+  const seen = {
+    text: await d.evaluate<string>(shown),
+    ...(await picture(d)),
+  };
+  d.observed[capture] = seen;
+  expect(
+    seen.text.includes(title) && !seen.text.includes(" left"),
+    "The preview doesn't name the recording that plays",
+    seen,
+  );
+  await d.capture(capture);
+}
+
+/**
  * Enter on the programme with the cursor, which aired on a channel with catch-up: Watch plays it
  * from the panel's archive, says it aired, and its picture and sound advance on one connection.
+ * Returns the programme's title.
  */
-async function playAired(d: Driver, fixture: GridFixture, width: string) {
+async function playAired(d: Driver, fixture: GridFixture, width: string): Promise<string> {
   const title = await d.evaluate<string>(`${SELECTED}.textContent`);
   const asked = fixture.archiveRequests().length;
   await d.key("Enter", 13);
@@ -399,6 +440,7 @@ async function playAired(d: Driver, fixture: GridFixture, width: string) {
   for (const x of [600, 640])
     await d.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: 400 });
   await d.capture(`grid-catchup-playing-${width}`);
+  return title;
 }
 
 /** Frame intervals and long tasks while wheels scroll the list, then the grid, both ways. */

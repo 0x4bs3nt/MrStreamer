@@ -47,7 +47,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { useNow } from "../../lib/clock.ts";
 import { describeError } from "../../lib/errors.ts";
-import { clockTime, progressOf, timeLeft } from "../../lib/format.ts";
+import { clockTime, pastTime, progressOf, timeLeft } from "../../lib/format.ts";
 import { Message } from "../../lib/message.tsx";
 import { call } from "../../lib/ipc.ts";
 import { showSelection, useKeyboardMode } from "../../lib/input-mode.ts";
@@ -889,11 +889,13 @@ function NothingFound({
 
 /**
  * The stream that plays, muted, with what it shows and a way back to it, then `viewSwitch`, from
- * the list to the grid and back. While a receiver on the network is connected, the channel stands
- * still and a line says why.
+ * the list to the grid and back. A programme from the catch-up archive says when it aired, as
+ * Watch does. While a receiver on the network is connected, the channel stands still and a line
+ * says why.
  */
 function NowStrip({ active, viewSwitch }: { active: boolean; viewSwitch: ReactNode }) {
   const channel = usePlayer((state) => state.channel);
+  const archive = usePlayer((state) => state.archive);
   const audible = usePlayer((state) => state.audible && !state.muted);
   const waits = usePreviewWaits();
   const listing = useQuery(queries.listings(channel ? [channel] : [])).data?.[
@@ -901,7 +903,7 @@ function NowStrip({ active, viewSwitch }: { active: boolean; viewSwitch: ReactNo
   ];
   const now = useNow();
   if (!channel) return null;
-  const current = listing?.now ?? null;
+  const current = archive ? null : (listing?.now ?? null);
   return (
     <section className="flex items-end gap-6 px-9 pt-5 pb-4">
       <div className="relative aspect-video w-[18rem] flex-none overflow-hidden rounded-xl bg-white/5">
@@ -917,10 +919,14 @@ function NowStrip({ active, viewSwitch }: { active: boolean; viewSwitch: ReactNo
       </div>
       <div className="min-w-0 pb-1">
         <div className="truncate text-2xl font-semibold tracking-tight">
-          {current?.title ?? channel.title}
+          {(archive ?? current)?.title ?? channel.title}
         </div>
         <div className="mt-1 truncate text-sm text-muted-foreground">
-          {current ? `${channel.title} · ${timeLeft(current, now)}` : channel.tags.join(" · ")}
+          {archive
+            ? `${channel.title} · ${t("Aired {time}", { time: pastTime(archive.start, now) })}`
+            : current
+              ? `${channel.title} · ${timeLeft(current, now)}`
+              : channel.tags.join(" · ")}
         </div>
         {current && <Progress value={progressOf(current, now)} className="mt-2 w-48" />}
         <div className="mt-4 flex items-center gap-2">
