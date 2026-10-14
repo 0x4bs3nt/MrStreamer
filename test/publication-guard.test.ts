@@ -218,7 +218,9 @@ function jobScope(
       if (kind === "outputs" && output !== undefined) return outputs(need, output);
       return unmodelled(path);
     },
-    needsSucceeded: needs.every((need) => results.get(need) === "success"),
+    // GitHub's implicit success() skips a job when any job it waits for, however indirectly, didn't
+    // succeed: a skipped grandparent skips it even after its own need ran.
+    needsSucceeded: [...ancestors(workflow, name)].every((job) => results.get(job) === "success"),
     ancestorFailed: [...ancestors(workflow, name)].some((job) => results.get(job) === "failure"),
     cancelled,
   };
@@ -440,6 +442,15 @@ describe("publishing", { timeout: 120_000 }, () => {
         "indexnow",
       ]),
     );
+  });
+
+  it("publishes the website alone after a push to main that changes it", () => {
+    expect(simulate(publish, {}, "push", false)).toEqual([
+      "website",
+      "website-publish",
+      "indexnow",
+    ]);
+    expect(simulate(publish, {}, "push", true)).toEqual([]);
   });
 
   it("publishes nothing once the run is cancelled, or the package call failed", () => {

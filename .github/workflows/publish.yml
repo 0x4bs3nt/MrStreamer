@@ -469,7 +469,11 @@ jobs:
   website-publish:
     name: Publish the website
     needs: website
-    if: vars.MARKETING_DEPLOY_ENABLED == 'true'
+    # The website job runs after a push even though finalize, which it waits for, is skipped then.
+    # GitHub's implicit success() would skip this job for that skipped grandparent, so it asks for
+    # the build's own success instead.
+    if: >-
+      !cancelled() && needs.website.result == 'success' && vars.MARKETING_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -556,7 +560,7 @@ jobs:
   indexnow:
     name: Notify IndexNow after publication
     needs: [website, website-publish]
-    if: needs.website-publish.outputs.deployed == 'true'
+    if: "!cancelled() && needs.website-publish.outputs.deployed == 'true'"
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
