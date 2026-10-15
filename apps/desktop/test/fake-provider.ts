@@ -969,7 +969,7 @@ const defaultStreams: StreamSource = (channel, out, signal) => {
 };
 
 /** Recordings play out over their three seconds, then the connection stays open without data. */
-const liveStreams: StreamSource = (channel, out, signal) => {
+export const liveStreams: StreamSource = (channel, out, signal) => {
   if (!channel.fixture) return defaultStreams(channel, out, signal);
   const recording = fixture(channel.fixture);
   const step = Math.ceil(recording.length / 30);

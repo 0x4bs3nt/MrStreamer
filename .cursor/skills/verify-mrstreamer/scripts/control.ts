@@ -11,7 +11,7 @@ import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
 import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-labels.ts";
 import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
-import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
+import { homeStageScenario, stageChannel, stageLogo, stageStreams } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
 import { guideGridScenario, guideGridScrollScenario } from "./guide-grid.ts";
 import { startGuideHost, type GuideHost } from "../../../../apps/desktop/test/fake-guide-host.ts";
@@ -174,7 +174,14 @@ async function run(scenario: Scenario) {
                 : { ...channel, name: `${channel.name} ${channel.streamId}`, guideId: null },
           }
         : {}),
-      ...(stage ? { channelOf: stageChannel, logoSvg: stageLogo, adultChannels: true } : {}),
+      ...(stage
+        ? {
+            channelOf: stageChannel,
+            logoSvg: stageLogo,
+            streams: stageStreams,
+            adultChannels: true,
+          }
+        : {}),
       ...(scenario === "guides"
         ? { guideIdOf: (channel) => sourcedGuideId(channel.name) ?? channel.guideId }
         : {}),
@@ -212,6 +219,7 @@ async function run(scenario: Scenario) {
         second: true,
         channelOf: stageChannel,
         logoSvg: stageLogo,
+        streams: stageStreams,
       });
     if (scenario === "background-refresh") releaseGuide = provider.hold("guide").release;
     tmdb = await startFakeTmdb();

@@ -1,4 +1,10 @@
-import type { FakeChannel } from "../../../../apps/desktop/test/fake-provider.ts";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import {
+  liveStreams,
+  type FakeChannel,
+  type FakeProviderOptions,
+} from "../../../../apps/desktop/test/fake-provider.ts";
 import type { Driver } from "./language.ts";
 
 const CHANNELS = ["Meridian", "Newsroom", "Orbit", "Harbour", "Fernlight", "Atlas"];
@@ -16,6 +22,39 @@ export function stageChannel(channel: FakeChannel): FakeChannel {
       }
     : channel;
 }
+
+/**
+ * Stage channels broadcast their clip in a loop at its own rate, as a live channel doesn't run out:
+ * the preview must still advance after six plays, the layout measurements and the Watch handoff,
+ * where the three-second clip has long ended. Other channels stream as the live fake provider's do.
+ * The provider closing the request stops that broadcast's ffmpeg.
+ */
+export const stageStreams: NonNullable<FakeProviderOptions["streams"]> = (channel, out, signal) => {
+  if (!channel.fixture || !channel.name.startsWith("STAGE | "))
+    return liveStreams(channel, out, signal);
+  const clip = new URL(
+    `../../../../apps/desktop/test/fixtures/${channel.fixture}`,
+    import.meta.url,
+  );
+  const broadcast = spawn(
+    process.env["MR_STREAMER_FFMPEG"] || "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-re",
+      "-stream_loop",
+      "-1",
+      "-i",
+      fileURLToPath(clip),
+      ...["-c", "copy", "-f", "mpegts", "pipe:1"],
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  broadcast.once("error", () => out.destroy(new Error("Stage broadcast unavailable.")));
+  broadcast.stdout.pipe(out);
+  signal.addEventListener("abort", () => broadcast.kill("SIGTERM"), { once: true });
+};
 
 /** Tall, tiny, square and wide marks exercise containment with actual loaded SVG images. */
 export function stageLogo(channel: FakeChannel): string {
