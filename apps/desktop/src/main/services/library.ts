@@ -53,7 +53,7 @@ import {
   type Source,
   type PlaylistRefresh,
 } from "./subscription.ts";
-import { lazy } from "@mrstreamer/contracts/lazy";
+import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** How many results a search returns. Enough to scroll, small enough to send per keystroke. */
 const SEARCH_LIMIT = 200;
@@ -88,7 +88,16 @@ const CachedCatalogue = lazy(() =>
       "adult?": "boolean",
       "catchupDays?": "number | null",
     }).array(),
-  }).pipe((file) => ({
+  }),
+);
+
+/**
+ * A cached file as the lists read it, with what older versions left out filled in. Done after the
+ * schema rather than as a morph of it: ArkType copies the whole input before a morph runs, a
+ * quarter of a second for 13,000 channels while the app starts.
+ */
+function readCatalogue(file: Infer<typeof CachedCatalogue>): CatalogueFile & { outdated: boolean } {
+  return {
     ...file,
     channels: file.channels.map((channel) => ({
       ...channel,
@@ -101,8 +110,8 @@ const CachedCatalogue = lazy(() =>
         channel.adult === undefined ||
         channel.catchupDays === undefined,
     ),
-  })),
-);
+  };
+}
 
 /** What the disk cache holds. */
 interface CatalogueFile extends LiveCatalogue {
@@ -256,10 +265,11 @@ function make(options: LibraryOptions) {
       Effect.gen(function* () {
         const kept = catalogues.get(subscription.id);
         if (kept) return kept;
-        const file = yield* Effect.promise(() =>
+        const stored = yield* Effect.promise(() =>
           readJsonFile(cachePath(subscription), CachedCatalogue()),
         );
-        if (file?.key !== subscription.key) return null;
+        if (stored?.key !== subscription.key) return null;
+        const file = readCatalogue(stored);
         // Read by another call meanwhile, or fetched: that one stands.
         const now = catalogues.get(subscription.id) ?? index(file, subscription.id, file.outdated);
         catalogues.set(subscription.id, now);

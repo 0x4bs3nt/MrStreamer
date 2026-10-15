@@ -228,7 +228,8 @@ try {
     activePage = page;
     const loaded = await observeAcrossLoad(
       page,
-      `!!document.querySelector("section h1") && !document.body.innerText.includes("Loading channels")`,
+      // Home's Stage names the channel its preview plays once the catalogue is read.
+      `!!document.querySelector("[data-home-preview] h2") && !document.body.innerText.includes("Loading channels")`,
       started,
     );
     observations.push({ name: "cold start", initialNavigationObserved: loaded.navigationObserved });
