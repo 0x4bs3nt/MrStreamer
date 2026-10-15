@@ -1,0 +1,33 @@
+{
+  "name": "mrstreamer-ios",
+  "private": true,
+  "type": "module",
+  "description": "The iOS app: React Native on Hermes, sharing contracts and portable rules with the desktop app.",
+  "license": "GPL-3.0-only",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios",
+    "proof": "node scripts/proof-server.ts"
+  },
+  "dependencies": {
+    "@formatjs/intl-displaynames": "7.3.15",
+    "@formatjs/intl-getcanonicallocales": "3.2.12",
+    "@formatjs/intl-listformat": "8.3.15",
+    "@formatjs/intl-locale": "5.3.12",
+    "@formatjs/intl-numberformat": "9.4.3",
+    "@formatjs/intl-pluralrules": "6.3.15",
+    "@mrstreamer/contracts": "link:../../packages/contracts",
+    "@mrstreamer/core": "link:../../packages/core",
+    "arktype": "2.2.5",
+    "core-js": "3.50.0",
+    "effect": "4.0.0-rc.118",
+    "expo": "58.0.9",
+    "expo-secure-store": "58.0.2",
+    "react": "19.3.0",
+    "react-native": "0.88.0-rc.4"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0"
+  }
+}

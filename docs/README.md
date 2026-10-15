@@ -32,5 +32,6 @@ Start with the [contribution policy](../CONTRIBUTING.md).
 - [Microsoft Store submissions](./maintainers/microsoft-store.md)
 - [Licences and sources](./maintainers/licences.md)
 - [The website](../apps/marketing/README.md): running it, publishing it and the one-time setup
+- [The iOS app](../apps/ios/README.md): its own install, what Hermes lacks and the runtime proof
 
 Priorities, status and acceptance live in the maintainers' [GitHub project](https://github.com/orgs/Mr-Streamer-OSS/projects/1).

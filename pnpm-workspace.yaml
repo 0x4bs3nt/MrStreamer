@@ -1,6 +1,8 @@
 packages:
   - apps/*
   - packages/*
+  # The iOS app keeps its own install and lockfile, so React Native never enters the desktop's.
+  - "!apps/ios"
 allowBuilds:
   electron: true
   electron-winstaller: false

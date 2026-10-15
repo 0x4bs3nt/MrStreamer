@@ -2,7 +2,7 @@
   "name": "mrstreamer-workspace",
   "private": true,
   "type": "module",
-  "description": "Mr. Streamer: the desktop app in apps/desktop, the website in apps/marketing, shared contracts and rules in packages.",
+  "description": "Mr. Streamer: the desktop app in apps/desktop, the website in apps/marketing, the iOS app in apps/ios (its own install), shared contracts and rules in packages.",
   "license": "GPL-3.0-only",
   "scripts": {
     "dev": "pnpm --filter mrstreamer dev",

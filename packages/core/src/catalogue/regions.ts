@@ -75,11 +75,17 @@ export function leadingFlag(text: string): { region: string; rest: string } | nu
   return { region: countryForCode(code) ?? code, rest: text.slice(match[0].length) };
 }
 
+/**
+ * ISO 3166 codes reserved for a country that has another: UK is GB, in ".uk" guide ids and "UK |"
+ * catalogues. Node's ICU names them through its own aliases; Hermes on iOS has no such alias.
+ */
+const RESERVED: Readonly<Record<string, string>> = { UK: "GB" };
+
 /** ISO country metadata, including guide suffixes and flags, never uses reseller aliases. */
 export function countryForCode(code: string): string | null {
   code = code.toUpperCase();
   if (!/^[A-Z]{2}$/.test(code)) return null;
-  const name = english.of(code);
+  const name = english.of(RESERVED[code] ?? code);
   return name && name !== code ? name : null;
 }
 

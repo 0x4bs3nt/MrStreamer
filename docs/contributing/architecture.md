@@ -46,6 +46,9 @@ apps/desktop         The app, package name mrstreamer
 apps/marketing       The website, package name mrstreamer-marketing: static pages built by Vite
                      from the app captures in docs/assets and the privacy policy in
                      docs/privacy.md. Depends on nothing else in the workspace.
+apps/ios             The iOS app, React Native on Hermes: contracts and the core rules that run
+                     without Node, with native adapters of its own. Outside the workspace, with
+                     its own install and lockfile, so the desktop never installs React Native.
 scripts              Release planning, the update feed and CI signing, run from the repository root
 test                 The release planning suite, and the website's publishing workflow
 ```

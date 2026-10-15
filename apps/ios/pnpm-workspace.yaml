@@ -1,0 +1,8 @@
+# Its own workspace: React Native and Expo stay out of the desktop install (see README.md).
+packages:
+  - .
+allowBuilds:
+  # Its install script only prints a funding message.
+  core-js: false
+patchedDependencies:
+  react-native@0.88.0-rc.4: patches/react-native@0.88.0-rc.4.patch

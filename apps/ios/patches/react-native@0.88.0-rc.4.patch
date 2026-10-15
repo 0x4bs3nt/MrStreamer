@@ -1,0 +1,14 @@
+diff --git a/src/types/globals.d.ts b/src/types/globals.d.ts
+index f9820c6fc5b4e1c1d49fb742974a833c2e3c2d51..5f446024c8c0b50d25931950ef2a067616aabef6 100644
+--- a/src/types/globals.d.ts
++++ b/src/types/globals.d.ts
+@@ -479,6 +479,9 @@ declare global {
+   var URL: {
+     prototype: URL;
+     new (url: string | URL, base?: string | URL): URL;
++    // Expo's runtime replaces React Native's URL with a WHATWG one, which has both.
++    canParse(url: string | URL, base?: string | URL): boolean;
++    parse(url: string | URL, base?: string | URL): URL | null;
+     createObjectURL(obj: Blob): string;
+     revokeObjectURL(url: string): void;
+   };
