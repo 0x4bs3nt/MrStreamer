@@ -394,11 +394,20 @@ const UserInfo = lazy(() =>
   }),
 );
 
-const AuthResponse = lazy(() =>
+/**
+ * The login's answer as the panel sends it. It has no morph, so checking a catalogue list against
+ * it doesn't copy the list: a JSON array passes as an object without `user_info`.
+ */
+const AuthBody = lazy(() =>
   type({
     "user_info?": UserInfo().or("unknown[]"),
     "server_info?": type({ "timezone?": "string | null" }).or("unknown[] | null"),
-  }).pipe((body) => ({
+  }),
+);
+
+/** The login's answer, normalised. Its morph deep-copies the input, so it reads only the login's. */
+const AuthResponse = lazy(() =>
+  AuthBody().pipe((body) => ({
     user_info: Array.isArray(body.user_info) ? undefined : body.user_info,
     /** The panel's IANA time zone, "Europe/Amsterdam", or null when it names none. */
     timeZone:
@@ -612,9 +621,9 @@ function detailsOf(
 }
 
 /**
- * An object the details schemas accept, or undefined for the `[]` or `null` panels send in its
- * place. The schemas leave those as they are instead of morphing them: any morph makes ArkType
- * deep-copy its whole input first, a megabyte for a long series.
+ * An object a schema accepts, or undefined for the `[]` or `null` panels send in its place. The
+ * schemas leave those as they are instead of morphing them: any morph makes ArkType deep-copy its
+ * whole input first, a megabyte for a long series.
  */
 function fields<A extends object>(value: A | unknown[] | null | undefined): A | undefined {
   return Array.isArray(value) || value === null ? undefined : value;
@@ -736,14 +745,15 @@ function accountState(status: string | null | undefined): AccountState {
   }
 }
 
-/** Some panels answer catalogue actions with a login failure instead of an HTTP error. */
+/**
+ * Some panels answer catalogue actions with a login failure instead of an HTTP error. `body` is
+ * usually the whole list, so this checks it without copying it.
+ */
 function isRejectedLogin(body: unknown): boolean {
-  const parsed = AuthResponse()(body);
-  return (
-    !(parsed instanceof type.errors) &&
-    parsed.user_info !== undefined &&
-    !isTruthy(parsed.user_info.auth)
-  );
+  const parsed = AuthBody()(body);
+  if (parsed instanceof type.errors) return false;
+  const info = fields(parsed.user_info);
+  return info !== undefined && !isTruthy(info.auth);
 }
 
 function rows(body: unknown): unknown[] {
