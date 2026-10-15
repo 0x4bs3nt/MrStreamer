@@ -75,7 +75,10 @@ export interface FakeProviderOptions {
    * its timeshift addresses are on: "Europe/Amsterdam" unless given, none with null.
    */
   readonly timeZone?: string | null;
-  /** How long a closed stream keeps its connection slot. Real panels often lag behind. */
+  /**
+   * How long a closed stream keeps its connection slot. Real panels often lag behind; with 0 the
+   * slot is free as soon as the provider hears the close.
+   */
   readonly slotReleaseMs?: number;
   /** Replaces the default streams. */
   readonly streams?: StreamSource;
@@ -345,6 +348,11 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     catalogue.channels.map((channel) => [String(channel.streamId), channel]),
   );
   let slots = 0;
+  /** Gives back the connection slot of a request that closed, `slotReleaseMs` later. */
+  const freeSlot = () => {
+    if (slotReleaseMs > 0) setTimeout(() => slots--, slotReleaseMs);
+    else slots--;
+  };
   let origin = "";
   let guideAnswer: string | number | "hold" | null = null;
   let guidePieceBytes = 0;
@@ -643,7 +651,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     request.on("close", () => {
       if (closed.signal.aborted) return;
       closed.abort();
-      setTimeout(() => slots--, slotReleaseMs);
+      freeSlot();
     });
     response.writeHead(200, { "Content-Type": "video/mp2t" });
     streams(channel, response, closed.signal);
@@ -667,7 +675,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     request.on("close", () => {
       if (released) return;
       released = true;
-      setTimeout(() => slots--, slotReleaseMs);
+      freeSlot();
     });
     response.writeHead(200, { "Content-Type": "video/mp2t" });
     const recording = fixture(channel.fixture);
@@ -739,7 +747,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       if (released) return;
       released = true;
       filesOpen--;
-      setTimeout(() => slots--, slotReleaseMs);
+      freeSlot();
     });
     const answer = () => {
       if (response.destroyed) return;
