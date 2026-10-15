@@ -152,14 +152,23 @@ export function ChannelTable({
     },
     [kept],
   );
-  const virtualizer = useVirtualizer({
-    count: channels.length,
-    getScrollElement: () => scroller.current,
-    estimateSize: () => ROW_REM * rem,
-    getItemKey: (index) => {
+  // Whole pixels, as the virtualizer measures a row: one scrolling in measures as estimated, and
+  // the thousands after it aren't placed again.
+  const rowPx = Math.round(ROW_REM * rem);
+  // The virtualizer places every row again when this changes: once per list or search, not on
+  // each render while it scrolls.
+  const getItemKey = useCallback(
+    (index: number) => {
       const channel = channels[index];
       return searchRows?.[index]?.key ?? (channel ? ownedKey(channel) : index);
     },
+    [channels, searchRows],
+  );
+  const virtualizer = useVirtualizer({
+    count: channels.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: () => rowPx,
+    getItemKey,
     overscan: 8,
     rangeExtractor,
   });
