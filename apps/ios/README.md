@@ -92,7 +92,7 @@ REACT_NATIVE_PACKAGER_HOSTNAME=127.0.0.1 EXPO_PUBLIC_PROOF_URL=http://127.0.0.1:
   ./node_modules/.bin/expo start --port 8197
 onmac tunnel 8197 8791 8790
 onmac run -- zsh -c 'cd apps/ios && pnpm install --frozen-lockfile && npx expo run:ios --device <udid> --no-bundler'
-ssh mac-mini xcrun simctl launch <udid> app.mrstreamer.player.dev -RCT_jsLocation 127.0.0.1:8197
+ssh mac-mini xcrun simctl launch <udid> app.mrstreamer.player -RCT_jsLocation 127.0.0.1:8197
 ```
 
 The build has no development client, so a deep link doesn't tell it where Metro is: launch it
@@ -119,4 +119,34 @@ node scripts/log-scan.ts 'cnry Usr7Kq' 'cnry+Pw@9&Zq' metro.log unified.log
 Node and compares them. Each area in `src/proof/groups/` loads on its own, so a module that fails
 on Hermes fails only its group. It is a development screen, Runtime proof, linked from Connect and
 Settings, so the guide group that fails on purpose never runs at launch. Each run sends one
-report; receipts go to `.local/ios-proof/` at the repository's root.
+report; receipts go to `.local/ios-proof/` at the repository's root. A release build leaves the
+proof out: `src/app/proof.tsx` loads it only in development.
+
+## For TestFlight
+
+The app installs as `app.mrstreamer.player`, the desktop's `appId`, in development and release
+builds alike. Its version is its own, not the desktop's: `version` in `app.json` is `0.1.0` for
+the private beta, and `ios.buildNumber` goes up by one for every upload, because App Store Connect
+refuses a build number it has seen.
+
+Xtream panels are mostly plain `http://` servers at whatever address the viewer types, so
+`app.json` lets the app load from any host without HTTPS. Expo's template allows local networking
+only, and while that key is there iOS ignores the wider one: a panel over `http://` fails to load
+on an iPhone. App Review will want a reason for this exception; internal TestFlight testing has no
+review. `ITSAppUsesNonExemptEncryption` is false, because the app's only encryption is the
+system's HTTPS and Keychain, so uploads skip the export compliance question.
+
+The icon, `assets/icon.png`, is the desktop's Store tile at 1024 px, rendered with the desktop's
+icons by `pnpm icons:export` in `apps/desktop`.
+
+The build runs on the Mac mini from a committed checkout:
+
+```sh
+onmac run -- apps/ios/scripts/testflight.sh archive
+onmac run -- apps/ios/scripts/testflight.sh upload
+```
+
+`archive` generates the native project and archives a Release build with its JavaScript inside,
+so it runs without Metro, the fixtures or a launch argument, then prints the commit, identifier,
+version and build it archived. `upload` sends that archive to App Store Connect for internal
+testers only. The app's record has to exist there first; the API can't create one.

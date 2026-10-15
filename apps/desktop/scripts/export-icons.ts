@@ -5,6 +5,7 @@
 // build/icon.ico: Windows icon, cropped to the squircle so it fills the tile like other Windows apps.
 // build/appx: the Microsoft Store package's logos, drawn from the bare mark rather than the macOS
 //   squircle. electron-builder's appx target packs every file there and indexes the scaled ones.
+// ../ios/assets/icon.png: the iOS app's icon, the Store tiles' artwork at 1024 px.
 // Usage: pnpm icons:export
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -156,7 +157,23 @@ await Promise.all(
       .toFile(`${root}build/appx/${name}.png`),
   ),
 );
-console.log("Wrote build/icon.png, build/icon.icns, build/icon.ico and build/appx");
+
+// iOS masks the icon itself and refuses one with an alpha channel, so it gets a full square of
+// true black with the mark at the share the macOS squircle gives it, and no alpha.
+await mkdir(`${root}../ios/assets`, { recursive: true });
+await sharp(
+  Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">${tile(0.56)(1024, 1024)}</svg>`,
+  ),
+  { density: 72 * 4 },
+)
+  .resize(1024, 1024)
+  .removeAlpha()
+  .png()
+  .toFile(`${root}../ios/assets/icon.png`);
+console.log(
+  "Wrote build/icon.png, build/icon.icns, build/icon.ico, build/appx and ../ios/assets/icon.png",
+);
 
 /** An ICNS file: a big-endian "icns" header followed by one PNG per element type. */
 function icns(elements: [type: string, png: Buffer][]): Buffer {

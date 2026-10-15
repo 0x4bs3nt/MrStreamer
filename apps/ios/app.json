@@ -3,17 +3,27 @@
     "name": "Mr. Streamer",
     "slug": "mrstreamer",
     "scheme": "mrstreamer",
-    "version": "0.0.0",
+    "version": "0.1.0",
     "platforms": ["ios"],
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#000000",
+    "icon": "./assets/icon.png",
     "experiments": {
       "tsconfigPaths": false
     },
     "ios": {
-      "bundleIdentifier": "app.mrstreamer.player.dev",
-      "supportsTablet": true
+      "bundleIdentifier": "app.mrstreamer.player",
+      "buildNumber": "1",
+      "supportsTablet": true,
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
     },
     "plugins": [
       [
