@@ -324,7 +324,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
     },
 
     async movieDetails(id, signal) {
-      const body = titleSchemas().MovieInfo(
+      const body = detailSchemas().MovieInfo(
         await getJson(
           `&action=get_vod_info&vod_id=${encodeURIComponent(id)}`,
           DETAILS_TIMEOUT_MS,
@@ -332,19 +332,19 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
         ),
       );
       if (body instanceof type.errors) throw notAnApi(account.server);
-      const info = body.info;
+      const info = fields(body.info);
       return {
         ...detailsOf(info),
         duration: seconds(info?.duration_secs) ?? clockSeconds(info?.duration),
         posterUrl: url(info?.cover_big) ?? url(info?.movie_image),
         seasons: [],
         episodes: [],
-        container: body.movie_data?.container_extension?.trim() || null,
+        container: fields(body.movie_data)?.container_extension?.trim() || null,
       };
     },
 
     async seriesDetails(id, signal) {
-      const body = titleSchemas().SeriesInfo(
+      const body = detailSchemas().SeriesInfo(
         await getJson(
           `&action=get_series_info&series_id=${encodeURIComponent(id)}`,
           DETAILS_TIMEOUT_MS,
@@ -352,7 +352,7 @@ export function xtreamProvider(account: XtreamAccount, options: ProviderOptions)
         ),
       );
       if (body instanceof type.errors) throw notAnApi(account.server);
-      const info = body.info;
+      const info = fields(body.info);
       const episodes = Array.isArray(body.episodes)
         ? body.episodes.flat()
         : Object.values(body.episodes ?? {}).flat();
@@ -464,12 +464,9 @@ const StreamRow = lazy(() =>
   }),
 );
 
-/**
- * The movie and series schemas, built on first use: the catalogue worker needs them for the lists,
- * the main process only once a title's details open, never while it starts.
- */
-function defineTitleSchemas() {
-  const MovieRow = type({
+/** The movie and series list rows, built on first use: only the catalogue worker reads the lists. */
+const rowSchemas = lazy(() => ({
+  MovieRow: type({
     stream_id: idLike,
     "name?": "string | null",
     "stream_icon?": "string | null",
@@ -480,9 +477,8 @@ function defineTitleSchemas() {
     "container_extension?": "string | null",
     "is_adult?": "number | string | boolean | null",
     "tmdb?": loose,
-  });
-
-  const SeriesRow = type({
+  }),
+  SeriesRow: type({
     series_id: idLike,
     "name?": "string | null",
     "cover?": "string | null",
@@ -495,8 +491,14 @@ function defineTitleSchemas() {
     "category_ids?": "(string | number)[] | null",
     "is_adult?": "number | string | boolean | null",
     "tmdb?": loose,
-  });
+  }),
+}));
 
+/**
+ * The details schemas, built on first use: the main process needs them only once a title's
+ * details open, never while it starts.
+ */
+function defineDetailSchemas() {
   const Info = type({
     "name?": "string | null",
     "o_name?": "string | null",
@@ -517,16 +519,12 @@ function defineTitleSchemas() {
     "duration?": loose,
     "episode_run_time?": loose,
   });
-  // Panels send `info: []` or `null` for a title they know nothing more about.
-  const InfoOrNothing = Info.or("unknown[] | null").pipe((info) =>
-    Array.isArray(info) || info === null ? undefined : info,
-  );
+  // Panels send `info: []` or `null` for a title they know nothing more about; see `fields`.
+  const InfoOrNothing = Info.or("unknown[] | null");
 
   const MovieInfo = type({
     "info?": InfoOrNothing,
-    "movie_data?": type({ "container_extension?": "string | null" })
-      .or("unknown[] | null")
-      .pipe((data) => (Array.isArray(data) || data === null ? undefined : data)),
+    "movie_data?": type({ "container_extension?": "string | null" }).or("unknown[] | null"),
   });
 
   const EpisodeRow = type({
@@ -543,9 +541,7 @@ function defineTitleSchemas() {
       "duration?": loose,
       "air_date?": "string | null",
       "releasedate?": "string | null",
-    })
-      .or("unknown[] | null")
-      .pipe((info) => (Array.isArray(info) || info === null ? undefined : info)),
+    }).or("unknown[] | null"),
   });
 
   const SeriesInfo = type({
@@ -562,13 +558,13 @@ function defineTitleSchemas() {
     "episodes?": type({ "[string]": "unknown[]" }).or("unknown[][]").or("null"),
   });
 
-  return { MovieRow, SeriesRow, Info, MovieInfo, EpisodeRow, SeriesInfo };
+  return { Info, MovieInfo, EpisodeRow, SeriesInfo };
 }
-const titleSchemas = lazy(defineTitleSchemas);
-type Info = ReturnType<typeof titleSchemas>["Info"]["infer"];
+const detailSchemas = lazy(defineDetailSchemas);
+type Info = ReturnType<typeof detailSchemas>["Info"]["infer"];
 
 function toMovie(raw: unknown): ProviderTitle[] {
-  const row = titleSchemas().MovieRow(raw);
+  const row = rowSchemas().MovieRow(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.stream_id);
   return [
@@ -595,7 +591,7 @@ function tmdbIdOf(value: string | number | null | undefined): string | null {
 }
 
 function toSeries(raw: unknown): ProviderTitle[] {
-  const row = titleSchemas().SeriesRow(raw);
+  const row = rowSchemas().SeriesRow(raw);
   if (row instanceof type.errors) return [];
   const id = String(row.series_id);
   return [
@@ -616,22 +612,23 @@ function toSeries(raw: unknown): ProviderTitle[] {
 }
 
 function toEpisode(raw: unknown): ProviderEpisode[] {
-  const row = titleSchemas().EpisodeRow(raw);
+  const row = detailSchemas().EpisodeRow(raw);
   if (row instanceof type.errors) return [];
   const season = toInteger(row.season);
   const number = toInteger(row.episode_num);
   if (season === null || number === null) return [];
   const id = String(row.id);
+  const info = fields(row.info);
   return [
     {
       id,
       season,
       number,
       name: row.title?.trim() || `Episode ${number}`,
-      plot: row.info?.plot?.trim() || null,
-      duration: seconds(row.info?.duration_secs) ?? clockSeconds(row.info?.duration),
-      stillUrl: url(row.info?.movie_image),
-      airDate: row.info?.air_date?.trim() || row.info?.releasedate?.trim() || null,
+      plot: info?.plot?.trim() || null,
+      duration: seconds(info?.duration_secs) ?? clockSeconds(info?.duration),
+      stillUrl: url(info?.movie_image),
+      airDate: info?.air_date?.trim() || info?.releasedate?.trim() || null,
       addedAt: epochSeconds(row.added),
       container: row.container_extension?.trim() || "mp4",
     },
@@ -652,6 +649,15 @@ function detailsOf(
       info?.releasedate?.trim() || info?.releaseDate?.trim() || info?.release_date?.trim() || null,
     backdropUrl: url(firstOf(info?.backdrop_path)),
   };
+}
+
+/**
+ * An object the details schemas accept, or undefined for the `[]` or `null` panels send in its
+ * place. The schemas leave those as they are instead of morphing them: any morph makes ArkType
+ * deep-copy its whole input first, a megabyte for a long series.
+ */
+function fields<A extends object>(value: A | unknown[] | null | undefined): A | undefined {
+  return Array.isArray(value) || value === null ? undefined : value;
 }
 
 function categoryIdsOf(row: {
