@@ -189,15 +189,18 @@ export const ipcInputs = {
   /**
    * Adds the XMLTV guide at `address` after the other sources, at once, and downloads it in the
    * background. The address can hold a key: it goes to the main process here and never comes
-   * back. One already added stays where it is.
+   * back. One already added stays where it is, with its name. `label` names it in the window
+   * (`GuideSourceStatus.label`); empty or left out, it has none.
    */
-  "guide.addSource": () => type({ address: "string <= 4096" }),
+  "guide.addSource": () => type({ address: "string <= 4096", "label?": "string <= 4096" }),
   /** Removes a source, with what it downloaded and the mappings made to it. */
   "guide.removeSource": () => type({ id: "string > 0" }),
   /** Moves a source one place earlier (-1) or later (1) in the order. */
   "guide.moveSource": () => type({ id: "string > 0", by: "-1 | 1" }),
   /** Downloads a source again now. */
   "guide.refreshSource": () => type({ id: "string > 0" }),
+  /** Names a source in the window, or takes its name away with null or an empty one. */
+  "guide.renameSource": () => type({ id: "string > 0", label: "string <= 4096 | null" }),
   /**
    * Maps one of a subscription's channels to a guide channel by its `GuideChannelRef.ref`, or
    * back to automatic with null. `revision` is the `MapChannelPage.revision` the choice was made
@@ -553,6 +556,7 @@ export interface IpcOutputs {
   "guide.moveSource": null;
   /** Once the download is done: the source's status, which says why when it failed. */
   "guide.refreshSource": GuideSourceStatus;
+  "guide.renameSource": GuideSourceStatus;
   /** The channel as it is mapped now, or null when the provider no longer lists it. */
   "guide.map": MapChannel | null;
   /**

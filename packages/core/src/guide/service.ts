@@ -35,10 +35,11 @@
 // source supplies both. A search goes through every guide and is cut only once they are all in.
 //
 // A source is added at once: its address is sealed, as it can hold a key, and only its origin is
-// ever told; its download follows in the background. One that fails keeps its last download that
-// worked and its place in the order, and its status says why and since when. Removing one drops
-// what it downloaded; a mapping made to it then leads nowhere and its channel goes back to
-// automatic.
+// ever told; its download follows in the background. The viewer can name it, at once or later,
+// which the window shows in place of its host; a name is the viewer's own text, kept unsealed.
+// One that fails keeps its last download that worked and its place in the order, and its status
+// says why and since when. Removing one drops what it downloaded; a mapping made to it then leads
+// nowhere and its channel goes back to automatic.
 //
 // A subscription can answer that it has no guide, as a playlist does whose first line names none.
 // That is an answer like any other: a guide loaded before is dropped, the status says so, and the
@@ -74,20 +75,21 @@
 // as it is.
 import { randomUUID } from "node:crypto";
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
-import type {
-  GuideChannelPage,
-  GuideFailure,
-  GuideProcessing,
-  GuideSlot,
-  GuideSourceStatus,
-  GuideStatus,
-  Listing,
-  ListingMatch,
-  MapChannel,
-  MapChannelPage,
-  MapFilter,
-  Programme,
-  ProgrammeMatch,
+import {
+  GUIDE_LABEL_MAX,
+  type GuideChannelPage,
+  type GuideFailure,
+  type GuideProcessing,
+  type GuideSlot,
+  type GuideSourceStatus,
+  type GuideStatus,
+  type Listing,
+  type ListingMatch,
+  type MapChannel,
+  type MapChannelPage,
+  type MapFilter,
+  type Programme,
+  type ProgrammeMatch,
 } from "@mrstreamer/contracts/guide";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import * as Cause from "effect/Cause";
@@ -244,6 +246,8 @@ export interface StoredSource {
   /** Tells addresses apart without holding one (`GuideAddress.identity`). */
   readonly identity: string;
   readonly sealedAddress: string;
+  /** The name the viewer gave it (`GuideSourceStatus.label`), or null. */
+  readonly label: string | null;
   /** Its last download that worked, or null before one. */
   readonly document: GuideDocument | null;
   readonly failure: GuideFailureNote | null;
@@ -573,16 +577,24 @@ export class Guide extends Context.Service<
     /** The global sources, in their order. */
     readonly sources: Effect.Effect<readonly GuideSourceStatus[]>;
     /**
-     * Adds the XMLTV guide at the address typed after the other sources, at once, and starts
-     * its download. The same address again leaves the source it is as it is.
+     * Adds the XMLTV guide at the address typed after the other sources, named `label`, at once,
+     * and starts its download. The same address again leaves the source it is as it is, its name
+     * too. A name is kept as `renameSource` keeps it, and one it refuses adds nothing.
      */
-    addSource(typed: string): Effect.Effect<GuideSourceStatus, Failed>;
+    addSource(typed: string, label?: string | null): Effect.Effect<GuideSourceStatus, Failed>;
     /** Removes a source and what it downloaded, stopping its download. */
     removeSource(id: string): Effect.Effect<void, Failed>;
     /** Moves a source `by` one place earlier (-1) or later (1); at either end, it stays. */
     moveSource(id: string, by: -1 | 1): Effect.Effect<void, Failed>;
     /** Downloads a source now, joining a download under way, and answers its status then. */
     refreshSource(id: string): Effect.Effect<GuideSourceStatus, Failed>;
+    /**
+     * Names a source, or takes its name away with null. The name is kept with runs of white
+     * space as one space, cut to `GUIDE_LABEL_MAX` characters, and none when nothing is left.
+     * One holding "://" is refused (`label`): a name is kept unsealed, and that is an address
+     * pasted into the wrong field. Nothing else of what a viewer types is checked.
+     */
+    renameSource(id: string, label: string | null): Effect.Effect<GuideSourceStatus, Failed>;
     /**
      * Maps a channel to the guide channel `ref` names exactly, or back to automatic with null.
      * `revision` names the guides the choice was made from: another one refuses it, and so does
@@ -704,6 +716,14 @@ function make() {
     const jobs = new Map<string, Job>();
     const noSubscription = new Failed({ error: { kind: "no-subscription" } });
     const failed = (failure: GuideFailure) => new Failed({ error: { kind: "guide", failure } });
+    /** A source's name as `renameSource` keeps it, or `label` refused. */
+    const labelOf = (typed: string | null | undefined) =>
+      Effect.suspend(() => {
+        const whole = (typed ?? "").replace(/\s+/g, " ").trim();
+        if (whole.includes("://")) return Effect.fail(failed({ kind: "label" }));
+        const label = Array.from(whole).slice(0, GUIDE_LABEL_MAX).join("").trim();
+        return Effect.succeed(label === "" ? null : label);
+      });
     const changed = failed({ kind: "changed" });
     const published = PubSub.publish(updates, undefined);
     let toldAt = Number.NEGATIVE_INFINITY;
@@ -1654,6 +1674,7 @@ function make() {
                   origin: legacy.origin,
                   identity: legacy.identity,
                   sealedAddress: legacy.sealedAddress,
+                  label: null,
                   document,
                   failure: legacy.failure,
                   movedFrom,
@@ -2238,7 +2259,14 @@ function make() {
             if (count === 0) return [];
             return [
               {
-                source: each === OWN_GUIDE ? null : { id: each, origin: origin ?? "" },
+                source:
+                  each === OWN_GUIDE
+                    ? null
+                    : {
+                        id: each,
+                        origin: origin ?? "",
+                        label: (sourceList ?? []).find((one) => one.id === each)?.label ?? null,
+                      },
                 channels: count,
               },
             ];
@@ -2370,6 +2398,7 @@ function make() {
     const sourceStatusOf = (each: Source, channels: number): GuideSourceStatus => ({
       id: each.id,
       origin: each.origin,
+      label: each.label,
       locked: each.address === null,
       processing: processingOf(sourceKey(each.id), openOf(each) ?? null, channels, each.failure),
     });
@@ -2499,10 +2528,11 @@ function make() {
         return list.map((each) => sourceStatusOf(each, counts.get(each.id) ?? 0));
       }),
 
-      addSource: (typed: string) =>
+      addSource: (typed: string, named?: string | null) =>
         Effect.gen(function* () {
           const address = guideAddress(typed);
           if (!address) return yield* failed({ kind: "address" });
+          const label = yield* labelOf(named);
           const known = (yield* currentSources).find((each) => each.identity === address.identity);
           // The same address again is the same source. Typed again where the keychain no longer
           // opens it, it is sealed anew and downloads again.
@@ -2529,6 +2559,7 @@ function make() {
             origin: address.origin,
             identity: address.identity,
             sealedAddress: yield* addresses.seal(address.href),
+            label,
             document: null,
             failure: null,
             movedFrom: null,
@@ -2592,6 +2623,19 @@ function make() {
                 : Effect.void,
             ),
           );
+          return yield* sourceStatus(id);
+        }),
+
+      renameSource: (id: string, typed: string | null) =>
+        Effect.gen(function* () {
+          const label = yield* labelOf(typed);
+          const before = yield* changeSources((now) =>
+            Effect.gen(function* () {
+              if (!now.some((each) => each.id === id)) return yield* changed;
+              return updated(now, id, (was) => (was.label === label ? null : { ...was, label }));
+            }),
+          );
+          if (before) yield* published;
           return yield* sourceStatus(id);
         }),
 

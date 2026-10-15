@@ -128,6 +128,8 @@ function describeGuideFailure(failure: GuideFailure): string {
   switch (failure.kind) {
     case "address":
       return t("Enter the address of an XMLTV guide.");
+    case "label":
+      return t("A name can't be an address.");
     case "locked":
       return t("This guide needs its address again.");
     case "redirect":

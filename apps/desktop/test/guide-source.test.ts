@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 import { AppFailure } from "@mrstreamer/contracts/errors";
+import { GUIDE_LABEL_MAX } from "@mrstreamer/contracts/guide";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
@@ -256,6 +257,7 @@ describe("the sources of Settings > Guides", () => {
     expect(added).toEqual({
       id: expect.any(String),
       origin: host.origin,
+      label: null,
       locked: false,
       processing: { state: "downloading", bytes: expect.any(Number), total: null },
     });
@@ -612,12 +614,13 @@ describe("channels mapped to a guide's by hand", () => {
   }
 
   it("lists every guide's channels by name and id, its own first, and a subscription's channels by how they get programmes", async () => {
-    const { run, guide, host, id, list, loose, first, own, sourced } = await mapping();
+    const { run, guide, host, id, list, loose, first, own, sourced, source } = await mapping();
     const options = (query: string, offset = 0, limit = 200) =>
       run(guide.mapOptions({ subscriptionId: id, query, offset, limit }));
     const ofOwn = (guideId: string, name: string, programmes: boolean) => ({
       ref: own(guideId),
       id: guideId,
+      source: null,
       origin: null,
       name,
       programmes,
@@ -625,6 +628,7 @@ describe("channels mapped to a guide's by hand", () => {
     const ofSource = (guideId: string, name: string, programmes: boolean) => ({
       ref: sourced(guideId),
       id: guideId,
+      source: source.id,
       origin: host.origin,
       name,
       programmes,
@@ -783,7 +787,7 @@ describe("channels mapped to a guide's by hand", () => {
         number: null,
         title,
         shown: null,
-        mapped: { ref: sourced("spare.test"), id: "spare.test", origin: null },
+        mapped: { ref: sourced("spare.test"), id: "spare.test", source: source.id, origin: null },
         listed: false,
       },
     ]);
@@ -1115,6 +1119,92 @@ describe("a source across starts", () => {
     expect(again).toMatchObject({ id: source.id, locked: false });
     await locked.run(locked.guide.refreshSource(source.id));
     expect(await locked.nowOn(quality)).toBe("Again");
+  });
+
+  it("keeps a source's name while its address is locked, and when it is typed again", async () => {
+    const { run, guide, host, dataDir } = await connected();
+    const source = await run(guide.addSource(host.address(), "Netherlands"));
+    await run(guide.refreshSource(source.id));
+
+    const locked = await app(dataDir, { secrets: withoutGuide });
+    expect((await locked.sources())[0]).toMatchObject({ label: "Netherlands", locked: true });
+    // Typed again under another name, it is the same source, with the name it has.
+    expect(await locked.run(locked.guide.addSource(host.address(), "Elsewhere"))).toMatchObject({
+      id: source.id,
+      label: "Netherlands",
+      locked: false,
+    });
+    expect((await (await app(dataDir)).sources())[0]?.label).toBe("Netherlands");
+  });
+});
+
+describe("a source's name", () => {
+  it("is kept as typed, tidied, by the source's id through moves, refreshes, failures and restarts", async () => {
+    const { run, guide, host, dataDir, id, sources, status } = await connected();
+    host.serve("/a.xml", tv(slot(QUALITY, "A")));
+    host.serve("/b.xml", tv(slot(QUALITY, "B")));
+    const a = await run(guide.addSource(host.address("/a.xml"), "  The\t\n Netherlands "));
+    const b = await run(guide.addSource(host.address("/b.xml")));
+    await run(guide.refreshSource(a.id));
+    await run(guide.refreshSource(b.id));
+    const named = async () => (await sources()).map(({ id, label }) => [id, label]);
+
+    // Runs of white space are one space; none at all is no name.
+    expect(await named()).toEqual([
+      [a.id, "The Netherlands"],
+      [b.id, null],
+    ]);
+    expect(await run(guide.renameSource(b.id, "United Kingdom"))).toMatchObject({
+      id: b.id,
+      label: "United Kingdom",
+    });
+    await run(guide.moveSource(b.id, -1));
+    host.serve("/a.xml", 503);
+    expect((await run(guide.refreshSource(a.id))).processing).toMatchObject({ state: "failed" });
+    await run(guide.refreshSource(b.id));
+    expect(await named()).toEqual([
+      [b.id, "United Kingdom"],
+      [a.id, "The Netherlands"],
+    ]);
+    // A subscription's guide says the name of each source that supplies it.
+    expect((await status(id)).supplied).toContainEqual({
+      source: { id: b.id, origin: host.origin, label: "United Kingdom" },
+      channels: 1,
+    });
+
+    const restarted = await app(dataDir);
+    expect((await restarted.sources()).map(({ id: source, label }) => [source, label])).toEqual(
+      await named(),
+    );
+    // Taken away, with null or an empty name, the source has none again.
+    await restarted.run(restarted.guide.renameSource(a.id, null));
+    await restarted.run(restarted.guide.renameSource(b.id, " "));
+    expect((await (await app(dataDir)).sources()).map(({ label }) => label)).toEqual([null, null]);
+  });
+
+  it("is cut to its longest, refuses an address, and is the viewer's own text on disk beside a sealed address", async () => {
+    const { run, guide, host, dataDir, sources } = await connected();
+    const refused = { kind: "guide", failure: { kind: "label" } };
+
+    // An address pasted into the name adds nothing and renames nothing.
+    expect(await failureOf(run(guide.addSource(host.address(), host.address("/b.xml"))))).toEqual(
+      refused,
+    );
+    expect(await sources()).toEqual([]);
+    const source = await run(guide.addSource(host.address(), "é".repeat(GUIDE_LABEL_MAX + 5)));
+    expect(source.label).toBe("é".repeat(GUIDE_LABEL_MAX));
+    expect(await failureOf(run(guide.renameSource(source.id, "see https://x.example/a")))).toEqual(
+      refused,
+    );
+    await run(guide.renameSource(source.id, "United Kingdom"));
+    expect((await sources())[0]?.label).toBe("United Kingdom");
+
+    const disk = await written(dataDir);
+    expect(disk).toContain('"label":"United Kingdom"');
+    expect(disk).not.toContain(GUIDE_KEY);
+    // One that went can't be named.
+    await run(guide.removeSource(source.id));
+    expect(await failureOf(run(guide.renameSource(source.id, "Gone")))).toEqual(changed);
   });
 });
 

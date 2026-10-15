@@ -2,7 +2,8 @@
 // Subscriptions. On the left, the subscription's channels: those without programmes, those
 // mapped by hand, or all, searched by name or number. On the right, for the channel picked
 // there, the channels its guides list, its own guide's and then each source's of Settings >
-// Guides, searched by name or id, each with both and a source's host: nothing is ever matched by
+// Guides, searched by name or id, each with both and its source's name as Settings > Guides
+// calls it (`guideNames`): nothing is ever matched by
 // name, so the viewer picks the exact guide channel of the exact guide. Map takes effect at
 // once, in every list, whatever the order of the guides; Automatic takes a mapping away again,
 // and the channel goes back to the first guide channel its own guide ids name, or to none.
@@ -12,7 +13,7 @@
 // is. The arrow keys move through either list; Enter goes from a channel to its guide channels,
 // and maps there.
 import { Dialog } from "@base-ui/react/dialog";
-import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Search } from "lucide-react";
 import {
@@ -28,6 +29,7 @@ import {
 import type {
   GuideChannel,
   GuideChannelRef,
+  GuideSourceStatus,
   GuideStatus,
   MapChannel,
   MapFilter,
@@ -39,6 +41,7 @@ import { Sheet } from "../../components/Sheet.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { hostOf } from "../../lib/format.ts";
+import { guideName } from "../../lib/guide-names.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries, subscriptionName } from "../../lib/queries.ts";
 import { useDebounced } from "../../lib/use-debounced.ts";
@@ -93,6 +96,7 @@ export function GuideMap({
   const channelList = useRef<HTMLDivElement>(null);
   const optionField = useRef<HTMLInputElement>(null);
   const failed = loaded.find((each) => each.error)?.error;
+  const sources = useQuery(queries.guideSources()).data ?? [];
 
   const without = Math.max(0, guide.listed - guide.channels);
   return (
@@ -168,7 +172,7 @@ export function GuideMap({
                         </span>
                         <span className="min-w-0 flex-1 truncate">{channel.title}</span>
                         <span className="max-w-[55%] flex-none truncate text-[0.8125rem] text-muted-foreground">
-                          {stateOf(channel)}
+                          {stateOf(channel, sources)}
                         </span>
                       </>
                     )
@@ -211,20 +215,27 @@ export function GuideMap({
   );
 }
 
-/** A guide channel by its id, after its source's host when it isn't the subscription's own guide's. */
-function nameOf(guideChannel: GuideChannelRef): string {
-  return guideChannel.origin
-    ? `${hostOf(guideChannel.origin)} · ${guideChannel.id}`
-    : guideChannel.id;
+/**
+ * A guide channel by its id, after its source's name among `sources` when it isn't the
+ * subscription's own guide's; after its host where it is none of them, as an address an older
+ * release set that couldn't move to them this run, and alone for a source that went.
+ */
+function nameOf(guideChannel: GuideChannelRef, sources: readonly GuideSourceStatus[]): string {
+  const { id, source, origin } = guideChannel;
+  const listed = source === null ? undefined : sources.find((each) => each.id === source);
+  if (listed) return `${guideName(listed, sources)} · ${id}`;
+  return origin ? `${hostOf(origin)} · ${id}` : id;
 }
 
 /** How a channel gets its programmes, in a few words beside its name. */
-function stateOf(channel: MapChannel): string {
+function stateOf(channel: MapChannel, sources: readonly GuideSourceStatus[]): string {
   if (!channel.listed) return t("no longer listed");
-  if (channel.mapped === null) return channel.shown ? nameOf(channel.shown) : t("no id match");
+  if (channel.mapped === null) {
+    return channel.shown ? nameOf(channel.shown, sources) : t("no id match");
+  }
   return channel.shown === null
-    ? `${t("mapped")} · ${nameOf(channel.mapped)} · ${t("not in this guide")}`
-    : `${t("mapped")} · ${nameOf(channel.mapped)}`;
+    ? `${t("mapped")} · ${nameOf(channel.mapped, sources)} · ${t("not in this guide")}`
+    : `${t("mapped")} · ${nameOf(channel.mapped, sources)}`;
 }
 
 /**
@@ -273,6 +284,7 @@ function Picker({
   const active = at.list === listKey ? at.index : 0;
   const list = useRef<HTMLDivElement>(null);
   const words = searchWords(query);
+  const sources = useQuery(queries.guideSources()).data ?? [];
 
   const map = useMutation({
     mutationFn: (ref: string | null) =>
@@ -324,7 +336,7 @@ function Picker({
               <>
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">
                   {channel.mapped === null
-                    ? `${t("Automatic")} · ${channel.shown ? nameOf(channel.shown) : t("no id match")}`
+                    ? `${t("Automatic")} · ${channel.shown ? nameOf(channel.shown, sources) : t("no id match")}`
                     : t("Automatic")}
                 </span>
                 <Choice
@@ -348,7 +360,7 @@ function Picker({
                   )}
                 </span>
                 <span className="max-w-[45%] flex-none truncate font-mono text-xs text-muted-foreground">
-                  {nameOf(option)}
+                  {nameOf(option, sources)}
                 </span>
                 <Choice
                   current={option.ref === channel.mapped?.ref}

@@ -313,6 +313,7 @@ export const fr: Translation = {
   "Mr. Streamer can't reach receivers right now.":
     "Mr. Streamer ne peut pas joindre les récepteurs pour le moment.",
   "Enter the address of an XMLTV guide.": "Saisissez l'adresse d'un guide XMLTV.",
+  "A name can't be an address.": "Un nom ne peut pas être une adresse.",
   "This guide needs its address again.": "Ce guide a de nouveau besoin de son adresse.",
   "The address redirected to an unencrypted one, so Mr. Streamer stopped.":
     "L'adresse a redirigé vers une adresse non chiffrée, Mr. Streamer s'est donc arrêté.",
@@ -452,6 +453,8 @@ export const fr: Translation = {
   "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
   "{count} without": { one: "{count} sans guide", other: "{count} sans guide" },
   "Address of an XMLTV guide": "Adresse d'un guide XMLTV",
+  "Name of the guide": "Nom du guide",
+  "Name, optional": "Nom, facultatif",
   "Address of an XMLTV guide, .xml or .xml.gz": "Adresse d'un guide XMLTV, .xml ou .xml.gz",
   "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
     "Le guide propre d'un abonnement passe en premier, puis ceux-ci, dans l'ordre. Le premier qui a des programmes pour une chaîne la fournit. Le traitement se poursuit en arrière-plan.",
@@ -616,6 +619,7 @@ export const fr: Translation = {
   "Later programmes": "Programmes suivants",
   "Move {name} up": "Monter {name}",
   "Move {name} down": "Descendre {name}",
+  "Rename {name}": "Renommer {name}",
   "Move up, or to the top with Shift": "Monter, ou tout en haut avec Maj",
   "Move down, or to the bottom with Shift": "Descendre, ou tout en bas avec Maj",
   "{name}, {position} of {count}": "{name}, {position} sur {count}",

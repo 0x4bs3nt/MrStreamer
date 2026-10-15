@@ -303,6 +303,7 @@ export const nl: Translation = {
   "This computer isn't on a local network.": "Deze computer zit niet op een lokaal netwerk.",
   "Mr. Streamer can't reach receivers right now.": "Mr. Streamer kan ontvangers nu niet bereiken.",
   "Enter the address of an XMLTV guide.": "Vul het adres van een XMLTV-gids in.",
+  "A name can't be an address.": "Een naam kan geen adres zijn.",
   "This guide needs its address again.": "Deze gids heeft opnieuw zijn adres nodig.",
   "The address redirected to an unencrypted one, so Mr. Streamer stopped.":
     "Het adres stuurde door naar een onversleuteld adres, dus Mr. Streamer is gestopt.",
@@ -433,6 +434,8 @@ export const nl: Translation = {
   "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
   "{count} without": { one: "{count} zonder", other: "{count} zonder" },
   "Address of an XMLTV guide": "Adres van een XMLTV-gids",
+  "Name of the guide": "Naam van de gids",
+  "Name, optional": "Naam, optioneel",
   "Address of an XMLTV guide, .xml or .xml.gz": "Adres van een XMLTV-gids, .xml of .xml.gz",
   "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
     "De eigen gids van een abonnement komt eerst, daarna deze, in volgorde. De eerste met programma's voor een zender levert die. De verwerking gaat op de achtergrond door.",
@@ -582,6 +585,7 @@ export const nl: Translation = {
   "Later programmes": "Latere programma's",
   "Move {name} up": "{name} omhoog",
   "Move {name} down": "{name} omlaag",
+  "Rename {name}": "{name} hernoemen",
   "Move up, or to the top with Shift": "Omhoog, of met Shift naar boven",
   "Move down, or to the bottom with Shift": "Omlaag, of met Shift naar onder",
   "{name}, {position} of {count}": "{name}, {position} van {count}",

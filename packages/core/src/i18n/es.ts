@@ -312,6 +312,7 @@ export const es: Translation = {
   "Mr. Streamer can't reach receivers right now.":
     "Mr. Streamer no puede llegar a los receptores ahora.",
   "Enter the address of an XMLTV guide.": "Escribe la dirección de una guía XMLTV.",
+  "A name can't be an address.": "Un nombre no puede ser una dirección.",
   "This guide needs its address again.": "Esta guía necesita de nuevo su dirección.",
   "The address redirected to an unencrypted one, so Mr. Streamer stopped.":
     "La dirección redirigió a una sin cifrar, así que Mr. Streamer se detuvo.",
@@ -454,6 +455,8 @@ export const es: Translation = {
   "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
   "{count} without": { one: "{count} sin guía", other: "{count} sin guía" },
   "Address of an XMLTV guide": "Dirección de una guía XMLTV",
+  "Name of the guide": "Nombre de la guía",
+  "Name, optional": "Nombre, opcional",
   "Address of an XMLTV guide, .xml or .xml.gz": "Dirección de una guía XMLTV, .xml o .xml.gz",
   "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
     "La guía propia de una suscripción va primero, luego estas, en orden. La primera con programas para un canal lo cubre. El procesamiento sigue en segundo plano.",
@@ -621,6 +624,7 @@ export const es: Translation = {
   "Later programmes": "Programas posteriores",
   "Move {name} up": "Subir {name}",
   "Move {name} down": "Bajar {name}",
+  "Rename {name}": "Cambiar el nombre de {name}",
   "Move up, or to the top with Shift": "Subir, o al principio con Mayús",
   "Move down, or to the bottom with Shift": "Bajar, o al final con Mayús",
   "{name}, {position} of {count}": "{name}, {position} de {count}",

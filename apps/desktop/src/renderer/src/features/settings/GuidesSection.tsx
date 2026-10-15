@@ -1,23 +1,28 @@
 // Settings > Guides: the XMLTV guides the viewer adds, which every subscription reads after its
-// own guide, in this order. Each is a row of two lines, its host and what it is doing: being
+// own guide, in this order. Each is a row of two lines, its name and what it is doing: being
 // downloaded, read, ready with what it supplies, or failing, with why and since when, its last
-// good download staying in use. Up and Down change the order, the cross removes one. The field
-// under the list adds one at Add: it is saved at once and downloads in the background, its row
-// telling each step as `guide.updated` brings it. A move or a removal that fails says why on its
-// row, and leaves the list as it was. The keyboard stays on the arrow a move pressed, or the other
-// one where the row reached an end, and a removal hands it to the row that took its place, else
-// the one before, else the field.
-//   An address can hold a key: the field starts empty again once it is added, and nothing here
+// good download staying in use. The name is the one the viewer gave it, its host then leading the
+// second line, else its host, tagged where two would read alike (`guideNames`); each button of the
+// row says it. The pencil renames it in place: Enter or leaving the field keeps the name, Escape
+// keeps the one before, and an empty one goes back to the host. Up and Down change the order, the
+// cross removes one. The fields under the list add one at Add, with a name or without: it is
+// saved at once and downloads in the background, its row telling each step as `guide.updated`
+// brings it. A move, a removal or a rename that fails says why on its row, and leaves the list as
+// it was. The keyboard stays on the arrow a move pressed, or the other one where the row reached
+// an end, and a removal hands it to the row that took its place, else the one before, else the
+// address field. A rename hands it back to the pencil, unless it left the field for elsewhere.
+//   An address can hold a key: the fields start empty again once it is added, and nothing here
 // shows more of one than its host.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, RotateCw, X } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { ArrowDown, ArrowUp, Pencil, RotateCw, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { GuideProcessing, GuideSourceStatus } from "@mrstreamer/contracts/guide";
 import { formatBytes, formatPercent, t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { comingTime, hostOf, pastTime } from "../../lib/format.ts";
+import { guideNames } from "../../lib/guide-names.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries } from "../../lib/queries.ts";
 import { cn } from "../../lib/utils.ts";
@@ -35,7 +40,9 @@ export function GuidesSection() {
   const client = useQueryClient();
   const read = useQuery(queries.guideSources()).data;
   const sources = read ?? [];
+  const names = useMemo(() => guideNames(read ?? []), [read]);
   const section = useRef<HTMLElement>(null);
+  const field = useRef<HTMLInputElement>(null);
   const refocus = useRef<Refocus | null>(null);
   useEffect(() => {
     const wanted = refocus.current;
@@ -52,16 +59,18 @@ export function GuidesSection() {
       return;
     }
     const near = rows[wanted.at] ?? rows[wanted.at - 1];
-    (pressable(near?.querySelector("[data-remove]")) ?? root.querySelector("input"))?.focus();
+    (pressable(near?.querySelector("[data-remove]")) ?? field.current)?.focus();
   }, [read]);
   const [address, setAddress] = useState("");
+  const [label, setLabel] = useState("");
   const changed = () => client.invalidateQueries({ queryKey: ["guide"] });
   const add = useMutation({
-    mutationFn: (typed: string) => call("guide.addSource", { address: typed }),
+    mutationFn: (sent: { address: string; label: string }) => call("guide.addSource", sent),
     // The address it was sent with isn't kept past the field: it can hold a key.
     gcTime: 0,
     onSuccess: () => {
       setAddress("");
+      setLabel("");
       void changed();
     },
   });
@@ -74,6 +83,7 @@ export function GuidesSection() {
           <SourceRow
             key={source.id}
             source={source}
+            name={names.get(source.id) ?? hostOf(source.origin)}
             first={at === 0}
             last={at === sources.length - 1}
             onChange={changed}
@@ -90,10 +100,11 @@ export function GuidesSection() {
         className="mt-5 flex items-center gap-2"
         onSubmit={(event: FormEvent) => {
           event.preventDefault();
-          if (typed && !add.isPending) add.mutate(typed);
+          if (typed && !add.isPending) add.mutate({ address: typed, label: label.trim() });
         }}
       >
         <Input
+          ref={field}
           value={address}
           onChange={(event) => {
             setAddress(event.target.value);
@@ -103,6 +114,17 @@ export function GuidesSection() {
           placeholder={t("Address of an XMLTV guide, .xml or .xml.gz")}
           autoComplete="off"
           className="h-9 flex-1 rounded-lg px-3 text-[0.9375rem]"
+        />
+        <Input
+          value={label}
+          onChange={(event) => {
+            setLabel(event.target.value);
+            add.reset();
+          }}
+          aria-label={t("Name of the guide")}
+          placeholder={t("Name, optional")}
+          autoComplete="off"
+          className="h-9 w-44 flex-none rounded-lg px-3 text-[0.9375rem]"
         />
         <Button type="submit" size="sm" disabled={!typed || add.isPending}>
           {t("Add")}
@@ -130,9 +152,10 @@ export function GuidesSection() {
   );
 }
 
-/** A source: its host, what it is doing, and what can be done with it. */
+/** A source: its name, what it is doing, and what can be done with it. */
 function SourceRow({
   source,
+  name,
   first,
   last,
   onChange,
@@ -140,6 +163,8 @@ function SourceRow({
   onRemoved,
 }: {
   source: GuideSourceStatus;
+  /** What the window calls it, among the others (`guideNames`). */
+  name: string;
   first: boolean;
   last: boolean;
   onChange: () => Promise<void>;
@@ -150,6 +175,9 @@ function SourceRow({
 }) {
   const { id, processing } = source;
   const host = hostOf(source.origin);
+  const client = useQueryClient();
+  const renameButton = useRef<HTMLButtonElement>(null);
+  const [renaming, setRenaming] = useState(false);
   const refresh = useMutation({
     mutationFn: () => call("guide.refreshSource", { id }),
     onSettled: onChange,
@@ -164,32 +192,57 @@ function SourceRow({
     onSuccess: onRemoved,
     onSettled: onChange,
   });
+  const rename = useMutation({
+    mutationFn: (label: string | null) => call("guide.renameSource", { id, label }),
+    // Shown at once, before the list is read again.
+    onSuccess: (renamed) =>
+      client.setQueryData(queries.guideSources().queryKey, (all) =>
+        all?.map((each) => (each.id === renamed.id ? renamed : each)),
+      ),
+    onSettled: onChange,
+  });
   // Pressed again while it is under way, an action does nothing; it isn't disabled meanwhile,
   // which would leave the keyboard on a button that can't be pressed.
   const moving = (by: -1 | 1) => {
     if (move.isPending) return;
     remove.reset();
+    rename.reset();
     move.mutate(by);
   };
   const removing = () => {
     if (remove.isPending) return;
     move.reset();
+    rename.reset();
     remove.mutate();
   };
-  const failure = move.error ?? remove.error;
+  /** Ends the rename, keeping `typed` unless it is null, and hands the keyboard back on `refocus`. */
+  const renamed = (typed: string | null, refocus: boolean) => {
+    setRenaming(false);
+    if (refocus) renameButton.current?.focus();
+    const label = typed?.trim() || null;
+    if (typed === null || label === source.label) return;
+    move.reset();
+    remove.reset();
+    rename.mutate(label);
+  };
+  const failure = move.error ?? remove.error ?? rename.error;
   const busy = processing.state === "downloading" || processing.state === "reading";
   const failed = processing.state === "failed" || source.locked;
   return (
     <li data-source={id} className="flex min-h-15 items-center gap-6 border-b border-white/8 py-2">
       <div className="min-w-0 flex-1">
-        <div className="truncate">{host}</div>
+        {renaming ? (
+          <RenameField source={source} onDone={renamed} />
+        ) : (
+          <div className="truncate">{name}</div>
+        )}
         <div
           className={cn(
             "mt-0.5 text-[0.8125rem]",
             failed ? "text-destructive" : "text-muted-foreground",
           )}
         >
-          {stateOf(source, Date.now())}
+          {[source.label !== null && host, stateOf(source, Date.now())].filter(Boolean).join(" · ")}
         </div>
         {failure && (
           <p role="alert" className="mt-0.5 text-[0.8125rem] text-destructive">
@@ -218,7 +271,7 @@ function SourceRow({
         {processing.state === "failed" && !source.locked ? (
           <Button
             size="sm"
-            aria-label={t("Retry {name}", { name: host })}
+            aria-label={t("Retry {name}", { name })}
             disabled={refresh.isPending}
             onClick={() => refresh.mutate()}
           >
@@ -230,7 +283,7 @@ function SourceRow({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={t("Refresh {name}", { name: host })}
+              aria-label={t("Refresh {name}", { name })}
               disabled={refresh.isPending}
               onClick={() => refresh.mutate()}
             >
@@ -239,9 +292,22 @@ function SourceRow({
           )
         )}
         <Button
+          ref={renameButton}
           variant="ghost"
           size="icon-sm"
-          aria-label={t("Move {name} up", { name: host })}
+          aria-label={t("Rename {name}", { name })}
+          onClick={() => {
+            if (rename.isPending) return;
+            rename.reset();
+            setRenaming(true);
+          }}
+        >
+          <Pencil />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t("Move {name} up", { name })}
           data-move={-1}
           disabled={first}
           onClick={() => moving(-1)}
@@ -251,7 +317,7 @@ function SourceRow({
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={t("Move {name} down", { name: host })}
+          aria-label={t("Move {name} down", { name })}
           data-move={1}
           disabled={last}
           onClick={() => moving(1)}
@@ -261,7 +327,7 @@ function SourceRow({
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label={t("Remove {name}", { name: host })}
+          aria-label={t("Remove {name}", { name })}
           data-remove
           onClick={removing}
         >
@@ -269,6 +335,50 @@ function SourceRow({
         </Button>
       </div>
     </li>
+  );
+}
+
+/**
+ * The name of a source being renamed, in place of its first line, starting with the one it has
+ * and its host as the hint. Enter or leaving it keeps what it holds, Escape what it had.
+ */
+function RenameField({
+  source,
+  onDone,
+}: {
+  source: GuideSourceStatus;
+  /** Once, with what to keep, or null for what it had, and whether the keyboard goes back. */
+  onDone: (typed: string | null, refocus: boolean) => void;
+}) {
+  const [label, setLabel] = useState(source.label ?? "");
+  const done = useRef(false);
+  const finish = (typed: string | null, refocus: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(typed, refocus);
+  };
+  return (
+    <Input
+      value={label}
+      onChange={(event) => setLabel(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finish(label, true);
+        } else if (event.key === "Escape") {
+          // Settings keeps the page open: this Escape is the field's.
+          event.preventDefault();
+          finish(null, true);
+        }
+      }}
+      onBlur={() => finish(label, false)}
+      onFocus={(event) => event.currentTarget.select()}
+      aria-label={t("Name of the guide")}
+      placeholder={hostOf(source.origin)}
+      autoComplete="off"
+      autoFocus
+      className="h-7 rounded-md px-2 text-[0.9375rem]"
+    />
   );
 }
 

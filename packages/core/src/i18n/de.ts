@@ -305,6 +305,7 @@ export const de: Translation = {
   "Mr. Streamer can't reach receivers right now.":
     "Mr. Streamer kann Empfänger gerade nicht erreichen.",
   "Enter the address of an XMLTV guide.": "Gib die Adresse eines XMLTV-Programmführers ein.",
+  "A name can't be an address.": "Ein Name kann keine Adresse sein.",
   "This guide needs its address again.": "Dieser Programmführer braucht seine Adresse erneut.",
   "The address redirected to an unencrypted one, so Mr. Streamer stopped.":
     "Die Adresse hat auf eine unverschlüsselte umgeleitet, daher hat Mr. Streamer abgebrochen.",
@@ -437,6 +438,8 @@ export const de: Translation = {
   "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
   "{count} without": { one: "{count} ohne", other: "{count} ohne" },
   "Address of an XMLTV guide": "Adresse eines XMLTV-Programmführers",
+  "Name of the guide": "Name des Programmführers",
+  "Name, optional": "Name, optional",
   "Address of an XMLTV guide, .xml or .xml.gz":
     "Adresse eines XMLTV-Programmführers, .xml oder .xml.gz",
   "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
@@ -588,6 +591,7 @@ export const de: Translation = {
   "Later programmes": "Spätere Sendungen",
   "Move {name} up": "{name} nach oben",
   "Move {name} down": "{name} nach unten",
+  "Rename {name}": "{name} umbenennen",
   "Move up, or to the top with Shift": "Nach oben, mit Umschalt ganz nach oben",
   "Move down, or to the bottom with Shift": "Nach unten, mit Umschalt ganz nach unten",
   "{name}, {position} of {count}": "{name}, {position} von {count}",

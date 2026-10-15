@@ -1232,11 +1232,13 @@ describe("a subscription's guides in order", () => {
       shown: {
         ref: guideRef("late", "shared.test"),
         id: "shared.test",
+        source: "late",
         origin: "https://late.example",
       },
       mapped: {
         ref: guideRef("late", "shared.test"),
         id: "shared.test",
+        source: "late",
         origin: "https://late.example",
       },
       listed: true,
@@ -1252,6 +1254,7 @@ describe("a subscription's guides in order", () => {
       {
         ref: guideRef(OWN_GUIDE, "shared.test"),
         id: "shared.test",
+        source: null,
         origin: null,
         name: "shared.test",
         programmes: false,
@@ -1259,6 +1262,7 @@ describe("a subscription's guides in order", () => {
       {
         ref: guideRef("early", "shared.test"),
         id: "shared.test",
+        source: "early",
         origin: "https://early.example",
         name: "shared.test",
         programmes: true,
@@ -1266,6 +1270,7 @@ describe("a subscription's guides in order", () => {
       {
         ref: guideRef("late", "shared.test"),
         id: "shared.test",
+        source: "late",
         origin: "https://late.example",
         name: "shared.test",
         programmes: true,

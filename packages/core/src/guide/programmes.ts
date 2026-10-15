@@ -452,7 +452,9 @@ function mappedRef(guides: Guides, mapping: GuideMapping): GuideChannelRef {
 }
 
 function refOf(source: string, origin: string | null, id: string): GuideChannelRef {
-  return { ref: guideRef(source, id), id, origin: source === OWN_GUIDE ? null : origin };
+  return source === OWN_GUIDE
+    ? { ref: guideRef(source, id), id, source: null, origin: null }
+    : { ref: guideRef(source, id), id, source, origin };
 }
 
 /**

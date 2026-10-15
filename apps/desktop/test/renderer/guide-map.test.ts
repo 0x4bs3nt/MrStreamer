@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   GuideChannelPage,
+  GuideSourceStatus,
   GuideStatus,
   MapChannel,
   MapChannelPage,
@@ -41,7 +42,7 @@ const ORIGIN = "https://guide.example.org";
 const guide: GuideStatus = {
   subscriptionId: holiday.id,
   channels: 412,
-  supplied: [{ source: { id: "source-1", origin: ORIGIN }, channels: 412 }],
+  supplied: [{ source: { id: "source-1", origin: ORIGIN, label: null }, channels: 412 }],
   listed: 1180,
   guideChannels: 1204,
   fetchedAt: Date.now(),
@@ -52,7 +53,7 @@ const guide: GuideStatus = {
 };
 
 /** A guide channel of the source, as the main process names it. */
-const sourced = (id: string) => ({ ref: `source-1:${id}`, id, origin: ORIGIN });
+const sourced = (id: string) => ({ ref: `source-1:${id}`, id, source: "source-1", origin: ORIGIN });
 
 const channel = (id: string, title: string, mappedTo: string | null = null): MapChannel => ({
   id,
@@ -93,11 +94,19 @@ const ready = (check: () => void) =>
   );
 
 /** The sheet, opened from Holiday house's Map, with its first channels and their guide's answered. */
-async function sheet(pages: { channels?: MapChannelPage; options?: GuideChannelPage } = {}) {
+async function sheet(
+  pages: {
+    channels?: MapChannelPage;
+    options?: GuideChannelPage;
+    /** The sources of Settings > Guides, which name the guides. */
+    sources?: readonly GuideSourceStatus[];
+  } = {},
+) {
   ipc.reset();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["subscriptions"], [holiday]);
   client.setQueryData(["guide", "status"], [guide]);
+  if (pages.sources) client.setQueryData(["guide", "sources"], pages.sources);
   client.setQueryData(["library", "status"], []);
   client.setQueryData(["ondemand", "status"], { lists: [], metadata: null });
   const container = document.createElement("div");
@@ -380,6 +389,20 @@ describe("mapping channels to a guide's by hand", () => {
     await press(optionList(), "ArrowUp");
     await press(optionList(), "ArrowUp");
     expect(document.activeElement).toBe(channelList());
+  });
+
+  it("names each guide channel's source as Settings > Guides does", async () => {
+    const named: GuideSourceStatus = {
+      id: "source-1",
+      origin: ORIGIN,
+      label: "United Kingdom",
+      locked: false,
+      processing: { state: "empty" },
+    };
+    const { channels, options } = await sheet({ sources: [named] });
+
+    expect(channels()[2]).toBe("22News 24mapped · United Kingdom · news24.ex");
+    expect(options()[1]).toBe("Canal NordUnited Kingdom · canalnord.exMap");
   });
 
   it("searches and filters the channels, and searches the guide by what is typed", async () => {

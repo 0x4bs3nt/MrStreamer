@@ -702,10 +702,11 @@ async function start(): Promise<void> {
           return status ?? (yield* new Failed({ error: { kind: "no-subscription" } }));
         }),
       "guide.sources": () => guide.sources,
-      "guide.addSource": ({ address }) => guide.addSource(address),
+      "guide.addSource": ({ address, label }) => guide.addSource(address, label),
       "guide.removeSource": ({ id }) => Effect.as(guide.removeSource(id), null),
       "guide.moveSource": ({ id, by }) => Effect.as(guide.moveSource(id, by), null),
       "guide.refreshSource": ({ id }) => guide.refreshSource(id),
+      "guide.renameSource": ({ id, label }) => guide.renameSource(id, label),
       "guide.map": ({ subscriptionId, channelId, guide: ref, revision }) =>
         guide.map(subscriptionId, channelId, ref, revision),
       "guide.mapChannels": (query) => guide.mapChannels(query),

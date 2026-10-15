@@ -70,9 +70,10 @@ Settings > **Subscriptions** lists each one with its kind and how it stands: whe
 
 A subscription's programme guide comes from its provider, or from the guide its playlist names. Settings > **Guides** adds XMLTV guides of your own, such as a paid guide service's. Every subscription reads them after its own guide, in the order listed.
 
-- Type an address in the field and choose **Add**. Plain XML and gzip both work. It is saved at once and downloads in the background, and its row says how far it got: downloading, reading, then ready, with how many of your channels it supplies, how many programmes it has, how far ahead they run and when it was last updated.
+- Type an address in the field and choose **Add**, with a name beside it if you like, such as "United Kingdom". Plain XML and gzip both work. It is saved at once and downloads in the background, and its row says how far it got: downloading, reading, then ready, with how many of your channels it supplies, how many programmes it has, how far ahead they run and when it was last updated.
+- **A guide goes by its name**, or by its host without one, in its row, its buttons, a subscription's **Guide** and **Map**. The pencil renames it in place: Enter or clicking elsewhere keeps the new name, Escape keeps the old one, and an empty name goes back to the host. Two guides that would read the same, as two from one host without names, or two given one name, each add the first characters of a random code the app gave the guide, such as "epg.example.net 3f9a", which stay with it when it moves. A name can't hold an address: it is kept as you typed it, not encrypted.
 - **For each channel, the first guide with programmes for it supplies all of them.** A subscription's own guide comes first, then yours from the top. The arrows move a guide up or down, and the cross removes it with what it downloaded.
-- **The address is kept like a password.** It often holds a key, so it is encrypted on your computer and never shown again: Settings names only its host, and the field starts empty once it is added. An address starting with `http://` travels unencrypted, key included, and the field says so before anything is sent.
+- **The address is kept like a password.** It often holds a key, so it is encrypted on your computer and never shown again: Settings shows only its host, and the fields start empty once it is added. An address starting with `http://` travels unencrypted, key included, and the field says so before anything is sent.
 - **Nothing falls back.** When a guide's server stops answering, or answers with something else, its row says why in red and since when, with **Retry**, and the programmes it last downloaded stay in use. Guides are downloaded again about every six hours.
 - **Times** follow the offset each programme carries, such as `+0200`, and count as UTC without one. They show in your computer's time zone. There is no setting to shift them.
 
@@ -85,7 +86,7 @@ From 0.0.13, a guide address you gave a subscription before is in Settings > Gui
 A channel shows programmes when the guide id your provider gives it is one the guide lists, exactly. Mr. Streamer never matches by name: two channels called the same are often not the same channel. **Map**, beside **Mapped channels**, is for the rest:
 
 - The left list has your channels: those without programmes, those you mapped, or all. The field searches them by name or number.
-- Pick a channel and the right list has the guides' channels, its own guide's first, each with its name, the host of the guide it is from and its id. Its field starts with the channel's name; change it to search by another name or by id.
+- Pick a channel and the right list has the guides' channels, its own guide's first, each with its name, the name of the guide it is from and its id. Its field starts with the channel's name; change it to search by another name or by id.
 - **Map** gives the channel that guide channel's programmes, at once, in Live TV, on Home and in search. A mapped channel uses its mapping alone, and moves from the channels without programmes to those you mapped. **Restore**, on the **Automatic** row, takes it away again.
 
 The arrow keys move through either list. Enter goes from a channel to its guide channels, and maps there.

@@ -107,7 +107,9 @@ const GuideSourceFile = lazy(() =>
   }),
 );
 
-// sources.json, in the sources' folder: the global sources in their order.
+// sources.json, in the sources' folder: the global sources in their order. A field a later
+// release adds is one more key: 0.0.13 reads a source's `label`, which it doesn't know, and writes
+// it back with the rest, so a name outlasts a downgrade and a return.
 const SourcesFile = lazy(() =>
   type({
     version: "1",
@@ -116,6 +118,8 @@ const SourcesFile = lazy(() =>
       origin: "string",
       identity: "string",
       sealedAddress: "string",
+      /** The name the viewer gave it, from 0.0.14, as typed: it is no secret. */
+      "label?": "string",
       document: KeptDocument().or("null"),
       "failure?": "unknown",
       /** The download a release before kept that it was copied from, until one of its own. */
@@ -282,8 +286,9 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
     Effect.tryPromise({
       try: async (): Promise<readonly StoredSource[]> => {
         const file = await readRecord(sourcesPath(store), SourcesFile());
-        return (file?.sources ?? []).map(({ document, failure, movedFrom, ...source }) => ({
+        return (file?.sources ?? []).map(({ label, document, failure, movedFrom, ...source }) => ({
           ...source,
+          label: label ?? null,
           document: document && documentOf(document.file, document.fetchedAt),
           failure: failureOf(failure),
           movedFrom: movedFrom ?? null,
@@ -297,8 +302,9 @@ export const guideStoreLayer: Layer.Layer<GuideStore> = Layer.succeed(GuideStore
         await mkdir(store, { recursive: true });
         const file: Infer<typeof SourcesFile> = {
           version: 1,
-          sources: sources.map(({ document, failure, movedFrom, ...source }) => ({
+          sources: sources.map(({ label, document, failure, movedFrom, ...source }) => ({
             ...source,
+            ...(label === null ? {} : { label }),
             document: document && { file: document.file, fetchedAt: document.fetchedAt },
             ...(failure ? { failure } : {}),
             ...(movedFrom ? { movedFrom } : {}),

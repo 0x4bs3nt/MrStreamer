@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
+import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-labels.ts";
 import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
 import { homeStageScenario, stageChannel, stageLogo } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
@@ -44,6 +45,7 @@ const scenarios = [
   "moved-guide",
   "live-tv",
   "guides",
+  "guide-labels",
   "catch-up",
   "catch-up-hls",
   "live-categories",
@@ -129,6 +131,7 @@ async function run(scenario: Scenario) {
   let other: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
   let guideHosts: { north: GuideHost; south: GuideHost } | undefined;
   let movedHost: GuideHost | undefined;
+  let labelHost: GuideHost | undefined;
   let releaseGuide: (() => void) | undefined;
   let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
   let app: ChildProcess | undefined;
@@ -175,12 +178,19 @@ async function run(scenario: Scenario) {
       ...(scenario === "guides"
         ? { guideIdOf: (channel) => sourcedGuideId(channel.name) ?? channel.guideId }
         : {}),
+      ...(scenario === "guide-labels"
+        ? { guideIdOf: (channel) => labelledGuideId(channel.name) ?? channel.guideId }
+        : {}),
     });
     if (scenario === "guides") {
       guideHosts = { north: await startGuideHost(), south: await startGuideHost() };
       serveGuides(guideHosts.north, guideHosts.south);
     }
     if (scenario === "moved-guide") movedHost = await startGuideHost();
+    if (scenario === "guide-labels") {
+      labelHost = await startGuideHost();
+      serveLabelled(labelHost);
+    }
     if (scenario === "live-categories")
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
     if (scenario === "live-categories")
@@ -315,6 +325,7 @@ async function run(scenario: Scenario) {
             ? [guideHosts.north, guideHosts.south].map((host) => Number(new URL(host.origin).port))
             : []),
           ...(movedHost ? [Number(new URL(movedHost.origin).port)] : []),
+          ...(labelHost ? [Number(new URL(labelHost.origin).port)] : []),
         ],
         url,
         ...build,
@@ -609,6 +620,24 @@ async function run(scenario: Scenario) {
         },
         guideHosts!,
       );
+    } else if (scenario === "guide-labels") {
+      await guideLabelsScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        labelHost!,
+      );
     } else if (scenario === "live-categories") {
       await liveCategoriesScenario(
         {
@@ -865,6 +894,10 @@ async function run(scenario: Scenario) {
     }
     if (movedHost) {
       const owned = movedHost;
+      await clean(() => owned.close());
+    }
+    if (labelHost) {
+      const owned = labelHost;
       await clean(() => owned.close());
     }
     if (tmdb) {

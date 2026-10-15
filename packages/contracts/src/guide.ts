@@ -76,10 +76,18 @@ export type GuideAvailability = "unknown" | "available" | "none";
  * process, sealed on disk: this says only where it leads.
  */
 export interface GuideSourceStatus {
-  /** Names the source for `guide.removeSource`, `guide.moveSource` and `guide.refreshSource`. */
+  /**
+   * Names the source for `guide.removeSource`, `guide.moveSource`, `guide.refreshSource` and
+   * `guide.renameSource`. A random id given when it was added: nothing of its address.
+   */
   readonly id: string;
   /** The address's scheme, host and port: "https://guide.example.org". */
   readonly origin: string;
+  /**
+   * The name the viewer gave it, `GUIDE_LABEL_MAX` characters at most, or null without one. Kept
+   * as typed, not sealed.
+   */
+  readonly label: string | null;
   /**
    * The keychain no longer opens the saved address. What was downloaded from it still shows, and
    * nothing refreshes until the viewer adds it again.
@@ -92,7 +100,7 @@ export interface GuideSourceStatus {
 /** How many of a subscription's channels one of its guides supplies. */
 export interface GuideSupply {
   /** The global source, or null for the subscription's own guide. */
-  readonly source: { readonly id: string; readonly origin: string } | null;
+  readonly source: Pick<GuideSourceStatus, "id" | "origin" | "label"> | null;
   readonly channels: number;
 }
 
@@ -166,10 +174,18 @@ export interface GuideStatus {
   readonly processing: GuideProcessing;
 }
 
+/** The most characters a source's name keeps: one typed longer is cut there. */
+export const GUIDE_LABEL_MAX = 60;
+
 /** Why a guide can't be used, or why a change to one no longer applies. */
 export type GuideFailure =
   /** Nothing to add: what was typed isn't an http(s) address. */
   | { readonly kind: "address" }
+  /**
+   * The name given a source holds an address ("://"), as when one is pasted into the wrong field:
+   * a name is kept unsealed. A guard against that slip, not a check that a name holds no key.
+   */
+  | { readonly kind: "label" }
   /** The keychain no longer opens the saved address. */
   | { readonly kind: "locked" }
   /** The address redirected from https to http, or more often than a guide may. */
@@ -200,6 +216,11 @@ export interface GuideChannelRef {
   readonly ref: string;
   /** The id programmes name it by, exactly as the guide writes it. */
   readonly id: string;
+  /**
+   * The global source's id, as `guide.sources` names it, or null for the subscription's own guide.
+   * An address a release before set that couldn't move to the sources this run is none of theirs.
+   */
+  readonly source: string | null;
   /** The global source's origin, or null for the subscription's own guide. */
   readonly origin: string | null;
 }

@@ -1,18 +1,19 @@
 // A subscription's programme guide in Settings > Subscriptions, in its details: where its
 // channels' programmes come from, its own guide's and each XMLTV source's of Settings > Guides
-// that supplies any, and how many have none; a refresh of its own guide, and a way to the
+// that supplies any, by the name Settings > Guides gives it (`guideNames`), and how many have none; a refresh of its own guide, and a way to the
 // sources. Under it, the channels mapped by hand.
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCw } from "lucide-react";
-import type { GuideStatus } from "@mrstreamer/contracts/guide";
+import type { GuideSourceStatus, GuideStatus } from "@mrstreamer/contracts/guide";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
-import { hostOf, pastTime } from "../../lib/format.ts";
+import { pastTime } from "../../lib/format.ts";
+import { guideName } from "../../lib/guide-names.ts";
 import { call } from "../../lib/ipc.ts";
-import { keepGuideStatus, subscriptionName } from "../../lib/queries.ts";
+import { keepGuideStatus, queries, subscriptionName } from "../../lib/queries.ts";
 import { Row } from "./Rows.tsx";
 
 /**
@@ -31,6 +32,7 @@ export function GuideRows({
   onMap: () => void;
 }) {
   const client = useQueryClient();
+  const sources = useQuery(queries.guideSources()).data ?? [];
   const name = subscriptionName(subscription);
   const refresh = useMutation({
     mutationFn: () => call("guide.refresh", { subscriptionId: subscription.id }),
@@ -41,7 +43,7 @@ export function GuideRows({
   const failure = refresh.error ? appError(refresh.error) : (failed?.reason ?? null);
   return (
     <>
-      <Row label={t("Guide")} note={guide ? supplied(guide) : t("not loaded yet")} wrap>
+      <Row label={t("Guide")} note={guide ? supplied(guide, sources) : t("not loaded yet")} wrap>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -88,15 +90,15 @@ export function GuideRows({
   );
 }
 
-/** "25 own · 9 iptv-epg.org · 3 without": where its channels' programmes come from. */
-function supplied(guide: GuideStatus): string {
+/** "25 own · 9 United Kingdom · 3 without": where its channels' programmes come from. */
+function supplied(guide: GuideStatus, sources: readonly GuideSourceStatus[]): string {
   if (guide.availability === "unknown" && guide.supplied.length === 0) return t("not loaded yet");
   const without = Math.max(0, guide.listed - guide.channels);
   return [
     guide.availability === "none" && t("none in this playlist"),
     ...guide.supplied.map(({ source, channels }) =>
       source
-        ? t("{count} {host}", { count: channels, host: hostOf(source.origin) })
+        ? t("{count} {host}", { count: channels, host: guideName(source, sources) })
         : t("{count} own", { count: channels }),
     ),
     guide.listed > 0 && t("{count} without", { count: without }),

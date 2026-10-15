@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GuideStatus } from "@mrstreamer/contracts/guide";
+import type { GuideSourceStatus, GuideStatus } from "@mrstreamer/contracts/guide";
 import type { CatalogueStatus, LiveChannel } from "@mrstreamer/contracts/library";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -114,12 +114,18 @@ const onTestClock = () => {
 /** The section for the saved `subscriptions`, with their lists as the main process last said. */
 async function section(
   subscriptions: readonly SubscriptionSummary[],
-  loaded: { guides?: readonly GuideStatus[]; catalogues?: readonly CatalogueStatus[] } = {},
+  loaded: {
+    guides?: readonly GuideStatus[];
+    catalogues?: readonly CatalogueStatus[];
+    /** The sources of Settings > Guides, which name the guides. */
+    sources?: readonly GuideSourceStatus[];
+  } = {},
 ) {
   ipc.reset();
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], subscriptions);
   client.setQueryData(["guide", "status"], loaded.guides ?? []);
+  if (loaded.sources) client.setQueryData(["guide", "sources"], loaded.sources);
   client.setQueryData(
     ["library", "status"],
     loaded.catalogues ?? subscriptions.map((each) => catalogueOf(each)),
@@ -712,7 +718,7 @@ describe("a subscription's guide", () => {
     channels: 34,
     supplied: [
       { source: null, channels: 25 },
-      { source: { id: "source-1", origin: ORIGIN }, channels: 9 },
+      { source: { id: "source-1", origin: ORIGIN, label: null }, channels: 9 },
     ],
     guideChannels: 1204,
     availability: "available",
@@ -742,6 +748,40 @@ describe("a subscription's guide", () => {
     expect(container.querySelector("form")).toBeNull();
     await click(button("Guides"));
     expect(useUi.getState().settings).toBe("guides");
+  });
+
+  it("names each source as Settings > Guides does", async () => {
+    const supplying = "c0712b44-8e1f-4a6b-b2c9-0d1e2f3a4b5c";
+    const listed = (id: string, label: string | null): GuideSourceStatus => ({
+      id,
+      origin: ORIGIN,
+      label,
+      locked: false,
+      processing: { state: "empty" },
+    });
+    const guides = [
+      {
+        ...combined,
+        subscriptionId: holiday.id,
+        supplied: [
+          { source: null, channels: 25 },
+          { source: { id: supplying, origin: ORIGIN, label: null }, channels: 9 },
+        ],
+      },
+    ];
+    // Another of the same host, which supplies nothing here, tells it apart all the same.
+    const { guideRow } = await section([holiday], {
+      guides,
+      sources: [listed("3f9a0c11-5b2e-4d1a-9c3e-7a1b2c3d4e5f", null), listed(supplying, null)],
+    });
+    expect(guideRow().text).toBe("Guide · 25 own · 9 guide.example.org c071 · 3 without");
+    unmount();
+
+    const renamed = await section([holiday], {
+      guides,
+      sources: [listed(supplying, "United Kingdom")],
+    });
+    expect(renamed.guideRow().text).toBe("Guide · 25 own · 9 United Kingdom · 3 without");
   });
 
   it("says why its own guide's download failed, since when, and from when the listings are, and tries again alone", async () => {

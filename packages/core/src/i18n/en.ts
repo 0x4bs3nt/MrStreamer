@@ -297,6 +297,7 @@ export const en = {
   "This computer isn't on a local network.": "This computer isn't on a local network.",
   "Mr. Streamer can't reach receivers right now.": "Mr. Streamer can't reach receivers right now.",
   "Enter the address of an XMLTV guide.": "Enter the address of an XMLTV guide.",
+  "A name can't be an address.": "A name can't be an address.",
   "This guide needs its address again.": "This guide needs its address again.",
   "The address redirected to an unencrypted one, so Mr. Streamer stopped.":
     "The address redirected to an unencrypted one, so Mr. Streamer stopped.",
@@ -426,6 +427,8 @@ export const en = {
   "{count} {host}": { one: "{count} {host}", other: "{count} {host}" },
   "{count} without": { one: "{count} without", other: "{count} without" },
   "Address of an XMLTV guide": "Address of an XMLTV guide",
+  "Name of the guide": "Name of the guide",
+  "Name, optional": "Name, optional",
   "Address of an XMLTV guide, .xml or .xml.gz": "Address of an XMLTV guide, .xml or .xml.gz",
   "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.":
     "A subscription's own guide comes first, then these, in order. The first with programmes for a channel supplies it. Processing continues in the background.",
@@ -575,6 +578,7 @@ export const en = {
   "Later programmes": "Later programmes",
   "Move {name} up": "Move {name} up",
   "Move {name} down": "Move {name} down",
+  "Rename {name}": "Rename {name}",
   "Move up, or to the top with Shift": "Move up, or to the top with Shift",
   "Move down, or to the bottom with Shift": "Move down, or to the bottom with Shift",
   "{name}, {position} of {count}": "{name}, {position} of {count}",
