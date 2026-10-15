@@ -10,7 +10,18 @@
     "ios": "expo run:ios",
     "proof": "node scripts/proof-server.ts"
   },
+  "expo": {
+    "autolinking": {
+      "ios": {
+        "buildFromSource": [
+          "ExpoVideo"
+        ]
+      }
+    }
+  },
   "dependencies": {
+    "@expo/log-box": "58.0.12",
+    "@expo/metro-runtime": "58.0.14",
     "@formatjs/intl-displaynames": "7.3.15",
     "@formatjs/intl-getcanonicallocales": "3.2.12",
     "@formatjs/intl-listformat": "8.3.15",
@@ -23,9 +34,18 @@
     "core-js": "3.50.0",
     "effect": "4.0.0-rc.118",
     "expo": "58.0.9",
+    "expo-constants": "58.0.11",
+    "expo-file-system": "58.0.9",
+    "expo-glass-effect": "58.0.3",
+    "expo-linking": "58.0.12",
+    "expo-router": "58.0.18",
     "expo-secure-store": "58.0.2",
+    "expo-symbols": "58.0.4",
+    "expo-video": "58.0.10",
     "react": "19.3.0",
-    "react-native": "0.88.0-rc.4"
+    "react-native": "0.88.0-rc.4",
+    "react-native-safe-area-context": "5.9.1",
+    "react-native-screens": "4.29.0"
   },
   "devDependencies": {
     "@types/react": "19.3.0"

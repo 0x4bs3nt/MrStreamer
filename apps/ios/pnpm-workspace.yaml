@@ -4,5 +4,9 @@ packages:
 allowBuilds:
   # Its install script only prints a funding message.
   core-js: false
+# Only the native modules this app names are installed, and so linked into its build. Expo
+# Router's drawer asks for Reanimated and Gesture Handler, which the app doesn't use.
+autoInstallPeers: false
 patchedDependencies:
+  expo-video@58.0.10: patches/expo-video@58.0.10.patch
   react-native@0.88.0-rc.4: patches/react-native@0.88.0-rc.4.patch

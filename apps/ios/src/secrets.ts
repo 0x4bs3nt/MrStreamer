@@ -11,6 +11,11 @@ export interface SecretStore {
   read(id: string): Promise<string | null>;
   write(id: string, secret: string): Promise<void>;
   remove(id: string): Promise<void>;
+  /**
+   * Removes every secret this app wrote. Keychain items outlive the app, so a reinstall calls
+   * this before anything else, and an uninstalled login doesn't come back.
+   */
+  clear(): Promise<void>;
 }
 
 /**
@@ -29,6 +34,12 @@ const OPTIONS: SecureStore.SecureStoreOptions = {
 const keyOf = (id: string) =>
   `s.${id.replace(/[^A-Za-z0-9.-]/g, (unit) => `_${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)}`;
 
+/**
+ * The ids holding a secret, as JSON, in an item of their own: the Keychain can't list a
+ * service's items through SecureStore. No id's key starts like it.
+ */
+const INDEX = "index";
+
 async function keychain<A>(operation: () => Promise<A>): Promise<A> {
   try {
     return await operation();
@@ -37,8 +48,51 @@ async function keychain<A>(operation: () => Promise<A>): Promise<A> {
   }
 }
 
+/** The last change to this store's items, settled or not; a failed one counts as done. */
+let changing: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs `change` once every change begun before it has finished. Writes, removals and clearing
+ * each read the index and write it back, so two at once would lose one's ids: a Disconnect's
+ * removal still running when the next sign-in writes its password would drop the new id, and a
+ * reinstall wouldn't remove that password.
+ */
+function serially<A>(change: () => Promise<A>): Promise<A> {
+  const run = changing.then(change);
+  changing = run.catch(() => undefined);
+  return run;
+}
+
+async function ids(): Promise<string[]> {
+  const listed = await SecureStore.getItemAsync(INDEX, OPTIONS);
+  const parsed: unknown = listed ? JSON.parse(listed) : [];
+  return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [];
+}
+
+const index = (change: (listed: string[]) => string[]) =>
+  ids().then((listed) => SecureStore.setItemAsync(INDEX, JSON.stringify(change(listed)), OPTIONS));
+
 export const keychainSecrets: SecretStore = {
   read: (id) => keychain(() => SecureStore.getItemAsync(keyOf(id), OPTIONS)),
-  write: (id, secret) => keychain(() => SecureStore.setItemAsync(keyOf(id), secret, OPTIONS)),
-  remove: (id) => keychain(() => SecureStore.deleteItemAsync(keyOf(id), OPTIONS)),
+  write: (id, secret) =>
+    keychain(() =>
+      serially(async () => {
+        await index((listed) => [...listed.filter((each) => each !== id), id]);
+        await SecureStore.setItemAsync(keyOf(id), secret, OPTIONS);
+      }),
+    ),
+  remove: (id) =>
+    keychain(() =>
+      serially(async () => {
+        await SecureStore.deleteItemAsync(keyOf(id), OPTIONS);
+        await index((listed) => listed.filter((each) => each !== id));
+      }),
+    ),
+  clear: () =>
+    keychain(() =>
+      serially(async () => {
+        for (const id of await ids()) await SecureStore.deleteItemAsync(keyOf(id), OPTIONS);
+        await SecureStore.deleteItemAsync(INDEX, OPTIONS);
+      }),
+    ),
 };

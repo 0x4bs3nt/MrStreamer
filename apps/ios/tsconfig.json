@@ -1,10 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // The app runs on Hermes inside React Native; scripts/ runs in Node on the workbench.
+    // The app runs on Hermes inside React Native; scripts/ runs in Node with its own tsconfig.
     "lib": ["ES2024"],
     "types": ["node"],
     "jsx": "react-jsx"
   },
-  "include": ["index.ts", "src", "scripts"]
+  "include": ["index.ts", "src"]
 }

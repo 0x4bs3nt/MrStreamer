@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    // Workbench scripts run in Node, beside the desktop tests' fake provider they reuse; the app's
+    // React Native types (its global URL among them) stay out.
+    "lib": ["ES2024"],
+    "types": ["node"]
+  },
+  "include": ["."]
+}

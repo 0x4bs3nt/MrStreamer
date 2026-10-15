@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Platform, ScrollView, Text } from "react-native";
 import { fetch as expoFetch } from "expo/fetch";
-import { runCases } from "./proof/run.ts";
-import { keychainProof } from "./proof/keychain.ts";
-import { keychainSecrets } from "./secrets.ts";
+import { runCases } from "./run.ts";
+import { keychainProof } from "./keychain.ts";
+import { keychainSecrets } from "../secrets.ts";
 
-// A development build's only screen until a design is picked: it runs the runtime proof and, when
-// built with EXPO_PUBLIC_PROOF_URL, sends the report to scripts/proof-server.ts.
+// The runtime proof, a development screen apart from the app's own (Connect and Settings link to
+// it): it runs the shared rules on Hermes and, when Metro serves EXPO_PUBLIC_PROOF_URL, sends the
+// report to scripts/proof-server.ts. Its guide group fails on purpose while core's XMLTV reader
+// needs Buffer, so the app never runs it at launch.
 const PROOF_URL = process.env.EXPO_PUBLIC_PROOF_URL;
 
 interface HermesRuntime {
@@ -56,7 +58,7 @@ async function prove() {
   return results;
 }
 
-export function App() {
+export function ProofScreen() {
   const [lines, setLines] = useState<readonly string[]>(["Proving"]);
   useEffect(() => {
     prove().then(
@@ -73,10 +75,7 @@ export function App() {
     );
   }, []);
   return (
-    <ScrollView
-      style={{ backgroundColor: "#000" }}
-      contentContainerStyle={{ padding: 16, paddingTop: 64 }}
-    >
+    <ScrollView style={{ backgroundColor: "#000" }} contentContainerStyle={{ padding: 16 }}>
       {lines.map((line, index) => (
         <Text
           key={index}

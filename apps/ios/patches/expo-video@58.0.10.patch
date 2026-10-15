@@ -1,0 +1,95 @@
+diff --git a/ios/VideoAsset.swift b/ios/VideoAsset.swift
+index ea1043e4f62718244ddfab88394c85ff617c6224..ac7b85190a85b20ac5d1ab2c237fcdaea1296d80 100644
+--- a/ios/VideoAsset.swift
++++ b/ios/VideoAsset.swift
+@@ -49,6 +49,17 @@ internal class VideoAsset: AVURLAsset, @unchecked Sendable {
+     onAssetDeinit?()
+   }
+ 
++  // AVURLAsset describes itself with its URL, and AVFoundation and AVKit log player items with
++  // their asset's description. A source's address can carry a login (IPTV panels put the username
++  // and password in the path), so the asset is described without it.
++  override var description: String {
++    "<\(type(of: self)): \(Unmanaged.passUnretained(self).toOpaque())>"
++  }
++
++  override var debugDescription: String {
++    description
++  }
++
+   internal func prepareForLoadingIfNeeded() async throws {
+     try await preAssetLoadCallback?(self)
+   }
+diff --git a/ios/VideoExceptions.swift b/ios/VideoExceptions.swift
+index 71766387e6e661c112a05cf32c19723508e8ffa8..0fba324eb3a74c2f642616a239eafb777aab3deb 100644
+--- a/ios/VideoExceptions.swift
++++ b/ios/VideoExceptions.swift
+@@ -51,3 +51,14 @@ internal final class VideoCacheUnsupportedFormatException: GenericException<Stri
+     "The server responded with a resource with mimeType: \(param) which cannot be played with caching enabled"
+   }
+ }
++
++internal extension Error {
++  /// The error for a log: its domain and code, and its underlying error's. A source's address can
++  /// carry a login (IPTV panels put the username and password in the path), and an error's
++  /// description or user info can quote that address, so neither is included.
++  var withoutAddress: String {
++    let failure = self as NSError
++    let cause = (failure.userInfo[NSUnderlyingErrorKey] as? NSError).map { " (\($0.domain) \($0.code))" } ?? ""
++    return "\(failure.domain) \(failure.code)\(cause)"
++  }
++}
+diff --git a/ios/VideoPlayer.swift b/ios/VideoPlayer.swift
+index 3c2fde463a10c78546947dacd8c0fda67f0494c7..3b6d520985d5af1038414fda3aafbd27ea2aa212 100644
+--- a/ios/VideoPlayer.swift
++++ b/ios/VideoPlayer.swift
+@@ -301,7 +301,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       do {
+         try await self.replaceCurrentItem(with: videoSource)
+       } catch {
+-        log.warn("[expo-video] Failed to reload the video source while recovering a failed player: \(error.localizedDescription)")
++        log.warn("[expo-video] Failed to reload the video source while recovering a failed player: \(error.withoutAddress)")
+         return
+       }
+ 
+diff --git a/ios/VideoPlayerAudioTracks.swift b/ios/VideoPlayerAudioTracks.swift
+index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2e6ae526a17b862bf5931a141a56778d778076a8 100644
+--- a/ios/VideoPlayerAudioTracks.swift
++++ b/ios/VideoPlayerAudioTracks.swift
+@@ -24,8 +24,7 @@ class VideoPlayerAudioTracks {
+     do {
+       availableAudioTracks = try await Self.findAvailableAudioTracks(for: playerItem)
+     } catch {
+-      let uri = (playerItem as? VideoPlayerItem)?.videoSource.uri?.absoluteString ?? "the current source"
+-      owner?.appContext?.jsLogger.warn("Failed to load available audio tracks for \(uri). Error: \(error)")
++      owner?.appContext?.jsLogger.warn("Failed to load available audio tracks: \(error.withoutAddress)")
+       availableAudioTracks = []
+     }
+ 
+diff --git a/ios/VideoPlayerItem.swift b/ios/VideoPlayerItem.swift
+index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..e57285c6721905431e1ff44370b67bc3429e9fc0 100644
+--- a/ios/VideoPlayerItem.swift
++++ b/ios/VideoPlayerItem.swift
+@@ -135,7 +135,7 @@ class VideoPlayerItem: AVPlayerItem {
+     do {
+       return try await self.fetchHlsVideoTracks()
+     } catch {
+-      log.warn("[expo-video] Failed to fetch HLS video tracks: \(error.localizedDescription)")
++      log.warn("[expo-video] Failed to fetch HLS video tracks: \(error.withoutAddress)")
+       return []
+     }
+   }
+diff --git a/ios/VideoPlayerSubtitles.swift b/ios/VideoPlayerSubtitles.swift
+index ab8464c918cf43c08b72dba12c366eaf658ba83e..6bf10ff2c4bc41b1988de4850e3dfaa45d5c5a1e 100644
+--- a/ios/VideoPlayerSubtitles.swift
++++ b/ios/VideoPlayerSubtitles.swift
+@@ -24,8 +24,7 @@ class VideoPlayerSubtitles {
+     do {
+       availableSubtitleTracks = try await Self.findAvailableSubtitleTracks(for: playerItem)
+     } catch {
+-      let uri = (playerItem as? VideoPlayerItem)?.videoSource.uri?.absoluteString ?? "the current source"
+-      owner?.appContext?.jsLogger.warn("Failed to load available subtitle tracks for \(uri). Error: \(error)")
++      owner?.appContext?.jsLogger.warn("Failed to load available subtitle tracks: \(error.withoutAddress)")
+       availableSubtitleTracks = []
+     }
+ 
