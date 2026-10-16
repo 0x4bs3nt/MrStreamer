@@ -23,12 +23,7 @@ import {
   searchPage,
   type IndexedCatalogue,
 } from "@mrstreamer/core/ondemand/catalogue";
-import type {
-  CollectionId,
-  HomeRecommendation,
-  Title,
-  TitleKind,
-} from "@mrstreamer/contracts/ondemand";
+import type { HomeRecommendation, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { listedFileKey } from "@mrstreamer/core/ondemand/files";
 import {
   filterOptions,
@@ -41,7 +36,11 @@ import { adultIn } from "@mrstreamer/core/adult";
 import { setLanguage, t } from "@mrstreamer/core/i18n";
 import type { OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
 import { tmdb, tmdbImage } from "@mrstreamer/core/metadata/tmdb";
-import { collections, type Collections } from "@mrstreamer/core/ondemand/collections";
+import {
+  collectionRows,
+  collections,
+  type Collections,
+} from "@mrstreamer/core/ondemand/collections";
 import {
   relatedProviderFacts,
   relatedTitles,
@@ -244,11 +243,6 @@ function remember(
   }, 0);
   return kept;
 }
-
-/** How many titles a row shows before its All. */
-const ROW_TITLES = 24;
-/** Streaming services For you shows as rows, most stocked first. */
-const SERVICE_ROWS = 3;
 
 /** Notes whether the viewer shows titles for adults; turning it on asks TMDB about them. */
 function showing(now: boolean): void {
@@ -691,26 +685,11 @@ const handlers: {
   },
   rows: async ({ language, kind, tab, like, owners }) => {
     speaking(language);
-    const made = collectionsOf(await catalogueOf(owners, language, true), kind);
-    const ids: CollectionId[] =
-      tab === "new"
-        ? ["new-week", "new-month", "recent"]
-        : [
-            ...(like ? [`like:${ownedKey(like)}` as const] : []),
-            "popular",
-            "new-week",
-            "top-rated",
-            ...made
-              .services()
-              .slice(0, SERVICE_ROWS)
-              .map((service) => `service:${service.id}` as const),
-          ];
-    return ids.flatMap((id) => {
-      const titles = made.list(id);
-      const name = made.name(id);
-      if (titles.length === 0 || !name) return [];
-      return [{ id, name, total: titles.length, titles: titles.slice(0, ROW_TITLES) }];
-    });
+    return collectionRows(
+      collectionsOf(await catalogueOf(owners, language, true), kind),
+      tab,
+      like ?? null,
+    );
   },
   recommendations: async ({ owners, language, seeds }) => {
     const members = owners.flatMap((owner) => {

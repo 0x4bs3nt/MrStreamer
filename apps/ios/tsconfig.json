@@ -6,5 +6,5 @@
     "types": ["node"],
     "jsx": "react-jsx"
   },
-  "include": ["index.ts", "src"]
+  "include": ["index.ts", "src", "test"]
 }

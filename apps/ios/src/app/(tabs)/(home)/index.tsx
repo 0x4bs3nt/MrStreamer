@@ -1,7 +1,7 @@
 import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
 import { VideoView } from "expo-video";
-import { useCallback } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useMemo } from "react";
+import { ActionSheetIOS, ScrollView, StyleSheet, Text, View } from "react-native";
 import { loadCatalogue, playChannel, useCatalogue } from "../../../account.ts";
 import { describeError } from "../../../errors.ts";
 import { Glass, IconButton } from "../../../glass.tsx";
@@ -11,24 +11,32 @@ import {
   player,
   retry,
   setMuted,
-  playingChannelId,
+  playingId,
   usePlayback,
   type Playback,
 } from "../../../playback.ts";
+import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
 import { useSavedState } from "../../../storage.ts";
+import { named, useMetadataVersion, useTitleLists } from "../../../titles.ts";
+import { Shelf } from "../../../titles-ui.tsx";
 import { ChannelRow, colors, Message, useRowHeight } from "../../../ui.tsx";
+import { removeFromContinue } from "../../../viewing.ts";
+import { useWatchlist, watchlistTitles } from "../../../watchlist.ts";
 
 const RECENT_LINES = 5;
 
 /**
- * Home: the Stage, a muted preview of what plays, then the channels watched lately. Films and
- * series rows, the watchlist and downloads join it as they come to iOS.
+ * Home: the Stage, a muted preview of what plays, then Continue watching, the watchlist and the
+ * channels watched lately. Downloads join it as they come to iOS.
  */
 export default function Home() {
   const catalogue = useCatalogue();
   const { recent } = useSavedState();
   const playback = usePlayback();
   const height = useRowHeight();
+  const continuing = useContinueWatching();
+  const saved = useWatchlist();
+  const titlesShown = continuing.length > 0 || saved.length > 0;
   const library = catalogue.kind === "ready" ? catalogue.library : null;
   const recentChannels = library
     ? recent.flatMap((id) => {
@@ -41,7 +49,7 @@ export default function Home() {
       library && playChannel(channel, placeOf(library, channel), { watch: false }),
     [library],
   );
-  const playingId = playingChannelId(playback.phase);
+  const playing = playingId(playback.phase);
 
   return (
     <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic">
@@ -50,6 +58,7 @@ export default function Home() {
         last={recentChannels[0] ?? null}
         onPlayLast={() => recentChannels[0] && preview(recentChannels[0])}
       />
+      <TitleRows />
       {recentChannels.length > 0 ? (
         <Text style={styles.section} accessibilityRole="header">
           Recently watched
@@ -63,7 +72,7 @@ export default function Home() {
                 key={channel.id}
                 channel={channel}
                 detail={placeOf(library, channel)}
-                playing={channel.id === playingId}
+                playing={channel.id === playing}
                 height={height}
                 onPress={preview}
               />
@@ -76,14 +85,64 @@ export default function Home() {
           action={{ label: "Try again", onPress: loadCatalogue }}
         />
       ) : null}
-      {library && recentChannels.length === 0 && playback.phase.kind === "idle" ? (
-        <Message text="Pick a channel in Live." />
+      {library && recentChannels.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
+        <Message text="Pick a channel in Live, or a film or series." />
       ) : null}
     </ScrollView>
   );
 }
 
 const placeOf = (library: Library, channel: ListedChannel) => library.placeOf.get(channel.id) ?? "";
+
+/** Continue watching and the watchlist, as rows of posters. */
+function TitleRows() {
+  const continuing = useContinueWatching();
+  const lists = useTitleLists();
+  const saved = useWatchlist();
+  const metadata = useMetadataVersion();
+  const watchlist = useMemo(
+    () =>
+      lists.kind === "ready"
+        ? watchlistTitles(lists.index, saved).flatMap(({ title }) => (title ? [named(title)] : []))
+        : [],
+    // A new metadata version renames titles.
+    [lists, saved, metadata],
+  );
+  const entryOf = (key: string) => continuing.find((entry) => entry.title.key === key);
+  return (
+    <>
+      {continuing.length > 0 ? (
+        <Shelf
+          name="Continue watching"
+          titles={continuing.map((entry) => entry.title)}
+          lines={(title) => entryOf(title.key)?.line}
+          done={(title) => entryOf(title.key)?.done ?? null}
+          onPress={(title) => {
+            const entry = entryOf(title.key);
+            if (entry) resume(entry);
+          }}
+          onLongPress={(title) =>
+            ActionSheetIOS.showActionSheetWithOptions(
+              {
+                title: title.title,
+                options: ["Details", "Remove from Continue watching", "Cancel"],
+                destructiveButtonIndex: 1,
+                cancelButtonIndex: 2,
+              },
+              (index) => {
+                if (index === 0) openDetails({ ...title, ...entryOf(title.key)?.version });
+                if (index === 1) void removeFromContinue(title).catch(() => undefined);
+              },
+            )
+          }
+        />
+      ) : null}
+      {watchlist.length > 0 ? (
+        <Shelf name="Watchlist" titles={watchlist} onPress={(title) => openDetails(title)} />
+      ) : null}
+    </>
+  );
+}
 
 /**
  * The preview of the one player, muted until unmuted here or opened in Watch. It shows no
@@ -103,7 +162,7 @@ function Stage({
     (phase.kind === "loading" || phase.kind === "playing" || phase.kind === "paused") &&
     !watch &&
     !pip;
-  const title = phase.kind === "idle" ? (last?.title ?? "Nothing playing") : phase.channel.title;
+  const title = phase.kind === "idle" ? (last?.title ?? "Nothing playing") : phase.item.title;
   const status =
     phase.kind === "idle"
       ? last

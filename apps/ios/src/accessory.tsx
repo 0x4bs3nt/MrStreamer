@@ -19,7 +19,7 @@ export function NowPlaying() {
     <View style={styles.row}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${phase.channel.title}, ${status}`}
+        accessibilityLabel={`${phase.item.title}, ${status}`}
         accessibilityHint="Opens Watch"
         onPress={openWatch}
         style={styles.open}
@@ -28,7 +28,7 @@ export function NowPlaying() {
         <SymbolView name={external ? "airplay.video" : "pip"} size={18} tintColor={colors.text} />
         <View style={styles.names}>
           <Text style={styles.title} numberOfLines={1}>
-            {phase.channel.title}
+            {phase.item.title}
           </Text>
           {placement === "regular" ? (
             <Text style={styles.where} numberOfLines={1}>

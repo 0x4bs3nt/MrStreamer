@@ -2,20 +2,24 @@ import { NativeTabs } from "expo-router/native-tabs";
 import { useSegments } from "expo-router";
 import { NowPlaying } from "../../accessory.tsx";
 import { usePlayback } from "../../playback.ts";
+import { useVirtualisedScreen } from "../../tab-bar.ts";
 
 // The system tab bar, Liquid Glass from iOS 26. While Picture in Picture or AirPlay plays and
-// Watch is closed, the now playing accessory sits above it. The bar shrinks on Home's scrolling
-// only: iOS can't follow Live's and Search's virtualised lists, so there it stays put.
+// Watch is closed, the now playing accessory sits above it. The bar shrinks as Home, the shelves
+// of Films and Series and their details scroll: iOS can't follow a virtualised list, as Live's,
+// Search's and the poster grids are, so there it stays put.
 export default function TabsLayout() {
   const { phase, watch, pip, external } = usePlayback();
   const segments: readonly string[] = useSegments();
+  const virtualised = useVirtualisedScreen();
   const accessory = phase.kind !== "idle" && !watch && (pip || external);
+  const shrinks = ["(home)", "films", "series"].includes(segments[1] ?? "") && !virtualised;
   return (
     <NativeTabs
       tintColor="#FFFFFF"
       backgroundColor="#000000"
       disableTransparentOnScrollEdge
-      minimizeBehavior={segments[1] === "(home)" ? "onScrollDown" : "never"}
+      minimizeBehavior={shrinks ? "onScrollDown" : "never"}
     >
       {accessory ? (
         <NativeTabs.BottomAccessory>

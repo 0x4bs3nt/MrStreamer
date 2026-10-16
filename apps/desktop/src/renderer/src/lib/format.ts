@@ -2,6 +2,7 @@ import type { Programme } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { formatDate, t } from "@mrstreamer/core/i18n";
+import { minutesLeft } from "@mrstreamer/core/viewing/continue";
 import type { StreamInfo } from "../player/engine.ts";
 
 /**
@@ -107,18 +108,10 @@ export function timeLeft(programme: Pick<Programme, "start" | "stop">, now: numb
   return minutesLeft(Math.max(1, Math.ceil((programme.stop - now) / 60_000)));
 }
 
-/** "34 min left", "1 h left", "1 h 20 min left". */
-export function minutesLeft(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (hours === 0) return t("{minutes} min left", { minutes });
-  return rest
-    ? t("{hours} h {minutes} min left", { hours, minutes: rest })
-    : t("{hours} h left", { hours });
-}
-
 /** How far a programme has run, from 0 to 1. */
 export function progressOf(programme: Pick<Programme, "start" | "stop">, now: number): number {
   const length = programme.stop - programme.start;
   return length > 0 ? Math.min(1, Math.max(0, (now - programme.start) / length)) : 0;
 }
+
+export { minutesLeft };

@@ -41,6 +41,7 @@ export const groups: readonly {
   { name: "i18n", load: () => import("./groups/i18n.ts") },
   { name: "catchup", load: () => import("./groups/catchup.ts") },
   { name: "names", load: () => import("./groups/names.ts") },
+  { name: "ondemand", load: () => import("./groups/ondemand.ts") },
   { name: "subtitles", load: () => import("./groups/subtitles.ts") },
   { name: "effect", load: () => import("./groups/effect.ts") },
   { name: "guide", load: () => import("./groups/guide.ts") },

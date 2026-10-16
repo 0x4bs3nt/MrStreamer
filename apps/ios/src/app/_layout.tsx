@@ -1,7 +1,8 @@
-import { DarkTheme, Stack, ThemeProvider } from "expo-router";
+import { DarkTheme, Stack, ThemeProvider, usePathname } from "expo-router";
 import { useEffect } from "react";
 import { StyleSheet, View } from "react-native";
 import { restore, useSession } from "../account.ts";
+import { onScreen } from "../playback.ts";
 import { WatchLayer } from "../watch.tsx";
 
 // The app: Connect until a subscription is signed in, then the five tabs. Watch lies over both,
@@ -23,9 +24,12 @@ let restored: Promise<void> | null = null;
 
 export default function RootLayout() {
   const session = useSession();
+  const pathname = usePathname();
   useEffect(() => {
     restored ??= restore();
   }, []);
+  // A request still waiting when the viewer moves to another screen lapses (playback.ts).
+  useEffect(() => onScreen(pathname), [pathname]);
   if (session.kind === "restoring") return <View style={styles.black} />;
   const signedIn = session.kind === "signed-in";
   return (

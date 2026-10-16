@@ -3,12 +3,14 @@
 // popularity, streaming services). Nothing here reads a provider's own category names.
 import type {
   CollectionId,
+  CollectionRow,
   CollectionSort,
+  RowTab,
   Title,
   TitleKind,
 } from "@mrstreamer/contracts/ondemand";
 import { type PlainKey, t } from "../i18n.ts";
-import { ownedKey } from "@mrstreamer/contracts/subscription";
+import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { GENRES, tmdbImage, type TitleMetadata } from "../metadata/tmdb.ts";
 import { suitability, suits } from "./languages.ts";
 
@@ -275,6 +277,42 @@ export function collections(source: CollectionSource): Collections {
         .sort((a, b) => b.count - a.count),
     ),
   };
+}
+
+/** How many titles a row shows before its All. */
+const ROW_TITLES = 24;
+/** Streaming services For you shows as rows, most stocked first. */
+const SERVICE_ROWS = 3;
+
+/**
+ * The rows of For you or New, each with its first titles and how many it has: New gathers what
+ * was added; For you leads with titles like `like`, the one watched last, then what is popular,
+ * new and top rated, and the best stocked services. Rows with nothing in them are left out.
+ */
+export function collectionRows(
+  made: Collections,
+  tab: RowTab,
+  like: OwnedId | null,
+): CollectionRow[] {
+  const ids: CollectionId[] =
+    tab === "new"
+      ? ["new-week", "new-month", "recent"]
+      : [
+          ...(like ? [`like:${ownedKey(like)}` as const] : []),
+          "popular",
+          "new-week",
+          "top-rated",
+          ...made
+            .services()
+            .slice(0, SERVICE_ROWS)
+            .map((service) => `service:${service.id}` as const),
+        ];
+  return ids.flatMap((id) => {
+    const titles = made.list(id);
+    const name = made.name(id);
+    if (titles.length === 0 || !name) return [];
+    return [{ id, name, total: titles.length, titles: titles.slice(0, ROW_TITLES) }];
+  });
 }
 
 function once<A>(make: () => A): () => A {

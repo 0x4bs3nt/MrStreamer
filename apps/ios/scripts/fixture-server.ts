@@ -14,16 +14,32 @@
 // for even ids and dark for odd ones. Each request is logged without the login, to
 // .local/ios-fixture/requests.jsonl.
 //
+// Movies and episodes are the panel's (FIXTURE_TITLES, about 120 by default, sizes the lists),
+// with their files served here, byte ranges and all, since the panel's own redirect names a port
+// the simulator can't reach. The TEST titles stream their clips from apps/desktop/test/fixtures
+// as they are (MKV, AVI, MPEG-TS, MOV and MP4), so what AVPlayer can't open fails as it would;
+// every other title streams a ten-minute H.264 + AAC feature made here, long enough to resume.
+// A fake TMDB (apps/desktop/test/fake-tmdb.ts) answers under /tmdb/3.
+//
 // The control port listens on the workbench only and is never tunnelled to the Mac:
 //   POST /fail-catalogue?status=503    channel and category lists answer that; status=none restores
 //   POST /fail-live?id=<id>&count=<n>  the next n playlists of that channel answer 503
 //   GET  /requests?since=<epoch ms>    the logged requests
 //   GET  /live                         channels asked for in the last six seconds
+//   GET  /titles                       movie and episode files asked for in the last six seconds
+//   POST /fail-titles?status=503       the next title file requests answer that; status=none restores
+//   POST /delay-details?ms=8000        movie and series details answer that much later; ms=0 restores
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, request as forward, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as forward,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { join } from "node:path";
 import { startFakeProvider, type FakeChannel } from "../../desktop/test/fake-provider.ts";
+import { startFakeTmdb } from "../../desktop/test/fake-tmdb.ts";
 
 const USERNAME = process.env.FIXTURE_USERNAME ?? "fixture";
 const PASSWORD = process.env.FIXTURE_PASSWORD ?? "fixture-pass";
@@ -106,9 +122,50 @@ function recording(file: string): Media {
 
 const provider = await startFakeProvider({
   channels: CHANNELS,
+  titles: Number(process.env.FIXTURE_TITLES ?? 120),
   username: USERNAME,
   password: PASSWORD,
 });
+const tmdb = await startFakeTmdb();
+// One service streams the first films and series it is told about.
+tmdb.stream(
+  "movie",
+  provider.titles.movies.slice(12, 40).map((movie) => String(movie.id + 10_000)),
+);
+tmdb.stream(
+  "tv",
+  provider.titles.series.slice(0, 6).map((series) => series.tmdb ?? String(series.id + 10_000)),
+);
+
+/** Ten minutes of test picture with its clock and a tone, for titles to resume partway. */
+const feature = join(out, "media", "feature.mp4");
+if (!existsSync(feature)) {
+  mkdirSync(join(out, "media"), { recursive: true });
+  execFileSync("ffmpeg", [
+    ...["-v", "error", "-y"],
+    ...["-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=600"],
+    ...["-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:d=600"],
+    ...["-c:v", "libx264", "-profile:v", "main", "-g", "50", "-b:v", "300k", "-pix_fmt", "yuv420p"],
+    ...["-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"],
+    feature,
+  ]);
+}
+/** What each movie's and episode's address streams: a file, or null for a missing one. */
+const titleFiles = new Map<string, string | null>();
+const fileOf = (name: string, fixture: string | null) =>
+  fixture === null ? null : name.startsWith("TEST") ? join(fixtures, fixture) : feature;
+for (const movie of provider.titles.movies) {
+  titleFiles.set(`movie/${movie.id}`, fileOf(movie.name, movie.fixture));
+}
+for (const series of provider.titles.series) {
+  for (const episode of series.seasons.flat()) {
+    titleFiles.set(`series/${episode.id}`, fileOf(series.name, episode.fixture));
+  }
+}
+/** Title file requests left to answer with a failure, and its status. */
+let titleFailure: number | null = null;
+/** How long movie and series details wait before the panel is asked. */
+let detailsDelay = 0;
 const channels = new Map(provider.catalogue.channels.map((each) => [String(each.streamId), each]));
 const mediaOf = (channel: FakeChannel): Media | null =>
   channel.offline
@@ -125,7 +182,7 @@ const failing = new Map<string, number>();
 
 interface Logged {
   readonly at: number;
-  readonly kind: "api" | "playlist" | "segment" | "other";
+  readonly kind: "api" | "playlist" | "segment" | "title" | "tmdb" | "other";
   readonly channel?: string;
   readonly status: number;
   readonly path: string;
@@ -137,7 +194,36 @@ function record(entry: Logged) {
 }
 /** A live path with whatever login it carries, and any query, left out. */
 const redacted = (path: string) =>
-  path.replace(/\?.*$/, "").replace(/^\/live\/[^/]+\/[^/]+\//, "/live/<login>/");
+  path.replace(/\?.*$/, "").replace(/^\/(live|movie|series)\/[^/]+\/[^/]+\//, "/$1/<login>/");
+
+/** A title's file, whole or the byte range asked for, as panels serve them. */
+function serveTitle(file: string, request: IncomingMessage, response: ServerResponse) {
+  const bytes = readFileSync(file);
+  const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? "");
+  const start = range ? Number(range[1]) : 0;
+  const end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+  if (start >= bytes.length) {
+    response.writeHead(416, { "Content-Range": `bytes */${bytes.length}` }).end();
+    return 416;
+  }
+  const type = file.endsWith(".mp4")
+    ? "video/mp4"
+    : file.endsWith(".mov")
+      ? "video/quicktime"
+      : file.endsWith(".mkv")
+        ? "video/x-matroska"
+        : file.endsWith(".avi")
+          ? "video/x-msvideo"
+          : "video/mp2t";
+  response.writeHead(range ? 206 : 200, {
+    "Content-Type": type,
+    "Content-Length": end - start + 1,
+    "Accept-Ranges": "bytes",
+    ...(range ? { "Content-Range": `bytes ${start}-${end}/${bytes.length}` } : {}),
+  });
+  response.end(request.method === "HEAD" ? undefined : bytes.subarray(start, end + 1));
+  return range ? 206 : 200;
+}
 
 /**
  * The live playlist of `channel` now: the newest `WINDOW` segments of its loop, which started
@@ -212,28 +298,64 @@ createServer((request, response) => {
     if (!found || !file) return answer(response, 404, "text/plain", "");
     return answer(response, 200, "video/mp2t", readFileSync(join(found.dir, file)));
   }
-  // Everything else is the panel's own: its API, logos and guide.
-  const upstream = forward(
-    {
-      host: panel.hostname,
-      port: panel.port,
-      method: request.method,
-      path,
-      headers: { ...request.headers, host: panel.host },
-    },
-    (reply) => {
-      record({
-        at: Date.now(),
-        kind: url.pathname === "/player_api.php" ? "api" : "other",
-        status: reply.statusCode ?? 0,
-        path: `${url.pathname}${url.searchParams.get("action") ? `?action=${url.searchParams.get("action")}` : ""}`,
-      });
-      response.writeHead(reply.statusCode ?? 502, reply.headers);
-      reply.pipe(response);
-    },
-  );
-  upstream.on("error", () => answer(response, 502, "text/plain", ""));
-  request.pipe(upstream);
+  const title = /^\/(movie|series)\/([^/]+)\/([^/]+)\/(\d+)\.(\w+)$/.exec(url.pathname);
+  if (title) {
+    const [, folder = "", user, pass, id = ""] = title;
+    const file = titleFiles.get(`${folder}/${id}`);
+    const status =
+      decodeURIComponent(user ?? "") !== USERNAME || decodeURIComponent(pass ?? "") !== PASSWORD
+        ? 401
+        : titleFailure !== null
+          ? titleFailure
+          : !file
+            ? 404
+            : serveTitle(file, request, response);
+    record({ at: Date.now(), kind: "title", channel: id, status, path: redacted(path) });
+    if (status !== 200 && status !== 206 && status !== 416)
+      answer(response, status, "text/plain", "");
+    return;
+  }
+  const tmdbPath = /^\/tmdb(\/3\/.*)$/.exec(path);
+  if (tmdbPath) {
+    const target = new URL(tmdb.url);
+    const upstream = forward(
+      { host: target.hostname, port: target.port, method: request.method, path: tmdbPath[1] },
+      (reply) => {
+        record({ at: Date.now(), kind: "tmdb", status: reply.statusCode ?? 0, path: url.pathname });
+        response.writeHead(reply.statusCode ?? 502, reply.headers);
+        reply.pipe(response);
+      },
+    );
+    upstream.on("error", () => answer(response, 502, "text/plain", ""));
+    request.pipe(upstream);
+    return;
+  }
+  // Everything else is the panel's own: its API, logos and guide. Details can be held back.
+  const action = url.searchParams.get("action");
+  const wait = action === "get_vod_info" || action === "get_series_info" ? detailsDelay : 0;
+  setTimeout(() => {
+    const upstream = forward(
+      {
+        host: panel.hostname,
+        port: panel.port,
+        method: request.method,
+        path,
+        headers: { ...request.headers, host: panel.host },
+      },
+      (reply) => {
+        record({
+          at: Date.now(),
+          kind: url.pathname === "/player_api.php" ? "api" : "other",
+          status: reply.statusCode ?? 0,
+          path: `${url.pathname}${url.searchParams.get("action") ? `?action=${url.searchParams.get("action")}` : ""}`,
+        });
+        response.writeHead(reply.statusCode ?? 502, reply.headers);
+        reply.pipe(response);
+      },
+    );
+    upstream.on("error", () => answer(response, 502, "text/plain", ""));
+    request.pipe(upstream);
+  }, wait);
 }).listen(port, "127.0.0.1");
 
 createServer((request, response) => {
@@ -252,9 +374,25 @@ createServer((request, response) => {
     const since = Number(url.searchParams.get("since") ?? 0);
     return json(requests.filter((each) => each.at >= since));
   }
+  if (request.method === "POST" && url.pathname === "/fail-titles") {
+    const status = url.searchParams.get("status");
+    titleFailure = status && status !== "none" ? Number(status) : null;
+    return json({ titles: titleFailure });
+  }
+  if (request.method === "POST" && url.pathname === "/delay-details") {
+    detailsDelay = Number(url.searchParams.get("ms") ?? 0);
+    return json({ detailsDelay });
+  }
+  if (url.pathname === "/titles") {
+    const recent = requests.filter(
+      (each) => each.kind === "title" && each.at >= Date.now() - PLAYING_MS,
+    );
+    return json([...new Set(recent.map((each) => each.channel))]);
+  }
   if (url.pathname === "/live") {
     const recent = requests.filter(
-      (each) => each.kind !== "api" && each.at >= Date.now() - PLAYING_MS,
+      (each) =>
+        (each.kind === "playlist" || each.kind === "segment") && each.at >= Date.now() - PLAYING_MS,
     );
     return json([...new Set(recent.map((each) => each.channel))]);
   }
@@ -262,6 +400,7 @@ createServer((request, response) => {
 }).listen(controlPort, "127.0.0.1");
 
 writeFileSync(join(out, "server.json"), JSON.stringify({ port, controlPort, started }));
+console.log(`fake TMDB at http://127.0.0.1:${port}/tmdb/3`);
 console.log(
   `fixture panel http://127.0.0.1:${port} as ${USERNAME}, ${provider.catalogue.channels.length} channels; control http://127.0.0.1:${controlPort}`,
 );

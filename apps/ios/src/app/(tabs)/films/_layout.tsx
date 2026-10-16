@@ -1,5 +1,6 @@
 import { Stack } from "expo-router";
 
+/** Films: its tabs of shelves and grids, with collections and details pushed over them. */
 export default function FilmsLayout() {
   return (
     <Stack
@@ -9,7 +10,9 @@ export default function FilmsLayout() {
         headerTitleStyle: { color: "#FFFFFF" },
       }}
     >
-      <Stack.Screen name="index" options={{ title: "Films" }} />
+      <Stack.Screen name="index" options={{ title: "Films", headerLargeTitle: true }} />
+      <Stack.Screen name="collection/[id]" options={{ title: "" }} />
+      <Stack.Screen name="title/[id]" options={{ title: "", headerTransparent: true }} />
     </Stack>
   );
 }

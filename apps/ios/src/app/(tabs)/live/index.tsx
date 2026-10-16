@@ -5,7 +5,7 @@ import { FlatList, StyleSheet, View } from "react-native";
 import { loadCatalogue, playChannel, useCatalogue } from "../../../account.ts";
 import { describeError } from "../../../errors.ts";
 import type { Library, Region } from "../../../library.ts";
-import { playingChannelId, usePlayback } from "../../../playback.ts";
+import { playingId, usePlayback } from "../../../playback.ts";
 import { useSavedState, writeState } from "../../../storage.ts";
 import { ChannelRow, Message, useRowHeight } from "../../../ui.tsx";
 
@@ -85,7 +85,7 @@ function Channels({ library }: { library: Library }) {
     });
   }, [navigation, library, region, shelf, choose]);
 
-  const playingId = playingChannelId(phase);
+  const playing = playingId(phase);
   const watch = useCallback(
     (channel: ListedChannel) =>
       playChannel(channel, library.placeOf.get(channel.id) ?? "", { watch: true }),
@@ -96,12 +96,12 @@ function Channels({ library }: { library: Library }) {
       style={styles.screen}
       data={channels}
       keyExtractor={(channel) => channel.id}
-      extraData={playingId}
+      extraData={playing}
       renderItem={({ item }) => (
         <ChannelRow
           channel={item}
           detail={library.placeOf.get(item.id) ?? ""}
-          playing={item.id === playingId}
+          playing={item.id === playing}
           height={height}
           onPress={watch}
         />
