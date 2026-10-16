@@ -1074,6 +1074,8 @@ function outputChanged(status: OutputStatus, before: OutputStatus): void {
       },
     });
   } else if (store.getState().phase.kind !== "ended") {
+    // Stopped there, which ended its run in the main process: playing on from here is another.
+    observation.begin();
     released = position;
     receiver.paused = true;
     store.setState({ position, confirmed: null, phase: { kind: "paused" } });
@@ -1573,6 +1575,7 @@ export const titlePlayer = {
   stop(): void {
     if (!receiver) return;
     command({ command: "stop" });
+    observation.end();
     titlePlayer.close();
   },
 

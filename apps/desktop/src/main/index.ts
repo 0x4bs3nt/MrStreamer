@@ -37,7 +37,6 @@ import { t } from "@mrstreamer/core/i18n";
 import { WINDOW_BAR } from "../shared/window-bar.ts";
 import { analyticsBuild } from "./analytics/build.ts";
 import { Analytics } from "./analytics/service.ts";
-import type { SummaryFailure, SummaryOperation, SummaryOutcome } from "./analytics/summary.ts";
 import { observeOpen } from "./analytics/playback.ts";
 import { profileOrigin } from "./analytics/storage.ts";
 import { analyticsTransport } from "./analytics/transport.ts";
@@ -417,16 +416,10 @@ async function start(): Promise<void> {
   });
   powerMonitor.on("suspend", () => analytics.suspendPlayback());
   powerMonitor.on("resume", () => analytics.suspendPlayback());
+  // Outcomes of work begun before the update channel is read would carry a guessed dimension.
   let dimensionsReady = storeCopy;
-  const observeOperation = (operation: SummaryOperation, playbackToken?: string) => () => {
-    const generation = dimensionsReady ? analytics.noteOperationStarted(operation) : null;
-    const failedPlayback =
-      operation === "playback_open" ? analytics.playbackFailureObserver(playbackToken) : null;
-    return (outcome: SummaryOutcome, failure?: SummaryFailure) => {
-      analytics.noteOperationFinished(operation, generation, outcome, failure);
-      if (outcome === "failed") failedPlayback?.(failure ?? "app");
-    };
-  };
+  const observeOperation = (event: "download_ended" | "update_check_ended") => () =>
+    dimensionsReady ? analytics.observeOperation(event) : () => {};
 
   const runtime = ManagedRuntime.make(
     mainLayer({
@@ -435,7 +428,7 @@ async function start(): Promise<void> {
         action: (action) => analytics.actionObserver(action),
         setting: (setting) => analytics.settingObserver(setting),
       },
-      downloads: { observeTransfer: observeOperation("download_transfer") },
+      downloads: { observeTransfer: observeOperation("download_ended") },
       secrets: keychainSecrets,
       userAgent,
       ffmpeg: toolPath("ffmpeg"),
@@ -465,7 +458,7 @@ async function start(): Promise<void> {
             observeCheck: (channel) => {
               analytics.setUpdateChannel(channel);
               dimensionsReady = true;
-              return observeOperation("update_check")();
+              return observeOperation("update_check_ended")();
             },
             discover: discovery({
               feedUrl: UPDATE_FEED,
@@ -754,7 +747,7 @@ async function start(): Promise<void> {
         const token = analytics.admitPlayback("live", preview ? undefined : measurement, frame);
         return observeOpen(
           coordination,
-          observeOperation("playback_open", token ?? undefined),
+          () => analytics.playbackFailureObserver(token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               const channel = yield* library.channel(named);
@@ -799,7 +792,7 @@ async function start(): Promise<void> {
         const token = analytics.admitPlayback("vod", measurement, frame);
         return observeOpen(
           coordination,
-          observeOperation("playback_open", token ?? undefined),
+          () => analytics.playbackFailureObserver(token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               // What plays goes first, whichever subscription it is of, so no provider sees a
@@ -819,7 +812,7 @@ async function start(): Promise<void> {
         const token = analytics.admitPlayback("vod", measurement, frame);
         return observeOpen(
           coordination,
-          observeOperation("playback_open", token ?? undefined),
+          () => analytics.playbackFailureObserver(token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
@@ -882,7 +875,7 @@ async function start(): Promise<void> {
             : undefined;
         return observeOpen(
           coordination,
-          observeOperation("playback_open", token ?? undefined),
+          () => analytics.playbackFailureObserver(token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               const channel = yield* library.channel(named);
@@ -906,7 +899,7 @@ async function start(): Promise<void> {
             : undefined;
         return observeOpen(
           coordination,
-          observeOperation("playback_open", token ?? undefined),
+          () => analytics.playbackFailureObserver(token ?? undefined),
           (turn) =>
             Effect.gen(function* () {
               const { url, revision, headers, listingKey } = yield* onDemand.file(title);
@@ -1168,12 +1161,11 @@ async function start(): Promise<void> {
     window.webContents.on("did-start-loading", () => {
       requestedClose = false;
       analytics.rendererGone();
-      analytics.noteRenderer("starts");
     });
     window.webContents.on("render-process-gone", (_event, details) => {
       analytics.rendererGone();
       if (leaving || requestedClose || details.reason === "clean-exit") return;
-      analytics.noteRenderer(
+      analytics.noteRendererExit(
         details.reason === "crashed" ? "crashed" : details.reason === "killed" ? "killed" : "other",
       );
     });

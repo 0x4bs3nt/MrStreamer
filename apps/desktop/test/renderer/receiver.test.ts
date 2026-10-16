@@ -428,6 +428,25 @@ describe("a movie with a receiver connected", () => {
     expect(saved).toEqual(saved.map(() => expect.objectContaining({ since: began })));
   });
 
+  it("plays on as a new play once it was stopped on the receiver", async () => {
+    await onReceiver(movieNow(movie, null), 120, 1);
+    const first = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
+    expect(ipc.argsOf("output.playTitle").at(-1)?.measurement).toEqual(first);
+
+    // The receiver holds the load no more, with nothing failed: it was stopped there.
+    await emit(connected());
+    expect(titlePlayer.state().phase.kind).toBe("paused");
+    const fresh = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
+    expect(fresh.control).not.toBe(first.control);
+
+    titlePlayer.togglePause();
+    await wait(0);
+    expect(ipc.argsOf("output.playTitle").at(-1)).toMatchObject({
+      sessionId: "r1",
+      measurement: fresh,
+    });
+  });
+
   it("is held here, paused, when the receiver lets go by itself", async () => {
     await show(TitleWatch);
     await onReceiver(movieNow(movie, null), 120, 1);
@@ -916,6 +935,21 @@ describe("a channel with a receiver connected", () => {
     expect(ipc.argsOf("playback.open")).toMatchObject([
       { channel: { subscriptionId: SUBSCRIPTION, id: "a" } },
     ]);
+  });
+
+  it("ends its play when it is stopped on the receiver, and choosing it again is another", async () => {
+    await playing();
+    const first = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
+
+    await emit(connected());
+    expect(player.state()).toMatchObject({ phase: { kind: "idle" }, stopped: true });
+    expect(ipc.argsOf("analytics.playbackEnd").at(-1)).toEqual({ token: first.control });
+
+    player.play(channel("a"));
+    await wait(0);
+    const fresh = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
+    expect(fresh.control).not.toBe(first.control);
+    expect(ipc.argsOf("output.playChannel").at(-1)?.measurement).toEqual(fresh);
   });
 
   it("stays stopped when the receiver lets go by itself", async () => {

@@ -86,12 +86,7 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
         profile_origin: allowed.properties.profile_origin,
         $process_person_profile: false,
         $geoip_disable: true,
-        ...(allowed.event === "app_active_day"
-          ? { activity_date: allowed.properties.activity_date }
-          : {}),
-        ...(allowed.event === "app_summary_day"
-          ? { summary_date: allowed.properties.summary_date, counts: allowed.properties.counts }
-          : {}),
+        ...ownProperties(allowed),
       };
       const body = JSON.stringify({
         api_key: projectToken,
@@ -136,4 +131,37 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
       });
     },
   };
+}
+
+/** Copies each event's own fixed fields by name, never by spreading a validated object. */
+function ownProperties(event: CaptureEvent) {
+  switch (event.event) {
+    case "app_active_day":
+      return { activity_date: event.properties.activity_date };
+    case "stream_started":
+      return { stream_type: event.properties.stream_type };
+    case "stream_stopped":
+      return {
+        stream_type: event.properties.stream_type,
+        watch_duration_seconds: event.properties.watch_duration_seconds,
+      };
+    case "stream_error":
+      return {
+        stream_type: event.properties.stream_type,
+        error_type: event.properties.error_type,
+      };
+    case "settings_changed":
+      return { setting_key: event.properties.setting_key };
+    case "feature_opened":
+      return { feature: event.properties.feature };
+    case "download_ended":
+    case "update_check_ended":
+      return event.properties.outcome === "failed"
+        ? { outcome: event.properties.outcome, error_type: event.properties.error_type }
+        : { outcome: event.properties.outcome };
+    case "renderer_exited":
+      return { reason: event.properties.reason };
+    default:
+      return {};
+  }
 }

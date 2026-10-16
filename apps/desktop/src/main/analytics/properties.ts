@@ -12,15 +12,3 @@ export const BuildProperties = lazy(() =>
   }).onUndeclaredKey("delete"),
 );
 export type BuildProperties = Infer<typeof BuildProperties>;
-
-/** All capture dimensions participate; ordering of persisted object keys does not. */
-export function sameProperties(left: BuildProperties, right: BuildProperties): boolean {
-  return (
-    left.app_version === right.app_version &&
-    left.build_channel === right.build_channel &&
-    left.update_channel === right.update_channel &&
-    left.os === right.os &&
-    left.arch === right.arch &&
-    left.distribution === right.distribution
-  );
-}

@@ -12,8 +12,7 @@ import {
   CaptureEvent,
   type BuildProperties,
 } from "../src/main/analytics/model.ts";
-import { emptySummaryCounts } from "../src/main/analytics/summary.ts";
-import { appFailure, downloadFailure, checkFailure } from "../src/main/analytics/operations.ts";
+import { downloadFailure, checkFailure } from "../src/main/analytics/operations.ts";
 import { Analytics } from "../src/main/analytics/service.ts";
 import { analyticsStore, profileOrigin } from "../src/main/analytics/storage.ts";
 import {
@@ -64,6 +63,7 @@ async function start(
     properties?: BuildProperties;
     transport?: Omit<CaptureTransport, "kind"> | null;
     store?: ReturnType<typeof analyticsStore>;
+    monotonic?: () => number;
   } = {},
 ) {
   const dataDir = options.dataDir ?? (await tempDir());
@@ -83,6 +83,7 @@ async function start(
     properties: options.properties ?? properties,
     transport: transport ? { ...transport, kind: "local" } : null,
     ...(options.store ? { store: options.store } : {}),
+    ...(options.monotonic ? { monotonic: options.monotonic } : {}),
   });
   owners.push(owner);
   await owner.settings();
@@ -410,12 +411,11 @@ describe("analytics consent and persistence", () => {
     expect(await owner.settings()).toEqual({ enabled: true, transport: "unconfigured" });
     owner.setForeground(true);
     owner.noteFeature("home");
-    owner.noteRenderer("starts");
-    expect(owner.noteOperationStarted("update_check")).toBeNull();
+    owner.noteRendererExit("crashed");
+    owner.observeOperation("update_check_ended")("success");
     await owner.configure(false);
     await owner.configure(true);
     expect((await saved(dataDir)).installationId).toBeNull();
-    expect((await saved(dataDir)).summary).toBeUndefined();
     expect((await saved(dataDir)).pending).toEqual([]);
   });
 });
@@ -611,15 +611,18 @@ describe("analytics delivery and deadlines", () => {
     for (const event of days) expect(event).toEqual(days[0]);
   });
 
-  it("bounds its persisted outbox while foreground days accumulate behind an offline transport", async () => {
+  it("rate-limits captures and bounds the persisted outbox behind a hung transport, keeping first-seen", async () => {
     vi.useFakeTimers({
       toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
     });
     vi.setSystemTime(new Date("2026-10-01T12:00:00Z"));
     const store = memoryStore();
     let signal: AbortSignal | undefined;
+    // The rate window follows its own clock, so retry timers never run during this test.
+    let now = 0;
     const { owner } = await start({
       store,
+      monotonic: () => now,
       transport: {
         send(_event, owned) {
           signal = owned;
@@ -628,40 +631,22 @@ describe("analytics delivery and deadlines", () => {
       },
     });
     owner.setForeground(true);
-    // Finish each observation before moving the clock; file visibility can precede save completion.
     await vi.advanceTimersByTimeAsync(0);
     const first = await store.load();
-    expect(first?.firstSeen).toBe(true);
     expect(signal).toBeDefined();
-    for (let day = 2; day <= 20; day++) {
-      owner.setForeground(false);
-      const date = `2026-10-${String(day).padStart(2, "0")}`;
-      vi.setSystemTime(new Date(`${date}T12:00:00Z`));
-      owner.setForeground(true);
-      await vi.advanceTimersByTimeAsync(0);
-      const record = await store.load();
-      expect(record?.lastDay).toBe(date);
-      expect(record?.pending.length).toBeLessThanOrEqual(8);
-    }
+    // A runaway producer: the first minute keeps 60 captures, the rest are dropped.
+    for (let i = 0; i < 100; i++) owner.noteFeature("home");
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await store.load())?.pending).toHaveLength(62);
+    now += 60_000;
+    for (let i = 0; i < 10; i++) owner.noteAction("epg_opened");
+    await vi.advanceTimersByTimeAsync(0);
     const kept = await store.load();
-    expect(kept?.pending).toHaveLength(8);
-    expect(kept?.pending[0]?.event.event).toBe("installation_observed");
+    expect(kept?.pending).toHaveLength(64);
     expect(kept?.pending[0]?.event).toEqual(first?.pending[0]?.event);
-    expect(kept?.installationId).toBe(first?.installationId);
-    expect(kept?.firstSeen).toBe(true);
-    expect(
-      kept?.pending.flatMap(({ event }) =>
-        event.event === "app_active_day" ? [event.properties.activity_date] : [],
-      ),
-    ).toEqual([
-      "2026-10-14",
-      "2026-10-15",
-      "2026-10-16",
-      "2026-10-17",
-      "2026-10-18",
-      "2026-10-19",
-      "2026-10-20",
-    ]);
+    expect(kept?.pending[0]?.event.event).toBe("installation_observed");
+    expect(kept?.pending.filter(({ event }) => event.event === "epg_opened")).toHaveLength(10);
+    expect(kept?.pending.filter(({ event }) => event.event === "app_active_day")).toHaveLength(0);
     expect(await owner.settings()).toEqual({ enabled: true, transport: "local" });
     const closing = owner.close();
     await vi.advanceTimersByTimeAsync(500);
@@ -696,531 +681,281 @@ describe("analytics delivery and deadlines", () => {
   });
 });
 
-describe("completed daily product and reliability capture", () => {
-  function clock(day = "2026-10-11") {
-    vi.useFakeTimers({
-      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-    });
-    vi.setSystemTime(new Date(`${day}T12:00:00Z`));
-  }
+/** Playback events as compact facts, in delivery order. */
+function streams(events: readonly CaptureEvent[]) {
+  return events.flatMap((event) => {
+    switch (event.event) {
+      case "stream_started":
+        return [`started ${event.properties.stream_type}`];
+      case "stream_stopped":
+        return [
+          `stopped ${event.properties.stream_type} ${event.properties.watch_duration_seconds}`,
+        ];
+      case "stream_error":
+        return [`error ${event.properties.stream_type} ${event.properties.error_type}`];
+      default:
+        return [];
+    }
+  });
+}
 
-  async function nextDay(owner: Analytics, day = "2026-10-12") {
-    owner.setForeground(false);
-    vi.setSystemTime(new Date(`${day}T12:00:00Z`));
-    owner.setForeground(true);
-    await vi.advanceTimersByTimeAsync(0);
-  }
-
-  it("captures fixed counts and bounded failures with terminal denominators independent of start day", async () => {
-    clock();
+describe("direct product and reliability events", () => {
+  it("sends each completed action, setting, screen, outcome and renderer exit with only fixed fields", async () => {
     const capture = await captureServer();
     const { owner } = await start({ transport: localCapture(capture.endpoint) });
+    // No identity exists before the first foreground observation, so nothing can be queued.
+    owner.noteAction("favourite_added");
+    await owner.settings();
     owner.setForeground(true);
     await until(() => capture.payloads.length === 2);
-    for (const feature of [
-      "home",
-      "live_tv",
-      "movies",
-      "series",
-      "watchlist",
-      "downloads",
-      "search",
-      "settings",
-      "player",
-      "details",
-    ] as const)
-      owner.noteFeature(feature);
-    const midnight = owner.noteOperationStarted("playback_open");
-    for (const outcome of ["success", "success", "failed", "interrupted"] as const) {
-      const generation = owner.noteOperationStarted("download_transfer");
-      owner.noteOperationFinished(
-        "download_transfer",
-        generation,
-        outcome,
-        downloadFailure({ kind: "folder", detail: "/PRIVATE/PATH" }),
-      );
-    }
-    for (const outcome of ["success", "failed"] as const) {
-      const generation = owner.noteOperationStarted("update_check");
-      owner.noteOperationFinished(
-        "update_check",
-        generation,
-        outcome,
-        checkFailure({ kind: "offline" }),
-      );
-    }
-    owner.noteRenderer("starts");
-    owner.noteRenderer("starts");
-    owner.noteRenderer("crashed");
-    await nextDay(owner);
-    await until(() => capture.payloads.length === 4);
-    owner.noteOperationFinished(
-      "playback_open",
-      midnight,
+    owner.noteAction("epg_opened");
+    owner.noteAction("search_used");
+    owner.actionObserver("favourite_added")();
+    owner.settingObserver("autoplay_next")();
+    owner.noteFeature("details");
+    owner.observeOperation("download_ended")(
       "failed",
-      appFailure({ kind: "unreachable", server: "PRIVATE", detail: "SECRET" }),
+      downloadFailure({ kind: "folder", detail: "/PRIVATE/PATH" }),
     );
-    const summary = CaptureEvent()(capture.payloads[3]);
-    if (summary instanceof type.errors || summary.event !== "app_summary_day")
-      throw new Error("No completed summary.");
-    expect(summary.properties.summary_date).toBe("2026-10-11");
-    expect(Object.values(summary.properties.counts.features)).toEqual(Array(10).fill(1));
-    expect(summary.properties.counts.download_transfer).toMatchObject({
-      started: 4,
-      success: 2,
-      failed: 1,
-      interrupted: 1,
-      failures: { disk: 1 },
+    owner.observeOperation("download_ended")("interrupted");
+    owner.observeOperation("update_check_ended")("failed", checkFailure({ kind: "offline" }));
+    owner.observeOperation("update_check_ended")("success", "network");
+    owner.noteRendererExit("crashed");
+    await until(() => capture.payloads.length === 12);
+    const sent = capture.payloads.map((payload) => {
+      const event = CaptureEvent()(payload);
+      if (event instanceof type.errors) throw new Error("Invalid local payload.");
+      expect(payload).toEqual({ api_key: "mrstreamer-local-verification", ...event });
+      return event;
     });
-    expect(summary.properties.counts.update_check).toMatchObject({
-      started: 2,
-      success: 1,
-      failed: 1,
-      failures: { network: 1 },
-    });
-    expect(summary.properties.counts.playback_open).toMatchObject({ started: 1, failed: 0 });
-    const transfer = summary.properties.counts.download_transfer;
-    expect(transfer.success / (transfer.success + transfer.failed)).toBe(2 / 3);
-    expect(summary.properties.counts.renderer).toEqual({
-      starts: 2,
-      crashed: 1,
-      killed: 0,
-      other: 0,
-    });
-    expect(JSON.stringify(capture.payloads)).not.toMatch(/PRIVATE|SECRET/);
-    await nextDay(owner, "2026-10-13");
-    await until(() => capture.payloads.length === 6);
-    expect(capture.payloads[5]).toMatchObject({
-      properties: {
-        counts: { playback_open: { started: 0, failed: 1, failures: { network: 1 } } },
-      },
-    });
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(capture.payloads).toHaveLength(6);
+    const common = sent[0]?.properties;
+    expect(sent.slice(2).map(({ event, properties }) => [event, properties])).toEqual(
+      [
+        ["epg_opened", {}],
+        ["search_used", {}],
+        ["favourite_added", {}],
+        ["settings_changed", { setting_key: "autoplay_next" }],
+        ["feature_opened", { feature: "details" }],
+        ["download_ended", { outcome: "failed", error_type: "disk" }],
+        ["download_ended", { outcome: "interrupted" }],
+        ["update_check_ended", { outcome: "failed", error_type: "network" }],
+        ["update_check_ended", { outcome: "success" }],
+        ["renderer_exited", { reason: "crashed" }],
+      ].map(([event, own]) => [event, { ...common, ...(own as object) }]),
+    );
+    expect(new Set(sent.map((event) => event.uuid)).size).toBe(12);
+    expect(new Set(sent.map((event) => event.distinct_id))).toEqual(
+      new Set([sent[0]?.distinct_id]),
+    );
+    expect(JSON.stringify(capture.payloads)).not.toMatch(/PRIVATE|summary|counts/);
   });
 
-  it("preserves the previous build's recorded dimensions when an upgrade precedes rollover", async () => {
-    clock();
+  it("reports an observed transaction or operation only in the consent generation that began it", async () => {
+    const { owner, events } = await start();
+    owner.setForeground(true);
+    await until(() => events.length === 2);
+    const favourite = owner.actionObserver("favourite_added");
+    const setting = owner.settingObserver("home_rows");
+    const download = owner.observeOperation("download_ended");
+    await owner.configure(false);
+    const disabled = owner.observeOperation("update_check_ended");
+    await owner.configure(true);
+    favourite();
+    setting();
+    download("success");
+    disabled("success");
+    owner.observeOperation("update_check_ended")("success");
+    await until(() => events.length === 3);
+    await owner.settings();
+    expect(events.slice(2).map((event) => event.event)).toEqual(["update_check_ended"]);
+  });
+
+  it("stamps each event with the update channel current when it is queued, without ending playback", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
+    const { owner, events } = await start({ store: memoryStore() });
+    owner.setForeground(true);
+    await vi.advanceTimersByTimeAsync(0);
+    const token = owner.beginPlayback("live")!;
+    const binding = owner.bindPlayback(token, "local")!;
+    owner.notePlaybackState(token, binding, 1, "playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    owner.setUpdateChannel("nightly");
+    owner.notePlaybackState(token, binding, 2, "playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    owner.endPlayback(token);
+    await until(() => streams(events).length === 2);
+    expect(streams(events)).toEqual(["started live", "stopped live 2"]);
+    expect(events.at(-2)?.properties.update_channel).toBe("stable");
+    expect(events.at(-1)?.properties.update_channel).toBe("nightly");
+  });
+
+  it("queues the active run's stop at quit and delivers it within the quit deadline", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
     const store = memoryStore();
-    const before = await start({ store });
-    before.owner.setForeground(true);
-    await until(() => before.events.length === 2);
-    const generation = before.owner.noteOperationStarted("playback_open");
-    before.owner.noteOperationFinished("playback_open", generation, "failed", "unsupported");
-    await before.owner.close();
-    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-    const upgraded = {
-      ...properties,
-      app_version: "0.0.12",
-      build_channel: "stable" as const,
-      update_channel: "nightly" as const,
-    };
-    const after = await start({ store, properties: upgraded });
-    after.owner.setForeground(true);
-    await until(() => after.events.length === 2);
-    expect(after.events[0]).toMatchObject({ event: "app_active_day", properties: upgraded });
-    expect(after.events[1]).toMatchObject({
-      event: "app_summary_day",
+    const { owner, events } = await start({ store });
+    owner.setForeground(true);
+    await vi.advanceTimersByTimeAsync(0);
+    const token = owner.beginPlayback("vod")!;
+    const binding = owner.bindPlayback(token, "local")!;
+    for (let second = 1; second <= 3; second++) {
+      owner.notePlaybackState(token, binding, second, "playing");
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    await owner.close();
+    expect(streams(events)).toEqual(["started vod", "stopped vod 3"]);
+    expect((await store.load())?.pending).toEqual([]);
+  });
+});
+
+describe("persisted state migration", () => {
+  const legacy = (event: string, extra: object, attempts: number) => ({
+    event: {
+      uuid: randomUUID(),
+      distinct_id: "f157c0b7-1b97-4a60-a96b-1c2ca9e56904",
+      timestamp: "2026-10-11T12:00:00.000Z",
+      event,
       properties: {
         ...properties,
-        summary_date: "2026-10-11",
-        counts: { playback_open: { failed: 1 } },
+        profile_origin: "upgrading",
+        $process_person_profile: false,
+        $geoip_disable: true,
+        ...extra,
       },
-    });
-    expect(after.events[1]?.distinct_id).toBe(before.events[0]?.distinct_id);
+    },
+    attempts,
   });
+  const summary = {
+    day: "2026-10-12",
+    counts: { features: { home: 3 }, saturated: false },
+    properties,
+    ready: null,
+    reportedDay: "2026-10-11",
+  };
 
-  it("resets partial-day counts on build or update-channel changes and excludes stale check results", async () => {
-    clock();
-    const store = memoryStore();
-    const before = await start({ store });
-    before.owner.setForeground(true);
-    await until(() => before.events.length === 2);
-    before.owner.noteFeature("home");
-    await before.owner.close();
-    const upgraded = { ...properties, app_version: "0.0.12", build_channel: "stable" as const };
-    const after = await start({ store, properties: upgraded });
-    after.owner.noteFeature("movies");
-    const oldCheck = after.owner.noteOperationStarted("update_check");
-    after.owner.setUpdateChannel("nightly");
-    after.owner.noteOperationFinished("update_check", oldCheck, "failed", "network");
-    after.owner.noteFeature("series");
-    const newCheck = after.owner.noteOperationStarted("update_check");
-    after.owner.noteOperationFinished("update_check", newCheck, "success");
-    await nextDay(after.owner);
-    await until(() => after.events.length === 2);
-    expect(after.events[1]).toMatchObject({
-      event: "app_summary_day",
-      properties: {
-        ...upgraded,
-        update_channel: "nightly",
-        counts: {
-          features: { home: 0, movies: 0, series: 1 },
-          update_check: { started: 1, success: 1, failed: 0 },
-        },
-      },
-    });
-  });
-
-  it("excludes obsolete outcomes after a channel round trip, keeps same-channel midnight results and pending dimensions", async () => {
-    clock();
-    const capture = await captureServer();
-    let accepting = false;
-    const transport = localCapture(capture.endpoint);
-    if (!transport) throw new Error("No local transport.");
-    const store = memoryStore();
-    const { owner } = await start({
-      store,
-      transport: {
-        async send(event, signal) {
-          if (!accepting) return "retry";
-          return transport.send(event, signal);
-        },
-      },
-    });
-    owner.setForeground(true);
-    await until(async () => (await store.load())?.pending[0]?.attempts === 1);
-    const pending = (await store.load())?.pending.map((item) => item.event);
-    const obsolete = owner.noteOperationStarted("update_check");
-    owner.setUpdateChannel("nightly");
-    owner.setUpdateChannel("stable");
-    const current = owner.noteOperationStarted("update_check");
-    owner.setUpdateChannel("stable");
-    owner.noteOperationFinished("update_check", current, "success");
-    owner.noteOperationFinished("update_check", obsolete, "failed", "network");
-    await vi.advanceTimersByTimeAsync(1000);
-    // Channel changes do not relabel events already waiting in the durable outbox.
-    expect((await store.load())?.pending.map((item) => item.event)).toEqual(pending);
-    accepting = true;
-    await nextDay(owner);
-    await vi.advanceTimersByTimeAsync(1000);
-    await until(() => capture.payloads.length === 4);
-    expect(capture.payloads[3]).toMatchObject({
-      event: "app_summary_day",
-      properties: {
-        update_channel: "stable",
-        counts: { update_check: { started: 1, success: 1, failed: 0, failures: { network: 0 } } },
-      },
-    });
-    // Same-owner, same-channel results remain valid when only the UTC day changes.
-    const crossing = owner.noteOperationStarted("playback_open");
-    await nextDay(owner, "2026-10-13");
-    await until(() => capture.payloads.length === 6);
-    owner.setUpdateChannel("stable");
-    owner.noteOperationFinished("playback_open", crossing, "success");
-    await nextDay(owner, "2026-10-14");
-    await until(() => capture.payloads.length === 8);
-    expect(capture.payloads[7]).toMatchObject({
-      properties: { counts: { playback_open: { started: 0, success: 1 } } },
-    });
-  });
-
-  it("does not accept an outcome whose start was dropped during clock rollback", async () => {
-    clock();
-    const { owner, events } = await start({ store: memoryStore() });
-    owner.setForeground(true);
-    await until(() => events.length === 2);
-    owner.noteFeature("home");
-    vi.setSystemTime(new Date("2026-10-10T12:00:00Z"));
-    const dropped = owner.noteOperationStarted("playback_open");
-    expect(dropped).toBeNull();
-    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
-    owner.noteOperationFinished("playback_open", dropped, "failed", "app");
-    const observed = owner.noteOperationStarted("playback_open");
-    owner.noteOperationFinished("playback_open", observed, "success");
-    await nextDay(owner);
-    await until(() => events.length === 4);
-    expect(events[3]).toMatchObject({
-      properties: { counts: { playback_open: { started: 1, success: 1, failed: 0 } } },
-    });
-  });
-
-  it("pauses notes synchronously, clears daily counts, and never backfills across off/on or restart", async () => {
-    clock();
-    const store = memoryStore();
-    const { owner } = await start({ store });
-    owner.setForeground(true);
-    await until(async () => (await store.load())?.pending.length === 0);
-    const old = owner.noteOperationStarted("playback_open");
-    owner.noteFeature("home");
-    const off = owner.configure(false);
-    owner.noteFeature("movies");
-    owner.noteOperationFinished("playback_open", old, "failed", "app");
-    await off;
-    expect((await store.load())?.summary).toBeUndefined();
-    await owner.close();
-    const restarted = await start({ store });
-    restarted.owner.noteFeature("series");
-    await restarted.owner.configure(true);
-    restarted.owner.noteOperationFinished("playback_open", old, "success");
-    restarted.owner.noteFeature("settings");
-    await nextDay(restarted.owner);
-    await until(() => restarted.events.length === 2);
-    expect(restarted.events[1]).toMatchObject({
-      properties: {
-        counts: {
-          features: { home: 0, movies: 0, series: 0, settings: 1 },
-          playback_open: { success: 0, failed: 0 },
-        },
-      },
-    });
-  });
-
-  it("coalesces a burst through slow storage so opt-out needs only bounded persistence work", async () => {
-    clock();
-    const disk = memoryStore();
-    let pendingSave: (() => void) | undefined;
-    let gated = false;
-    const store = {
-      load: disk.load,
-      async save(record: AnalyticsRecord) {
-        if (gated)
-          await new Promise<void>((resolve) => {
-            pendingSave = resolve;
-          });
-        await disk.save(record);
-      },
-    };
-    const { owner } = await start({ store });
-    owner.setForeground(true);
-    await until(async () => (await disk.load())?.pending.length === 0);
-    gated = true;
-    for (let n = 0; n < 10_000; n++) owner.noteFeature("home");
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(pendingSave).toBeDefined();
-    for (let n = 0; n < 10_000; n++) owner.noteFeature("home");
-    const off = owner.configure(false);
-    owner.noteFeature("home");
-    gated = false;
-    pendingSave?.();
-    await off;
-    expect((await disk.load())?.summary).toBeUndefined();
-    expect(await owner.settings()).toMatchObject({ enabled: false, transport: "local" });
-  });
-
-  it("keeps only the newest completed bucket and never reopens days on clock rollback", async () => {
-    clock();
-    const { owner, events } = await start({ store: memoryStore() });
-    owner.noteFeature("home");
-    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-    owner.noteFeature("movies");
-    vi.setSystemTime(new Date("2026-10-13T12:00:00Z"));
-    owner.noteFeature("series");
+  it("discards queued daily summaries and their counts, never sending them, and keeps other queued events", async () => {
+    const dataDir = await tempDir();
+    const install = legacy("installation_observed", {}, 1);
+    const day = legacy("app_active_day", { activity_date: "2026-10-11" }, 0);
+    const old = legacy("app_summary_day", { summary_date: "2026-10-10", counts: {} }, 2);
+    await writeFile(
+      join(dataDir, "analytics.json"),
+      JSON.stringify({
+        format: 1,
+        enabled: true,
+        installationId: install.event.distinct_id,
+        profileOrigin: "upgrading",
+        firstSeen: true,
+        lastDay: "2026-10-11",
+        summary,
+        pending: [install, old, day],
+      }),
+    );
+    const { owner, events } = await start({ dataDir });
     owner.setForeground(true);
     await until(() => events.length === 3);
-    expect(events[2]).toMatchObject({
-      event: "app_summary_day",
-      properties: { summary_date: "2026-10-12", counts: { features: { home: 0, movies: 1 } } },
+    // Legacy retries keep their UUID and timestamp; today's observation follows them.
+    expect(events.slice(0, 2)).toEqual([install.event, day.event]);
+    expect(events[2]?.event).toBe("app_active_day");
+    const raw = JSON.parse(await readFile(join(dataDir, "analytics.json"), "utf8"));
+    expect(raw).not.toHaveProperty("summary");
+    expect(raw.format).toBe(2);
+    expect((await saved(dataDir)).installationId).toBe(install.event.distinct_id);
+    owner.noteAction("search_used");
+    await until(() => events.length === 4);
+    expect(events[3]).toMatchObject({
+      event: "search_used",
+      distinct_id: install.event.distinct_id,
     });
-    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
-    owner.noteFeature("home");
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(events).toHaveLength(3);
-    await nextDay(owner, "2026-10-14");
-    await until(() => events.length === 5);
-    expect(events[4]).toMatchObject({
-      properties: { summary_date: "2026-10-13", counts: { features: { home: 0, series: 1 } } },
-    });
+    expect(events.some((event) => (event.event as string) === "app_summary_day")).toBe(false);
   });
 
-  it("migrates format-one state without a summary and preserves disabled consent and identity", async () => {
-    const first = await start();
-    first.owner.setForeground(true);
-    await until(() => first.events.length === 2);
-    await first.owner.configure(false);
-    await first.owner.close();
-    const old = await saved(first.dataDir);
-    expect(old.summary).toBeUndefined();
-    const restarted = await start({ dataDir: first.dataDir });
-    restarted.owner.noteFeature("home");
-    await restarted.owner.configure(true);
-    restarted.owner.noteFeature("movies");
-    await restarted.owner.close();
-    const kept = await saved(first.dataDir);
-    expect(kept.installationId).toBe(old.installationId);
-    expect(kept.summary?.counts.features).toMatchObject({ home: 0, movies: 1 });
-    expect(restarted.events).toEqual([]);
-  });
-
-  it("caps counts and flags clipping, validates renderer literals, and strips nested payload extras", async () => {
-    clock();
-    expect(ipcInputs["analytics.feature"]()("details")).toBe("details");
-    for (const value of ["PRIVATE", { feature: "home", query: "PRIVATE" }, { feature: "home" }])
-      expect(ipcInputs["analytics.feature"]()(value)).toBeInstanceOf(type.errors);
-    const { owner, events, dataDir } = await start();
+  it("migrates an opted-out profile without its counts, keeping consent and identity", async () => {
+    const dataDir = await tempDir();
+    await writeFile(
+      join(dataDir, "analytics.json"),
+      JSON.stringify({
+        format: 1,
+        enabled: false,
+        installationId: "f157c0b7-1b97-4a60-a96b-1c2ca9e56904",
+        profileOrigin: "fresh",
+        firstSeen: true,
+        lastDay: "2026-10-11",
+        summary,
+        pending: [],
+      }),
+    );
+    const { owner, events } = await start({ dataDir });
     owner.setForeground(true);
-    await until(() => events.length === 2);
     owner.noteFeature("home");
-    await owner.close();
-    const stored = await saved(dataDir);
-    if (!stored.summary) throw new Error("No counts.");
-    stored.summary.counts.features.home = 1_000_000;
-    stored.summary.counts.actions.favourite_added = 1_000_000;
-    stored.summary.counts.settings.title_language = 1_000_000;
-    stored.summary.counts.playback.live.starts = 1_000_000;
-    await analyticsStore(dataDir).save(stored);
-    const restarted = await start({ dataDir });
-    restarted.owner.noteFeature("home");
-    restarted.owner.noteAction("favourite_added");
-    restarted.owner.noteSetting("title_language");
-    const token = restarted.owner.beginPlayback("live")!;
-    const binding = restarted.owner.bindPlayback(token, "local")!;
-    restarted.owner.notePlaybackState(token, binding, 1, "playing");
-    await nextDay(restarted.owner);
-    await until(() => restarted.events.length === 2);
-    const event = restarted.events[1];
-    expect(event).toMatchObject({
-      properties: {
-        counts: {
-          saturated: true,
-          features: { home: 1_000_000 },
-          actions: { favourite_added: 1_000_000 },
-          settings: { title_language: 1_000_000 },
-          playback: { live: { starts: 1_000_000 } },
+    expect(await owner.settings()).toEqual({ enabled: false, transport: "local" });
+    expect(events).toEqual([]);
+    const raw = JSON.parse(await readFile(join(dataDir, "analytics.json"), "utf8"));
+    expect(raw).toEqual({
+      format: 2,
+      enabled: false,
+      installationId: "f157c0b7-1b97-4a60-a96b-1c2ca9e56904",
+      profileOrigin: "fresh",
+      firstSeen: true,
+      lastDay: "2026-10-11",
+      pending: [],
+    });
+  });
+
+  it("clears a loaded queue when opt-out is requested during startup and never backfills it", async () => {
+    const store = memoryStore();
+    const before = await start({
+      store,
+      transport: { send: () => new Promise(() => {}) },
+    });
+    before.owner.setForeground(true);
+    await until(async () => (await store.load())?.pending.length === 2);
+    before.owner.noteFeature("home");
+    await until(async () => (await store.load())?.pending.length === 3);
+    let loaded: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      loaded = resolve;
+    });
+    const events: CaptureEvent[] = [];
+    const owner = new Analytics({
+      dataDir: before.dataDir,
+      origin: Promise.resolve("unknown"),
+      properties,
+      store: {
+        async load() {
+          await gate;
+          return store.load();
+        },
+        save: store.save,
+      },
+      transport: {
+        kind: "local",
+        async send(event) {
+          events.push(structuredClone(event));
+          return "accepted";
         },
       },
     });
-    const capture = await captureServer();
-    const transport = localCapture(capture.endpoint);
-    if (!event || event.event !== "app_summary_day" || !transport)
-      throw new Error("No transport/summary.");
-    const raw = {
-      ...event,
-      properties: {
-        ...event.properties,
-        query: "PRIVATE",
-        counts: {
-          ...event.properties.counts,
-          stack: "PRIVATE",
-          features: { ...event.properties.counts.features, provider: "PRIVATE" },
-          playback_open: {
-            ...event.properties.counts.playback_open,
-            failures: {
-              ...event.properties.counts.playback_open.failures,
-              private_error: "PRIVATE",
-            },
-          },
-        },
-      },
-    };
-    expect(await transport.send(raw, new AbortController().signal)).toBe("accepted");
-    expect(capture.payloads[0]).toEqual({ api_key: "mrstreamer-local-verification", ...event });
-    expect(JSON.stringify(capture.payloads)).not.toContain("PRIVATE");
-    const invalid = {
-      ...event,
-      properties: {
-        ...event.properties,
-        counts: {
-          ...emptySummaryCounts(),
-          features: { ...event.properties.counts.features, home: -1 },
-        },
-      },
-    };
-    expect(await transport.send(invalid, new AbortController().signal)).toBe("discard");
-    expect(capture.payloads).toHaveLength(1);
+    owners.push(owner);
+    const disabled = owner.configure(false);
+    loaded?.();
+    await disabled;
+    expect((await store.load())?.pending).toEqual([]);
+    await owner.configure(true);
+    owner.noteFeature("settings");
+    await until(() => events.length === 1);
+    await owner.settings();
+    expect(events.map((event) => event.event)).toEqual(["feature_opened"]);
+    expect(events[0]).toMatchObject({ properties: { feature: "settings" } });
   });
 });
 
-it("retains a summary's exact payload and three-attempt budget across a hung request and restart", async () => {
-  vi.useFakeTimers({
-    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-  });
-  vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
-  const store = memoryStore();
-  const summaries: CaptureEvent[] = [];
-  const before = await start({
-    store,
-    transport: {
-      send(event, signal) {
-        if (event.event !== "app_summary_day") return Promise.resolve("accepted");
-        summaries.push(structuredClone(event));
-        return new Promise((resolve) =>
-          signal.addEventListener("abort", () => resolve("retry"), { once: true }),
-        );
-      },
-    },
-  });
-  before.owner.setForeground(true);
-  await until(async () => (await store.load())?.pending.length === 0);
-  before.owner.noteFeature("player");
-  before.owner.setForeground(false);
-  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-  before.owner.setForeground(true);
-  await until(() => summaries.length === 1);
-  const closing = before.owner.close();
-  await vi.advanceTimersByTimeAsync(500);
-  await closing;
-  const after = await start({
-    store,
-    transport: {
-      async send(event) {
-        if (event.event === "app_summary_day") summaries.push(structuredClone(event));
-        return "retry";
-      },
-    },
-  });
-  after.owner.setForeground(true);
-  await vi.advanceTimersByTimeAsync(0);
-  for (let attempt = 0; attempt < 4; attempt++) await vi.advanceTimersByTimeAsync(2000);
-  expect(summaries).toHaveLength(3);
-  for (const event of summaries) expect(event).toEqual(summaries[0]);
-  expect((await store.load())?.pending).toEqual([]);
-  expect((await store.load())?.summary?.reportedDay).toBe("2026-10-11");
-});
-
-it("cannot restore a loaded aggregate after opt-out was requested during startup", async () => {
-  vi.useFakeTimers({
-    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-  });
-  vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
-  const store = memoryStore();
-  const before = await start({ store });
-  before.owner.setForeground(true);
-  await until(async () => (await store.load())?.pending.length === 0);
-  before.owner.noteFeature("home");
-  await before.owner.close();
-  let loaded: (() => void) | undefined;
-  const gate = new Promise<void>((resolve) => {
-    loaded = resolve;
-  });
-  const events: CaptureEvent[] = [];
-  const owner = new Analytics({
-    dataDir: before.dataDir,
-    origin: Promise.resolve("unknown"),
-    properties,
-    store: {
-      async load() {
-        await gate;
-        return store.load();
-      },
-      save: store.save,
-    },
-    transport: {
-      kind: "local",
-      async send(event) {
-        events.push(structuredClone(event));
-        return "accepted";
-      },
-    },
-  });
-  owners.push(owner);
-  const disabled = owner.configure(false);
-  loaded?.();
-  await disabled;
-  expect((await store.load())?.summary).toBeUndefined();
-  await owner.configure(true);
-  owner.noteFeature("settings");
-  owner.setForeground(false);
-  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-  owner.setForeground(true);
-  await vi.advanceTimersByTimeAsync(0);
-  expect(events[1]).toMatchObject({
-    event: "app_summary_day",
-    properties: { counts: { features: { home: 0, settings: 1 } } },
-  });
-});
-
-describe("confirmed daily playback measurements", () => {
+describe("observed playback runs", () => {
   function playbackClock(at = "2026-10-11T12:00:00Z") {
     vi.useFakeTimers({
       toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -1231,6 +966,7 @@ describe("confirmed daily playback measurements", () => {
     const result = await start({ store: memoryStore() });
     result.owner.setForeground(true);
     await vi.advanceTimersByTimeAsync(0);
+    await until(() => result.events.length === 2);
     return result;
   }
   async function playing(
@@ -1246,21 +982,24 @@ describe("confirmed daily playback measurements", () => {
     }
     return sequence;
   }
-  async function complete(owner: Analytics) {
-    owner.setForeground(false);
-    vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-    owner.setForeground(true);
+  /** Waits for the expected facts, then confirms nothing else arrives. */
+  async function expectStreams(
+    owner: Analytics,
+    events: readonly CaptureEvent[],
+    expected: string[],
+  ) {
+    await until(() => streams(events).length >= expected.length);
     await vi.advanceTimersByTimeAsync(0);
+    await owner.settings();
+    expect(streams(events)).toEqual(expected);
   }
 
-  it("counts a receiver title's pre-observer load failure once without a second open operation", async () => {
+  it("reports a receiver title's pre-observer load failure once, with no start or stop", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const frame = "current-frame";
     const hint = { control: randomUUID(), order: 1, ongoing: false };
     const token = owner.admitPlayback("vod", hint, frame)!;
-    const preparation = owner.noteOperationStarted("playback_open");
-    owner.noteOperationFinished("playback_open", preparation, "success");
     const failedLoad = owner.receiverLoadFailureObserver(hint.control, frame);
     failedLoad("network");
     failedLoad("network");
@@ -1269,21 +1008,7 @@ describe("confirmed daily playback measurements", () => {
     physical.failure("credentials");
     physical.stop();
     owner.endPlayback(token);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback_open: { started: 1, success: 1, failed: 0 },
-          playback: {
-            vod: {
-              starts: 0,
-              errors: 1,
-              failures: { network: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, ["error vod network"]);
   });
 
   it("rejects a superseded receiver load failure and old physical callback after a new run", async () => {
@@ -1298,60 +1023,32 @@ describe("confirmed daily playback measurements", () => {
     owner.admitPlayback("vod", current, frame);
     staleFailure("credentials");
     stalePhysical.failure("credentials");
-    const freshFailure = owner.receiverLoadFailureObserver(current.control, frame);
-    freshFailure("network");
+    owner.receiverLoadFailureObserver(current.control, frame)("network");
     const currentPhysical = owner.remotePlayback("vod", current.control);
     currentPhysical.failure("network");
     currentPhysical.failure("credentials");
     owner.endControlledPlayback(current.control, frame);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            vod: { starts: 0, errors: 1, failures: { network: 1, credentials: 0 } },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, ["error vod network"]);
   });
 
-  it.each(["consent", "dimensions"] as const)(
-    "rejects a pre-reset receiver load callback after %s changes, while a current continuation can fail",
-    async (reset) => {
-      playbackClock();
-      const { owner, events } = await measuring();
-      await until(() => events.length === 2);
-      const frame = "current-frame";
-      const hint = { control: randomUUID(), order: 1, ongoing: false };
-      owner.admitPlayback("vod", hint, frame);
-      const stale = owner.receiverLoadFailureObserver(hint.control, frame);
-      if (reset === "consent") {
-        await owner.configure(false);
-        await owner.configure(true);
-        await vi.advanceTimersByTimeAsync(0);
-      } else {
-        owner.setUpdateChannel("nightly");
-        owner.setUpdateChannel("stable");
-      }
-      stale("credentials");
-      owner.admitPlayback("vod", hint, frame);
-      owner.receiverLoadFailureObserver(hint.control, frame)("network");
-      owner.endControlledPlayback(hint.control, frame);
-      await complete(owner);
-      expect(events.filter((event) => event.event === "app_summary_day").at(-1)).toMatchObject({
-        properties: {
-          counts: {
-            playback: {
-              vod: { starts: 0, errors: 1, failures: { network: 1, credentials: 0 } },
-            },
-          },
-        },
-      });
-    },
-  );
+  it("rejects a pre-reset receiver load callback after consent changes, while the current continuation can fail", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const frame = "current-frame";
+    const hint = { control: randomUUID(), order: 1, ongoing: false };
+    owner.admitPlayback("vod", hint, frame);
+    const stale = owner.receiverLoadFailureObserver(hint.control, frame);
+    await owner.configure(false);
+    await owner.configure(true);
+    await vi.advanceTimersByTimeAsync(0);
+    stale("credentials");
+    owner.admitPlayback("vod", hint, frame);
+    owner.receiverLoadFailureObserver(hint.control, frame)("network");
+    owner.endControlledPlayback(hint.control, frame);
+    await expectStreams(owner, events, ["error vod network"]);
+  });
 
-  it("measures receiver replay with a fresh load control and rejects the old load's facts", async () => {
+  it("ends a receiver run at replay with its own watch time and rejects the old load's facts", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const first = owner.beginPlayback("vod")!;
@@ -1373,94 +1070,63 @@ describe("confirmed daily playback measurements", () => {
     fresh.failure("network");
     fresh.stop();
     owner.endPlayback(replay);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            vod: {
-              starts: 2,
-              errors: 1,
-              watch_minutes: 1,
-              failures: { network: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, [
+      "started vod",
+      "stopped vod 20",
+      "started vod",
+      "error vod network",
+      "stopped vod 20",
+    ]);
   });
 
-  it.each(["consent", "dimensions"] as const)(
-    "resolves fresh receiver open failures after %s reset but rejects callbacks created before the reset",
-    async (reset) => {
-      playbackClock();
-      const { owner, events } = await measuring();
-      await until(() => events.length === 2);
-      const control = owner.beginPlayback("vod")!;
-      const remote = owner.remotePlayback("vod", control);
-      remote.state("playing");
-      const stale = owner.playbackFailureObserver(control);
-      if (reset === "consent") {
-        await owner.configure(false);
-        await owner.configure(true);
-        await vi.advanceTimersByTimeAsync(0);
-      } else {
-        owner.setUpdateChannel("nightly");
-        owner.setUpdateChannel("stable");
-      }
-      remote.state("playing");
-      remote.stop();
-      stale("credentials");
-      owner.playbackFailureObserver(control)("network");
-      owner.playbackFailureObserver(control)("network");
-      await complete(owner);
-      const summaries = events.filter((event) => event.event === "app_summary_day");
-      expect(summaries.at(-1)).toMatchObject({
-        properties: {
-          counts: {
-            playback: {
-              vod: {
-                starts: 0,
-                errors: 1,
-                failures: { network: 1, credentials: 0 },
-              },
-            },
-          },
-        },
-      });
-    },
-  );
+  it("resolves fresh receiver open failures after a consent reset but rejects callbacks created before it", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const control = owner.beginPlayback("vod")!;
+    const remote = owner.remotePlayback("vod", control);
+    remote.state("playing");
+    const stale = owner.playbackFailureObserver(control);
+    await expectStreams(owner, events, ["started vod"]);
+    await owner.configure(false);
+    await owner.configure(true);
+    await vi.advanceTimersByTimeAsync(0);
+    remote.state("playing");
+    remote.stop();
+    stale("credentials");
+    owner.playbackFailureObserver(control)("network");
+    owner.playbackFailureObserver(control)("network");
+    await owner.close();
+    // Opt-out dropped the first run without a stop; the continuation has no historical start.
+    expect(streams(events)).toEqual(["started vod", "error vod network"]);
+  });
 
-  it.each(["consent", "dimensions", "end"] as const)(
-    "rejects a delayed closed-binding failure after %s reset",
+  it.each(["consent", "end"] as const)(
+    "rejects a delayed closed-binding failure after %s",
     async (reset) => {
       playbackClock();
       const { owner, events } = await measuring();
-      await until(() => events.length === 2);
       const token = owner.beginPlayback("live")!;
       const closed = new AbortController();
       const binding = owner.bindPlayback(token, "local", "live", closed.signal)!;
       owner.notePlaybackState(token, binding, 1, "playing");
       closed.abort();
+      await expectStreams(owner, events, ["started live"]);
       if (reset === "consent") {
         await owner.configure(false);
         await owner.configure(true);
         await vi.advanceTimersByTimeAsync(0);
-      } else if (reset === "dimensions") {
-        owner.setUpdateChannel("nightly");
-        owner.setUpdateChannel("stable");
       } else owner.endPlayback(token);
       owner.beginPlayback("live", true);
       owner.notePlaybackFailure(token, binding, "credentials");
-      owner.noteFeature("home");
-      await complete(owner);
-      expect(events.filter((event) => event.event === "app_summary_day").at(-1)).toMatchObject({
-        properties: { counts: { playback: { live: { errors: 0, failures: { credentials: 0 } } } } },
-      });
+      await expectStreams(
+        owner,
+        events,
+        reset === "consent" ? ["started live"] : ["started live", "stopped live 0"],
+      );
     },
   );
 
-  it("exports late terminal failure once, excluding closed generations after a newer bind and run", async () => {
+  it("exports a late terminal failure once, excluding closed generations after a newer bind and run", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const token = owner.beginPlayback("live")!;
@@ -1480,23 +1146,15 @@ describe("confirmed daily playback measurements", () => {
     const fresh = owner.beginPlayback("live")!;
     owner.notePlaybackFailure(token, replacement, "credentials");
     owner.endPlayback(fresh);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            live: {
-              starts: 1,
-              errors: 2,
-              failures: { network: 1, unsupported: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, [
+      "started live",
+      "error live network",
+      "error live unsupported",
+      "stopped live 0",
+    ]);
   });
 
-  it("admits gameplay hints without advisory registration, preserves reconnects and rejects superseded controls", async () => {
+  it("admits gameplay hints without advisory registration, keeps reconnects in one run and rejects superseded controls", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const frame = "current-frame";
@@ -1527,28 +1185,19 @@ describe("confirmed daily playback measurements", () => {
     owner.endPlayback(second);
     expect(owner.admitPlayback("live", replay, frame)).toBeNull();
     expect(owner.admitPlayback("live", first, frame)).toBeNull();
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            live: {
-              starts: 2,
-              watch_minutes: 1,
-              errors: 1,
-              failures: { network: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
-    expect(JSON.stringify(events)).not.toMatch(/control|order|frame|watch_ms/);
+    await expectStreams(owner, events, [
+      "started live",
+      "stopped live 40",
+      "started live",
+      "error live network",
+      "stopped live 10",
+    ]);
+    expect(JSON.stringify(events)).not.toMatch(/control|order|frame|binding|position/);
   });
 
-  it("keeps a remote run across frame adoption and output moves, and renews only its current lineage after resets", async () => {
+  it("keeps a receiver run across frame adoption, and a run continuing across consent reset reports no start or stop", async () => {
     playbackClock();
     const { owner, events } = await measuring();
-    await until(() => events.length === 2);
     const first = { control: randomUUID(), order: 1, ongoing: false };
     const token = owner.admitPlayback("vod", first, "old-frame")!;
     const remote = owner.remotePlayback("vod", token);
@@ -1559,6 +1208,7 @@ describe("confirmed daily playback measurements", () => {
     const adopted = { control: randomUUID(), order: 1, ongoing: true };
     expect(owner.admitPlayback("vod", adopted, "new-frame")).toBe(token);
     expect(owner.admitPlayback("vod", first, "old-frame")).toBeNull();
+    await expectStreams(owner, events, ["started vod"]);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -1570,34 +1220,15 @@ describe("confirmed daily playback measurements", () => {
     remote.stop();
     // Current normal media admission can return a paused receiver here without another poll.
     expect(owner.admitPlayback("vod", adopted, "new-frame")).toBe(renewed);
-    let binding = owner.bindPlayback(renewed, "local", "vod")!;
+    const binding = owner.bindPlayback(renewed, "local", "vod")!;
     await playing(owner, renewed, binding, 35);
-    owner.setUpdateChannel("nightly");
-    owner.setUpdateChannel("stable");
-    const continued = owner.admitPlayback("vod", adopted, "new-frame")!;
-    binding = owner.bindPlayback(continued, "local", "vod")!;
-    await playing(owner, continued, binding, 35);
     owner.notePlaybackFailure(renewed, null, "credentials");
-    owner.notePlaybackFailure(continued, binding, "network");
-    owner.endPlayback(continued);
-    await complete(owner);
-    expect(events.filter((event) => event.event === "app_summary_day").at(-1)).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            vod: {
-              starts: 0,
-              watch_minutes: 1,
-              errors: 1,
-              failures: { network: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
+    owner.notePlaybackFailure(renewed, binding, "network");
+    owner.endPlayback(renewed);
+    await expectStreams(owner, events, ["started vod", "error vod network"]);
   });
 
-  it("promotes an admitted preview session and replays an existing local session through independent binding admission", async () => {
+  it("starts a promoted preview only once it plays in Watch, and replays a local session as a new run", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     expect(owner.admitPlayback("live", undefined, "frame")).toBeNull();
@@ -1606,6 +1237,7 @@ describe("confirmed daily playback measurements", () => {
     const binding = owner.bindPlayback(token, "local", "live")!;
     owner.setPlaybackEligible(token, false);
     await playing(owner, token, binding, 40);
+    await expectStreams(owner, events, []);
     owner.setPlaybackEligible(token, true);
     await playing(owner, token, binding, 20, 40);
     owner.endPlayback(token);
@@ -1614,16 +1246,17 @@ describe("confirmed daily playback measurements", () => {
     const next = owner.bindPlayback(renewed, "local", "live")!;
     await playing(owner, renewed, next, 20);
     owner.endPlayback(renewed);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: { counts: { playback: { live: { starts: 2, watch_minutes: 1, errors: 0 } } } },
-    });
+    await expectStreams(owner, events, [
+      "started live",
+      "stopped live 20",
+      "started live",
+      "stopped live 20",
+    ]);
   });
 
   it("does not revive an obsolete remote intent after a newer selection ended or consent changed", async () => {
     playbackClock();
     const { owner, events } = await measuring();
-    await until(() => events.length === 2);
     const old = { control: randomUUID(), order: 1, ongoing: false };
     const token = owner.admitPlayback("live", old, "frame")!;
     const stale = owner.remotePlayback("live", token);
@@ -1631,24 +1264,19 @@ describe("confirmed daily playback measurements", () => {
     const current = { control: randomUUID(), order: 2, ongoing: false };
     const next = owner.admitPlayback("vod", current, "frame")!;
     owner.endPlayback(next);
+    await expectStreams(owner, events, ["started live", "stopped live 0"]);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
     stale.state("playing");
     stale.failure("credentials");
-    expect(owner.resumePlayback("live")).toBeNull();
     expect(owner.admitPlayback("live", old, "frame")).toBeNull();
-    owner.noteFeature("home");
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: { counts: { playback: { live: { starts: 0, watch_minutes: 0, errors: 0 } } } },
-    });
+    await expectStreams(owner, events, ["started live", "stopped live 0"]);
   });
 
-  it("observes a receiver admitted while consent was off, then rejects its hint after a newer disabled-period load", async () => {
+  it("observes a receiver admitted while consent was off without a historical start", async () => {
     playbackClock();
     const { owner, events } = await measuring();
-    await until(() => events.length === 2);
     await owner.configure(false);
     const old = { control: randomUUID(), order: 1, ongoing: false };
     expect(owner.admitPlayback("live", old, "frame")).toBeNull();
@@ -1671,27 +1299,13 @@ describe("confirmed daily playback measurements", () => {
     expect(owner.controlledPlayback(old.control, "frame")).toBeNull();
     current.failure("network");
     current.stop();
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            live: {
-              starts: 0,
-              watch_minutes: 1,
-              errors: 1,
-              failures: { network: 1, credentials: 0 },
-            },
-          },
-        },
-      },
-    });
+    await owner.close();
+    expect(streams(events)).toEqual(["error live network"]);
   });
 
   it("retires stopped controls while sharing is off so a late advisory or media request cannot revive them", async () => {
     playbackClock();
     const { owner, events } = await measuring();
-    await until(() => events.length === 2);
     await owner.configure(false);
     const hint = { control: randomUUID(), order: 1, ongoing: false };
     expect(owner.admitPlayback("live", hint, "frame")).toBeNull();
@@ -1713,13 +1327,10 @@ describe("confirmed daily playback measurements", () => {
     owner.endControlledPlayback(hint.control, "frame");
     expect(owner.controlledPlayback(current.control, "frame")).toBe(token);
     owner.endControlledPlayback(current.control, "frame");
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: { counts: { playback: { live: { starts: 1, watch_minutes: 1, errors: 0 } } } },
-    });
+    await expectStreams(owner, events, ["started live", "stopped live 35"]);
   });
 
-  it("requires confirmed playback, rounds many intervals once, and keeps one start across replacement and output moves", async () => {
+  it("counts only confirmed playing time across pause, seek and output moves, with one start and stop", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const token = owner.beginPlayback("vod")!;
@@ -1729,49 +1340,12 @@ describe("confirmed daily playback measurements", () => {
     for (let run = 0; run < 6; run++) {
       binding = owner.bindPlayback(token, run % 2 ? "remote" : "local")!;
       const sequence = await playing(owner, token, binding, 6);
-      owner.notePlaybackState(token, binding, sequence + 1, "seeking");
+      owner.notePlaybackState(token, binding, sequence + 1, run % 2 ? "seeking" : "waiting");
       await vi.advanceTimersByTimeAsync(10_000);
     }
     owner.endPlayback(token);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            vod: { starts: 1, errors: 0, watch_minutes: 1 },
-            live: { starts: 0, watch_minutes: 0 },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, ["started vod", "stopped vod 36"]);
     expect(JSON.stringify(events)).not.toMatch(/watch_ms|sessionId|binding|position/);
-  });
-
-  it("splits confirmed monotonic time before UTC foreground rollover without starting again at midnight", async () => {
-    playbackClock("2026-10-11T23:59:20Z");
-    const { owner, events } = await measuring();
-    const token = owner.beginPlayback("live")!;
-    const binding = owner.bindPlayback(token, "local")!;
-    const sequence = await playing(owner, token, binding, 80);
-    owner.notePlaybackState(token, binding, sequence + 1, "paused");
-    owner.setForeground(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        summary_date: "2026-10-11",
-        counts: { playback: { live: { starts: 1, watch_minutes: 1 } } },
-      },
-    });
-    owner.setForeground(false);
-    vi.setSystemTime(new Date("2026-10-13T12:00:00Z"));
-    owner.setForeground(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(events.filter((event) => event.event === "app_summary_day")[1]).toMatchObject({
-      properties: {
-        summary_date: "2026-10-12",
-        counts: { playback: { live: { starts: 0, watch_minutes: 1 } } },
-      },
-    });
   });
 
   it("excludes preview intervals and deduplicates an incident until successful recovery", async () => {
@@ -1793,24 +1367,15 @@ describe("confirmed daily playback measurements", () => {
     owner.setPlaybackEligible(token, false);
     await playing(owner, token, binding, 60, sequence);
     owner.endPlayback(token);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: {
-            live: {
-              starts: 1,
-              errors: 2,
-              watch_minutes: 1,
-              failures: { network: 1, credentials: 1, unsupported: 0 },
-            },
-          },
-        },
-      },
-    });
+    await expectStreams(owner, events, [
+      "started live",
+      "error live network",
+      "error live credentials",
+      "stopped live 60",
+    ]);
   });
 
-  it("bounds missing renderer heartbeats, suspend and wall-clock jumps, while remote playback survives renderer loss", async () => {
+  it("bounds missing heartbeats and suspend, ends a local run with its renderer and keeps receiver playback", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     let token = owner.beginPlayback("live")!;
@@ -1827,26 +1392,23 @@ describe("confirmed daily playback measurements", () => {
     owner.suspendPlayback();
     await vi.advanceTimersByTimeAsync(3600_000);
     sequence = await playing(owner, token, binding, 20, sequence);
-    vi.setSystemTime(new Date(Date.now() + 3600_000));
-    owner.noteFeature("home");
     owner.notePlaybackState(token, binding, ++sequence, "paused");
     owner.endPlayback(token);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: {
-        counts: {
-          playback: { live: { starts: 1, watch_minutes: 0 }, vod: { starts: 1, watch_minutes: 1 } },
-        },
-      },
-    });
+    await expectStreams(owner, events, [
+      "started live",
+      "stopped live 5",
+      "started vod",
+      "stopped vod 60",
+    ]);
   });
 
-  it("invalidates old bindings across opt-out/on and dimension ABA, with no disabled-period backfill or historical start", async () => {
+  it("drops a run at opt-out without a stop, and never backfills disabled time or a historical start", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const old = owner.beginPlayback("live")!;
     const binding = owner.bindPlayback(old, "local")!;
     await playing(owner, old, binding, 40);
+    await expectStreams(owner, events, ["started live"]);
     await owner.configure(false);
     await vi.advanceTimersByTimeAsync(3600_000);
     await owner.configure(true);
@@ -1855,229 +1417,154 @@ describe("confirmed daily playback measurements", () => {
     const ongoing = owner.beginPlayback("live", true)!;
     const renewed = owner.bindPlayback(ongoing, "local")!;
     await playing(owner, ongoing, renewed, 40);
-    owner.setUpdateChannel("nightly");
-    owner.setUpdateChannel("stable");
-    owner.notePlaybackState(ongoing, renewed, 100, "playing");
-    const future = owner.beginPlayback("live", true)!;
-    const fresh = owner.bindPlayback(future, "local")!;
-    await playing(owner, future, fresh, 40);
-    owner.endPlayback(future);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: { counts: { playback: { live: { starts: 0, errors: 0, watch_minutes: 1 } } } },
-    });
+    owner.endPlayback(ongoing);
+    const next = owner.beginPlayback("live")!;
+    const fresh = owner.bindPlayback(next, "local")!;
+    await playing(owner, next, fresh, 10);
+    owner.endPlayback(next);
+    await expectStreams(owner, events, ["started live", "started live", "stopped live 10"]);
   });
 
-  it("drops old binding sequences without creating playback counts", async () => {
+  it("drops old binding sequences without creating playback events", async () => {
     playbackClock();
     const { owner, events } = await measuring();
     const token = owner.beginPlayback("vod")!;
     const old = owner.bindPlayback(token, "local")!;
     const binding = owner.bindPlayback(token, "local")!;
-    owner.noteFeature("home");
     owner.notePlaybackState(token, old, 999, "playing");
     owner.notePlaybackState(token, binding, 2, "paused");
     owner.notePlaybackState(token, binding, 1, "playing");
     owner.notePlaybackFailure(token, old, "network");
     await vi.advanceTimersByTimeAsync(60_000);
     owner.endPlayback(token);
-    await complete(owner);
-    expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-      properties: { counts: { playback: { vod: { starts: 0, errors: 0, watch_minutes: 0 } } } },
-    });
+    await expectStreams(owner, events, []);
   });
-});
 
-it("migrates populated legacy current/ready buckets without changing a pending retry envelope", async () => {
-  vi.useFakeTimers({
-    toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  it("ends a receiver run once at its terminal observation, with no renderer left", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const token = owner.beginPlayback("vod")!;
+    const remote = owner.remotePlayback("vod", token);
+    for (let second = 0; second < 20; second++) {
+      remote.state("playing");
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    remote.state("stopped");
+    remote.end();
+    remote.end();
+    remote.state("playing");
+    remote.failure("network");
+    await expectStreams(owner, events, ["started vod", "stopped vod 20"]);
   });
-  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-  const dataDir = await tempDir();
-  const {
-    playback: _playback,
-    actions: _actions,
-    settings: _settings,
-    ...legacy
-  } = emptySummaryCounts();
-  legacy.features.home = 7;
-  legacy.playback_open.success = 3;
-  const id = "11111111-1111-4111-8111-111111111111";
-  const pending = {
-    uuid: "22222222-2222-4222-8222-222222222222",
-    distinct_id: id,
-    timestamp: "2026-10-10T12:00:00.000Z",
-    event: "app_summary_day" as const,
-    properties: {
-      ...properties,
-      profile_origin: "upgrading" as const,
-      $process_person_profile: false as const,
-      $geoip_disable: true as const,
-      summary_date: "2026-10-09",
-      counts: legacy,
-    },
-  };
-  await writeFile(
-    join(dataDir, "analytics.json"),
-    JSON.stringify({
-      format: 1,
-      enabled: true,
-      installationId: id,
-      profileOrigin: "upgrading",
-      firstSeen: true,
-      lastDay: "2026-10-11",
-      summary: {
-        day: "2026-10-11",
-        properties,
-        counts: legacy,
-        ready: { day: "2026-10-09", properties, counts: legacy },
-        reportedDay: "2026-10-09",
-      },
-      pending: [{ event: pending, attempts: 1 }],
-    }),
-  );
-  const loaded = await analyticsStore(dataDir).load();
-  expect(loaded?.summary?.counts).toMatchObject({
-    features: { home: 7 },
-    playback_open: { success: 3 },
-    playback: { live: { starts: 0, watch_minutes: 0 } },
-    actions: { favourite_added: 0 },
-    settings: { home_rows: 0 },
-  });
-  expect(loaded?.summary?.ready?.counts.features.home).toBe(7);
-  expect(loaded?.pending[0]).toEqual({ event: pending, attempts: 1 });
-  const { owner, events } = await start({ dataDir });
-  owner.setForeground(true);
-  await vi.advanceTimersByTimeAsync(0);
-  await until(() => events.length === 3);
-  expect(events[0]).toEqual(pending);
-  expect(events[2]).toMatchObject({
-    properties: {
-      summary_date: "2026-10-11",
-      counts: { features: { home: 7 }, playback: { vod: { starts: 0 } } },
-    },
-  });
-});
 
-it("validates and strips every new nested capture dictionary without normalizing a pending snapshot", async () => {
-  const counts = emptySummaryCounts();
-  const capture = await captureServer();
-  const transport = localCapture(capture.endpoint)!;
-  const event = {
-    uuid: "22222222-2222-4222-8222-222222222222",
-    distinct_id: "11111111-1111-4111-8111-111111111111",
-    timestamp: "2026-10-11T12:00:00.000Z",
-    event: "app_summary_day" as const,
-    properties: {
-      ...properties,
-      profile_origin: "fresh" as const,
-      $process_person_profile: false as const,
-      $geoip_disable: true as const,
-      summary_date: "2026-10-11",
-      counts,
-    },
-  };
-  const raw = {
-    ...event,
-    properties: {
-      ...event.properties,
-      counts: {
-        ...counts,
-        playback: {
-          ...counts.playback,
-          PRIVATE: "SECRET",
-          live: {
-            ...counts.playback.live,
-            title: "SECRET",
-            failures: { ...counts.playback.live.failures, PRIVATE: "SECRET" },
-          },
-        },
-        actions: { ...counts.actions, PRIVATE: "SECRET" },
-        settings: { ...counts.settings, PRIVATE: "SECRET" },
-        watch_ms: { live: 99, PRIVATE: "SECRET" },
-      },
-    },
-  };
-  expect(await transport.send(raw, new AbortController().signal)).toBe("accepted");
-  expect(capture.payloads[0]).toEqual({ api_key: "mrstreamer-local-verification", ...event });
-  for (const invalid of [-1, 1.5, 1_000_001, NaN]) {
-    expect(
-      await transport.send(
-        {
-          ...event,
-          properties: {
-            ...event.properties,
-            counts: {
-              ...counts,
-              actions: { ...counts.actions, search_used: invalid },
-            },
-          },
-        },
-        new AbortController().signal,
-      ),
-    ).toBe("discard");
-  }
-  expect(
-    await transport.send(
-      {
-        ...event,
-        properties: {
-          ...event.properties,
-          counts: {
-            ...counts,
-            playback: {
-              ...counts.playback,
-              live: { ...counts.playback.live, watch_minutes: 1441 },
-            },
-          },
-        },
-      },
-      new AbortController().signal,
-    ),
-  ).toBe("discard");
-  expect(capture.payloads).toHaveLength(1);
-});
-
-it("rejects stale logical request tokens and stopped receiver observations across consent changes", async () => {
-  vi.useFakeTimers({
-    toFake: ["Date", "performance", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+  it("ends the renderer's run at a receiver's terminal observation, so its control is spent and a fresh one starts anew", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const hint = { control: randomUUID(), order: 1, ongoing: false };
+    owner.admitPlayback("vod", hint, "frame");
+    const remote = owner.remotePlayback("vod", hint.control);
+    for (let second = 0; second < 10; second++) {
+      remote.state("playing");
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    remote.end();
+    expect(owner.controlledPlayback(hint.control, "frame")).toBeNull();
+    expect(owner.admitPlayback("vod", hint, "frame")).toBeNull();
+    owner.endControlledPlayback(hint.control, "frame");
+    const again = { control: randomUUID(), order: 2, ongoing: false };
+    const token = owner.admitPlayback("vod", again, "frame")!;
+    const next = owner.remotePlayback("vod", again.control);
+    next.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    next.end();
+    expect(token).not.toBeNull();
+    await expectStreams(owner, events, [
+      "started vod",
+      "stopped vod 10",
+      "started vod",
+      "stopped vod 1",
+    ]);
   });
-  vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
-  const { owner, events } = await start({ store: memoryStore() });
-  owner.setForeground(true);
-  await vi.advanceTimersByTimeAsync(0);
-  await until(() => events.length === 2);
-  const stale = owner.beginPlayback("live")!;
-  const fail = owner.playbackFailureObserver(stale);
-  const current = owner.beginPlayback("live")!;
-  fail("network");
-  const staleRemote = owner.remotePlayback("live", stale);
-  staleRemote.state("playing");
-  staleRemote.failure("network");
-  staleRemote.stop();
-  const remote = owner.remotePlayback("live", current);
-  remote.state("playing");
-  await owner.configure(false);
-  await owner.configure(true);
-  await vi.advanceTimersByTimeAsync(0);
-  staleRemote.state("playing");
-  staleRemote.failure("network");
-  remote.state("playing");
-  expect(owner.resumePlayback("live")).not.toBeNull();
-  remote.stop();
-  const replacement = owner.remotePlayback("live", current);
-  replacement.state("playing");
-  replacement.failure("network");
-  replacement.stop();
-  owner.noteFeature("home");
-  owner.setForeground(false);
-  vi.setSystemTime(new Date("2026-10-12T12:00:00Z"));
-  owner.setForeground(true);
-  await vi.advanceTimersByTimeAsync(0);
-  await until(() => events.some((event) => event.event === "app_summary_day"));
-  expect(events.find((event) => event.event === "app_summary_day")).toMatchObject({
-    properties: {
-      counts: { playback: { live: { starts: 0, errors: 1, failures: { network: 1 } } } },
-    },
+
+  it("ignores a terminal observation from a replaced load, a moved output or an older run", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const first = owner.beginPlayback("vod")!;
+    const old = owner.remotePlayback("vod", first);
+    old.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    // Another track: a new load takes the binding of the same run before the old one stops.
+    const reload = owner.remotePlayback("vod", first);
+    old.end();
+    reload.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    // Moved back here: the receiver's load stops reporting and local playback goes on.
+    reload.stop();
+    reload.end();
+    const local = owner.bindPlayback(first, "local")!;
+    owner.notePlaybackState(first, local, 1, "playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    const replay = owner.beginPlayback("vod")!;
+    const fresh = owner.remotePlayback("vod", replay);
+    fresh.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    reload.end();
+    old.end();
+    fresh.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    fresh.end();
+    await expectStreams(owner, events, [
+      "started vod",
+      "stopped vod 3",
+      "started vod",
+      "stopped vod 2",
+    ]);
+  });
+
+  it("reports nothing for a terminal observation after opt-out, and no stop after opting back in", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const token = owner.beginPlayback("live")!;
+    const remote = owner.remotePlayback("live", token);
+    remote.state("playing");
+    await expectStreams(owner, events, ["started live"]);
+    await owner.configure(false);
+    remote.end();
+    await owner.configure(true);
+    await vi.advanceTimersByTimeAsync(0);
+    const continued = owner.remotePlayback("live", token);
+    continued.state("playing");
+    await vi.advanceTimersByTimeAsync(1000);
+    continued.end();
+    await expectStreams(owner, events, ["started live"]);
+  });
+
+  it("rejects stale logical request tokens and stopped receiver observations across consent changes", async () => {
+    playbackClock();
+    const { owner, events } = await measuring();
+    const stale = owner.beginPlayback("live")!;
+    const fail = owner.playbackFailureObserver(stale);
+    const current = owner.beginPlayback("live")!;
+    fail("network");
+    const staleRemote = owner.remotePlayback("live", stale);
+    staleRemote.state("playing");
+    staleRemote.failure("network");
+    staleRemote.stop();
+    const remote = owner.remotePlayback("live", current);
+    remote.state("playing");
+    await expectStreams(owner, events, ["started live"]);
+    await owner.configure(false);
+    await owner.configure(true);
+    await vi.advanceTimersByTimeAsync(0);
+    staleRemote.state("playing");
+    staleRemote.failure("network");
+    remote.state("playing");
+    remote.stop();
+    const replacement = owner.remotePlayback("live", current);
+    replacement.state("playing");
+    replacement.failure("network");
+    replacement.stop();
+    await owner.close();
+    expect(streams(events)).toEqual(["started live", "error live network"]);
   });
 });

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated 13 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 16 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
 
 Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
 
@@ -18,22 +18,31 @@ Most of what the app handles never reaches us. It stays in its data folder ([whe
 - copies of each provider's channel, guide, movie and series lists, and what TMDB said about them
 - downloaded movies and episodes, with their details, pictures, subtitles and progress
 - subtitle-service settings and saved subtitles, if you turn subtitle search on
-- the statistics setting, its installation identifier, up to eight statistics waiting to be sent, and, from 0.0.12, the counts for the current day and at most one earlier day
+- the statistics setting, its installation identifier and up to 64 statistics waiting to be sent
 - a diagnostics log with no addresses, logins or channel names
 
 We can't see, copy or delete any of it. **Diagnostics…** in Settings > About shows you the text before you save it and uploads nothing.
 
 ### Usage statistics
 
-**Share basic usage statistics** is on by default, in new and existing profiles, without a prompt. From 0.0.12, while it's on, the app counts on your computer how often you open each part of the app, from a fixed list: Home, Live TV, Movies, Series, Watchlist, Downloads, Search, Settings, the player and title details. It counts how many playback requests, download runs and update checks started, succeeded, failed or were interrupted, with one of six fixed reasons for each failure, such as "network" or "disk". A playback request succeeds when the app gets the stream ready to play. It doesn't show whether picture or sound played. An update check succeeds when it gets an answer, even with no new version, and installing an update isn't counted. The app also counts how often its window started and how often it stopped unexpectedly. Closing the window or quitting doesn't count, and a crash of the whole app or a power cut can't be counted.
+**Share basic usage statistics** is on by default, in new and existing profiles, without a prompt. While it's on, the app sends a short event each time one of these happens. From 0.0.14 these are separate events, each with the time it happened, instead of daily totals:
 
-From 0.0.12 the app also adds up, for each day, how many live channels and how many movies and episodes started playing, how many of those failed or stopped with an error, with one of the fixed reasons, and how many minutes of each played, rounded to whole minutes. These are totals for the day. They don't say what played, from which subscription, or at what time.
+- you open a part of the app, from a fixed list: Home, Live TV, Movies, Series, Watchlist, Downloads, Search, Settings, the player and title details
+- a live channel, or a movie or episode, starts playing, and when it stops, for how many seconds it played. Only time it was actually playing counts: not paused, loading, seeking or the muted preview on Home
+- playback fails or stops with an error, with one of six fixed reasons, such as "network" or "unsupported"
+- you open a channel's guide, start a search, add a favourite, switch to another channel, or add, remove or refresh a subscription
+- you change a preference, naming only which one from a fixed list, such as the audio language or the update channel, never what you chose
+- the update panel shows a new version, or you dismiss it
+- a download or update check succeeds, fails or is interrupted, with the fixed reason for a failure
+- the app's window stops unexpectedly. Closing the window or quitting doesn't count, and a crash of the whole app or a power cut can't be counted
 
-Counting also runs with the window in the background, for example during downloads and update checks. The app queues statistics only while its main window is in the foreground: an observation the first time it observes this profile, at most one per UTC day after that, and, from 0.0.12, with it one summary of the most recent earlier day's counts. It sends each to PostHog straight away and tries up to three times in all, so a retry can happen with the window in the background, as you quit or after the next start. Up to eight wait on your computer. Beyond that the oldest are dropped, keeping the first observation. Only the most recent earlier day is kept, so counts for older days that were never queued are dropped. If the app version or update channel changes during a day, that day's counts start again from zero. Builds without our project configuration count and send nothing.
+Events say whether live TV or a movie or episode played, not which one, from which subscription or from where. A search event never contains what you searched for.
 
-Each observation and summary carries a random installation identifier, an event identifier, the time it was queued, the app version, build and update channel, operating system, processor type, whether the app came from the Microsoft Store or our download, and whether the profile looked new, upgraded or unknown when the app first observed it. A summary also has the UTC day it counts, with the version, channels and system it was counted under.
+The app also sends an observation the first time it observes this profile with its main window in the foreground, and at most one per UTC day after that. The app sends each to PostHog straight away and tries up to three times in all, so a retry can happen as you quit or after the next start. Up to 64 wait on your computer; beyond that the oldest are dropped, keeping the first observation. The app collects at most 60 new events a minute, not counting the first and daily observations; the rest are dropped. Events still waiting and retries are sent as soon as they can be. Events from before the app first observed this profile, and some from just before it closes unexpectedly, are dropped. Builds without our project configuration send nothing. Daily totals that 0.0.12 or 0.0.13 kept or queued and hadn't sent are deleted when you update, without being sent.
 
-Statistics never include what you watch, title or channel names, your provider or its address, stream addresses, logins, searches, file paths, logs or error messages. There is no autocapture, session replay, crash dump or log upload. The identifier doesn't name you but links your observations and summaries, so the data is pseudonymous, not anonymous. Person profiles and location lookup are off in PostHog. PostHog receives your IP address with each request, as any server does, and our project is set not to store it.
+Each event carries a random installation identifier, an event identifier, the time it happened, the app version, build and update channel, operating system, processor type, whether the app came from the Microsoft Store or our download, and whether the profile looked new, upgraded or unknown when the app first observed it.
+
+Statistics never include what you watch, title or channel names, your provider or its address, stream addresses, logins, searches, file paths, logs or error messages. There is no autocapture, session replay, crash dump or log upload. The identifier doesn't name you but links your events, including when you used the app and how long things played, so the data is pseudonymous, not anonymous. Person profiles and location lookup are off in PostHog. PostHog receives your IP address with each request, as any server does, and our project is set not to store it.
 
 ### The website
 
@@ -91,7 +100,7 @@ Your network operator and DNS provider can see which servers the app contacts.
 
 ## Your choices
 
-- **Statistics.** Turn off **Share basic usage statistics** in Settings > General > Privacy. Counting stops, statistics waiting to be sent and unsent counts are cleared, and it stays off after a restart. Turning it back on keeps the same identifier, starts counting from zero and sends nothing about the time it was off.
+- **Statistics.** Turn off **Share basic usage statistics** in Settings > General > Privacy. Sending stops at once, events waiting to be sent are cleared, and it stays off after a restart. Turning it back on keeps the same identifier and sends nothing about the time it was off, including playback that continued meanwhile.
 - **Website analytics.** Turn off **Site analytics** at the foot of any page of mrstreamer.app. The choice applies to that browser only, and clearing the site's data from your browser turns them back on.
 - **Subtitle search** is off until you turn it on.
 - **Casting** happens only after you open the receiver list and pick a device.

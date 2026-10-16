@@ -60,7 +60,7 @@ export const analyticsFailures = [
 ] as const;
 export type AnalyticsFailure = (typeof analyticsFailures)[number];
 
-/** Ephemeral gameplay correlation only. Main mints runs, owns clocks and counts. */
+/** Ephemeral gameplay correlation only. Main mints runs, owns clocks and events. */
 export const PlaybackControl = lazy(() =>
   type({
     control: "string.uuid",

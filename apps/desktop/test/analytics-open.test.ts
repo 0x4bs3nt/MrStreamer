@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Failed } from "@mrstreamer/core/failure";
+import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -7,24 +8,24 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import { observeOpen } from "../src/main/analytics/playback.ts";
-import type { OperationObserver } from "../src/main/analytics/operations.ts";
 import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
 import { PLAYLIST_CHANNELS, startFakePlaylist } from "./fake-playlist.ts";
 import { holdableFetch, runtimeFor, tempDir, testSecrets } from "./support.ts";
 
+/** Records each observed open and the fixed failure code it reports, if any. */
 function observations() {
-  const notes: ("started" | Parameters<ReturnType<OperationObserver>>)[] = [];
-  const observe: OperationObserver = () => {
+  const notes: string[] = [];
+  const observe = () => {
     notes.push("started");
-    return (...outcome) => notes.push(outcome);
+    return (failure: AnalyticsFailure) => notes.push(`failed ${failure}`);
   };
   return { observe, notes };
 }
 
 describe("observed playback requests", () => {
-  it("preserves overlapping public channel results and counts the superseded open as interrupted", async () => {
+  it("preserves overlapping public channel results and reports no failure for the superseded open", async () => {
     const host = await startFakePlaylist();
     try {
       const holdable = holdableFetch();
@@ -69,7 +70,7 @@ describe("observed playback requests", () => {
           },
         });
       expect((await second).channel).toEqual(channel);
-      expect(notes).toEqual(["started", "started", ["interrupted"], ["success"]]);
+      expect(notes).toEqual(["started", "started"]);
     } finally {
       await host.close();
     }
@@ -111,10 +112,10 @@ describe("observed playback requests", () => {
     const prepared = await receiver;
     if (!Exit.isSuccess(prepared)) throw new Error("Preview superseded the receiver request.");
     expect(prepared.value).toBe("receiver prepared");
-    expect(notes).toEqual(["started", ["success"]]);
+    expect(notes).toEqual(["started"]);
   });
 
-  it("keeps stop and cancellation separate from fixed failure categories and preserves public returns", async () => {
+  it("reports only fixed failure categories, never stop or cancellation, and preserves public returns", async () => {
     const runtime = runtimeFor(PlaybackCoordination.layer);
     const coordination = await runtime.runPromise(PlaybackCoordination);
     const { observe, notes } = observations();
@@ -144,6 +145,8 @@ describe("observed playback requests", () => {
     );
     await waiting.promise;
     await runtime.runPromise(Fiber.interrupt(cancelled));
+    // Stop and cancellation are not failures.
+    expect(notes).toEqual(["started", "started"]);
     const failures: readonly [AppError, string][] = [
       [{ kind: "stream", failure: { kind: "unavailable", status: 404 } }, "unavailable"],
       [{ kind: "stream", failure: { kind: "refused", status: 401 } }, "credentials"],
@@ -160,11 +163,8 @@ describe("observed playback requests", () => {
       const publicError = Cause.findErrorOption(result.cause);
       if (publicError._tag !== "Some") throw new Error("No public open error.");
       expect(publicError.value).toBe(failed);
-      expect(notes.at(-1)).toEqual(["failed", code]);
+      expect(notes.at(-1)).toBe(`failed ${code}`);
     }
-    expect(notes.filter((note) => Array.isArray(note) && note[0] === "interrupted")).toHaveLength(
-      2,
-    );
     expect(JSON.stringify(notes)).not.toContain("PRIVATE");
     const value = { sessionId: "kept" };
     expect(

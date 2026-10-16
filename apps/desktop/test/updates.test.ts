@@ -1,7 +1,8 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { SummaryFailure, SummaryOutcome } from "../src/main/analytics/summary.ts";
+import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
+import type { OperationOutcome } from "../src/main/analytics/operations.ts";
 import type { UpdateFeed } from "@mrstreamer/contracts/update-feed";
 import { parseVersion } from "@mrstreamer/contracts/version";
 import { discovery, DiscoveryFailed, type Offer } from "@mrstreamer/core/updates/feed";
@@ -867,7 +868,7 @@ describe("finding releases", () => {
 });
 
 it("observes one actual shared update check and bounded failures, excluding installer actions", async () => {
-  const outcomes: { outcome: SummaryOutcome; failure?: SummaryFailure }[] = [];
+  const outcomes: { outcome: OperationOutcome; failure?: AnalyticsFailure }[] = [];
   let starts = 0;
   const channels: string[] = [];
   let release: (() => void) | undefined;

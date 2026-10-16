@@ -10,7 +10,7 @@ import { call, listen } from "../lib/ipc.ts";
 
 let controlOrder = 0;
 
-/** One controller's current run/binding only. Main owns all counters, clocks and consent. */
+/** One controller's current run/binding only. Main owns all events, clocks and consent. */
 export class PlaybackObservation {
   private control: PlaybackControl | null = null;
   private binding: Promise<string | null> = Promise.resolve(null);

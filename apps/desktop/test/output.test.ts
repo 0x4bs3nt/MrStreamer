@@ -1,4 +1,6 @@
 import type { RemotePlaybackObservers } from "../src/main/analytics/observers.ts";
+import type { AnalyticsRecord, CaptureEvent } from "../src/main/analytics/model.ts";
+import { Analytics } from "../src/main/analytics/service.ts";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -215,6 +217,7 @@ describe.skipIf(!hasTools)("playback on a receiver", () => {
         state() {},
         failure: (code) => physical.push(code),
         stop() {},
+        end() {},
       }),
     });
     await connect();
@@ -1086,10 +1089,18 @@ it.skipIf(!hasTools)(
       states: string[];
       failures: string[];
       stops: number;
+      ends: number;
     }[] = [];
     const { output, tv, connect, play } = await casting({
       observePlayback: (kind, control) => {
-        const item = { control, kind, states: [] as string[], failures: [] as string[], stops: 0 };
+        const item = {
+          control,
+          kind,
+          states: [] as string[],
+          failures: [] as string[],
+          stops: 0,
+          ends: 0,
+        };
         observations.push(item);
         return {
           state: (state) => {
@@ -1100,6 +1111,9 @@ it.skipIf(!hasTools)(
           },
           stop: () => {
             item.stops++;
+          },
+          end: () => {
+            item.ends++;
           },
         };
       },
@@ -1135,8 +1149,140 @@ it.skipIf(!hasTools)(
     await eventually(() => expect(observations[1]?.states.at(-1)).toBe("playing"));
     await output.disconnect();
     expect(observations[1]?.stops).toBe(1);
+    // Replacing a load and letting go of the receiver end no play.
+    expect(observations.map((item) => item.ends)).toEqual([0, 0]);
     expect(observations.every((item) => item.kind === "vod" && item.failures.length === 0)).toBe(
       true,
     );
   },
+);
+
+it.skipIf(!hasTools)(
+  "ends a receiver play once when it is stopped or played to its end, keeping it across reloads and handovers",
+  async () => {
+    const store = { record: null as AnalyticsRecord | null };
+    const events: CaptureEvent[] = [];
+    const analytics = new Analytics({
+      dataDir: await tempDir(),
+      origin: Promise.resolve("fresh"),
+      properties: {
+        app_version: "0.0.14",
+        build_channel: "unknown",
+        update_channel: "stable",
+        os: "linux",
+        arch: "x64",
+        distribution: "direct",
+      },
+      store: {
+        load: async () => store.record,
+        save: async (record) => void (store.record = record),
+      },
+      transport: {
+        kind: "local",
+        async send(event) {
+          events.push(event);
+          return "accepted";
+        },
+      },
+    });
+    const facts = () =>
+      events.flatMap((event) =>
+        event.event === "stream_started"
+          ? [`started ${event.properties.stream_type}`]
+          : event.event === "stream_stopped"
+            ? [`stopped ${event.properties.stream_type}`]
+            : event.event === "stream_error"
+              ? [`error ${event.properties.error_type}`]
+              : [],
+      );
+    const { output, tv, connect, title, file, provider, own, loaded, dispose } = await casting({
+      observePlayback: (kind, control) => analytics.remotePlayback(kind, control),
+    });
+    try {
+      analytics.setForeground(true);
+      await eventually(() => expect(events).toHaveLength(2));
+      await connect();
+      /** A title for the receiver under a run of its own, as when no window is left to ask. */
+      const playRun = async (position: number) => {
+        const control = analytics.beginPlayback("vod")!;
+        const opened = await output.openTitle(title, file, Date.now(), { measurement: control });
+        const media = await output.playTitle(opened.sessionId, {
+          position,
+          audio: null,
+          subtitle: null,
+          shown: SHOWN,
+        });
+        return { control, opened, media };
+      };
+
+      // Played to its end on the receiver: the run stops at once.
+      await playRun(140);
+      tv.status({ playerState: "PLAYING", currentTime: 141 });
+      await eventually(() => expect(facts()).toEqual(["started vod"]));
+      tv.idle("FINISHED");
+      await eventually(() => expect(facts()).toEqual(["started vod", "stopped vod"]));
+
+      // Another track is another load of the same run; the viewer's Stop then ends it once.
+      const second = await playRun(10);
+      tv.status({ playerState: "PLAYING", currentTime: 11 });
+      await eventually(() => expect(facts()).toHaveLength(3));
+      const reload = await output.playTitle(second.opened.sessionId, {
+        position: 20,
+        audio: second.opened.audio[0]!.id,
+        subtitle: null,
+        shown: SHOWN,
+      });
+      tv.status({ playerState: "PLAYING", currentTime: 21 });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(facts()).toHaveLength(3);
+      await output.command(second.media.generation, { command: "stop" });
+      expect(facts()).toHaveLength(3);
+      await output.command(reload.generation, { command: "stop" });
+      await eventually(() => expect(facts()).toHaveLength(4));
+      expect(facts().slice(2)).toEqual(["started vod", "stopped vod"]);
+
+      // Stopped on the receiver itself.
+      await playRun(30);
+      tv.status({ playerState: "PLAYING", currentTime: 31 });
+      await eventually(() => expect(facts()).toHaveLength(5));
+      tv.idle("CANCELLED");
+      await eventually(() => expect(facts().slice(4)).toEqual(["started vod", "stopped vod"]));
+
+      // Letting go of the receiver hands the play back, still running.
+      const handed = await playRun(50);
+      tv.status({ playerState: "PLAYING", currentTime: 51 });
+      await eventually(() => expect(facts()).toHaveLength(7));
+      await output.disconnect();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(facts()).toHaveLength(7);
+      analytics.endPlayback(handed.control);
+      await eventually(() => expect(facts().slice(6)).toEqual(["started vod", "stopped vod"]));
+
+      // A channel whose stream breaks is an incident to retry, not the end of its run.
+      await connect();
+      const broken = provider.catalogue.channels.find(
+        (each) => each.name === "TEST | H.264 + AAC",
+      )!;
+      const live = analytics.beginPlayback("live")!;
+      await output.playChannel(own(String(broken.streamId)), {
+        variants: [String(broken.streamId)],
+        shown: { name: "A channel" },
+        measurement: live,
+      });
+      tv.status({ playerState: "PLAYING", currentTime: 2 });
+      await eventually(() => expect(facts()).toHaveLength(9));
+      // The fixture's three seconds are over and the TV plays out what it has.
+      await eventually(async () =>
+        expect(await (await fetch(loaded().media.contentId)).text()).toContain("#EXT-X-ENDLIST"),
+      );
+      tv.idle("FINISHED");
+      await eventually(() => expect(facts().slice(8)).toEqual(["started live", "error network"]));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(facts()).toHaveLength(10);
+    } finally {
+      await analytics.close();
+      await dispose();
+    }
+  },
+  30_000,
 );

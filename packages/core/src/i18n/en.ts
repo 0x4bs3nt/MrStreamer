@@ -25,7 +25,7 @@ export const en = {
   Privacy: "Privacy",
   "Share basic usage statistics": "Share basic usage statistics",
   "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
-    "Counts app use, the features you open, whether playback, downloads and update checks work, how often the window stops unexpectedly, and how many minutes of live TV and of movies and series play each day. Never what you watch, your provider or your login.",
+    "Counts app use, the features you open, whether playback, downloads and update checks work, how often the window stops unexpectedly, and when and for how long live TV and movies and series play. Never what you watch, your provider or your login.",
   "Privacy policy": "Privacy policy",
   "Report a bug": "Report a bug",
   "Rate in the Microsoft Store": "Rate in the Microsoft Store",

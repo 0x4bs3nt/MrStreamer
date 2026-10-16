@@ -1,6 +1,6 @@
 // Built-app proof through the actual Settings control, with an isolated profile and loopback only.
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from "node:util";
 import { type } from "arktype";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import type { Result } from "@mrstreamer/contracts/errors";
-import { AnalyticsRecord, CaptureEvent } from "../../src/main/analytics/model.ts";
+import { CaptureEvent, type CaptureName, type CaptureOf } from "../../src/main/analytics/model.ts";
 import { startFakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, delay, type Page } from "./app.ts";
@@ -107,6 +107,21 @@ function captured(payload: unknown): CaptureEvent {
   if (!isDeepStrictEqual(payload, { api_key: "mrstreamer-local-verification", ...event }))
     throw new Error("Unexpected raw capture fields.");
   return event;
+}
+
+/** Every decoded capture so far, in arrival order. */
+function sent(): CaptureEvent[] {
+  return payloads.map(captured);
+}
+
+/** How many captures of one event arrived, optionally matching their fixed properties. */
+function count<Name extends CaptureName>(
+  name: Name,
+  match: (event: CaptureOf<Name>) => boolean = () => true,
+): number {
+  return sent()
+    .filter((event): event is CaptureOf<Name> => event.event === name)
+    .filter(match).length;
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs = 60_000) {
@@ -351,12 +366,10 @@ async function namedButton(selector: string, name: string, title = false) {
   actions.push({ action: `Pressed ${name}`, at: new Date().toISOString() });
 }
 
-async function analyticsState() {
-  const state = AnalyticsRecord()(
-    JSON.parse(await readFile(join(profile, "analytics.json"), "utf8")),
-  );
-  if (state instanceof type.errors) throw new Error("Invalid analytics checkpoint.");
-  return state;
+async function analyticsFile(): Promise<Record<string, unknown>> {
+  const kept: unknown = JSON.parse(await readFile(join(profile, "analytics.json"), "utf8"));
+  if (!record(kept)) throw new Error("Invalid analytics state.");
+  return kept;
 }
 
 async function productPaths() {
@@ -364,8 +377,9 @@ async function productPaths() {
   await namedButton("header button", "Live TV");
   // Actual guide expansion/favourite/search use, without treating schedule queries as actions.
   await click('button[aria-label="Later programmes"]');
+  await waitFor(async () => count("epg_opened") === 1);
   await click('button[aria-label="Add to favourites"]');
-  await waitFor(async () => (await analyticsState()).summary?.counts.actions.favourite_added === 1);
+  await waitFor(async () => count("favourite_added") === 1);
   await click('button[aria-label="Search"]');
   await send("Input.insertText", { text: "TEST | H.264 + AAC" });
   await waitFor(() =>
@@ -373,6 +387,7 @@ async function productPaths() {
       "document.querySelector('[aria-label=\"Search results\"] [aria-selected=true]')?.textContent.includes('H.264 + AAC') ?? false",
     ),
   );
+  await waitFor(async () => count("search_used") === 1);
   await send("Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: "Enter",
@@ -385,14 +400,17 @@ async function productPaths() {
     code: "Enter",
     windowsVirtualKeyCode: 13,
   });
-  await waitFor(async () => (await analyticsState()).summary?.counts.playback.live.starts === 1);
+  await waitFor(
+    async () => count("stream_started", (e) => e.properties.stream_type === "live") === 1,
+  );
+  const liveStarted = Date.now();
   await waitFor(() =>
     live().evaluate<boolean>(
       "!!document.querySelector('[data-view=watch]') && document.querySelector('video').videoWidth > 0",
     ),
   );
   // Real eligible elapsed time, rather than media position or an injected duration.
-  await waitFor(async () => ((await analyticsState()).summary?.watch_ms.live ?? 0) >= 32_000);
+  await delay(34_000);
   await snapshot("confirmed-live-watch");
   await keyEscape();
   await namedButton("header button", "Home");
@@ -401,41 +419,54 @@ async function productPaths() {
       "!document.querySelector('[data-view=watch]') && document.querySelector('video').muted && !document.querySelector('video').paused",
     ),
   );
-  await delay(1500);
-  const previewTime = (await analyticsState()).summary?.watch_ms.live ?? 0;
-  await delay(3500);
-  const afterPreview = (await analyticsState()).summary?.watch_ms.live ?? 0;
-  if (afterPreview !== previewTime) throw new Error("Home preview accrued watch time.");
+  const previewFrom = Date.now();
+  await delay(12_000);
+  const previewTo = Date.now();
+  if (count("stream_started") !== 1 || count("stream_stopped") !== 0)
+    throw new Error("Home preview started or stopped a run.");
   await snapshot("excluded-home-preview");
   await namedButton("button", "Watch");
   await delay(2500);
-  if ((await analyticsState()).summary?.counts.playback.live.starts !== 1)
-    throw new Error("Preview promotion counted another start.");
+  if (count("stream_started") !== 1) throw new Error("Preview promotion counted another start.");
   await keyEscape();
-  observations["previewExclusion"] = { previewTime, afterPreview, starts: 1 };
   await namedButton("header button", "Movies");
   await namedButton("nav button", "All movies");
   await namedButton("button[title]", "Index at the end", true);
   await namedButton('[role="dialog"] button', "Save");
   await namedButton('[role="dialog"] button', "Download");
   await waitFor(
-    async () => (await analyticsState()).summary?.counts.download_transfer.success === 1,
+    async () => count("download_ended", (e) => e.properties.outcome === "success") === 1,
   );
   await snapshot("download-complete");
   await namedButton('[role="dialog"] button', "Play");
+  // The title's run ends the live run, which reports its own active time once.
   await waitFor(
-    async () => ((await analyticsState()).summary?.counts.playback_open.success ?? 0) >= 1,
+    async () => count("stream_stopped", (e) => e.properties.stream_type === "live") === 1,
   );
-  await waitFor(async () => (await analyticsState()).summary?.counts.playback.vod.starts === 1);
+  const liveStopped = Date.now();
+  await waitFor(
+    async () => count("stream_started", (e) => e.properties.stream_type === "vod") === 1,
+  );
+  const liveStop = sent().find(
+    (event) => event.event === "stream_stopped" && event.properties.stream_type === "live",
+  );
+  if (liveStop?.event !== "stream_stopped") throw new Error("No live stop.");
+  const watched = liveStop.properties.watch_duration_seconds;
+  const wall = (liveStopped - liveStarted) / 1000;
+  const preview = (previewTo - previewFrom) / 1000;
+  // Measured from the sink's view of the start, so the real run can be up to ~3 s longer.
+  if (watched < 32 || watched > wall - preview + 3)
+    throw new Error(`Live watch time ${watched}s is outside ${wall}s minus ${preview}s preview.`);
+  observations["liveRun"] = { watched, wallSeconds: wall, previewSeconds: preview };
   await snapshot("provider-title-open");
   await click('button[aria-label="Pause"]');
   await click('button[aria-label="Forward 10 seconds"]');
   await delay(1200);
-  if ((await analyticsState()).summary?.counts.playback.vod.starts !== 1)
+  if (count("stream_started", (e) => e.properties.stream_type === "vod") !== 1)
     throw new Error("Paused seek created another start.");
   await click('[data-view="title"] button[aria-label="Play"]');
   await delay(1500);
-  if ((await analyticsState()).summary?.counts.playback.vod.starts !== 1)
+  if (count("stream_started", (e) => e.properties.stream_type === "vod") !== 1)
     throw new Error("Resume created another start.");
   await snapshot("vod-paused-seek-resume");
   await keyEscape();
@@ -445,7 +476,12 @@ async function productPaths() {
   await waitFor(() =>
     live().evaluate<boolean>("!!document.querySelector('[data-view=title] video')"),
   );
-  await waitFor(async () => (await analyticsState()).summary?.counts.playback.vod.starts === 2);
+  await waitFor(
+    async () => count("stream_started", (e) => e.properties.stream_type === "vod") === 2,
+  );
+  await waitFor(
+    async () => count("stream_stopped", (e) => e.properties.stream_type === "vod") === 1,
+  );
   await snapshot("copy-playing");
   await keyEscape();
   await namedButton("header button", "Movies");
@@ -462,18 +498,23 @@ async function productPaths() {
   await snapshot("transfer-running");
   await click('[role="dialog"] button[aria-label$="cancel download"]');
   await waitFor(
-    async () => (await analyticsState()).summary?.counts.download_transfer.interrupted === 1,
+    async () => count("download_ended", (e) => e.properties.outcome === "interrupted") === 1,
   );
   await keyEscape();
   await namedButton("button[title]", "Missing file", true);
   await namedButton('[role="dialog"] button', "Download");
   await waitFor(
-    async () => (await analyticsState()).summary?.counts.download_transfer.failed === 1,
+    async () => count("download_ended", (e) => e.properties.outcome === "failed") === 1,
   );
   await namedButton('[role="dialog"] button', "Play");
-  await waitFor(
-    async () => ((await analyticsState()).summary?.counts.playback_open.failed ?? 0) >= 1,
-  );
+  // A failure before playing: one fixed error, with no start for that run.
+  await waitFor(async () => count("stream_error", (e) => e.properties.stream_type === "vod") === 1);
+  await delay(1500);
+  if (
+    count("stream_error") !== 1 ||
+    count("stream_started", (e) => e.properties.stream_type === "vod") !== 2
+  )
+    throw new Error("A failed open repeated its error or started.");
   await snapshot("failed-open");
   await keyEscape();
   await keyEscape();
@@ -485,25 +526,29 @@ async function productPaths() {
   await keyEscape();
   await settings();
   await click('[role="checkbox"][aria-label="Next episode"]');
-  await waitFor(async () => (await analyticsState()).summary?.counts.settings.autoplay_next === 1);
+  await waitFor(
+    async () =>
+      count("settings_changed", (e) => e.properties.setting_key === "autoplay_next") === 1,
+  );
   offerUpdate = true;
   await namedButton("button", "Check now");
-  await waitFor(async () => (await analyticsState()).summary?.counts.update_check.success === 1);
+  await waitFor(
+    async () => count("update_check_ended", (e) => e.properties.outcome === "success") === 1,
+  );
   await keyEscape();
   await click("[data-update-notice]");
-  await waitFor(async () => (await analyticsState()).summary?.counts.actions.update_seen === 1);
+  await waitFor(async () => count("update_seen") === 1);
   await namedButton("button", "Not now");
-  await waitFor(
-    async () => (await analyticsState()).summary?.counts.actions.update_dismissed === 1,
-  );
+  await waitFor(async () => count("update_dismissed") === 1);
   await snapshot("update-panel-dismissed");
   await settings();
   rejectUpdate = true;
   await namedButton("button", "Check now");
-  await waitFor(async () => (await analyticsState()).summary?.counts.update_check.failed === 1);
+  await waitFor(
+    async () => count("update_check_ended", (e) => e.properties.outcome === "failed") === 1,
+  );
   await snapshot("update-check-failed");
   if (!mainPage) throw new Error("No owned main inspector.");
-  await waitFor(async () => (await analyticsState()).summary?.counts.renderer.starts === 1);
   // A real renderer crash in our disposable process, with main left alive to receive the exit.
   const electronModule = `process.getBuiltinModule('module').createRequire(${JSON.stringify(join(desktop, "package.json"))})('electron')`;
   await mainPage.evaluate(`(() => {
@@ -512,10 +557,7 @@ async function productPaths() {
     window.webContents.forcefullyCrashRenderer();
     return true;
   })()`);
-  await waitFor(async () => {
-    const counts = (await analyticsState()).summary?.counts.renderer;
-    return !!counts && counts.crashed + counts.killed + counts.other === 1;
-  });
+  await waitFor(async () => count("renderer_exited") === 1);
   await mainPage.evaluate(
     `(() => { ${electronModule}.BrowserWindow.getAllWindows()[0].webContents.reload(); return true; })()`,
   );
@@ -529,18 +571,7 @@ async function productPaths() {
       "Crashed only the owned renderer, main observed one unexpected exit; reloaded its primary window",
     at: new Date().toISOString(),
   });
-  // The recovered Home and Settings entries must reach the coalesced checkpoint before
-  // comparing that persisted snapshot with the next day's capture.
-  await waitFor(async () => {
-    const observed = await analyticsState();
-    return (
-      (observed.summary?.counts.features.home ?? 0) >= 3 &&
-      (observed.summary?.counts.features.settings ?? 0) >= 4
-    );
-  });
-  const before = await analyticsState();
-  if (!before.summary) throw new Error("No observed daily counts.");
-  const all = before.summary.counts;
+  await delay(1500);
   for (const feature of [
     "home",
     "live_tv",
@@ -553,94 +584,43 @@ async function productPaths() {
     "player",
     "details",
   ] as const)
-    if (all.features[feature] < 1) throw new Error(`No real entry for ${feature}.`);
-  if (all.renderer.starts !== 2)
-    throw new Error("Main did not observe the initial and reloaded renderer starts.");
-  observations["beforeRollover"] = all;
-  await writeFile(join(evidence, "checkpoint.json"), JSON.stringify(before, null, 2));
-  if (!mainPage) throw new Error("No owned main inspector.");
-  // Advance the clock only in our verified process. All product mutations above used UI input.
-  await mainPage.evaluate(`(() => { const RealDate = Date; const offset = 86400000;
-    globalThis.Date = class extends RealDate { constructor(...args) { if(args.length === 0) super(RealDate.now() + offset); else super(...args); } static now() { return RealDate.now() + offset; } };
-    return new Date().toISOString(); })()`);
-  actions.push({
-    action:
-      "Advanced owned main-process UTC clock one day, waiting for native foreground observation",
-    at: new Date().toISOString(),
-  });
-  await waitFor(
-    async () =>
-      payloads.some((payload) => {
-        return record(payload) && payload["event"] === "app_summary_day";
-      }),
-    75_000,
+    if (count("feature_opened", (e) => e.properties.feature === feature) < 1)
+      throw new Error(`No real entry for ${feature}.`);
+  for (const action of ["playlist_added", "playlist_refreshed"] as const)
+    if (count(action) < 1) throw new Error(`Missing source action ${action}.`);
+  const enabled = sent();
+  if (payloads.some((payload) => record(payload) && payload["event"] === "app_summary_day"))
+    throw new Error("A daily summary was sent.");
+  if (count("installation_observed") !== 1 || count("app_active_day") !== 1)
+    throw new Error("Wrong first-seen/day observations.");
+  // One raw property-key set per event name: the exact wire allowlist observed.
+  observations["wireAllowlist"] = Object.fromEntries(
+    payloads.flatMap((payload) =>
+      record(payload) && record(payload["properties"])
+        ? [[payload["event"], Object.keys(payload["properties"]).sort()]]
+        : [],
+    ),
   );
-  const enabled = payloads.map(captured);
-  if (
-    !isDeepStrictEqual(
-      enabled.map((event) => event.event),
-      ["installation_observed", "app_active_day", "app_active_day", "app_summary_day"],
-    )
-  )
-    throw new Error("Wrong enabled capture set.");
-  const rawSummary = payloads.find(
-    (payload) => record(payload) && payload["event"] === "app_summary_day",
-  );
-  if (!record(rawSummary) || !record(rawSummary["properties"]))
-    throw new Error("No raw summary capture.");
-  observations["summaryAllowlist"] = Object.keys(rawSummary["properties"]).sort();
-  observations["enabledCaptureSet"] = enabled.map((event) => event.event);
-  const summary = enabled.find((event) => event.event === "app_summary_day");
-  if (!summary || summary.event !== "app_summary_day")
-    throw new Error("No actual summary capture.");
-  const completedCounts = structuredClone(before.summary.counts);
-  for (const kind of ["live", "vod"] as const)
-    completedCounts.playback[kind].watch_minutes = Math.floor(
-      (before.summary.watch_ms[kind] + 30_000) / 60_000,
-    );
-  if (!isDeepStrictEqual(summary.properties.counts, completedCounts))
-    throw new Error("Capture lost observed counts.");
-  const operations = summary.properties.counts;
-  if (
-    (operations.playback?.live?.watch_minutes ?? 0) < 1 ||
-    operations.playback?.live?.starts !== 1 ||
-    (operations.playback?.vod?.starts ?? 0) < 2 ||
-    (operations.playback?.vod?.errors ?? 0) < 1
-  )
-    throw new Error("Missing expanded playback capture.");
-  for (const action of [
-    "playlist_added",
-    "playlist_refreshed",
-    "favourite_added",
-    "epg_opened",
-    "search_used",
-    "update_seen",
-    "update_dismissed",
-  ] as const)
-    if ((operations.actions?.[action] ?? 0) < 1)
-      throw new Error(`Missing expanded action ${action}.`);
-  if (operations.settings?.autoplay_next !== 1)
-    throw new Error("Missing committed setting capture.");
-  observations["expandedCapture"] = {
-    playback: operations.playback,
-    actions: operations.actions,
-    settings: operations.settings,
-  };
-  observations["rates"] = Object.fromEntries(
-    (["playback_open", "download_transfer", "update_check"] as const).map((name) => [
-      name,
-      {
-        started: operations[name].started,
-        success: operations[name].success,
-        failed: operations[name].failed,
-        interrupted: operations[name].interrupted,
-        denominator: operations[name].success + operations[name].failed,
-        successRate:
-          operations[name].success / (operations[name].success + operations[name].failed),
-      },
-    ]),
-  );
-  observations["summaryRecordedBuild"] = before.summary.properties;
+  observations["enabledCaptures"] = enabled.map((event) => ({
+    event: event.event,
+    ...Object.fromEntries(
+      Object.entries(event.properties).filter(
+        ([key]) =>
+          ![
+            "app_version",
+            "build_channel",
+            "update_channel",
+            "os",
+            "arch",
+            "distribution",
+            "profile_origin",
+            "$process_person_profile",
+            "$geoip_disable",
+          ].includes(key),
+      ),
+    ),
+  }));
+  observations["streamFacts"] = enabled.filter((event) => event.event.startsWith("stream_"));
   rejectUpdate = false;
 }
 
@@ -700,7 +680,7 @@ try {
   await launch();
   await connectFixture();
   await waitFor(async () => (await preference()).analyticsEnabled === true);
-  await waitFor(async () => payloads.length === 2);
+  await waitFor(async () => count("installation_observed") === 1 && count("app_active_day") === 1);
   if (
     (await live().evaluate<string>(
       `document.querySelector(${JSON.stringify(checkbox)}).getAttribute('aria-checked')`,
@@ -713,20 +693,9 @@ try {
     action: "Opened real General Privacy control, default checked",
     at: new Date().toISOString(),
   });
-  const first = captured(payloads[0]);
-  const day = captured(payloads[1]);
-  if (
-    first instanceof type.errors ||
-    day instanceof type.errors ||
-    first.event !== "installation_observed" ||
-    day.event !== "app_active_day"
-  )
-    throw new Error("Wrong capture events.");
-  if (
-    !isDeepStrictEqual(payloads[0], { api_key: "mrstreamer-local-verification", ...first }) ||
-    !isDeepStrictEqual(payloads[1], { api_key: "mrstreamer-local-verification", ...day })
-  )
-    throw new Error("Unexpected capture properties.");
+  const first = sent().find((event) => event.event === "installation_observed");
+  const day = sent().find((event) => event.event === "app_active_day");
+  if (!first || !day) throw new Error("Wrong capture events.");
   for (const payload of payloads) {
     if (
       !record(payload) ||
@@ -759,6 +728,8 @@ try {
   observations["activityAllowlist"] = Object.keys(day.properties).sort();
   await productPaths();
   const enabledCaptures = payloads.length;
+  if (new Set(sent().map((event) => event.uuid)).size !== enabledCaptures)
+    throw new Error("A capture was delivered twice.");
   await click(checkbox);
   await waitFor(async () => (await preference()).analyticsEnabled === false);
   await snapshot("off");
@@ -798,11 +769,94 @@ try {
   observations["optOutSurvivedRestart"] = true;
   observations["identityPreserved"] = true;
   observations["diagnosticsExcludeIdentity"] = true;
-  // A second fresh profile observes real pending events while the local capture boundary refuses them.
+  // A format-one profile with a queued daily summary: the summary and its counts are discarded,
+  // never sent, while consent, identity and the other queued event survive with their UUID.
+  await quit();
+  profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-legacy-"));
+  profiles.push(profile);
+  const legacyId = randomUUID();
+  const legacyEnvelope = (event: string, extra: object) => ({
+    uuid: randomUUID(),
+    distinct_id: legacyId,
+    timestamp: "2026-10-12T09:00:00.000Z",
+    event,
+    properties: { ...first.properties, profile_origin: "upgrading", ...extra },
+  });
+  const legacyInstall = legacyEnvelope("installation_observed", {});
+  const legacySummary = legacyEnvelope("app_summary_day", {
+    summary_date: "2026-10-11",
+    counts: { features: { home: 2 }, saturated: false },
+  });
+  await writeFile(
+    join(profile, "analytics.json"),
+    JSON.stringify({
+      format: 1,
+      enabled: true,
+      installationId: legacyId,
+      profileOrigin: "upgrading",
+      firstSeen: true,
+      lastDay: "2026-10-12",
+      summary: {
+        day: "2026-10-13",
+        counts: { features: { home: 1 }, saturated: false },
+        properties: legacyInstall.properties,
+        ready: null,
+        reportedDay: "2026-10-11",
+      },
+      pending: [
+        { event: legacyInstall, attempts: 1 },
+        { event: legacySummary, attempts: 0 },
+      ],
+    }),
+  );
+  const legacyFrom = payloads.length;
+  await launch();
+  await waitFor(async () =>
+    payloads
+      .slice(legacyFrom)
+      .some((payload) => record(payload) && payload["uuid"] === legacyInstall.uuid),
+  );
+  await waitFor(async () =>
+    payloads
+      .slice(legacyFrom)
+      .some((payload) => record(payload) && payload["event"] === "app_active_day"),
+  );
+  await delay(2000);
+  const legacySent = payloads.slice(legacyFrom).map(captured);
+  if (
+    payloads
+      .slice(legacyFrom)
+      .some(
+        (payload) =>
+          record(payload) &&
+          (payload["event"] === "app_summary_day" || payload["uuid"] === legacySummary.uuid),
+      )
+  )
+    throw new Error("A migrated daily summary was sent.");
+  if (!isDeepStrictEqual(legacySent[0], legacyInstall))
+    throw new Error("The queued legacy event changed identity or content.");
+  if (legacySent.some((event) => event.distinct_id !== legacyId))
+    throw new Error("Migration changed the installation identity.");
+  const migrated = await analyticsFile();
+  if (migrated["format"] !== 2 || "summary" in migrated || migrated["installationId"] !== legacyId)
+    throw new Error("Migrated state kept daily counts or lost identity.");
+  observations["legacyMigration"] = {
+    sent: legacySent.map((event) => event.event),
+    legacyEventSentUnchanged: true,
+    summaryNeverSent: true,
+    storedAfter: migrated,
+  };
+  await snapshot("legacy-migrated");
+  actions.push({
+    action: "Started a seeded format-one profile; its queued summary was discarded, not sent",
+    at: new Date().toISOString(),
+  });
+  // A fresh profile observes real pending events while the local capture boundary refuses them.
   await quit();
   rejectCapture = true;
   profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-pending-"));
   profiles.push(profile);
+  const refusedFrom = payloads.length;
   await launch();
   await connectFixture();
   const outbox = async () => {
@@ -813,8 +867,16 @@ try {
   };
   await waitFor(async () => {
     const kept = await outbox();
-    return Array.isArray(kept["pending"]) && kept["pending"].length === 2;
+    return Array.isArray(kept["pending"]) && kept["pending"].length >= 2;
   });
+  // A refused event is retried with the same UUID, timestamp and body.
+  await waitFor(async () => {
+    const refused = payloads.slice(refusedFrom).filter(record);
+    return refused.some((payload, index) =>
+      refused.slice(index + 1).some((later) => isDeepStrictEqual(later, payload)),
+    );
+  });
+  observations["refusedRetriedIdentically"] = true;
   observations["pendingBeforeOptOut"] = await outbox();
   await snapshot("pending-on");
   await click(checkbox);
@@ -827,7 +889,7 @@ try {
   observations["pendingAfterOptOut"] = await outbox();
   await snapshot("pending-cleared");
   actions.push({
-    action: "Opted out with two actual pending events; persisted queue is empty",
+    action: "Opted out with actual pending events; persisted queue is empty",
     at: new Date().toISOString(),
   });
   await quit();
@@ -914,7 +976,7 @@ try {
           .digest("hex"),
         limitations: [
           "Local capture, no live PostHog project/dashboard/retention acceptance",
-          "Rollover uses a controlled main-process UTC clock offset in our isolated instance",
+          "Abrupt termination without quit loses an unflushed stream_stopped; not exercised",
           packagedExecutable
             ? "Packaged executable against local capture; installed upgrade/native acceptance remains separate"
             : "Source build; native installed acceptance pending",

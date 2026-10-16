@@ -39,7 +39,7 @@ export const Preferences = lazy(() =>
      */
     "autoplayNext?": "boolean",
     /**
-     * Aggregate product-use and reliability statistics. On when absent; saved by the analytics
+     * Product-use and reliability statistics. On when absent; saved by the analytics
      * owner.
      */
     "analyticsEnabled?": "boolean",

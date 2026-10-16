@@ -14,7 +14,8 @@ import { setLanguage } from "@mrstreamer/core/i18n";
 import { playlistGroupId } from "@mrstreamer/core/playlist/import";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { OperationObserver } from "../src/main/analytics/operations.ts";
-import type { SummaryFailure, SummaryOutcome } from "../src/main/analytics/summary.ts";
+import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
+import type { OperationOutcome } from "../src/main/analytics/operations.ts";
 import { fileDisk, type Disk } from "../src/main/downloads/transfer.ts";
 import { mainLayer } from "../src/main/runtime.ts";
 import { Downloads } from "../src/main/services/downloads.ts";
@@ -1262,7 +1263,7 @@ it("says Downloads can't be opened in the interface language picked since the st
 });
 
 it("observes actual download runs, successful completion, disk failure and cancelled transfers with bounded codes", async () => {
-  const outcomes: { outcome: SummaryOutcome; failure?: SummaryFailure }[] = [];
+  const outcomes: { outcome: OperationOutcome; failure?: AnalyticsFailure }[] = [];
   let starts = 0;
   const observeTransfer: OperationObserver = () => {
     starts++;

@@ -24,7 +24,7 @@ export const de: Translation = {
   Privacy: "Datenschutz",
   "Share basic usage statistics": "Grundlegende Nutzungsstatistiken teilen",
   "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
-    "Zählt die App-Nutzung, welche Funktionen du öffnest, ob Wiedergabe, Downloads und Update-Prüfungen funktionieren, wie oft das Fenster unerwartet beendet wird und wie viele Minuten Live-TV sowie Filme und Serien pro Tag laufen. Nie, was du ansiehst, deinen Anbieter oder deine Anmeldedaten.",
+    "Zählt die App-Nutzung, welche Funktionen du öffnest, ob Wiedergabe, Downloads und Update-Prüfungen funktionieren, wie oft das Fenster unerwartet beendet wird und wann und wie lange Live-TV sowie Filme und Serien laufen. Nie, was du ansiehst, deinen Anbieter oder deine Anmeldedaten.",
   "Privacy policy": "Datenschutzerklärung",
   "Report a bug": "Fehler melden",
   "Rate in the Microsoft Store": "Im Microsoft Store bewerten",

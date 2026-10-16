@@ -431,7 +431,9 @@ function make(deps: OutputDeps) {
             const stream =
               now.item.kind === "channel" ? yield* playback.failure(now.sessionId) : null;
             if (playing !== now) return;
+            // A stream that broke is an incident the viewer may retry; otherwise the play is over.
             if (stream) now.measurement?.failure(streamFailure(stream));
+            else now.measurement?.end();
             yield* drop(true);
             if (output.kind !== "receiver") return;
             output = {
@@ -452,6 +454,8 @@ function make(deps: OutputDeps) {
               ? "stopped"
               : "waiting",
       );
+      // A title played to its end: playing it again is a new play.
+      if (said.state === "ended") now.measurement?.end();
       const before = now.media.state;
       now.media = {
         ...now.media,
@@ -1003,6 +1007,7 @@ function make(deps: OutputDeps) {
                 }
                 return;
               case "stop":
+                now.measurement?.end();
                 yield* drop(true);
                 opened.clear();
                 yield* Effect.promise(() => connection.stop(mine).catch(() => {}));
@@ -1046,6 +1051,7 @@ function make(deps: OutputDeps) {
             const { item } = was ?? {};
             const owner = item?.kind === "channel" ? item.channel : item?.title;
             if (!was || owner?.subscriptionId !== subscriptionId) return;
+            was.measurement?.end();
             yield* drop(true);
             if (connected) {
               yield* Effect.promise(() =>

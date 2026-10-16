@@ -723,6 +723,8 @@ function outputChanged(status: OutputStatus, before: OutputStatus): void {
   else if (failure) {
     store.setState({ phase: failed({ kind: "receiver", failure, lost: false }) });
   } else {
+    // Stopped there: the main process ended its run, and playing it again begins another.
+    observation.end();
     selection++;
     store.setState({ phase: { kind: "idle" }, stopped: true });
   }

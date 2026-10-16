@@ -1,13 +1,18 @@
 import type { AppError } from "@mrstreamer/contracts/errors";
+import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
 import type { DownloadFailure } from "@mrstreamer/contracts/downloads";
 import type { StreamFailure } from "@mrstreamer/contracts/playback";
 import type { CheckFailure } from "@mrstreamer/contracts/updates";
-import type { SummaryFailure, SummaryOutcome } from "./summary.ts";
 
-/** A start returns its generation-bound terminal note. No request data crosses this port. */
-export type OperationObserver = () => (outcome: SummaryOutcome, failure?: SummaryFailure) => void;
+export type OperationOutcome = "success" | "failed" | "interrupted";
 
-export function streamFailure(failure: StreamFailure): SummaryFailure {
+/** A start returns its consent-bound terminal note. No request data crosses this port. */
+export type OperationObserver = () => (
+  outcome: OperationOutcome,
+  failure?: AnalyticsFailure,
+) => void;
+
+export function streamFailure(failure: StreamFailure): AnalyticsFailure {
   switch (failure.kind) {
     case "network":
       return "network";
@@ -21,7 +26,7 @@ export function streamFailure(failure: StreamFailure): SummaryFailure {
 }
 
 /** Only typed categories select a code. Messages, names, addresses and paths are never copied. */
-export function appFailure(error: AppError): SummaryFailure {
+export function appFailure(error: AppError): AnalyticsFailure {
   switch (error.kind) {
     case "stream":
       return streamFailure(error.failure);
@@ -55,7 +60,7 @@ export function appFailure(error: AppError): SummaryFailure {
   }
 }
 
-export function downloadFailure(failure: DownloadFailure): SummaryFailure {
+export function downloadFailure(failure: DownloadFailure): AnalyticsFailure {
   switch (failure.kind) {
     case "disk-full":
     case "folder":
@@ -67,7 +72,7 @@ export function downloadFailure(failure: DownloadFailure): SummaryFailure {
   }
 }
 
-export function checkFailure(failure: CheckFailure): SummaryFailure {
+export function checkFailure(failure: CheckFailure): AnalyticsFailure {
   switch (failure.kind) {
     case "offline":
       return "network";

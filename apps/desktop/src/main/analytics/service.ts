@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type } from "arktype";
 import type {
   AnalyticsAction,
+  AnalyticsFailure,
   AnalyticsSetting,
   AnalyticsPlaybackKind,
   AnalyticsPlaybackState,
@@ -12,30 +13,22 @@ import type {
 import {
   AnalyticsRecord,
   BuildProperties,
-  type CaptureEvent,
+  CaptureEvent,
+  OUTBOX_LIMIT,
+  WATCH_SECONDS_LIMIT,
+  type CaptureName,
+  type EventProperties,
   type ProfileOrigin,
 } from "./model.ts";
+import type { OperationOutcome } from "./operations.ts";
 import { analyticsStore } from "./storage.ts";
 import type { CaptureTransport } from "./transport.ts";
-import {
-  incrementSummary,
-  summaryOnDay,
-  type SummaryCounts,
-  type SummaryFailure,
-  type SummaryOperation,
-  type SummaryOutcome,
-  type SummaryRecord,
-} from "./summary.ts";
 
 const IO_MS = 1500;
 const QUIT_MS = 500;
-const QUEUE_LIMIT = 8;
 const ATTEMPTS = 3;
-
-interface OperationGeneration {
-  readonly consent: number;
-  readonly dimensions: number;
-}
+/** Captures per minute. Human actions stay far below it; a runaway producer loses the rest. */
+const RATE_LIMIT = 60;
 
 interface PlaybackIntent {
   readonly control: string;
@@ -44,6 +37,14 @@ interface PlaybackIntent {
   readonly frame: string;
   ended: boolean;
   remoteControl?: string | null;
+}
+
+/** A capture waiting for the disk serializer, which adds the installation identity. */
+interface Unsent {
+  readonly uuid: string;
+  readonly timestamp: string;
+  readonly event: CaptureName;
+  readonly properties: object;
 }
 
 interface AnalyticsOptions {
@@ -57,18 +58,21 @@ interface AnalyticsOptions {
   readonly monotonic?: () => number;
 }
 
-/** One profile's consent, identity, observation ledger, durable outbox and owned network work. */
+/** One profile's consent, identity, playback runs, durable outbox and owned network work. */
 export class Analytics {
   private readonly monotonic: () => number;
   private readonly playbackReset: (() => void) | undefined;
-  private playbackTimer: ReturnType<typeof setInterval> | undefined;
   private intent: PlaybackIntent | null = null;
   private run: {
     token: string;
     kind: AnalyticsPlaybackKind;
+    /** Playing was confirmed, here or before this run was minted for a continuation. */
     started: boolean;
+    /** This run's stream_started was queued, so its end owes a stream_stopped. */
+    reported: boolean;
     incident: boolean;
     eligible: boolean;
+    watchMs: number;
     remoteControl?: string | null;
     intent?: PlaybackIntent;
   } | null = null;
@@ -80,7 +84,7 @@ export class Analytics {
   // One just-closed generation may report its terminal failure after synchronous teardown.
   private lastClosedBinding: string | null = null;
   private bindingClosed: { signal: AbortSignal; listener: () => void } | null = null;
-  private interval: { wall: number; mono: number; until: number } | null = null;
+  private interval: { mono: number; until: number } | null = null;
   private readonly store: ReturnType<typeof analyticsStore>;
   private readonly transport: CaptureTransport | null;
   private properties: BuildProperties;
@@ -90,15 +94,13 @@ export class Analytics {
   private available = true;
   private paused = false;
   private revision = 0;
-  private dimensions = 0;
   private foreground = false;
   private closing = false;
   private stopped = false;
   private observationPending = false;
-  private summary: SummaryRecord | undefined;
-  private notesDirty = false;
-  private checkpointPending = false;
-  private checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private incoming: Unsent[] = [];
+  private flushing = false;
+  private rate = { start: -Infinity, count: 0 };
   private dayTimer: ReturnType<typeof setInterval> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private request: AbortController | undefined;
@@ -116,7 +118,7 @@ export class Analytics {
     this.serial = deadline(
       Promise.all([this.store.load(), options.origin]).then(([kept, origin]) => {
         this.record = kept ?? {
-          format: 1,
+          format: 2,
           enabled: true,
           installationId: null,
           profileOrigin: origin,
@@ -124,15 +126,10 @@ export class Analytics {
           lastDay: null,
           pending: [],
         };
-        this.summary = this.record.enabled && !this.paused ? this.record.summary : undefined;
       }),
       IO_MS,
     ).catch(() => this.unavailable());
     this.initialized = this.serial;
-    if (this.transport) {
-      this.playbackTimer = setInterval(() => this.settlePlayback(), 1000);
-      this.playbackTimer.unref();
-    }
   }
 
   /** The only renderer-readable state. Identity and pending payloads stay in the main process. */
@@ -148,25 +145,22 @@ export class Analytics {
   /**
    * Pauses synchronously, before waiting for disk. Successful latest writes alone resume capture.
    * Re-enable keeps firstSeen and lastDay, so cleared observations are never recounted/backfilled.
+   * Opting out drops the current run without a stop; one continuing across opt-in has no start.
    */
   configure(enabled: boolean): Promise<AnalyticsSettings> {
-    this.settlePlayback();
-    this.invalidatePlayback();
+    if (!enabled) this.invalidatePlayback();
     this.paused = true;
     const revision = ++this.revision;
-    if (!enabled) this.summary = undefined;
-    this.notesDirty = false;
-    this.clearCheckpoint();
+    this.incoming = [];
     this.request?.abort();
     this.clearRetry();
     return this.exclusive(async () => {
       if (!this.available || !this.record || this.closing)
         throw new Error("Analytics preference could not be saved.");
-      const { summary: _summary, ...kept } = this.record;
       await this.save({
-        ...kept,
+        ...this.record,
         enabled,
-        pending: enabled ? kept.pending : [],
+        pending: enabled ? this.record.pending : [],
       });
       if (this.revision === revision) this.paused = !enabled;
     }).then(async () => {
@@ -190,54 +184,55 @@ export class Analytics {
     }
   }
 
+  /** Each capture carries the dimensions current when it is queued. */
   setUpdateChannel(channel: BuildProperties["update_channel"]): void {
-    if (channel === this.properties.update_channel) return;
-    this.settlePlayback();
-    this.invalidatePlayback();
     this.properties = { ...this.properties, update_channel: channel };
-    this.dimensions++;
-    this.playbackReset?.();
-    if (this.transport && this.summary && this.canCapture()) {
-      this.summary = summaryOnDay(
-        this.summary,
-        new Date().toISOString().slice(0, 10),
-        this.properties,
-      );
-      this.notesDirty = true;
-      this.checkpoint();
-    }
   }
 
+  /** A transaction's note counts only in the consent generation that began it. */
   actionObserver(action: AnalyticsAction): () => void {
-    const consent = this.revision,
-      dimensions = this.dimensions;
+    const consent = this.revision;
     const enabled = this.canCapture();
     return () => {
-      if (enabled && consent === this.revision && dimensions === this.dimensions)
-        this.noteAction(action);
+      if (enabled && consent === this.revision) this.noteAction(action);
     };
   }
 
   settingObserver(setting: AnalyticsSetting): () => void {
-    const consent = this.revision,
-      dimensions = this.dimensions;
+    const consent = this.revision;
     const enabled = this.canCapture();
     return () => {
-      if (enabled && consent === this.revision && dimensions === this.dimensions)
-        this.noteSetting(setting);
+      if (enabled && consent === this.revision) this.noteSetting(setting);
     };
   }
 
   noteAction(action: AnalyticsAction): void {
-    this.note((counts) => {
-      counts.actions[action] = incrementSummary(counts, counts.actions[action]);
-    });
+    this.capture(action, {});
   }
 
   noteSetting(setting: AnalyticsSetting): void {
-    this.note((counts) => {
-      counts.settings[setting] = incrementSummary(counts, counts.settings[setting]);
-    });
+    this.capture("settings_changed", { setting_key: setting });
+  }
+
+  noteFeature(feature: AnalyticsFeature): void {
+    this.capture("feature_opened", { feature });
+  }
+
+  /** Main observes the reason; clean exits and requested closes are the caller's to exclude. */
+  noteRendererExit(reason: EventProperties<"renderer_exited">["reason"]): void {
+    this.capture("renderer_exited", { reason });
+  }
+
+  /** An outcome reports only in the enabled generation that observed its start. */
+  observeOperation(
+    event: "download_ended" | "update_check_ended",
+  ): (outcome: OperationOutcome, failure?: AnalyticsFailure) => void {
+    const consent = this.revision;
+    const enabled = this.transport !== null && this.canCapture() && !this.closing;
+    return (outcome, failure = "app") => {
+      if (!enabled || consent !== this.revision) return;
+      this.capture(event, outcome === "failed" ? { outcome, error_type: failure } : { outcome });
+    };
   }
 
   /** Admission uses the same hint whether its advisory RPC answered, failed or never arrived. */
@@ -259,7 +254,7 @@ export class Analytics {
     if (fresh && (!hint.ongoing || this.run?.kind !== kind)) {
       this.beginPlayback(kind, hint.ongoing);
     } else if (!this.run) {
-      // Recollection after consent/dimension reset belongs to the current continuation.
+      // Recollection after a consent reset belongs to the current continuation.
       this.beginPlayback(kind, fresh ? hint.ongoing : true);
     }
     if (this.run?.kind !== kind) return null;
@@ -287,31 +282,31 @@ export class Analytics {
     else if (this.intent && this.isPlaybackControlCurrent(control, frame)) this.intent.ended = true;
   }
 
-  /** Logical intent is ephemeral. Opening media does not establish that it played. */
+  /**
+   * Logical intent is ephemeral. Opening media does not establish that it played. A new run ends
+   * the previous one. An ongoing continuation never reports a historical start.
+   */
   beginPlayback(
     kind: AnalyticsPlaybackKind,
     ongoing = false,
     remoteControl?: string | null,
     intent?: PlaybackIntent,
   ): string | null {
-    this.settlePlayback();
-    this.invalidatePlayback();
+    this.finishRun();
     if (!this.transport || !this.canCapture() || this.closing) return null;
     const token = randomUUID();
     this.run = {
       token,
       kind,
       started: ongoing,
+      reported: false,
       incident: false,
       eligible: true,
+      watchMs: 0,
       ...(remoteControl !== undefined ? { remoteControl } : {}),
       ...(intent ? { intent } : {}),
     };
     return token;
-  }
-
-  resumePlayback(kind: AnalyticsPlaybackKind): string | null {
-    return this.run?.kind === kind ? this.run.token : null;
   }
 
   bindPlayback(
@@ -361,19 +356,12 @@ export class Analytics {
     this.binding.sequence = sequence;
     if (state === "playing" && this.run.eligible) {
       if (!this.run.started) {
-        const kind = this.run.kind;
-        this.note((counts) => {
-          counts.playback[kind].starts = incrementSummary(counts, counts.playback[kind].starts);
-        });
         this.run.started = true;
+        this.run.reported = this.capture("stream_started", { stream_type: this.run.kind });
       }
       this.run.incident = false;
       const mono = this.monotonic();
-      this.interval = {
-        wall: Date.now(),
-        mono,
-        until: mono + (this.binding.output === "local" ? 5000 : 15000),
-      };
+      this.interval = { mono, until: mono + (this.binding.output === "local" ? 5000 : 15000) };
     } else this.interval = null;
   }
 
@@ -385,7 +373,7 @@ export class Analytics {
     // The producer must confirm playing again after promotion; eligibility alone proves no media.
   }
 
-  notePlaybackFailure(token: string, binding: string | null, failure: SummaryFailure): void {
+  notePlaybackFailure(token: string, binding: string | null, failure: AnalyticsFailure): void {
     if (
       this.run?.token !== token ||
       (binding === null
@@ -401,19 +389,13 @@ export class Analytics {
     this.settlePlayback();
     this.interval = null;
     this.run.incident = true;
-    const kind = this.run.kind;
-    this.note((counts) => {
-      const measured = counts.playback[kind];
-      measured.errors = incrementSummary(counts, measured.errors);
-      measured.failures[failure] = incrementSummary(counts, measured.failures[failure]);
-    });
+    this.capture("stream_error", { stream_type: this.run.kind, error_type: failure });
   }
 
   endPlayback(token: string): void {
     if (this.run?.token !== token) return;
-    this.settlePlayback();
     if (this.run.intent) this.run.intent.ended = true;
-    this.invalidatePlayback();
+    this.finishRun();
   }
 
   stopPlaybackBinding(binding: string): void {
@@ -425,12 +407,10 @@ export class Analytics {
     this.interval = null;
   }
 
+  /** A local run ends with its renderer. Receiver playback continues under main ownership. */
   rendererGone(): void {
     this.intent = null;
-    if (this.binding?.output !== "remote") {
-      this.settlePlayback();
-      this.invalidatePlayback();
-    }
+    if (this.binding?.output !== "remote") this.finishRun();
   }
 
   suspendPlayback(): void {
@@ -463,7 +443,7 @@ export class Analytics {
     let active = true;
     return {
       state: (state: AnalyticsPlaybackState) => {
-        // Consent/dimension changes require a fresh trusted observation, with no historical start.
+        // Consent changes require a fresh trusted observation, with no historical start.
         if (!active || !authorized) return;
         if (!this.run) {
           if (this.intent?.remoteControl === control && this.intent.kind === kind)
@@ -479,13 +459,47 @@ export class Analytics {
         }
         if (token && binding) this.notePlaybackState(token, binding, ++sequence, state);
       },
-      failure: (failure: SummaryFailure) => {
+      failure: (failure: AnalyticsFailure) => {
         if (active && token && binding) this.notePlaybackFailure(token, binding, failure);
       },
       stop: () => {
         active = false;
         if (binding) this.stopPlaybackBinding(binding);
       },
+      // Only while this load still owns the run's binding: a newer load, run or reset keeps its own.
+      end: () => {
+        if (!active) return;
+        active = false;
+        if (token && binding && this.binding?.token === binding) this.endPlayback(token);
+        else if (binding) this.stopPlaybackBinding(binding);
+      },
+    };
+  }
+
+  /** A terminal result can count only in the enabled generation that observed its start. */
+  playbackFailureObserver(control: string | undefined): (failure: AnalyticsFailure) => void {
+    // Resolve a receiver alias now, then retain the exact run through asynchronous completion.
+    const token =
+      control && (this.run?.token === control || this.run?.remoteControl === control)
+        ? this.run.token
+        : null;
+    return (failure) => {
+      if (token) this.notePlaybackFailure(token, null, failure);
+    };
+  }
+
+  /** A receiver load failed before Output could create its physical observation. */
+  receiverLoadFailureObserver(
+    control: string | undefined,
+    frame: string | null,
+  ): (failure: AnalyticsFailure) => void {
+    const token = control ? this.controlledPlayback(control, frame) : null;
+    return (failure) => {
+      if (!token || !control || this.controlledPlayback(control, frame) !== token) return;
+      // An earlier receiver load may still own the binding until this load takes its place.
+      // The run's incident guard merges that failure with any later physical callback.
+      const binding = this.binding;
+      this.notePlaybackFailure(token, binding?.token ?? null, failure);
     };
   }
 
@@ -503,178 +517,89 @@ export class Analytics {
     this.interval = null;
   }
 
-  /** Monotonic elapsed time is allocated before any bucket rotation, capped by confirmed leases. */
+  /** Ends the current run, reporting its active time once if its start was reported. */
+  private finishRun(): void {
+    const run = this.run;
+    this.settlePlayback();
+    this.invalidatePlayback();
+    if (run?.reported)
+      this.capture("stream_stopped", {
+        stream_type: run.kind,
+        watch_duration_seconds: Math.min(WATCH_SECONDS_LIMIT, Math.round(run.watchMs / 1000)),
+      });
+  }
+
+  /**
+   * Monotonic elapsed time since the last confirmed playing state, capped by its lease, so a
+   * stalled producer, pause, wait, seek or suspend adds nothing. Media positions are never used.
+   */
   private settlePlayback(): void {
     const interval = this.interval;
     if (!interval || !this.run || !this.canCapture() || this.closing) return;
     const mono = this.monotonic();
-    const wall = Date.now();
-    const elapsed = mono - interval.mono;
-    // A clock jump has no trustworthy UTC allocation. A stalled owner cannot accrue past its lease.
-    if (elapsed < 0 || Math.abs(wall - interval.wall - elapsed) > 2000) {
-      this.interval = null;
-      return;
-    }
-    const end = interval.wall + Math.max(0, Math.min(mono, interval.until) - interval.mono);
-    let from = interval.wall;
-    while (from < end) {
-      const day = new Date(from).toISOString().slice(0, 10);
-      const midnight = Date.parse(day) + 86_400_000;
-      const through = Math.min(end, midnight);
-      if (
-        (!this.summary || day >= this.summary.day) &&
-        (!this.record?.lastDay || day >= this.record.lastDay)
-      ) {
-        this.summary = summaryOnDay(this.summary, day, this.properties);
-        const room = Math.max(
-          0,
-          86_400_000 - this.summary.watch_ms.live - this.summary.watch_ms.vod,
-        );
-        const added = Math.min(room, through - from);
-        this.summary.watch_ms[this.run.kind] += added;
-        if (added < through - from) this.summary.counts.saturated = true;
-        this.notesDirty = true;
-        this.checkpoint();
-      }
-      from = through;
-    }
-    this.interval = mono >= interval.until ? null : { wall, mono, until: interval.until };
+    this.run.watchMs += Math.max(0, Math.min(mono, interval.until) - interval.mono);
+    this.interval = mono >= interval.until ? null : { mono, until: interval.until };
   }
 
-  noteFeature(feature: AnalyticsFeature): void {
-    this.note((counts) => {
-      counts.features[feature] = incrementSummary(counts, counts.features[feature]);
+  /**
+   * Queues one event in memory and coalesces a burst into one outbox write. Returns whether it
+   * was queued; consent, quit and the rate limit refuse it.
+   */
+  private capture<Name extends CaptureName>(
+    event: Name,
+    properties: EventProperties<Name>,
+  ): boolean {
+    if (!this.transport || !this.canCapture() || this.closing || !this.record) return false;
+    const now = this.monotonic();
+    if (now - this.rate.start >= 60_000) this.rate = { start: now, count: 0 };
+    if (this.rate.count >= RATE_LIMIT) return false;
+    this.rate.count++;
+    this.incoming.push({
+      uuid: randomUUID(),
+      timestamp: new Date().toISOString(),
+      event,
+      properties: {
+        ...this.properties,
+        profile_origin: this.record.profileOrigin,
+        $process_person_profile: false,
+        $geoip_disable: true,
+        ...properties,
+      },
     });
-  }
-
-  /** A terminal result can count only in the enabled generation that observed its start. */
-  playbackFailureObserver(control: string | undefined): (failure: SummaryFailure) => void {
-    // Resolve a receiver alias now, then retain the exact run through asynchronous completion.
-    const token =
-      control && (this.run?.token === control || this.run?.remoteControl === control)
-        ? this.run.token
-        : null;
-    return (failure) => {
-      if (token) this.notePlaybackFailure(token, null, failure);
-    };
-  }
-
-  /** A receiver load failed before Output could create its physical observation. */
-  receiverLoadFailureObserver(
-    control: string | undefined,
-    frame: string | null,
-  ): (failure: SummaryFailure) => void {
-    const token = control ? this.controlledPlayback(control, frame) : null;
-    return (failure) => {
-      if (!token || !control || this.controlledPlayback(control, frame) !== token) return;
-      // An earlier receiver load may still own the binding until this load takes its place.
-      // The run's incident guard merges that failure with any later physical callback.
-      const binding = this.binding;
-      this.notePlaybackFailure(token, binding?.token ?? null, failure);
-    };
-  }
-
-  noteOperationStarted(operation: SummaryOperation): OperationGeneration | null {
-    if (!this.transport || !this.canCapture() || this.closing) return null;
-    const observed = this.note((counts) => {
-      const measured = counts[operation];
-      measured.started = incrementSummary(counts, measured.started);
-    });
-    return observed ? { consent: this.revision, dimensions: this.dimensions } : null;
-  }
-
-  /** Outcomes describe the observed operation, never content, provider identity or raw failure. */
-  noteOperationFinished(
-    operation: SummaryOperation,
-    generation: OperationGeneration | null,
-    outcome: SummaryOutcome,
-    failure: SummaryFailure = "app",
-  ): void {
-    if (
-      !generation ||
-      generation.consent !== this.revision ||
-      generation.dimensions !== this.dimensions
-    )
-      return;
-    this.note((counts) => {
-      const measured = counts[operation];
-      measured[outcome] = incrementSummary(counts, measured[outcome]);
-      if (outcome === "failed")
-        measured.failures[failure] = incrementSummary(counts, measured.failures[failure]);
-    });
-  }
-
-  noteRenderer(event: keyof SummaryCounts["renderer"]): void {
-    this.note((counts) => {
-      counts.renderer[event] = incrementSummary(counts, counts.renderer[event]);
-    });
-  }
-
-  /** Notes mutate fixed-size memory. At most one checkpoint is queued, regardless of UI rate. */
-  private note(change: (counts: SummaryCounts) => void): boolean {
-    if (!this.transport || !this.canCapture() || this.closing) return false;
-    this.settlePlayback();
-    const day = new Date().toISOString().slice(0, 10);
-    if (
-      (this.summary && day < this.summary.day) ||
-      (this.record?.lastDay && day < this.record.lastDay)
-    )
-      return false;
-    this.summary = summaryOnDay(this.summary, day, this.properties);
-    change(this.summary.counts);
-    this.notesDirty = true;
-    this.checkpoint();
-    return true;
-  }
-
-  private checkpoint(): void {
-    if (
-      this.checkpointTimer ||
-      this.checkpointPending ||
-      !this.notesDirty ||
-      this.closing ||
-      !this.canCapture()
-    )
-      return;
-    this.checkpointTimer = setTimeout(() => {
-      this.checkpointTimer = undefined;
-      this.checkpointPending = true;
-      const revision = this.revision;
+    if (!this.flushing) {
+      this.flushing = true;
       void this.exclusive(async () => {
-        if (!this.canCapture() || revision !== this.revision || !this.record) return;
-        if (this.notesDirty) await this.save(this.record);
+        this.flushing = false;
+        const unsent = this.incoming.splice(0);
+        const record = this.record;
+        const id = record?.installationId;
+        // An event before the first foreground observation has no identity to send under.
+        if (!record || !id || unsent.length === 0 || !this.canCapture()) return;
+        const queued = unsent.flatMap((item) => {
+          const allowed = CaptureEvent()({ ...item, distinct_id: id });
+          return allowed instanceof type.errors ? [] : [{ event: allowed, attempts: 0 }];
+        });
+        await this.save({ ...record, pending: bounded([...record.pending, ...queued]) });
       })
         .catch(() => {})
-        .finally(() => {
-          this.checkpointPending = false;
-          this.checkpoint();
-        });
-    }, 1000);
-    this.checkpointTimer.unref();
-  }
-
-  private clearCheckpoint(): void {
-    if (this.checkpointTimer) clearTimeout(this.checkpointTimer);
-    this.checkpointTimer = undefined;
+        .finally(() => this.pump());
+    }
+    return true;
   }
 
   /** Bounds the total wait, including a hung disk/transport. No new observations during quit. */
   async close(): Promise<void> {
     if (this.closing) return;
-    this.settlePlayback();
-    this.invalidatePlayback();
-    if (this.playbackTimer) clearInterval(this.playbackTimer);
+    this.finishRun();
     this.closing = true;
     this.foreground = false;
     if (this.dayTimer) clearInterval(this.dayTimer);
     this.clearRetry();
-    this.clearCheckpoint();
     try {
       await deadline(
         (async () => {
-          await this.exclusive(async () => {
-            if (this.canCapture() && this.record && this.notesDirty) await this.save(this.record);
-          });
+          // The final stop and any burst reach the outbox first.
+          await this.exclusive(async () => {});
           // A retry backoff is skipped once at quit, within the same per-event attempt budget.
           this.pump();
           while (this.sending) await this.sending;
@@ -700,7 +625,6 @@ export class Analytics {
     this.observationPending = true;
     void this.exclusive(async () => {
       if (!this.canCapture() || !this.foreground || this.closing || !this.record) return;
-      this.settlePlayback();
       const timestamp = new Date().toISOString();
       const day = timestamp.slice(0, 10);
       if (this.record.lastDay !== null && day <= this.record.lastDay) return;
@@ -734,38 +658,12 @@ export class Analytics {
         },
         attempts: 0,
       });
-      let summary = this.summary && summaryOnDay(this.summary, day, this.properties);
-      if (summary?.ready && (!summary.reportedDay || summary.ready.day > summary.reportedDay)) {
-        pending.push({
-          event: {
-            uuid: randomUUID(),
-            distinct_id: installationId,
-            timestamp,
-            event: "app_summary_day",
-            properties: {
-              ...properties,
-              ...summary.ready.properties,
-              summary_date: summary.ready.day,
-              counts: summary.ready.counts,
-            },
-          },
-          attempts: 0,
-        });
-        summary = { ...summary, reportedDay: summary.ready.day, ready: null };
-      }
-      this.summary = summary;
-      // Preserve a pending first observation; discard the oldest day when offline too long.
-      while (pending.length > QUEUE_LIMIT) {
-        const oldestDay = pending.findIndex((item) => item.event.event !== "installation_observed");
-        pending.splice(oldestDay, 1);
-      }
       await this.save({
         ...this.record,
         installationId,
         firstSeen: true,
         lastDay: day,
-        pending,
-        ...(summary ? { summary } : {}),
+        pending: bounded(pending),
       });
     })
       .catch(() => {})
@@ -849,15 +747,9 @@ export class Analytics {
   }
 
   private async save(record: AnalyticsRecord): Promise<void> {
-    const { summary: _summary, ...kept } = record;
-    const snapshot: AnalyticsRecord = {
-      ...kept,
-      ...(record.enabled && this.summary ? { summary: structuredClone(this.summary) } : {}),
-    };
-    this.notesDirty = false;
     try {
-      await deadline(this.store.save(snapshot), IO_MS);
-      this.record = snapshot;
+      await deadline(this.store.save(record), IO_MS);
+      this.record = record;
     } catch {
       this.unavailable();
       throw new Error("Analytics preference could not be saved.");
@@ -866,8 +758,8 @@ export class Analytics {
 
   private unavailable(): void {
     this.available = false;
-    this.clearCheckpoint();
     this.paused = true;
+    this.incoming = [];
     this.request?.abort();
     this.clearRetry();
   }
@@ -876,6 +768,17 @@ export class Analytics {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
   }
+}
+
+/** Keeps the newest events and the first observation when the outbox overflows. */
+function bounded(pending: AnalyticsRecord["pending"]): AnalyticsRecord["pending"] {
+  const kept = [...pending];
+  while (kept.length > OUTBOX_LIMIT)
+    kept.splice(
+      kept.findIndex((item) => item.event.event !== "installation_observed"),
+      1,
+    );
+  return kept;
 }
 
 /** All owner waits have a deadline even when an injected or operating-system port never settles. */

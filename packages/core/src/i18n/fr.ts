@@ -24,7 +24,7 @@ export const fr: Translation = {
   Privacy: "Confidentialité",
   "Share basic usage statistics": "Partager les statistiques d’utilisation de base",
   "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
-    "Compte l’utilisation de l’application, les fonctionnalités que vous ouvrez, si la lecture, les téléchargements et les vérifications de mises à jour fonctionnent, combien de fois la fenêtre s’arrête de façon inattendue et combien de minutes de TV en direct et de films et séries sont lues chaque jour. Jamais ce que vous regardez, votre fournisseur ni vos identifiants.",
+    "Compte l’utilisation de l’application, les fonctionnalités que vous ouvrez, si la lecture, les téléchargements et les vérifications de mises à jour fonctionnent, combien de fois la fenêtre s’arrête de façon inattendue, et quand et combien de temps la TV en direct et les films et séries sont lus. Jamais ce que vous regardez, votre fournisseur ni vos identifiants.",
   "Privacy policy": "Politique de confidentialité",
   "Report a bug": "Signaler un bug",
   "Rate in the Microsoft Store": "Noter dans le Microsoft Store",

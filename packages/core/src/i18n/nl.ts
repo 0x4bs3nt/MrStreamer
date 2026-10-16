@@ -24,7 +24,7 @@ export const nl: Translation = {
   Privacy: "Privacy",
   "Share basic usage statistics": "Basisgebruiksstatistieken delen",
   "Counts app use, the features you open, whether playback, downloads and update checks work, and how often the window stops unexpectedly. No viewing history or provider details.":
-    "Telt appgebruik, welke functies je opent, of afspelen, downloads en updatecontroles werken, hoe vaak het venster onverwacht stopt en hoeveel minuten live-tv en films en series er per dag spelen. Nooit wat je kijkt, je provider of je login.",
+    "Telt appgebruik, welke functies je opent, of afspelen, downloads en updatecontroles werken, hoe vaak het venster onverwacht stopt en wanneer en hoe lang live-tv en films en series spelen. Nooit wat je kijkt, je provider of je login.",
   "Privacy policy": "Privacybeleid",
   "Report a bug": "Een fout melden",
   "Rate in the Microsoft Store": "Beoordelen in de Microsoft Store",
