@@ -654,16 +654,31 @@ export async function rememberCategory(
   );
 }
 
-/** Refetches library data whenever the main process reports a new catalogue. */
+/**
+ * Refetches library data whenever the main process reports a new catalogue. A read already under
+ * way may answer from the catalogue before, and settling clears the invalidation: once it settles,
+ * its query is marked stale again. Whoever awaits that read still gets its answer.
+ */
 export function syncLibraryUpdates(client: QueryClient): () => void {
+  // Favourites and history show by channel, and a new catalogue can join a channel's streams.
+  const changed = [["library"], ["playlist"], queries.viewing().queryKey];
   return listen("library.updated", () => {
     // Invalidation alone reuses an in-flight first read with no cached data. Its old decision
     // must not become fresh after a catalogue update.
     void client.cancelQueries({ queryKey: queries.searchGroups().queryKey, exact: true });
-    void client.invalidateQueries({ queryKey: ["library"] });
-    void client.invalidateQueries({ queryKey: ["playlist"] });
-    // Favourites and history show by channel, and a new catalogue can join a channel's streams.
-    void client.invalidateQueries({ queryKey: queries.viewing().queryKey });
+    const underWay = changed.flatMap((queryKey) =>
+      client
+        .getQueryCache()
+        .findAll({ queryKey, fetchStatus: "fetching" })
+        .flatMap(({ queryKey, promise }) => (promise ? [{ queryKey, promise }] : [])),
+    );
+    for (const queryKey of changed) void client.invalidateQueries({ queryKey });
+    // One that invalidation replaced with a new read is cancelled, and that read is current.
+    for (const { queryKey, promise } of underWay)
+      void promise.then(
+        () => client.invalidateQueries({ queryKey, exact: true }),
+        () => {},
+      );
   });
 }
 
