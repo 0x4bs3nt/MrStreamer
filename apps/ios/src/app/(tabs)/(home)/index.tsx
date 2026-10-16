@@ -1,98 +1,191 @@
-import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
+import { router } from "expo-router";
 import { VideoView } from "expo-video";
 import { useCallback, useMemo } from "react";
-import { ActionSheetIOS, ScrollView, StyleSheet, Text, View } from "react-native";
-import { loadCatalogue, playChannel, useCatalogue } from "../../../account.ts";
-import { describeError } from "../../../errors.ts";
+import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { playChannel, retryChannels, useCatalogue } from "../../../account.ts";
+import { failureOf } from "../../../errors.ts";
 import { Glass, IconButton } from "../../../glass.tsx";
-import type { Library } from "../../../library.ts";
+import type { Channel, Library } from "../../../library.ts";
 import {
   openWatch,
   player,
   retry,
   setMuted,
-  playingId,
+  playingChannel,
   usePlayback,
   type Playback,
 } from "../../../playback.ts";
 import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
 import { useSavedState } from "../../../storage.ts";
-import { named, useMetadataVersion, useTitleLists } from "../../../titles.ts";
+import { collectionOf, named, rowsOf, useMetadataVersion, useTitleLists } from "../../../titles.ts";
 import { Shelf } from "../../../titles-ui.tsx";
-import { ChannelRow, colors, Message, useRowHeight } from "../../../ui.tsx";
+import { ChannelLogo, colors, Message, Notice } from "../../../ui.tsx";
 import { removeFromContinue } from "../../../viewing.ts";
 import { useWatchlist, watchlistTitles } from "../../../watchlist.ts";
 
-const RECENT_LINES = 5;
+/** How many channels On now shows. */
+const ON_NOW = 12;
+/** How many movies Home shows before the Movies tab. */
+const MOVIES = 20;
 
 /**
- * Home: the Stage, a muted preview of what plays, then Continue watching, the watchlist and the
- * channels watched lately. Downloads join it as they come to iOS.
+ * Home: the Stage, a muted preview of what plays or of the channel to play, then On now,
+ * Continue watching, the watchlist and Movies for you. On now lists the channels watched lately,
+ * or the first of Live's country until there are any; their programmes join when iOS reads a
+ * guide, favourites when iOS has them. Downloads join Home as they come to iOS.
  */
 export default function Home() {
   const catalogue = useCatalogue();
-  const { recent } = useSavedState();
+  const { recentChannels: recent = [], region } = useSavedState();
   const playback = usePlayback();
-  const height = useRowHeight();
   const continuing = useContinueWatching();
   const saved = useWatchlist();
   const titlesShown = continuing.length > 0 || saved.length > 0;
   const library = catalogue.kind === "ready" ? catalogue.library : null;
   const recentChannels = library
-    ? recent.flatMap((id) => {
-        const channel = library.byId.get(id);
+    ? recent.flatMap((key) => {
+        const channel = library.byKey.get(key);
         return channel ? [channel] : [];
       })
     : [];
+  const listed =
+    recentChannels.length > 0
+      ? recentChannels
+      : ((library?.regions.find((each) => each.name === region) ?? library?.regions[0])?.channels ??
+        []);
+  const onNow = listed.slice(0, ON_NOW);
   const preview = useCallback(
-    (channel: ListedChannel) =>
+    (channel: Channel) =>
       library && playChannel(channel, placeOf(library, channel), { watch: false }),
     [library],
   );
-  const playing = playingId(playback.phase);
+  const playing = playingChannel(playback.phase);
+  const suggested = onNow[0] ?? null;
+  const shown =
+    playback.phase.kind === "idle"
+      ? suggested
+      : playback.phase.item.live
+        ? (library?.byKey.get(playback.phase.item.id) ?? null)
+        : null;
 
   return (
     <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic">
       <Stage
         playback={playback}
-        last={recentChannels[0] ?? null}
-        onPlayLast={() => recentChannels[0] && preview(recentChannels[0])}
+        channel={shown}
+        line={
+          !suggested
+            ? ""
+            : recentChannels.length > 0
+              ? "Last watched"
+              : library
+                ? placeOf(library, suggested)
+                : ""
+        }
+        onPlay={() => suggested && preview(suggested)}
       />
-      <TitleRows />
-      {recentChannels.length > 0 ? (
-        <Text style={styles.section} accessibilityRole="header">
-          Recently watched
-        </Text>
+      {library && onNow.length > 0 ? (
+        <OnNow channels={onNow} library={library} playing={playing} onPress={preview} />
       ) : null}
-      {library
-        ? recentChannels
-            .slice(0, RECENT_LINES)
-            .map((channel) => (
-              <ChannelRow
-                key={channel.id}
-                channel={channel}
-                detail={placeOf(library, channel)}
-                playing={channel.id === playing}
-                height={height}
-                onPress={preview}
-              />
-            ))
-        : null}
-      {catalogue.kind === "loading" ? <Message text="Loading channels" /> : null}
       {catalogue.kind === "failed" ? (
-        <Message
-          text={describeError(catalogue.error)}
-          action={{ label: "Try again", onPress: loadCatalogue }}
+        <Notice
+          failure={failureOf(catalogue.error, catalogue.member.entry.server)}
+          actions={[{ label: "Try again", onPress: retryChannels }]}
         />
       ) : null}
-      {library && recentChannels.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
-        <Message text="Pick a channel in Live, or a film or series." />
+      <TitleRows />
+      <MoviesForYou />
+      {catalogue.kind === "loading" ? <Message text="Loading channels" /> : null}
+      {library && onNow.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
+        <Message text="Pick a channel in Live, or a movie or series." />
       ) : null}
     </ScrollView>
   );
 }
 
-const placeOf = (library: Library, channel: ListedChannel) => library.placeOf.get(channel.id) ?? "";
+const placeOf = (library: Library, channel: Channel) => library.placeOf.get(channel.key) ?? "";
+
+/** Channels as a row of logos to preview on the Stage, with All channels opening Live. */
+function OnNow({
+  channels,
+  library,
+  playing,
+  onPress,
+}: {
+  channels: readonly Channel[];
+  library: Library;
+  playing: string | null;
+  onPress: (channel: Channel) => void;
+}) {
+  return (
+    <View style={styles.block}>
+      <View style={styles.head}>
+        <Text style={styles.section} accessibilityRole="header">
+          On now
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.navigate("/live")}
+          style={({ pressed }) => [styles.link, pressed && styles.pressed]}
+          testID="home-all-channels"
+        >
+          <Text style={styles.linkText}>All channels</Text>
+        </Pressable>
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.tiles}
+      >
+        {channels.map((channel) => {
+          const line = channel.key === playing ? "Playing" : shelfOf(placeOf(library, channel));
+          return (
+            <Pressable
+              key={channel.key}
+              accessibilityRole="button"
+              accessibilityLabel={[channel.title, line].filter(Boolean).join(", ")}
+              onPress={() => onPress(channel)}
+              style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
+              testID={`home-channel-${channel.key}`}
+            >
+              <ChannelLogo channel={channel} style={styles.tileLogo} large />
+              <Text style={styles.tileName} numberOfLines={1}>
+                {channel.title}
+              </Text>
+              {line ? (
+                <Text style={styles.tileLine} numberOfLines={1}>
+                  {line}
+                </Text>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+/** "News" from "Netherlands · News": the country is Live's menu, the tile says the category. */
+const shelfOf = (place: string) => place.split(" · ").at(-1) ?? place;
+
+/**
+ * Movies for you: the Movies tab's first For you row. Without TMDB's metadata that is what the
+ * provider added lately, and failing that the provider's own list.
+ */
+function MoviesForYou() {
+  const lists = useTitleLists();
+  const metadata = useMetadataVersion();
+  const shelf = useMemo(() => {
+    if (lists.kind !== "ready") return null;
+    const [row] = rowsOf(lists.index, "movie", "for-you", null);
+    if (row) return { name: "Movies for you", titles: row.titles };
+    const all = collectionOf(lists.index, "movie", "all").titles.slice(0, MOVIES);
+    return all.length > 0 ? { name: "Movies", titles: all } : null;
+    // A new metadata version changes what For you holds.
+  }, [lists, metadata]);
+  if (!shelf) return null;
+  return <Shelf name={shelf.name} titles={shelf.titles} onPress={(title) => openDetails(title)} />;
+}
 
 /** Continue watching and the watchlist, as rows of posters. */
 function TitleRows() {
@@ -146,28 +239,32 @@ function TitleRows() {
 
 /**
  * The preview of the one player, muted until unmuted here or opened in Watch. It shows no
- * picture while Watch, Picture in Picture or AirPlay shows it instead.
+ * picture while Watch, Picture in Picture or AirPlay shows it instead. Idle, it shows the channel
+ * Play starts: the last watched, or the first of On now. A channel without a picture yet shows
+ * its logo.
  */
 function Stage({
   playback,
-  last,
-  onPlayLast,
+  channel,
+  line,
+  onPlay,
 }: {
   playback: Playback;
-  last: ListedChannel | null;
-  onPlayLast: () => void;
+  /** The channel playing, or the one Play starts. */
+  channel: Channel | null;
+  /** Under the name while idle: why this channel. */
+  line: string;
+  onPlay: () => void;
 }) {
   const { phase, watch, pip, external, muted } = playback;
   const shows =
     (phase.kind === "loading" || phase.kind === "playing" || phase.kind === "paused") &&
     !watch &&
     !pip;
-  const title = phase.kind === "idle" ? (last?.title ?? "Nothing playing") : phase.item.title;
+  const title = phase.kind === "idle" ? (channel?.title ?? "Nothing playing") : phase.item.title;
   const status =
     phase.kind === "idle"
-      ? last
-        ? "Last watched"
-        : ""
+      ? line
       : phase.kind === "failed"
         ? phase.error
         : external
@@ -181,8 +278,15 @@ function Stage({
                 : muted
                   ? "Muted"
                   : "Live";
+  // The logo where the picture isn't: idle, connecting, failed, or shown elsewhere.
+  const logo = channel && (phase.kind !== "playing" || !shows) ? channel : null;
   return (
     <View style={styles.stage} testID="home-stage">
+      {logo ? (
+        <View style={styles.stageLogo} pointerEvents="none">
+          <ChannelLogo channel={logo} style={styles.stageMark} large />
+        </View>
+      ) : null}
       {shows ? (
         <VideoView
           player={player()}
@@ -202,13 +306,13 @@ function Stage({
           </Text>
         ) : null}
       </View>
-      {phase.kind === "idle" && !last ? null : (
+      {phase.kind === "idle" && !channel ? null : (
         <Glass style={styles.capsule}>
           {phase.kind === "idle" ? (
             <IconButton
               symbol="play.fill"
               label={`Play ${title}`}
-              onPress={onPlayLast}
+              onPress={onPlay}
               testID="home-play"
             />
           ) : phase.kind === "failed" ? (
@@ -269,12 +373,24 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     paddingHorizontal: 2,
   },
-  section: {
-    color: colors.text,
-    fontSize: 20,
-    fontWeight: "700",
-    marginTop: 20,
-    marginBottom: 4,
+  stageLogo: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center" },
+  stageMark: { width: "34%", aspectRatio: 16 / 10, backgroundColor: "transparent" },
+  block: { marginTop: 18 },
+  head: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginHorizontal: 16,
+    marginBottom: 8,
+    minHeight: 32,
   },
+  section: { color: colors.text, fontSize: 20, fontWeight: "700", flexShrink: 1 },
+  link: { minHeight: 44, justifyContent: "center" },
+  linkText: { color: colors.text, fontSize: 15 },
+  pressed: { opacity: 0.6 },
+  tiles: { paddingHorizontal: 16, gap: 10 },
+  tile: { width: 112 },
+  tileLogo: { width: 112, height: 63 },
+  tileName: { color: colors.text, fontSize: 13, marginTop: 6 },
+  tileLine: { color: colors.dim, fontSize: 12, marginTop: 1 },
 });

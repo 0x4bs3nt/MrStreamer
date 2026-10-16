@@ -8,5 +8,6 @@ allowBuilds:
 # Router's drawer asks for Reanimated and Gesture Handler, which the app doesn't use.
 autoInstallPeers: false
 patchedDependencies:
+  "@ark/schema@0.56.4": patches/@ark__schema@0.56.4.patch
   expo-video@58.0.10: patches/expo-video@58.0.10.patch
   react-native@0.88.0-rc.4: patches/react-native@0.88.0-rc.4.patch

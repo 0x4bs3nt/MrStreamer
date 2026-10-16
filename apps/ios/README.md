@@ -5,13 +5,21 @@ React Native on Hermes (Expo SDK 58), building toward the desktop app's features
 own native adapters: the Keychain, app storage and one native player so far. Nothing of it is in
 the desktop's install, build or packages.
 
-So far it connects one Xtream subscription. Live plays channels; Films and Series browse the
+It connects Xtream subscriptions, one or several, and shows everything from all of them
+together, as the desktop does: there is no subscription to switch to. Live lists a country's channels with their
+providers' logos, its categories as text tabs, and plays them; Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
-A movie or an episode plays in Watch from where it stopped, and Home shows Continue watching and
-the watchlist; Search finds films, series and channels. Downloads are a route that says they
-aren't on iPhone yet, and the details' Download button is shown disabled. What the desktop does
-and iOS doesn't yet is tracked in the parity report on the iOS card.
+A movie or an episode plays in Watch from where it stopped. Home leads with the preview, then
+channels to preview (On now: recent ones, else Live's country), Continue watching, the watchlist
+and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
+channel's category where the desktop shows its programme: iOS reads no guide yet. Search finds
+movies, series and channels. A movie's details and each episode row have a download button whose
+symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
+Cancel, Retry, Remove, Play offline and Delete as each state allows (`src/downloads-screen.tsx`,
+`src/download-controls.tsx`). Play and Resume always stream; a copy plays offline from Downloads,
+its menu and an episode's check. Downloads transfer only while the app is open. What the desktop
+does and iOS doesn't yet is tracked in the parity report on the iOS card.
 
 ## Its own install
 
@@ -45,37 +53,98 @@ its address, which AVKit's logs print. The player's failures reach the screen th
 
 Each responsibility has one owner, a plain module with a store the screens read:
 
-- `src/account.ts`: the subscription and its live catalogue. It signs in with core's Xtream
-  adapter (shared with the desktop), loads and reloads the channel list, cancels a load the
-  viewer moved past, and disconnects. A sign-in overtaken by a newer one or by Disconnect saves
-  nothing and signs nothing in.
-- `src/library.ts`: the catalogue as the screens show it, by core's names, quality grouping and
-  country rules.
-- `src/titles.ts`: the movie and series lists through the same adapter, indexed by core's
-  `indexCatalogue` (each kind in a task of its own, so input is handled between them), core's
-  collections and search, details with TMDB's facts, and the file each title streams from.
-  TMDB's metadata comes from core's store (`metadata/store.ts`, shared with the desktop) and is
-  kept in Caches.
+- `src/account.ts`: the saved subscriptions and their lists. It adds them (the provider checks
+  the login before anything is saved; the same account added again updates the one saved),
+  edits, retries and removes them, signs each in with core's Xtream adapter (shared with the
+  desktop) and loads each one's channels, and its movie and series lists once its login is
+  checked. Each has its own login, loads and failures: one that fails, reloads or is removed
+  leaves the others as they were. Changes to the registry and the Keychain run one at a time.
+  Its requests to the provider ask iOS's URL cache to keep nothing: the cache would store each
+  answer on disk under an address carrying the login, and answer a later Connect or reload with a
+  failure a panel allowed it to keep. The first private betas didn't ask, so
+  `modules/forget-cached-logins` empties that cache once, at the first launch of a build that has
+  it, before the app's JavaScript runs.
+- `src/subscriptions.ts`: the registry, `subscriptions.json`, and how private beta 2's one
+  subscription in `state.json` becomes its first entry under the same id. Accounts removed with
+  their history kept are remembered, so adding one again takes its id, and its history, back. Ids
+  whose Keychain item an add or a removal was writing when the app stopped are listed, and the
+  next launch removes those items; nothing else in the Keychain is touched. Ids removed with
+  their history are listed until all of it is deleted: each launch deletes what is left, and no new
+  subscription takes one of those ids.
+- `src/sources.ts`: each subscription's provider adapter and login, apart from every store, so no
+  screen, snapshot or failure holds a password. Requests go to the subscription that lists what
+  they name (`OwnedId`), and a failure hides only that subscription's login.
+- `src/library.ts`: every subscription's channels together, by core's names, quality grouping and
+  country rules, and the desktop's way of combining them: categories of one name in one country
+  are one, and a channel is never joined across subscriptions. Two channels of one name say which
+  subscription each is from. Channels in no category their provider lists come last, as Other
+  channels, or as All channels when none lists categories, so Live shows every channel the
+  desktop does.
+- `src/titles.ts`: every subscription's movie and series lists, indexed together by core's
+  `indexCatalogue` (each kind in a task of its own, so input is handled between them): a movie two
+  list under one TMDB id is one title with both versions, never by name. Core's collections and
+  search, details with TMDB's facts, and the file each version streams from, asked of its own
+  subscription. TMDB's metadata comes from core's store (`metadata/store.ts`, shared with the
+  desktop) and is kept in Caches.
 - `src/viewing.ts`: how far titles got, episode marks and Continue watching: core's
-  `ViewingRecord` service over core's in-memory store, its snapshot in `viewing.json`.
-- `src/watchlist.ts`: saved movies and series in `watchlist.json`, by core's watchlist rules.
+  `ViewingRecord` service over core's in-memory store, its snapshot in `viewing.json`, one record
+  per subscription under its id.
+- `src/watchlist.ts`: saved movies and series, each subscription's record in `watchlists.json`,
+  shown as one by core's watchlist rules. Beta 2's `watchlist.json` is read until the first change.
+- `src/downloads.ts`: movies and episodes downloaded to the phone, as the desktop's downloads:
+  `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. One
+  transfers at a time through `src/download-task.ts`, expo-file-system's native `DownloadTask` in a
+  foreground URLSession, so the bytes never pass through JavaScript and no transfer outlives the
+  app's process. Records hold no address, header, login or resume data; a file's address is made
+  from its subscription's login as its transfer starts. A stream of the same subscription takes the
+  connection back first (`onReclaim` in `playback.ts`): the transfer pauses before the stream's
+  request goes out, and goes on once nothing of that subscription streams. A transfer that doesn't
+  end within ten seconds fails the stream instead of opening a second connection. A provider takes
+  a moment to free a closed connection, so a subscription's next request, a stream's, the next
+  download's or a transfer's fresh start after its resumed request broke, waits a second after the
+  app's last one ended. Going to the background pauses it too. A pause keeps URLSession's resume
+  data, which names the address, in the Keychain under `download:<id>`, used only for that same
+  address; otherwise the transfer starts again and says so. A kill before the pause is written
+  starts it again at the next launch. A copy is complete
+  only once the native task moved it into place at the announced size; a file beside an unfinished
+  download at launch is deleted. A removed subscription's unfinished downloads end, with their files
+  and resume data; its copies stay, play from the phone with no login or network, and keep their own
+  progress, also given to the subscription's viewing record while it is saved. A copy playing goes
+  on when the last subscription is removed.
+  `modules/downloads-folder` makes `Documents/downloads` at launch and keeps it out of backups
+  (native: it takes a new build).
 - `src/playback.ts`: the one `expo-video` player and what it plays, a channel or a title. Home's
   preview, Watch, Picture in Picture and the accessory all show or control this player; none
-  opens a stream of its own. Another channel or title, Stop, Disconnect and a failure each let go
+  opens a stream of its own. Another channel or title, Stop, removing its subscription and a failure each let go
   of the stream. `src/play-title.ts` plays movies and episodes in it, saving how far they got.
-- `src/storage.ts`: what the app keeps between launches, apart from secrets, in one JSON file in
-  Documents: the subscription's server and username, recent channels and the Live country.
-  `src/files.ts` writes the viewing record and watchlist files whole, through a file beside them.
-  Disconnect erases both.
+- `src/storage.ts`: what the app keeps between launches, apart from secrets and the registry, in
+  `state.json` in Documents: recent channels by subscription and the Live country, and beta 2's
+  subscription for an older build to show. `src/files.ts` writes every file whole, through a file
+  beside it. Removing a subscription keeps its history unless the viewer deletes it too.
+- `src/telemetry/`: product statistics, off until the viewer turns them on in Settings. One owner
+  keeps the viewer's choice, a random installation id and a bounded outbox in `analytics.json`,
+  and builds every event from fixed observations: the app's activity, the player's state and
+  the screen on show. Events and properties are in `docs/telemetry.md`.
 - `src/secrets.ts`: passwords in the Keychain. Keychain items outlive the app, so the first launch
   after installing removes what an earlier install left there, by an index of the ids it wrote;
   writes, removals and clearing run one at a time so none loses another's change to the index.
 
 Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home's Downloads and
-Settings are pushed from its top bar, and `connect` shows until a subscription is signed in.
+Settings are pushed from its top bar, Settings' provider form (`provider`, Add provider or a
+provider's Edit) above Settings, and `connect` shows until a subscription is saved. With copies on
+the phone, Connect also opens `offline`, the same Downloads outside the tabs, so copies play with
+no provider saved, after a relaunch too. Connect and `provider` share `src/provider-form.tsx`. Settings lists each provider as a row with how it
+stands; pressing one offers Retry, its reloads, Edit and Remove as a system sheet, and Remove asks
+whether to delete its history too.
 Watch (`src/watch.tsx`) is a layer over the navigation rather than a route, because the view that
-starts Picture in Picture has to stay while it plays. `src/glass.tsx` draws the app's own controls
-as Liquid Glass, and solid before iOS 26 or with Reduce Transparency on.
+starts Picture in Picture has to stay while it plays. A movie or an episode turns it to landscape
+(`expo-screen-orientation`); closing it unlocks again, and iOS turns the screens under it as the
+phone is held. On the simulator the screens follow its device orientation (agent-device's
+`orientation`), not where Watch left them. `patches/` makes expo-video report Picture in Picture
+brought back to the app, which its own view never forwarded, and hold AVKit's answer until Watch
+has shown the player again, so the picture returns into Watch rather than Home.
+`src/glass.tsx` draws the app's own controls as Liquid Glass, and solid before iOS 26 or with
+Reduce Transparency on.
 
 Live channels are asked for as HLS, which AVPlayer plays and panels serve beside MPEG-TS. On the
 simulator the fixture channels showed what that covers: H.264 with AAC or AC-3 plays; MPEG-2 fails
@@ -101,6 +170,12 @@ missing and not polyfilled: `Buffer`, so `core/guide/xmltv` can't load, and `cry
 and `crypto.subtle`, which `core/guide/address`, `service`, `ondemand/files` and
 `playlist/import` take from `node:crypto`.
 
+Hermes's array methods ignore `Symbol.species`, so an Array subclass's `map` returns a plain
+Array. ArkType's intersection results are such a subclass, and it corrects this in one method but
+not in `withPrefixKey`; `patches/` makes that one keep its class too. Without it, a union of object
+schemas, as the statistics events are, fails to build on the iPhone with "undefined is not a
+function". The root tests run on Node, which honours species, so only the app shows it.
+
 ## On the simulator
 
 On the workbench, with the Mac mini's simulator (see the `mac-mini` skill). The fixture panel is
@@ -108,7 +183,10 @@ the desktop tests' fake Xtream provider with live HLS in front, its movie and se
 fake TMDB under `/tmdb/3`; log in to `http://127.0.0.1:8791` as `fixture` / `fixture-pass`.
 `FIXTURE_TITLES` sizes the movie and series lists. Its control port (8792) stays on the workbench
 and makes the catalogue, a channel or title files fail, or holds movie and series details back to
-try what a slow panel does; see `scripts/fixture-server.ts`.
+try what a slow panel does; see `scripts/fixture-server.ts`. A second panel, for several
+providers, runs beside it on other ports with `FIXTURE_SECOND=1` and its own login, such as
+`FIXTURE_SECOND=1 FIXTURE_USERNAME=second FIXTURE_PASSWORD=second-pass node scripts/fixture-server.ts 8793 8794`;
+add it in Settings > Add provider at `http://127.0.0.1:8793`. Its channels have the first's ids.
 
 ```sh
 node scripts/fixture-server.ts 8791 8792

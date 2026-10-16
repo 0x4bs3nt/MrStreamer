@@ -1,6 +1,9 @@
 import { router, Stack } from "expo-router";
 
-/** Home, with Downloads and Settings opening from its system glass buttons. */
+/**
+ * Home, with Downloads and Settings opening from its system glass buttons, and Settings' provider
+ * form above Settings.
+ */
 export default function HomeLayout() {
   return (
     <Stack
@@ -33,6 +36,7 @@ export default function HomeLayout() {
       />
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
+      <Stack.Screen name="provider" options={{ title: "" }} />
     </Stack>
   );
 }

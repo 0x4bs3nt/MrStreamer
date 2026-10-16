@@ -1,13 +1,13 @@
-import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { useNavigation } from "expo-router";
 import { useCallback, useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, SectionList, StyleSheet, Text, View } from "react-native";
 import type { SearchBarCommands } from "react-native-screens";
 import { playChannel, useCatalogue } from "../../../account.ts";
-import { searchChannels } from "../../../library.ts";
-import { playingId, usePlayback } from "../../../playback.ts";
+import { searchChannels, type Channel } from "../../../library.ts";
+import { playingChannel, usePlayback } from "../../../playback.ts";
 import { openDetails } from "../../../resume.ts";
+import { onSearchText } from "../../../telemetry/index.ts";
 import { searchTitles, useMetadataVersion, useTitleLists } from "../../../titles.ts";
 import { Artwork } from "../../../titles-ui.tsx";
 import { ChannelRow, colors, Message, useRowHeight } from "../../../ui.tsx";
@@ -17,12 +17,12 @@ const SHOWN = 20;
 
 type Row =
   | { readonly kind: "title"; readonly title: Title }
-  | { readonly kind: "channel"; readonly channel: ListedChannel };
+  | { readonly kind: "channel"; readonly channel: Channel };
 
 /**
- * Films, series and live channels by name, matched as the desktop's search matches words: titles
+ * Movies, series and live channels by name, matched as the desktop's search matches words: titles
  * by any of their names, TMDB's translations included, the best first. A title opens its details
- * in Films or Series; a channel plays in Watch.
+ * in Movies or Series; a channel plays in Watch.
  */
 export default function Search() {
   const navigation = useNavigation();
@@ -40,7 +40,7 @@ export default function Search() {
     const found: { title: string; total: number; data: Row[] }[] = [];
     if (lists.kind === "ready" && typed.trim()) {
       for (const [kind, name] of [
-        ["movie", "Films"],
+        ["movie", "Movies"],
         ["series", "Series"],
       ] as const) {
         const page = searchTitles(lists.index, kind, typed);
@@ -69,20 +69,22 @@ export default function Search() {
     navigation.setOptions({
       headerSearchBarOptions: {
         ref: searchBar,
-        placeholder: "Films, series and channels",
+        placeholder: "Movies, series and channels",
         autoCapitalize: "none",
-        onChangeText: (event: { nativeEvent: { text: string } }) =>
-          setQuery(event.nativeEvent.text),
+        onChangeText: (event: { nativeEvent: { text: string } }) => {
+          setQuery(event.nativeEvent.text);
+          onSearchText(event.nativeEvent.text);
+        },
       },
     });
   }, [navigation]);
 
   const watch = useCallback(
-    (channel: ListedChannel) => {
+    (channel: Channel) => {
       if (!library) return;
       // The system search field keeps its keyboard up until it is blurred, over Watch too.
       searchBar.current?.blur();
-      playChannel(channel, library.placeOf.get(channel.id) ?? "", { watch: true });
+      playChannel(channel, library.placeOf.get(channel.key) ?? "", { watch: true });
     },
     [library],
   );
@@ -90,12 +92,12 @@ export default function Search() {
     searchBar.current?.blur();
     openDetails(title);
   }, []);
-  const playing = playingId(phase);
+  const playing = playingChannel(phase);
   return (
     <SectionList
       style={styles.screen}
       sections={sections}
-      keyExtractor={(row) => (row.kind === "title" ? row.title.key : row.channel.id)}
+      keyExtractor={(row) => (row.kind === "title" ? row.title.key : row.channel.key)}
       extraData={playing}
       renderSectionHeader={({ section }) => (
         <Text style={styles.section} accessibilityRole="header">
@@ -110,8 +112,8 @@ export default function Search() {
         ) : (
           <ChannelRow
             channel={item.channel}
-            detail={library?.placeOf.get(item.channel.id) ?? ""}
-            playing={item.channel.id === playing}
+            detail={library?.placeOf.get(item.channel.key) ?? ""}
+            playing={item.channel.key === playing}
             height={height}
             onPress={watch}
           />
@@ -138,7 +140,9 @@ function TitleRow({
   height: number;
   onPress: (title: Title) => void;
 }) {
-  const line = [title.kind === "movie" ? "Film" : "Series", title.year].filter(Boolean).join(" · ");
+  const line = [title.kind === "movie" ? "Movie" : "Series", title.year]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <Pressable
       accessibilityRole="button"

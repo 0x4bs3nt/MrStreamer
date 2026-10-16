@@ -1,12 +1,14 @@
+import { appFailure, type AnalyticsFailure } from "@mrstreamer/contracts/analytics";
 import { createVideoPlayer, type VideoPlayer } from "expo-video";
 import { appError, describeError, withoutLogin } from "./errors.ts";
-import { store, useStore } from "./store.ts";
+import { store, useStore, type Store } from "./store.ts";
 
 // The app's one player and what it plays: a live channel, or a movie or an episode. Every surface
 // shows this player and no other: Home's preview, Watch, Picture in Picture and AirPlay, and the
 // accessory above the tabs controls it. Nothing opens a second stream for a preview. Playing
-// something else, stopping, disconnecting and a failure each let go of the stream, so the
-// provider's connection closes.
+// something else, stopping, removing its subscription and a failure each let go of the stream,
+// so the provider's connection closes. A download of the same subscription gives the connection
+// back before a stream opens (`onReclaim`); a downloaded copy plays from the phone and takes none.
 //
 // A title starts where it is asked to, has a length to seek in, and tells whoever played it how
 // far it got: every minute while it plays, when it pauses, and when it stops, fails or gives way
@@ -14,8 +16,13 @@ import { store, useStore } from "./store.ts";
 
 /** What plays, as the screens name it. */
 export interface Playing {
-  /** A channel's id, or a movie's or episode's version as `ownedKey` writes it. */
+  /** A channel's, movie's or episode's `ownedKey`. */
   readonly id: string;
+  /**
+   * The subscription whose provider streams it; null for a downloaded copy, which plays from the
+   * phone and holds no provider's connection.
+   */
+  readonly subscriptionId: string | null;
   readonly title: string;
   /** Where the catalogue lists a channel, "Netherlands · News"; a title's line, "S1 E2 · Name". */
   readonly place: string;
@@ -86,19 +93,36 @@ const clock = store(0);
 const length = store(0);
 
 export const usePlayback = () => useStore(state);
+/** Read-only, for telemetry, which follows the player without a screen. */
+export const playbackState: Pick<Store<Playback>, "get" | "subscribe"> = state;
+export const playbackClock: Pick<Store<number>, "get" | "subscribe"> = clock;
 export const usePlaybackClock = () => useStore(clock);
 export const usePlaybackLength = () => useStore(length);
 
-/** What plays or is about to, for lists to mark; none once it failed or stopped. */
-export function playingId(phase: Phase): string | null {
-  return phase.kind === "idle" || phase.kind === "failed" ? null : phase.item.id;
+/**
+ * The channel that plays or is about to, for channel lists to mark; none once it failed or
+ * stopped, or while a title plays. A movie's key can read like a channel's of the same
+ * subscription, so a title never counts.
+ */
+export function playingChannel(phase: Phase): string | null {
+  return phase.kind === "idle" || phase.kind === "failed" || !phase.item.live
+    ? null
+    : phase.item.id;
+}
+
+/**
+ * What streams or is about to, a channel or a title; none once it failed or stopped. A new play
+ * is a new item, even of the same key, so a return from Picture in Picture can tell it apart.
+ */
+export function playingItem(phase: Phase): Playing | null {
+  return phase.kind === "idle" || phase.kind === "failed" ? null : phase.item;
 }
 
 /**
  * A request of the viewer's that waits before it plays or opens anything, as a series' resume
  * waits for its details, or Next episode for how the episodes stand. It stands until the viewer
- * asks for something newer: any other request, any channel or title played, Stop (which
- * Disconnect calls) or another screen. Whatever waited checks `stands()` before acting, so a late
+ * asks for something newer: any other request, any channel or title played, Stop, removing a
+ * subscription or another screen. Whatever waited checks `stands()` before acting, so a late
  * answer never replaces what the viewer chose since, nor opens Watch over Connect.
  */
 export interface Request {
@@ -142,8 +166,16 @@ let current: {
 } | null = null;
 let attempt: AbortController | null = null;
 let checkpoint: ReturnType<typeof setInterval> | null = null;
+/** Told each failure's category, never its message; telemetry registers it. */
+let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
 let endPictureInPicture: (() => void) | null = null;
+/**
+ * Takes a subscription's connection back from a download before a stream of it opens, so the
+ * provider never sees both; downloads.ts registers it. Resolves once the download's request ended
+ * and the provider had a moment to free it; rejects when it didn't end, and the stream fails.
+ */
+let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
 
 /** Tells a title's owner how far it got, if it got anywhere. */
 function report() {
@@ -164,7 +196,8 @@ export function player(): VideoPlayer {
   made.muted = state.get().muted;
   made.addListener("statusChange", ({ status, error }) => {
     if (!current) return;
-    if (status === "error") return fail(error?.message ?? "The player stopped.");
+    // AVPlayer's failures come without a type; on the fixtures they were formats it can't play.
+    if (status === "error") return fail(error?.message ?? "The player stopped.", "unsupported");
     if (status === "readyToPlay" && current.seek !== null) {
       const from = current.seek;
       current.seek = null;
@@ -228,8 +261,9 @@ function release() {
 }
 
 /** Shows why the stream failed: the player's message, which can quote its address, without it. */
-function fail(message: string) {
+function fail(message: string, failure: AnalyticsFailure) {
   if (!current) return;
+  failed?.(failure);
   const { item, options } = current;
   release();
   if (!current.loaded) options.outcome?.(false);
@@ -259,6 +293,8 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     };
   });
   try {
+    if (item.subscriptionId !== null) await reclaim?.(item.subscriptionId);
+    if (controller.signal.aborted) return;
     const source = await open(controller.signal);
     if (controller.signal.aborted) return;
     await player().replaceAsync({
@@ -269,7 +305,9 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     if (controller.signal.aborted) return;
     player().play();
   } catch (cause) {
-    if (!controller.signal.aborted) fail(describeError(appError(cause)));
+    if (controller.signal.aborted) return;
+    const error = appError(cause);
+    fail(describeError(error), appFailure(error));
   }
 }
 
@@ -400,6 +438,29 @@ export function pictureInPicture(active: boolean) {
   state.set((s) => ({ ...s, pip: false, muted: s.watch ? s.muted : true }));
 }
 
+/**
+ * The viewer brought Picture in Picture back to the app rather than closing it: Watch shows the
+ * player again, with its sound, before Picture in Picture reports that it ended. Returns what
+ * Watch shows, or null when nothing streams in Picture in Picture any more (it stopped or failed
+ * first), so there is nothing to return to.
+ */
+export function restoreFromPictureInPicture(): Playing | null {
+  const { phase, pip } = state.get();
+  const item = playingItem(phase);
+  if (!pip || item === null) return null;
+  player().muted = false;
+  state.set((s) => ({ ...s, watch: true, muted: false }));
+  return item;
+}
+
+export function onPlaybackFailure(listener: ((failure: AnalyticsFailure) => void) | null) {
+  failed = listener;
+}
+
 export function onEndPictureInPicture(end: (() => void) | null) {
   endPictureInPicture = end;
+}
+
+export function onReclaim(take: ((subscriptionId: string) => Promise<void>) | null) {
+  reclaim = take;
 }

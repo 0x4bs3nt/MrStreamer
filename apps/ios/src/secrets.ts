@@ -53,9 +53,9 @@ let changing: Promise<unknown> = Promise.resolve();
 
 /**
  * Runs `change` once every change begun before it has finished. Writes, removals and clearing
- * each read the index and write it back, so two at once would lose one's ids: a Disconnect's
- * removal still running when the next sign-in writes its password would drop the new id, and a
- * reinstall wouldn't remove that password.
+ * each read the index and write it back, so two at once would lose one's ids: a removal still
+ * running when an add writes its password would drop the new id, and a reinstall wouldn't
+ * remove that password.
  */
 function serially<A>(change: () => Promise<A>): Promise<A> {
   const run = changing.then(change);

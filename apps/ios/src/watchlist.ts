@@ -1,118 +1,213 @@
+import { type } from "arktype";
+import { lazy } from "@mrstreamer/contracts/lazy";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import {
+  entriesOf,
   factsOf,
   sameTitle,
   savedFirst,
   settled,
   titleOf,
+  type SavedMember,
   type SavedTitle,
 } from "@mrstreamer/core/ondemand/watchlist";
+import { useMemo } from "react";
 import { readJson, removeJson, writeJson } from "./files.ts";
 import { store, useStore } from "./store.ts";
 
 // The watchlist: movies and whole series saved to watch later, apart from how far anything got.
-// What the subscription saved is kept by its provider's ids in watchlist.json, and which title an
-// entry is now goes by core's rules (`sameTitle`, `titleOf`): by TMDB id where the lists gather
-// versions by one, else by the provider's ids. Each time the lists are read, saved titles take
-// their name and versions as the lists have them now (`settled`). Disconnect forgets it.
+// Each saved subscription keeps its own record of what it saved, by its provider's ids, in
+// watchlists.json; the watchlist shows them as one by core's rules (`entriesOf`): a movie two
+// subscriptions list under one TMDB id is one entry, saved for both. Which title an entry is now
+// goes by `titleOf`, and each time the lists are read, saved titles take their name and versions
+// as the lists have them now (`settled`). A removed subscription's record stays for when its
+// account is added again, unless its history went with it.
+//
+// Private beta 2 kept its one subscription's record in watchlist.json. Until the first change
+// writes watchlists.json, that record is read from there; the old file stays as it was for an
+// older build.
 
-const FILE = "watchlist.json";
+const FILE = "watchlists.json";
+const LEGACY = "watchlist.json";
 
-interface Saved {
-  readonly version: 1;
-  readonly subscriptionId: string;
-  readonly entries: readonly SavedTitle[];
+const Saved = lazy(() =>
+  type({
+    kind: "'movie' | 'series'",
+    tmdbId: "string | null",
+    versionIds: "string[]",
+    name: "string",
+    year: "number | null",
+    adult: "boolean",
+    id: "string",
+    savedAt: "number",
+    sequence: "number",
+  }),
+);
+const Watchlists = lazy(() =>
+  type({ version: "1", accounts: type.Record("string", Saved().array()) }),
+);
+const Legacy = lazy(() =>
+  type({ version: "1", subscriptionId: "string", entries: Saved().array() }),
+);
+
+interface Accounts {
+  readonly accounts: Readonly<Record<string, readonly SavedTitle[]>>;
 }
 
-const saved = store<Saved | null>(null);
+/** One saved movie or series: what each subscription saved of it, the one saved first in front. */
+export type WatchlistEntry = readonly SavedMember[];
 
-function load(subscriptionId: string) {
-  const read = readJson(FILE) as Saved | null;
-  saved.set(
-    read?.version === 1 && read.subscriptionId === subscriptionId
-      ? read
-      : { version: 1, subscriptionId, entries: [] },
+const saved = store<Accounts>({ accounts: {} });
+/** The saved subscriptions in their order: only their records show. */
+const owners = store<readonly string[]>([]);
+let loaded = false;
+
+function load() {
+  if (loaded) return;
+  loaded = true;
+  const current = Watchlists()(readJson(FILE));
+  if (!(current instanceof type.errors)) return saved.set({ accounts: current.accounts });
+  const legacy = Legacy()(readJson(LEGACY));
+  if (!(legacy instanceof type.errors)) {
+    saved.set({ accounts: { [legacy.subscriptionId]: legacy.entries } });
+  }
+}
+
+function write(accounts: Accounts["accounts"]) {
+  writeJson(FILE, { version: 1, accounts });
+  saved.set({ accounts });
+}
+
+/** The saved subscriptions, whose records the watchlist shows; set by account.ts. */
+export function setWatchlistOwners(ids: readonly string[]) {
+  load();
+  const current = owners.get();
+  if (ids.length !== current.length || ids.some((id, at) => id !== current[at])) owners.set(ids);
+}
+
+/** Deletes what a removed subscription saved, when its history goes with it. */
+export function eraseWatchlist(subscriptionId: string) {
+  load();
+  write(
+    Object.fromEntries(
+      Object.entries(saved.get().accounts).filter(([owner]) => owner !== subscriptionId),
+    ),
+  );
+  // The old file must not bring it back to an older build either.
+  const legacy = Legacy()(readJson(LEGACY));
+  if (!(legacy instanceof type.errors) && legacy.subscriptionId === subscriptionId) {
+    removeJson(LEGACY);
+  }
+}
+
+function entries(accounts: Accounts["accounts"], ids: readonly string[]): WatchlistEntry[] {
+  return entriesOf(
+    ids.flatMap((subscriptionId) =>
+      (accounts[subscriptionId] ?? []).map((entry) => ({ ...entry, subscriptionId })),
+    ),
   );
 }
 
-function write(next: Saved) {
-  writeJson(FILE, next);
-  saved.set(next);
-}
-
-/** Reads what the signed-in subscription saved. */
-export function connectWatchlist(subscriptionId: string) {
-  load(subscriptionId);
-}
-
-export function disconnectWatchlist() {
-  saved.set(null);
-  removeJson(FILE);
-}
+const latestFirst = (list: readonly WatchlistEntry[]) =>
+  list.toSorted(([a], [b]) => (a && b ? savedFirst(b, a) : 0));
 
 /** The saved entries, the latest first. */
-export function useWatchlist(): readonly SavedTitle[] {
-  const current = useStore(saved);
-  return current ? current.entries.toSorted((a, b) => savedFirst(b, a)) : [];
+export function useWatchlist(): readonly WatchlistEntry[] {
+  const { accounts } = useStore(saved);
+  const ids = useStore(owners);
+  return useMemo(() => latestFirst(entries(accounts, ids)), [accounts, ids]);
 }
 
-/** The entry `title` is saved as, if any. */
-export function savedEntry(entries: readonly SavedTitle[], title: Title): SavedTitle | undefined {
-  const current = saved.get();
-  if (!current) return undefined;
-  const facts = factsOf(title, current.subscriptionId);
-  return entries.find((entry) => sameTitle(entry, facts));
+/** The same, as it stands, for owners outside React. */
+export const currentWatchlist = (): readonly WatchlistEntry[] =>
+  latestFirst(entries(saved.get().accounts, owners.get()));
+
+/** The entry `title` is saved as, if any: a record of a subscription that lists it. */
+export function savedEntry(
+  list: readonly WatchlistEntry[],
+  title: Title,
+): WatchlistEntry | undefined {
+  return list.find((entry) =>
+    entry.some((member) => sameTitle(member, factsOf(title, member.subscriptionId))),
+  );
 }
 
-/** Saves a movie or whole series; one saved already keeps its entry and time. */
+/**
+ * Saves a movie or whole series for every saved subscription that lists a version of it; one
+ * saved already keeps its entry and time.
+ */
 export function saveTitle(title: Title) {
-  const current = saved.get();
-  if (!current || savedEntry(current.entries, title)) return;
-  const sequence = Math.max(0, ...current.entries.map((entry) => entry.sequence)) + 1;
-  write({
-    ...current,
-    entries: [
-      ...current.entries,
-      {
-        ...factsOf(title, current.subscriptionId),
-        id: `${Date.now().toString(36)}-${sequence}`,
-        savedAt: Date.now(),
-        sequence,
-      },
-    ],
-  });
+  const { accounts } = saved.get();
+  const ids = owners.get();
+  if (savedEntry(entries(accounts, ids), title)) return;
+  const savedAt = Date.now();
+  let sequence = Math.max(
+    0,
+    ...Object.values(accounts).flatMap((list) => list.map((entry) => entry.sequence)),
+  );
+  const next = { ...accounts };
+  for (const subscriptionId of ids) {
+    const facts = factsOf(title, subscriptionId);
+    if (facts.versionIds.length === 0) continue;
+    sequence += 1;
+    next[subscriptionId] = [
+      ...(accounts[subscriptionId] ?? []),
+      { ...facts, id: `${savedAt.toString(36)}-${sequence}`, savedAt, sequence },
+    ];
+  }
+  write(next);
 }
 
-/** Takes a title's entry out. */
+/** Takes a title's entry out, with what every subscription saved of it. */
 export function removeTitle(title: Title) {
-  const current = saved.get();
-  const entry = current && savedEntry(current.entries, title);
-  if (!current || !entry) return;
-  write({ ...current, entries: current.entries.filter((each) => each.id !== entry.id) });
+  const { accounts } = saved.get();
+  const entry = savedEntry(entries(accounts, owners.get()), title);
+  if (!entry) return;
+  const next = { ...accounts };
+  for (const member of entry) {
+    next[member.subscriptionId] = (next[member.subscriptionId] ?? []).filter(
+      (each) => each.id !== member.id,
+    );
+  }
+  write(next);
 }
 
 /** The title each entry is in the lists now, or null when they hold none that is surely it. */
 export function watchlistTitles(
   index: IndexedCatalogue,
-  entries: readonly SavedTitle[],
-): readonly { readonly entry: SavedTitle; readonly title: Title | null }[] {
-  const current = saved.get();
-  if (!current) return [];
-  const { subscriptionId } = current;
-  return entries.map((entry) => ({ entry, title: titleOf(index, { ...entry, subscriptionId }) }));
+  list: readonly WatchlistEntry[],
+): readonly { readonly entry: WatchlistEntry; readonly title: Title | null }[] {
+  return list.map((entry) => ({
+    entry,
+    title: entry.reduce<Title | null>((found, member) => found ?? titleOf(index, member), null),
+  }));
 }
 
 /**
- * Brings what was saved in line with lists just read: each entry takes its title's name, year,
- * versions and TMDB id, and entries that turn out to be one title become the one saved first.
+ * Brings what each subscription saved in line with lists just read: each entry takes its title's
+ * name, year, versions and TMDB id, and entries that turn out to be one title become the one
+ * saved first.
  */
 export function alignWatchlist(index: IndexedCatalogue) {
-  const current = saved.get();
-  if (!current || current.entries.length === 0) return;
-  const { subscriptionId } = current;
-  let entries = current.entries;
-  for (const entry of current.entries) {
+  const { accounts } = saved.get();
+  let next: Record<string, readonly SavedTitle[]> | null = null;
+  for (const subscriptionId of owners.get()) {
+    const before = accounts[subscriptionId] ?? [];
+    const after = aligned(index, subscriptionId, before);
+    if (after !== before) (next ??= { ...accounts })[subscriptionId] = after;
+  }
+  if (next) write(next);
+}
+
+/** One subscription's records in line with the lists; the same array when nothing changes. */
+function aligned(
+  index: IndexedCatalogue,
+  subscriptionId: string,
+  records: readonly SavedTitle[],
+): readonly SavedTitle[] {
+  let entries = records;
+  for (const entry of records) {
     if (!entries.some((each) => each.id === entry.id)) continue;
     const title = titleOf(index, { ...entry, subscriptionId });
     if (!title) continue;
@@ -127,10 +222,8 @@ export function alignWatchlist(index: IndexedCatalogue) {
       result.kept,
     ];
   }
-  if (
-    JSON.stringify(entries.toSorted(savedFirst)) !==
-    JSON.stringify(current.entries.toSorted(savedFirst))
-  ) {
-    write({ ...current, entries });
-  }
+  return JSON.stringify(entries.toSorted(savedFirst)) ===
+    JSON.stringify(records.toSorted(savedFirst))
+    ? records
+    : entries;
 }

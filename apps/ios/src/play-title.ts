@@ -11,8 +11,8 @@ import { nextEpisode } from "@mrstreamer/core/ondemand/details";
 import { resumePoint } from "@mrstreamer/core/viewing/continue";
 import { finishes, nextUnwatched } from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
-import { streamLogin } from "./account.ts";
 import { play, request, type Playing } from "./playback.ts";
+import { loginOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { titleFile } from "./titles.ts";
 import { finishSeries, recordProgress, seriesViewing } from "./viewing.ts";
@@ -77,6 +77,7 @@ export function playMovie(title: Title, version: OwnedId, from: number, versions
   const key = ownedKey(version);
   const item: Playing = {
     id: key,
+    subscriptionId: version.subscriptionId,
     title: title.title,
     place: title.year ? String(title.year) : "",
     live: false,
@@ -85,7 +86,7 @@ export function playMovie(title: Title, version: OwnedId, from: number, versions
   };
   void play(item, sourceOf(ref), {
     watch: true,
-    login: streamLogin(),
+    login: loginOf(version.subscriptionId),
     from,
     progress: (position, duration) =>
       void recordProgress(ref, position, duration, since).catch(() => undefined),
@@ -119,6 +120,7 @@ export function playEpisode(
   const standing = () => seriesViewing(series);
   const item: Playing = {
     id: key,
+    subscriptionId: episode.subscriptionId,
     title: details.title.title,
     place: `${episodeLabel(episode.season, episode.number)} · ${episode.title}`,
     live: false,
@@ -127,7 +129,7 @@ export function playEpisode(
   };
   void play(item, sourceOf(ref), {
     watch: true,
-    login: streamLogin(),
+    login: loginOf(episode.subscriptionId),
     from,
     progress: (position, duration) => {
       const saved = recordProgress(ref, position, duration, since);

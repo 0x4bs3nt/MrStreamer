@@ -6,7 +6,7 @@ import { useVirtualisedScreen } from "../../tab-bar.ts";
 
 // The system tab bar, Liquid Glass from iOS 26. While Picture in Picture or AirPlay plays and
 // Watch is closed, the now playing accessory sits above it. The bar shrinks as Home, the shelves
-// of Films and Series and their details scroll: iOS can't follow a virtualised list, as Live's,
+// of Movies and Series and their details scroll: iOS can't follow a virtualised list, as Live's,
 // Search's and the poster grids are, so there it stays put.
 export default function TabsLayout() {
   const { phase, watch, pip, external } = usePlayback();
@@ -36,7 +36,7 @@ export default function TabsLayout() {
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="films" testID="tab-films">
         <NativeTabs.Trigger.Icon sf="film" />
-        <NativeTabs.Trigger.Label>Films</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Label>Movies</NativeTabs.Trigger.Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="series" testID="tab-series">
         <NativeTabs.Trigger.Icon sf="rectangle.stack" />

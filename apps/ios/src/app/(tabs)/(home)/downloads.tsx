@@ -1,13 +1,9 @@
-import { ScrollView, StyleSheet } from "react-native";
-import { Message } from "../../../ui.tsx";
+import { DownloadsScreen } from "../../../downloads-screen.tsx";
+import { useFixedTabBar } from "../../../tab-bar.ts";
 
-/** Where downloads will be. Downloading and offline playback aren't on iOS yet. */
+/** Downloads, pushed from Home's glass button and Settings' Downloads row. */
 export default function Downloads() {
-  return (
-    <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic">
-      <Message text="Downloads aren't on iPhone yet." />
-    </ScrollView>
-  );
+  // A virtualised list: iOS can't shrink the tab bar as it scrolls.
+  useFixedTabBar(true);
+  return <DownloadsScreen />;
 }
-
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: "#000000" } });

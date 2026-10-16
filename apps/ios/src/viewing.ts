@@ -1,5 +1,5 @@
 import { AppFailure } from "@mrstreamer/contracts/errors";
-import type { Title, TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { Title, TitleDetails, TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import type {
   EpisodeMark,
@@ -28,19 +28,29 @@ import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { readJson, writeJson } from "./files.ts";
 import { store, useStore } from "./store.ts";
-import { detailsOf, titleOf, type TitleLists } from "./titles.ts";
 
 // How far movies and episodes got, the episodes marked by hand and Continue watching: core's
 // viewing record service, the desktop's own rules, over core's in-memory store, whose snapshot is
-// kept in viewing.json in Documents and written whole after every change. One subscription's
-// record for now, kept under its id; Disconnect erases it. Live channels watched lately stay in
-// storage.ts, as before.
+// kept in viewing.json in Documents and written whole after every change. Each saved subscription
+// has a record of its own, under its id (private beta 2's one already did): account.ts says which
+// are saved, and erases one's record when it is removed with its history. Live channels watched
+// lately stay in storage.ts.
 
 const FILE = "viewing.json";
 
-let subscriptionId: string | null = null;
-/** The lists, for what a series is and which episodes it lists; set by whoever reads them. */
-let listed: () => TitleLists = () => ({ kind: "idle" });
+/** The saved subscriptions' ids, in their order; set by account.ts. */
+let owners: readonly string[] = [];
+
+/** What the lists hold of a series, for which episodes it has; set by titles.ts. */
+export interface ViewingCatalogue {
+  /** The series a version belongs to in the lists now, if they are read. */
+  readonly series: (version: OwnedId) => Title | undefined;
+  readonly details: (title: Title) => Promise<TitleDetails>;
+}
+let catalogue: ViewingCatalogue = {
+  series: () => undefined,
+  details: () => Promise.reject(new AppFailure({ kind: "no-subscription" })),
+};
 
 const viewing = store<Viewing | null>(null);
 /** The record as it stands; null before it was first read or without a subscription. */
@@ -60,20 +70,26 @@ const layer = ViewingRecord.layer.pipe(
         memoryViewingStore({ snapshot: snapshot(), save: (next) => writeJson(FILE, next) }),
       ),
       Layer.succeed(ViewingAccount, {
+        // The record key is the subscription's id, which comes back when an account is added
+        // again, so nothing is ever rekeyed.
         owners: Effect.sync(() =>
-          subscriptionId ? [{ subscriptionId, key: subscriptionId, original: false }] : [],
+          owners.map((subscriptionId) => ({
+            subscriptionId,
+            key: subscriptionId,
+            original: false,
+          })),
         ),
       }),
       // Channels watched lately are kept apart, in storage.ts.
       Layer.succeed(ViewingChannels, { lookup: () => Effect.succeed(() => undefined) }),
       Layer.succeed(ViewingSeries, {
-        identity: (series) => Effect.sync(() => seriesIdentity(series, seriesTitle(series))),
+        identity: (series) => Effect.sync(() => seriesIdentity(series, catalogue.series(series))),
         seasons: (series) =>
           Effect.tryPromise({
             try: async () => {
-              const title = seriesTitle(series);
+              const title = catalogue.series(series);
               if (!title) throw new AppFailure({ kind: "title-not-found", titleId: series.id });
-              const found = await detailsOf({ ...title, ...series });
+              const found = await catalogue.details({ ...title, ...series });
               return found.kind === "series" ? seriesEpisodeSeasons(found) : [];
             },
             catch: failedWith,
@@ -84,12 +100,6 @@ const layer = ViewingRecord.layer.pipe(
   ),
 );
 const runtime = ManagedRuntime.make(layer);
-
-/** A series version's title in the lists now, if they are read. */
-function seriesTitle(series: OwnedId): Title | undefined {
-  const lists = listed();
-  return lists.kind === "ready" ? titleOf(lists.index, "series", series) : undefined;
-}
 
 /** Runs a call of the record; rejects with an `AppFailure` for the error it failed with. */
 async function run<A>(call: (record: ViewingRecord["Service"]) => Effect.Effect<A, Failed>) {
@@ -103,12 +113,15 @@ async function run<A>(call: (record: ViewingRecord["Service"]) => Effect.Effect<
   throw cause instanceof Failed ? new AppFailure(cause.error) : cause;
 }
 
+/** Rises whenever the saved subscriptions change: a read made before then is dropped. */
+let generation = 0;
+
 /** Reads the record again for the screens. */
 async function refresh() {
-  if (!subscriptionId) return;
-  const id = subscriptionId;
+  const asked = generation;
+  if (owners.length === 0) return viewing.set(null);
   const read = await run((record) => record.state);
-  if (subscriptionId === id) viewing.set(read);
+  if (asked === generation) viewing.set(read);
 }
 
 /** Every change goes through here: the screens read the record once it is stored. */
@@ -120,19 +133,22 @@ async function change<A>(call: (record: ViewingRecord["Service"]) => Effect.Effe
 
 const commandId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
-/** Starts the record of the signed-in subscription; `lists` says what the catalogue holds. */
-export function connectViewing(id: string, lists: () => TitleLists) {
-  subscriptionId = id;
-  listed = lists;
+/** The saved subscriptions, whose records the screens read together. */
+export function setViewingOwners(ids: readonly string[]) {
+  if (ids.length === owners.length && ids.every((id, at) => id === owners[at])) return;
+  owners = ids;
+  generation++;
   void refresh().catch(() => undefined);
 }
 
-/** Erases what the subscription recorded, as the desktop does when a subscription is removed. */
-export async function disconnectViewing() {
-  const id = subscriptionId;
-  subscriptionId = null;
-  viewing.set(null);
-  if (id) await run((record) => record.erase(id)).catch(() => undefined);
+/** titles.ts says what the lists hold, once, as it loads. */
+export function serveViewing(lists: ViewingCatalogue) {
+  catalogue = lists;
+}
+
+/** Erases what a removed subscription recorded, when its history goes with it. */
+export function eraseViewing(subscriptionId: string): Promise<void> {
+  return change((record) => record.erase(subscriptionId));
 }
 
 /** Saves how far a movie or episode played, in a play begun at `since`. */
@@ -179,9 +195,11 @@ export function undoMark(series: OwnedId, revision: number) {
 
 /** Keeps the record's view of a series in line with its details as just read. */
 export function relist(series: OwnedId, title: Title) {
-  return detailsOf({ ...title, ...series }).then((found) =>
-    found.kind === "series"
-      ? run((record) => record.relist(commandId(), series, seriesEpisodeSeasons(found)))
-      : undefined,
-  );
+  return catalogue
+    .details({ ...title, ...series })
+    .then((found) =>
+      found.kind === "series"
+        ? run((record) => record.relist(commandId(), series, seriesEpisodeSeasons(found)))
+        : undefined,
+    );
 }

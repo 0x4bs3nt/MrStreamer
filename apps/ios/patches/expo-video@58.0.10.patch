@@ -1,3 +1,78 @@
+diff --git a/build/VideoView.d.ts b/build/VideoView.d.ts
+index 04960571a7e48738769ab3729d70f620c5d63627..ebf38bed119644412e58865c868feaf789d194be 100644
+--- a/build/VideoView.d.ts
++++ b/build/VideoView.d.ts
+@@ -64,5 +64,12 @@ export declare class VideoView extends PureComponent<VideoViewProps> {
+      * @platform web
+      */
+     stopPictureInPicture(): Promise<void>;
++    /**
++     * Answers the `onPictureInPictureRestore` event that carried `request`: `true` once the view is
++     * shown again, so Picture in Picture returns into it, `false` when there is nothing to return to.
++     * An answer to an earlier request changes nothing.
++     * @platform ios
++     */
++    finishPictureInPictureRestore(request: number, restored: boolean): Promise<void>;
+     render(): ReactNode;
+ }
+diff --git a/build/VideoView.js b/build/VideoView.js
+index a24578512cd3c19366312a7fb0d1ca146f53cdea..48ce463337a779d65df4d6b1c5b28ec8db7a0874 100644
+--- a/build/VideoView.js
++++ b/build/VideoView.js
+@@ -69,6 +69,14 @@ export class VideoView extends PureComponent {
+    */ async stopPictureInPicture() {
+         return await this.nativeRef.current?.stopPictureInPicture();
+     }
++    /**
++   * Answers the `onPictureInPictureRestore` event that carried `request`: `true` once the view is
++   * shown again, so Picture in Picture returns into it, `false` when there is nothing to return to.
++   * An answer to an earlier request changes nothing.
++   * @platform ios
++   */ async finishPictureInPictureRestore(request, restored) {
++        return await this.nativeRef.current?.finishPictureInPictureRestore(request, restored);
++    }
+     render() {
+         const { player, ...props } = this.props;
+         const playerId = player ? getPlayerId(player) : null;
+diff --git a/build/VideoView.types.d.ts b/build/VideoView.types.d.ts
+index f2970f5943aac4b2c80cb29765e7140752f75e36..801e9f4d6966ec675f0276e2871f973cfe049b83 100644
+--- a/build/VideoView.types.d.ts
++++ b/build/VideoView.types.d.ts
+@@ -86,6 +86,17 @@ export interface VideoViewProps extends ViewProps {
+      * @platform web
+      */
+     onPictureInPictureStop?: () => void;
++    /**
++     * A callback to call when the viewer returns from Picture in Picture to the app, before it stops.
++     * Answer its `request` with `finishPictureInPictureRestore` once the view is shown again. A newer
++     * return answers an earlier one still waiting with `false`.
++     * @platform ios
++     */
++    onPictureInPictureRestore?: (event: {
++        nativeEvent: {
++            request: number;
++        };
++    }) => void;
+     /**
+      * Determines whether the player allows Picture in Picture (PiP) mode.
+      * > **Note:** The `supportsPictureInPicture` property of the [config plugin](#configuration-in-app-config)
+diff --git a/ios/OrientationAVPlayerViewController.swift b/ios/OrientationAVPlayerViewController.swift
+index c66e0fae98a838732c9a2deab6c5e2a0b7e5abc1..4316053e1257923913a199e80abe825930701a28 100644
+--- a/ios/OrientationAVPlayerViewController.swift
++++ b/ios/OrientationAVPlayerViewController.swift
+@@ -220,7 +220,11 @@ internal class OrientationAVPlayerViewController: AVPlayerViewController, AVPlay
+         self?.pendingPiPCompletionHandler?(false)
+         self?.pendingPiPCompletionHandler = nil
+       })
+-    } else {
++    } else if forwardDelegate?.playerViewController?(
++      playerViewController,
++      restoreUserInterfaceForPictureInPictureStopWithCompletionHandler: completionHandler
++    ) == nil {
++      // The view's owner restores its own interface when it listens for the restore.
+       completionHandler(false)
+     }
+   }
 diff --git a/ios/VideoAsset.swift b/ios/VideoAsset.swift
 index ea1043e4f62718244ddfab88394c85ff617c6224..ac7b85190a85b20ac5d1ab2c237fcdaea1296d80 100644
 --- a/ios/VideoAsset.swift
@@ -39,6 +114,29 @@ index 71766387e6e661c112a05cf32c19723508e8ffa8..0fba324eb3a74c2f642616a239eafb77
 +    return "\(failure.domain) \(failure.code)\(cause)"
 +  }
 +}
+diff --git a/ios/VideoModule.swift b/ios/VideoModule.swift
+index a34afc4a755cb3a0fbe43878c89b9f1174c511a2..ef71946ed4d6c8fd04f88f674ba02349f87d7a8e 100644
+--- a/ios/VideoModule.swift
++++ b/ios/VideoModule.swift
+@@ -31,6 +31,7 @@ public final class VideoModule: Module {
+       Events(
+         "onPictureInPictureStart",
+         "onPictureInPictureStop",
++        "onPictureInPictureRestore",
+         "onFullscreenEnter",
+         "onFullscreenExit",
+         "onFirstFrameRender"
+@@ -123,6 +124,10 @@ public final class VideoModule: Module {
+       AsyncFunction("stopPictureInPicture") { view in
+         view.stopPictureInPicture()
+       }
++
++      AsyncFunction("finishPictureInPictureRestore") { (view: VideoView, request: Int, restored: Bool) in
++        view.finishPictureInPictureRestore(request, restored)
++      }
+     }
+ 
+     View(VideoAirPlayButtonView.self) {
 diff --git a/ios/VideoPlayer.swift b/ios/VideoPlayer.swift
 index 3c2fde463a10c78546947dacd8c0fda67f0494c7..3b6d520985d5af1038414fda3aafbd27ea2aa212 100644
 --- a/ios/VideoPlayer.swift
@@ -93,3 +191,110 @@ index ab8464c918cf43c08b72dba12c366eaf658ba83e..6bf10ff2c4bc41b1988de4850e3dfaa4
        availableSubtitleTracks = []
      }
  
+diff --git a/ios/VideoView.swift b/ios/VideoView.swift
+index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b92d1df549 100644
+--- a/ios/VideoView.swift
++++ b/ios/VideoView.swift
+@@ -40,6 +40,7 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {
+ 
+   let onPictureInPictureStart = EventDispatcher()
+   let onPictureInPictureStop = EventDispatcher()
++  let onPictureInPictureRestore = EventDispatcher()
+   let onFullscreenEnter = EventDispatcher()
+   let onFullscreenExit = EventDispatcher()
+   let onFirstFrameRender = EventDispatcher()
+@@ -65,6 +66,7 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {
+   }
+ 
+   deinit {
++    cancelPictureInPictureRestore()
+     VideoManager.shared.unregister(videoView: self)
+     removeFirstFrameObserver()
+   }
+@@ -162,9 +164,47 @@ public final class VideoView: ExpoView, AVPlayerViewControllerDelegate {
+   }
+ 
+   public func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
++    cancelPictureInPictureRestore()
+     onPictureInPictureStop()
+   }
+ 
++  /// AVKit's answer for a return from Picture in Picture, held until JavaScript has shown the view,
++  /// with the number its event carried.
++  private var pendingPictureInPictureRestore: (request: Int, completion: (Bool) -> Void)?
++  /// The number of the latest return this view asked JavaScript about.
++  private var pictureInPictureRestores = 0
++
++  // The viewer asked Picture in Picture to return to the app, rather than closing it. JavaScript
++  // shows this view again and then answers through finishPictureInPictureRestore with the event's
++  // request, so AVKit returns the picture into a view that is on screen. An earlier request still
++  // waiting is obsolete and answered no.
++  public func playerViewController(
++    _ playerViewController: AVPlayerViewController,
++    restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
++  ) {
++    cancelPictureInPictureRestore()
++    pictureInPictureRestores += 1
++    pendingPictureInPictureRestore = (pictureInPictureRestores, completionHandler)
++    onPictureInPictureRestore(["request": pictureInPictureRestores])
++  }
++
++  /// Answers the return `request` numbers, once, while it waits: true when the view is shown again.
++  /// An answer to an earlier request leaves a newer one waiting.
++  func finishPictureInPictureRestore(_ request: Int, _ restored: Bool) {
++    guard let pending = pendingPictureInPictureRestore, pending.request == request else {
++      return
++    }
++    pendingPictureInPictureRestore = nil
++    pending.completion(restored)
++  }
++
++  /// Answers no, once, to a return still waiting.
++  private func cancelPictureInPictureRestore() {
++    let pending = pendingPictureInPictureRestore
++    pendingPictureInPictureRestore = nil
++    pending?.completion(false)
++  }
++
+   public override func didMoveToWindow() {
+     // TV is doing a normal view controller present, so we should not execute
+     // this code
+diff --git a/src/VideoView.tsx b/src/VideoView.tsx
+index 33849e854dd8989186d1af84e0a141075070a5ec..78aab27fe686b48fa06da139b65c2379a43de9b1 100644
+--- a/src/VideoView.tsx
++++ b/src/VideoView.tsx
+@@ -85,6 +85,16 @@ export class VideoView extends PureComponent<VideoViewProps> {
+     return await this.nativeRef.current?.stopPictureInPicture();
+   }
+ 
++  /**
++   * Answers the `onPictureInPictureRestore` event that carried `request`: `true` once the view is
++   * shown again, so Picture in Picture returns into it, `false` when there is nothing to return to.
++   * An answer to an earlier request changes nothing.
++   * @platform ios
++   */
++  async finishPictureInPictureRestore(request: number, restored: boolean): Promise<void> {
++    return await this.nativeRef.current?.finishPictureInPictureRestore(request, restored);
++  }
++
+   render(): ReactNode {
+     const { player, ...props } = this.props;
+     const playerId = player ? getPlayerId(player) : null;
+diff --git a/src/VideoView.types.ts b/src/VideoView.types.ts
+index 0602ad659298136cdf6bbf2e9d603bedf98a980a..70339d17e7eb055ad73e445b5a913109bc6b7632 100644
+--- a/src/VideoView.types.ts
++++ b/src/VideoView.types.ts
+@@ -97,6 +97,13 @@ export interface VideoViewProps extends ViewProps {
+    * @platform web
+    */
+   onPictureInPictureStop?: () => void;
++  /**
++   * A callback to call when the viewer returns from Picture in Picture to the app, before it stops.
++   * Answer its `request` with `finishPictureInPictureRestore` once the view is shown again. A newer
++   * return answers an earlier one still waiting with `false`.
++   * @platform ios
++   */
++  onPictureInPictureRestore?: (event: { nativeEvent: { request: number } }) => void;
+ 
+   /**
+    * Determines whether the player allows Picture in Picture (PiP) mode.

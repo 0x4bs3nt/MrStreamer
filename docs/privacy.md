@@ -44,6 +44,14 @@ Each event carries a random installation identifier, an event identifier, the ti
 
 Statistics never include what you watch, title or channel names, your provider or its address, stream addresses, logins, searches, file paths, logs or error messages. There is no autocapture, session replay, crash dump or log upload. The identifier doesn't name you but links your events, including when you used the app and how long things played, so the data is pseudonymous, not anonymous. Person profiles and location lookup are off in PostHog. PostHog receives your IP address with each request, as any server does, and our project is set not to store it.
 
+### Usage statistics on iPhone
+
+The iPhone app, in test builds through TestFlight, has its own **Share basic usage statistics** switch in Settings > Privacy. It is off until you turn it on, and while it's off the app records and sends nothing.
+
+While it's on, the app sends the same kinds of events as above, for what the iPhone app has: the first and daily observations, opening Home, Live, Movies, Series, title details, Search, Settings, Downloads or the player, starting a search, switching to another channel, adding, removing or refreshing a subscription, a live channel or a movie or episode starting and stopping and for how many seconds it played, and playback failing with one of the fixed reasons. Only time you could see or hear it counts: in the player, Picture in Picture or AirPlay, or a preview on Home you unmuted. Not paused, loading or the silent preview.
+
+Each event carries a random installation identifier, an event identifier, the time it happened, the app version and build, that it came from iOS and iOS's major version. Not the device model, language or location. The exclusions above apply: never what you watch, your searches, your provider, its address or your login.
+
 ### The website
 
 mrstreamer.app is hosted by Vercel, which receives your IP address and browser identification with each request, as any web host does.
@@ -103,6 +111,7 @@ Your network operator and DNS provider can see which servers the app contacts.
 ## Your choices
 
 - **Statistics.** Turn off **Share basic usage statistics** in Settings > General > Privacy. Sending stops at once, events waiting to be sent are cleared, and it stays off after a restart. Turning it back on keeps the same identifier and sends nothing about the time it was off, including playback that continued meanwhile.
+- **Statistics on iPhone.** **Share basic usage statistics** in Settings > Privacy is off until you turn it on. Turning it off stops sending at once, clears events waiting to be sent, and stays off after the app restarts.
 - **Website analytics.** Turn off **Site analytics** at the foot of any page of mrstreamer.app. The choice applies to that browser only, and clearing the site's data from your browser turns them back on.
 - **Subtitle search** is off until you turn it on.
 - **Casting** happens only after you open the receiver list and pick a device.

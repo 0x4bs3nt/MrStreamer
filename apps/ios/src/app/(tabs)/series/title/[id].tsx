@@ -2,6 +2,7 @@ import { useLocalSearchParams } from "expo-router";
 import { DetailsScreen } from "../../../../details-screen.tsx";
 
 export default function SeriesDetails() {
+  // `id` is the version's `ownedKey`: the subscription that lists it, then its own id.
   const { id } = useLocalSearchParams<{ id: string }>();
-  return <DetailsScreen kind="series" id={id} />;
+  return <DetailsScreen kind="series" version={id} />;
 }

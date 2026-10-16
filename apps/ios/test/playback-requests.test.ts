@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // What the viewer asked for last is what plays: a series' resume or Next episode that waits for
 // an answer gives way to anything asked meanwhile, and a late answer, kept or failed, neither
-// replaces it nor opens Watch or details. The app's own owners run (resume, play-title, playback,
-// account's Disconnect); the native player, navigation, provider and storage are stand-ins whose
-// calls are what the viewer would see.
+// replaces it nor opens Watch or details. The app's own owners run (resume, play-title, playback);
+// the native player, navigation and provider are stand-ins whose calls are what the viewer would
+// see. Removing a subscription while a resume waits is in providers.test.ts.
 
 const SUB = "xtream-test";
 
@@ -39,7 +39,6 @@ const held: {
 } = { details: [], standing: [] };
 
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
-vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("expo-router", () => ({
   router: { push: (href: string) => pushed.push(href), navigate: () => undefined },
 }));
@@ -50,40 +49,14 @@ vi.mock("../src/titles.ts", () => ({
   titleOf: () => undefined,
   useMetadataVersion: () => 0,
   useTitleLists: () => ({ kind: "idle" }),
-  connectTitles: () => undefined,
-  disconnectTitles: () => undefined,
-  onTitleLists: () => () => undefined,
-  titleLists: () => ({ kind: "idle" }),
 }));
 vi.mock("../src/viewing.ts", () => ({
   seriesViewing: () => new Promise<SeriesViewing>((resolve) => held.standing.push(resolve)),
   recordProgress: async () => undefined,
   finishSeries: async () => undefined,
   useViewing: () => null,
-  connectViewing: () => undefined,
-  disconnectViewing: async () => undefined,
-}));
-vi.mock("../src/watchlist.ts", () => ({
-  alignWatchlist: () => undefined,
-  connectWatchlist: () => undefined,
-  disconnectWatchlist: () => undefined,
-}));
-vi.mock("../src/secrets.ts", () => ({
-  keychainSecrets: {
-    read: async () => null,
-    write: async () => undefined,
-    remove: async () => undefined,
-    clear: async () => undefined,
-  },
-}));
-vi.mock("../src/storage.ts", () => ({
-  firstLaunch: () => false,
-  readState: () => ({ subscription: null, recent: [], region: null }),
-  writeState: () => undefined,
-  rememberChannel: () => undefined,
 }));
 
-const { disconnect } = await import("../src/account.ts");
 const { failureOf, playEpisode, playMovie } = await import("../src/play-title.ts");
 const { onScreen, play, playNext, showVersions, stop } = await import("../src/playback.ts");
 const { resume } = await import("../src/resume.ts");
@@ -167,7 +140,7 @@ async function answer(details: SeriesDetails) {
 
 const live = (id: string) =>
   play(
-    { id, title: id, place: "", live: true, next: false, versions: false },
+    { id, subscriptionId: SUB, title: id, place: "", live: true, next: false, versions: false },
     async () => ({ url: `live:${id}`, hls: true }),
     { watch: true, login: [] },
   );
@@ -228,14 +201,6 @@ describe("a series' resume", () => {
     expect(pushed).toEqual([]);
   });
 
-  it("plays nothing after Disconnect, so Watch never opens over Connect", async () => {
-    resume(seriesEntry("s1"));
-    await disconnect();
-    await answer(seriesDetails("s1"));
-    expect(sources).toEqual([]);
-    expect(pushed).toEqual([]);
-  });
-
   it("lapses when the viewer goes to another screen", async () => {
     resume(seriesEntry("s1"));
     onScreen("/live");
@@ -268,7 +233,7 @@ describe("a series' resume", () => {
     resume(seriesEntry("s1"));
     held.details.shift()?.reject(new Error("unreachable"));
     await settle();
-    expect(pushed).toEqual(["/series/title/s1"]);
+    expect(pushed).toEqual([`/series/title/${encodeURIComponent(`${SUB}:s1`)}`]);
   });
 });
 

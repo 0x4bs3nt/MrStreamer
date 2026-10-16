@@ -10,7 +10,7 @@ import type {
   TitleKind,
   TitleRef,
 } from "@mrstreamer/contracts/ondemand";
-import { ownedId, ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
+import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { metadataStore, type MetadataStatus } from "@mrstreamer/core/metadata/store";
 import { tmdb, type Tmdb, type TmdbKind } from "@mrstreamer/core/metadata/tmdb";
 import {
@@ -26,18 +26,22 @@ import {
   type Collections,
 } from "@mrstreamer/core/ondemand/collections";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
-import type { Provider, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
+import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
 import { File, Paths } from "expo-file-system";
-import { appError } from "./errors.ts";
+import { members, onRoster, shownOf, type Member } from "./account.ts";
+import { currentSource, sourceOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
+import { serveViewing } from "./viewing.ts";
+import { alignWatchlist } from "./watchlist.ts";
 
-// The movie and series catalogue of the connected subscription, as the desktop builds it: the
-// provider's lists through core's Xtream adapter, indexed by core (names, versions gathered by
-// TMDB id, the version that suits the viewer's language first), the collections Films and Series
-// show, search, and details with seasons and episodes. TMDB's metadata comes from core's store,
-// with the key built into the app (EXPO_PUBLIC_TMDB_KEY); without one, collections that need it
-// are empty and details show the provider's facts. The lists are read once per sign-in and on
-// Reload; nothing of them is kept on disk yet.
+// The movie and series catalogue of every saved subscription together, as the desktop builds it:
+// each provider's lists, which account.ts loads, indexed by core as one (names, versions gathered
+// by TMDB id across subscriptions and never by name, the version that suits the viewer's language
+// first), the collections Movies and Series show, search, and details with seasons and episodes,
+// each read from the subscription that lists the version. TMDB's metadata comes from core's
+// store, with the key built into the app (EXPO_PUBLIC_TMDB_KEY); without one, collections that
+// need it are empty and details show the provider's facts. Nothing of the lists is kept on disk
+// yet.
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -94,72 +98,106 @@ const metadata = metadataStore({
   },
 });
 
-let provider: Provider | null = null;
-let subscriptionId = "";
-/** The signed-in subscription, which every version listed belongs to. */
-export const subscriptionOf = () => subscriptionId;
-let loading: AbortController | null = null;
-
-/** Takes over the signed-in subscription's provider and reads its lists. */
-export function connectTitles(signedIn: Provider, id: string) {
-  provider = signedIn;
-  subscriptionId = id;
-  details.clear();
-  seasons.clear();
-  loadTitles();
+/** One subscription's lists, as `indexCatalogue` takes them. */
+interface Listed {
+  readonly subscriptionId: string;
+  readonly catalogue: OnDemandCatalogue;
 }
 
-/** Forgets the lists and stops what they asked of the provider and TMDB. */
-export function disconnectTitles() {
-  loading?.abort();
-  loading = null;
-  provider = null;
-  subscriptionId = "";
-  details.clear();
-  seasons.clear();
-  made.clear();
-  lists.set({ kind: "idle" });
-  metadata.want([]);
-}
+/** The lists the index was made of, or is being made of. */
+let indexed: readonly Listed[] = [];
+let indexing: AbortController | null = null;
 
-/** Reads the provider's movie and series lists again, dropping a read still under way. */
-export function loadTitles() {
-  loading?.abort();
-  const controller = new AbortController();
-  loading = controller;
-  const reading = provider;
-  if (!reading) return;
-  lists.set({ kind: "loading" });
-  const startedAt = Date.now();
-  reading.onDemandCatalogue(controller.signal).then(
-    async (catalogue) => {
-      if (controller.signal.aborted) return;
-      const fetched = Date.now();
-      const index = indexCatalogue([{ subscriptionId, catalogue }], language);
-      // Each kind in a task of its own, after the one that read the lists, so taps are handled
-      // between them: the three back to back held the JS thread for 0.7 s with 25,000 titles.
-      let indexed = 0;
-      for (const kind of ["movie", "series"] as const) {
-        await nextTask();
-        if (controller.signal.aborted) return;
-        const started = Date.now();
-        kindOf(index, kind);
-        indexed += Date.now() - started;
-      }
-      timings.set({ fetched: fetched - startedAt, indexed });
-      made.clear();
-      lists.set({ kind: "ready", index });
-      // TMDB's metadata for what is listed, the newest first, once the lists show.
-      setTimeout(() => {
-        if (lists.get().kind === "ready" && !controller.signal.aborted) {
-          metadata.want(wantedOf(index), language);
-        }
-      }, 0);
-    },
-    (cause: unknown) => {
-      if (!controller.signal.aborted) lists.set({ kind: "failed", error: appError(cause) });
-    },
+const sameLists = (a: readonly Listed[], b: readonly Listed[]) =>
+  a.length === b.length &&
+  a.every(
+    (each, at) =>
+      each.subscriptionId === b[at]?.subscriptionId && each.catalogue === b[at]?.catalogue,
   );
+
+/**
+ * What the lists are while no subscription has any: loading while one may still bring some, else
+ * why the first that can't failed, a password the Keychain lost included.
+ */
+function standing(all: readonly Member[]): TitleLists {
+  if (all.length === 0) return { kind: "idle" };
+  const waiting = all.some(
+    (member) =>
+      member.titles.kind === "loading" || (member.titles.kind === "idle" && !member.needsSecret),
+  );
+  const stuck = all.find((member) => member.titles.kind === "failed" || member.needsSecret);
+  if (waiting || !stuck) return { kind: "loading" };
+  return {
+    kind: "failed",
+    error:
+      stuck.titles.kind === "failed"
+        ? stuck.titles.error
+        : { kind: "needs-secret", subscriptionId: stuck.entry.id },
+  };
+}
+
+/**
+ * Indexes the lists of every subscription that has them, whenever one's change: those that
+ * failed or load again keep what they had. Until one has lists, the state says whether any is
+ * still loading or why they failed, after every change of the subscriptions.
+ */
+function relist() {
+  const all = members();
+  const listed = all.flatMap((member) => {
+    const catalogue = shownOf(member.titles);
+    return catalogue ? [{ subscriptionId: member.entry.id, catalogue }] : [];
+  });
+  if (listed.length === 0) {
+    if (indexed.length > 0) {
+      indexed = [];
+      indexing?.abort();
+      indexing = null;
+      made.clear();
+      metadata.want([]);
+    }
+    const next = standing(all);
+    const now = lists.get();
+    const same =
+      now.kind === next.kind &&
+      (now.kind !== "failed" || (next.kind === "failed" && now.error === next.error));
+    if (!same) lists.set(next);
+    return;
+  }
+  if (sameLists(listed, indexed)) return;
+  indexed = listed;
+  indexing?.abort();
+  const controller = new AbortController();
+  indexing = controller;
+  void index(listed, controller.signal);
+}
+
+async function index(listed: readonly Listed[], signal: AbortSignal) {
+  // After the answer that brought the lists, so the screens draw first.
+  await nextTask();
+  if (signal.aborted) return;
+  const index = indexCatalogue(listed, language);
+  // Each kind in a task of its own, so taps are handled between them: the three back to back
+  // held the JS thread for 0.7 s with 25,000 titles.
+  let took = 0;
+  for (const kind of ["movie", "series"] as const) {
+    await nextTask();
+    if (signal.aborted) return;
+    const started = Date.now();
+    kindOf(index, kind);
+    took += Date.now() - started;
+  }
+  const fetched = Math.max(
+    0,
+    ...members().map((member) => (member.titles.kind === "ready" ? member.titles.took : 0)),
+  );
+  timings.set({ fetched, indexed: took });
+  made.clear();
+  lists.set({ kind: "ready", index });
+  alignWatchlist(index);
+  // TMDB's metadata for what is listed, the newest first, once the lists show.
+  setTimeout(() => {
+    if (!signal.aborted) metadata.want(wantedOf(index), language);
+  }, 0);
 }
 
 /** Resolves in a later task, after whatever input waits. */
@@ -263,7 +301,7 @@ export function titleOf(
   return found && named(found);
 }
 
-/** Details already read, or being read, by kind and version, with what the provider sent. */
+/** Details already read, or being read, by login, kind and version, with what the provider sent. */
 const details = new Map<string, Promise<Read>>();
 
 interface Read {
@@ -272,16 +310,16 @@ interface Read {
 }
 
 /**
- * A title's details: the provider's facts of the version `title` names, with TMDB's overview,
- * cast and artwork when the build has a key and TMDB knows the title. Read once per sign-in; a
- * failed read is asked again next time.
+ * A title's details: the provider's facts of the version `title` names, from its subscription,
+ * with TMDB's overview, cast and artwork when the build has a key and TMDB knows the title. Read
+ * once per sign-in; a failed read is asked again next time.
  */
 export function detailsOf(title: Title): Promise<TitleDetails> {
   return readOnce(title).then(({ shown }) => shown);
 }
 
 function readOnce(title: Title): Promise<Read> {
-  const key = `${title.kind}|${ownedKey(title)}`;
+  const key = `${currentSource(title.subscriptionId)?.revision ?? 0}|${title.kind}|${ownedKey(title)}`;
   let found = details.get(key);
   if (!found) {
     found = readDetails(title);
@@ -292,8 +330,7 @@ function readOnce(title: Title): Promise<Read> {
 }
 
 async function readDetails(title: Title): Promise<Read> {
-  const reading = provider;
-  if (!reading) throw new AppFailure({ kind: "no-subscription" });
+  const reading = sourceOf(title.subscriptionId).provider;
   const signal = AbortSignal.timeout(20_000);
   const about =
     client && title.tmdbId && !title.adult
@@ -307,43 +344,42 @@ async function readDetails(title: Title): Promise<Read> {
   return { raw, shown: seriesDetails(title, raw, known, language) };
 }
 
-/** A season's episodes with TMDB's names, stills and stories, by series version and season. */
-const seasons = new Map<string, Promise<readonly EpisodeDetails[]>>();
+type SeasonAnswers = Parameters<typeof seasonEpisodes>[1];
+
+/**
+ * What TMDB says of a season's episodes, by TMDB id and season. It is the same whichever provider
+ * lists the series, so it is asked once; the provider's episodes are those of the details read.
+ */
+const seasons = new Map<string, Promise<SeasonAnswers>>();
 
 /** A season's episodes as its details list them, with TMDB's worked in where it answers. */
-export function episodesOf(title: Title, season: Season): Promise<readonly EpisodeDetails[]> {
-  const key = `${ownedKey(title)}|${season.number}`;
-  let found = seasons.get(key);
-  if (!found) {
-    found = readSeason(title, season);
-    seasons.set(key, found);
+export async function episodesOf(title: Title, season: Season): Promise<readonly EpisodeDetails[]> {
+  const { tmdbId } = title;
+  if (!client || !tmdbId || title.adult) return seasonEpisodes(season, []);
+  const key = `${tmdbId}|${season.number}`;
+  let answers = seasons.get(key);
+  if (!answers) {
+    const ask = (asked: string) => client.season(tmdbId, season.number, asked).catch(() => []);
+    answers = Promise.all(language === "en" ? [ask(language)] : [ask(language), ask("en")]);
+    seasons.set(key, answers);
   }
-  return found;
-}
-
-async function readSeason(title: Title, season: Season): Promise<readonly EpisodeDetails[]> {
-  if (!client || !title.tmdbId || title.adult) return seasonEpisodes(season, []);
-  const ask = (asked: string) =>
-    client.season(title.tmdbId ?? "", season.number, asked).catch(() => []);
-  const answers = await Promise.all(
-    language === "en" ? [ask(language)] : [ask(language), ask("en")],
-  );
-  return seasonEpisodes(season, answers);
+  return seasonEpisodes(season, await answers);
 }
 
 /**
  * Where a movie or an episode streams from, by the file type its provider lists: a movie's in the
- * lists or its details, an episode's in its series' details. Carries the login in its address.
+ * lists or its details, an episode's in its series' details. Asks the subscription that lists it,
+ * and carries its login in the address.
  */
 export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<ProviderFile> {
-  const reading = provider;
+  const reading = sourceOf(ref.subscriptionId).provider;
   const ready = lists.get();
-  if (!reading || ready.kind !== "ready") throw new AppFailure({ kind: "no-subscription" });
+  if (ready.kind !== "ready") throw new AppFailure({ kind: "no-subscription" });
   const missing = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   if (ref.kind === "movie") {
     const title = titleOf(ready.index, "movie", ref);
     if (!title) throw missing;
-    const listed = title.versions.find((version) => version.id === ref.id)?.container;
+    const listed = title.versions.find((version) => sameOwned(version, ref))?.container;
     const container = listed ?? (await readOnce({ ...title, ...ownedId(ref) })).raw.container;
     return reading.titleFile("movie", ref.id, container ?? "mp4", signal);
   }
@@ -355,3 +391,14 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
   if (!episode) throw missing;
   return reading.titleFile("episode", ref.id, episode.container, signal);
 }
+
+onRoster(relist);
+relist();
+
+serveViewing({
+  series: (version) => {
+    const now = lists.get();
+    return now.kind === "ready" ? titleOf(now.index, "series", version) : undefined;
+  },
+  details: detailsOf,
+});

@@ -1,4 +1,6 @@
 import { type } from "arktype";
+import type { AppError } from "./errors.ts";
+import type { StreamFailure } from "./playback.ts";
 import { lazy, type Infer } from "./lazy.ts";
 
 /** Only these screen-entry literals may cross the renderer collection boundary. */
@@ -59,6 +61,57 @@ export const analyticsFailures = [
   "app",
 ] as const;
 export type AnalyticsFailure = (typeof analyticsFailures)[number];
+
+export function streamFailure(failure: StreamFailure): AnalyticsFailure {
+  switch (failure.kind) {
+    case "network":
+      return "network";
+    case "unsupported":
+      return "unsupported";
+    case "refused":
+      return failure.status === 401 || failure.status === 403 ? "credentials" : "unavailable";
+    default:
+      return "unavailable";
+  }
+}
+
+/**
+ * Only typed categories select a code. Messages, names, addresses and paths are never
+ * copied. Shared by the desktop app and the iOS app.
+ */
+export function appFailure(error: AppError): AnalyticsFailure {
+  switch (error.kind) {
+    case "stream":
+      return streamFailure(error.failure);
+    case "invalid-login":
+    case "account-inactive":
+    case "needs-secret":
+    case "keychain-refused":
+      return "credentials";
+    case "unreachable":
+      return "network";
+    case "provider-error":
+    case "no-subscription":
+    case "channel-not-found":
+    case "title-not-found":
+      return "unavailable";
+    case "output":
+      switch (error.failure.kind) {
+        case "stream":
+          return streamFailure(error.failure.failure);
+        case "unreachable":
+        case "not-fetched":
+        case "no-network":
+          return "network";
+        case "media":
+          return "unsupported";
+        default:
+          return "unavailable";
+      }
+    default:
+      return "app";
+  }
+}
 
 /** Ephemeral gameplay correlation only. Main mints runs, owns clocks and events. */
 export const PlaybackControl = lazy(() =>
