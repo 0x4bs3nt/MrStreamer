@@ -1,8 +1,10 @@
 #!/usr/bin/env -S node
 // Website analytics in a production-configured build, against an isolated loopback capture.
-// The browser reaches eu.i.posthog.com only through a loopback proxy that hands it to a local TLS
-// fixture with a certificate this run made; every other external request is blocked. Nothing
-// reaches PostHog. Build first with the EU host and a verification key, as --help says.
+// The browser reaches the site's own route, mrstreamer.app/ingest, only through a loopback proxy
+// that hands it to a local TLS fixture with a certificate this run made; every other external
+// request is blocked. The fixture resolves each request through the routes the package gives
+// Vercel and records where Vercel would send it, without sending it on. Nothing reaches
+// mrstreamer.app or PostHog. Build first with the EU host and a verification key, as --help says.
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer, type Server } from "node:http";
@@ -17,9 +19,25 @@ import { electronExecutable, freePort, record, stop } from "./session.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const marketing = join(root, "apps/marketing");
-const ENDPOINT = "https://eu.i.posthog.com/i/v0/e/";
+/** Where a production build's pages send, on the site's own route. */
+const ENDPOINT = "https://mrstreamer.app/ingest/i/v0/e/";
+/** What the packaged route must forward that to: PostHog's EU capture. */
+const UPSTREAM = "https://eu.i.posthog.com/i/v0/e/";
+const INGEST_HOST = "mrstreamer.app";
 const CHOICE = "mrstreamer.site-analytics";
-const PRIVATE = ["private-query", "private-fragment", "campaign"];
+/** Words from the private queries, fragments and referrers the run opens with. None may be sent. */
+const PRIVATE = [
+  "private-query",
+  "private-fragment",
+  "campaign=",
+  "utm_",
+  "gclid",
+  "github.com/Mr-Streamer-OSS/MrStreamer?",
+  "google.de",
+  "example.net",
+];
+/** The session storage key holding the tab's entry codes, and nothing else. */
+const ENTRY = "mrstreamer.site-entry";
 const SITE = "https://mrstreamer.app";
 /** posthog-js's cookieless placeholder distinct id. */
 const COOKIELESS = "$posthog_cookieless";
@@ -61,6 +79,22 @@ async function run() {
   );
   const bundle = scripts.find((text) => text.includes(ENDPOINT));
   if (!bundle) throw new Error("dist has no production-configured website analytics. See --help.");
+  if (scripts.some((text) => text.includes("i.posthog.com")))
+    throw new Error("The site's script names PostHog's host, past its own route.");
+  // The routes `vercel deploy --prebuilt` would deploy, before its filesystem phase.
+  const { routes } = JSON.parse(
+    await readFile(join(marketing, ".vercel/output/config.json"), "utf8"),
+  ) as { routes: { src?: string; dest?: string; methods?: string[]; handle?: string }[] };
+  const before = routes.slice(
+    0,
+    routes.findIndex((route) => route.handle === "filesystem"),
+  );
+  /** Where the package's first matching route sends `method` `path`, or "site" for none. */
+  const routed = (method: string, path: string) =>
+    before.find(
+      ({ src, methods }) =>
+        src !== undefined && new RegExp(src).test(path) && (!methods || methods.includes(method)),
+    )?.dest ?? "site";
   const key = /"(phc_[A-Za-z0-9_-]+)"/.exec(bundle)?.[1] ?? "";
   await mkdir(join(root, ".local/verification"), { recursive: true });
   const evidence = await mkdtemp(join(root, ".local/verification/website-analytics-"));
@@ -71,9 +105,28 @@ async function run() {
   const observed: Record<string, unknown> = {
     bundleSha256: createHash("sha256").update(bundle).digest("hex"),
     endpointInBundle: ENDPOINT,
+    // Other methods and paths under /ingest must not leave the site.
+    packagedRoutes: Object.fromEntries(
+      [
+        ["POST", "/ingest/i/v0/e/"],
+        ["GET", "/ingest/i/v0/e/"],
+        ["OPTIONS", "/ingest/i/v0/e/"],
+        ["POST", "/ingest/flags"],
+        ["POST", "/ingest/i/v0/e/extra"],
+        ["GET", "/ingest/static/array.js"],
+      ].map(([method = "", path = ""]) => [`${method} ${path}`, routed(method, path)]),
+    ),
     // The key itself is never written to evidence.
     verificationKey: key === "phc_mrstreamer_verification",
   };
+  if (
+    Object.entries(observed["packagedRoutes"] as Record<string, string>).some(
+      ([request, dest]) => dest !== (request === "POST /ingest/i/v0/e/" ? UPSTREAM : "site"),
+    )
+  )
+    throw new Error(
+      `The package routes /ingest wrongly: ${JSON.stringify(observed["packagedRoutes"])}`,
+    );
   const captures: Capture[] = [];
   const refusedTunnels: string[] = [];
   let hold = false;
@@ -117,7 +170,7 @@ async function run() {
     throw new Error(`Timed out: ${what}`);
   };
   try {
-    // A certificate for eu.i.posthog.com that only this run's browser trusts.
+    // A certificate for mrstreamer.app that only this run's browser trusts.
     execFileSync(
       "openssl",
       [
@@ -133,9 +186,9 @@ async function run() {
         "-out",
         join(scratch, "cert.pem"),
         "-subj",
-        "/CN=eu.i.posthog.com",
+        `/CN=${INGEST_HOST}`,
         "-addext",
-        "subjectAltName=DNS:eu.i.posthog.com",
+        `subjectAltName=DNS:${INGEST_HOST}`,
       ],
       { stdio: "ignore" },
     );
@@ -179,7 +232,7 @@ async function run() {
     );
     const proxy = createHttpServer((_req, res) => res.writeHead(403).end());
     proxy.on("connect", (req, socket, head) => {
-      if (req.url !== "eu.i.posthog.com:443") {
+      if (req.url !== `${INGEST_HOST}:443`) {
         refusedTunnels.push(req.url ?? "");
         socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
         return;
@@ -219,10 +272,10 @@ const cert = ${JSON.stringify(cert.replace(/\s/g, ""))};
 const origin = ${JSON.stringify(origin)};
 app.whenReady().then(async () => {
   const own = session.defaultSession;
-  // https goes only through the loopback proxy, which answers eu.i.posthog.com and refuses the rest.
+  // https goes only through the loopback proxy, which answers ${INGEST_HOST} and refuses the rest.
   await own.setProxy({ proxyRules: 'https=127.0.0.1:${proxyPort}' });
   own.setCertificateVerifyProc((request, callback) => {
-    callback(request.hostname === 'eu.i.posthog.com' && request.certificate.data.replace(/\\s/g, '') === cert ? 0 : -2);
+    callback(request.hostname === '${INGEST_HOST}' && request.certificate.data.replace(/\\s/g, '') === cert ? 0 : -2);
   });
   own.webRequest.onBeforeRequest((details, callback) => {
     const allowed = details.url.startsWith(origin + '/') || details.url === ${JSON.stringify(ENDPOINT)} || /^(data|blob|devtools):/.test(details.url);
@@ -359,6 +412,31 @@ app.on('window-all-closed', () => app.quit());
     };
     const storage = () =>
       evaluate<Record<string, string>>("Object.fromEntries(Object.entries(localStorage))");
+    const session = () =>
+      evaluate<Record<string, string>>("Object.fromEntries(Object.entries(sessionStorage))");
+    /** The entry codes on the newest `event` from `pathname` since `from`. */
+    const entryOf = (from: number, pathname: string, event = "$pageview") => {
+      const found = captures
+        .slice(from)
+        .filter((c) => pageOf(c) === pathname && c.raw.includes(`"event":"${event}"`))
+        .at(-1);
+      if (!found) return undefined;
+      const { properties } = JSON.parse(found.raw) as { properties: Record<string, unknown> };
+      return [properties["entry_source"], properties["entry_medium"], properties["entry_campaign"]];
+    };
+    /** Waits for `event` from `pathname` since `from` and requires its entry codes. */
+    const expectEntry = async (
+      from: number,
+      pathname: string,
+      codes: readonly string[],
+      event = "$pageview",
+    ) => {
+      await wait(() => entryOf(from, pathname, event) !== undefined, `${event} on ${pathname}`);
+      const sent = entryOf(from, pathname, event);
+      if (JSON.stringify(sent) !== JSON.stringify(codes))
+        throw new Error(`${event} on ${pathname} entered as ${JSON.stringify(sent)}.`);
+      return sent;
+    };
     /** Nothing new arrives, except the leave and vitals of a page that was already counting. */
     const quiet = async (from: number, what: string) => {
       await delay(1500);
@@ -473,6 +551,72 @@ app.on('window-all-closed', () => app.quit());
     );
     await delay(1000);
 
+    // 1c. Where a visit entered. The browser reports each referrer, here as a whole private
+    // address; the page may send and keep only fixed codes. Pages opened from the site or the
+    // address bar keep the tab's entry; a tagged link or another site starts a new one.
+    const entries: Record<string, unknown> = {};
+    const fromTag = captures.length;
+    act("Open Home from a tagged GitHub link whose referrer is a full private address");
+    await send("Page.navigate", {
+      url: `${origin}/?utm_source=GitHub&utm_medium=readme&utm_campaign=release&utm_content=private-query&utm_term=private-query&gclid=private-query`,
+      referrer: "https://github.com/Mr-Streamer-OSS/MrStreamer?private-query=1",
+      referrerPolicy: "unsafeUrl",
+    });
+    entries["taggedView"] = await expectEntry(fromTag, "/", ["github", "readme", "release"]);
+    entries["pageSawReferrer"] = await evaluate<boolean>(
+      "document.referrer.startsWith('https://github.com/')",
+    );
+    entries["taggedSessionStorage"] = await session();
+    if (
+      JSON.stringify(entries["taggedSessionStorage"]) !==
+      JSON.stringify({
+        [ENTRY]: JSON.stringify({
+          entry_source: "github",
+          entry_medium: "readme",
+          entry_campaign: "release",
+        }),
+      })
+    )
+      throw new Error("Session storage holds more than the entry codes.");
+    act("Click the header Downloads link, then an installer link");
+    await click('header a[href="/download"]');
+    entries["siteLinkView"] = await expectEntry(fromTag, "/download", [
+      "github",
+      "readme",
+      "release",
+    ]);
+    entries["internalReferrer"] = await evaluate<boolean>(
+      "new URL(document.referrer).origin === location.origin",
+    );
+    await click("main a[data-installer]");
+    entries["downloadClick"] = await expectEntry(
+      fromTag,
+      "/download",
+      ["github", "readme", "release"],
+      "download_clicked",
+    );
+    act("Open /faq from the address bar");
+    const fromTyped = captures.length;
+    await send("Page.navigate", { url: `${origin}/faq` });
+    entries["typedView"] = await expectEntry(fromTyped, "/faq", ["github", "readme", "release"]);
+    act("Open Home from a Google search with a private query");
+    const fromSearch = captures.length;
+    await send("Page.navigate", {
+      url: `${origin}/`,
+      referrer: "https://www.google.de/search?q=private-query",
+      referrerPolicy: "unsafeUrl",
+    });
+    entries["searchView"] = await expectEntry(fromSearch, "/", ["google", "search", "none"]);
+    act("Open /download from an unlisted site with an unlisted tag");
+    const fromOther = captures.length;
+    await send("Page.navigate", {
+      url: `${origin}/download?utm_source=private-query&utm_campaign=release`,
+      referrer: "https://private-query.example.net/post?private-query=1",
+      referrerPolicy: "unsafeUrl",
+    });
+    entries["otherView"] = await expectEntry(fromOther, "/download", ["other", "referral", "none"]);
+    observed["entries"] = entries;
+
     // 2. Turning off while a guide's events are held in flight aborts them, and nothing follows.
     hold = true;
     const beforeHeld = captures.length;
@@ -503,6 +647,9 @@ app.on('window-all-closed', () => app.quit());
     observed["offStorage"] = await storage();
     if ((observed["offStorage"] as Record<string, string>)[CHOICE] !== "off")
       throw new Error("Off was not stored.");
+    observed["offSessionStorage"] = await session();
+    if (Object.keys(observed["offSessionStorage"] as object).length)
+      throw new Error("Turning off left the tab's entry.");
     await narrow();
     await scrollToEnd();
     await shot("guide-footer-off-390");
@@ -538,6 +685,8 @@ app.on('window-all-closed', () => app.quit());
     act("Open /faq#free from the address bar");
     await send("Page.navigate", { url: `${origin}/faq#free` });
     await wait(() => captures.some((c) => c.raw.includes('"faq_question":"free"')), "FAQ anchor");
+    // The first page counted after turning on doesn't bring back the earlier entry.
+    observed["onAgainEntry"] = await expectEntry(afterOff, "/faq", ["unknown", "unknown", "none"]);
     // Home opened off: turning on there sent nothing, at its leave either.
     silent(afterOff, "/", "Home opened off");
     await click('footer a[href="/privacy"]');
@@ -622,6 +771,14 @@ app.on('window-all-closed', () => app.quit());
     };
     const refusing = captures.length;
     for (const [name, script] of Object.entries(refusals)) {
+      act(`Open /about from a Bing search, keeping an entry before the ${name} refusal`);
+      const kept = captures.length;
+      await send("Page.navigate", {
+        url: `${origin}/about`,
+        referrer: "https://www.bing.com/",
+        referrerPolicy: "unsafeUrl",
+      });
+      await expectEntry(kept, "/about", ["bing", "search", "none"]);
       const added = await send("Page.addScriptToEvaluateOnNewDocument", { source: script });
       const before = captures.length;
       act(`Open Home with ${name} refusal`);
@@ -635,6 +792,9 @@ app.on('window-all-closed', () => app.quit());
       );
       await quiet(before, name);
       observed[`${name}Footer`] = await switchText("footer");
+      observed[`${name}SessionStorage`] = await session();
+      if (Object.keys(observed[`${name}SessionStorage`] as object).length)
+        throw new Error(`${name} refusal left the tab's entry.`);
       observed[`${name}Emulated`] = await evaluate(
         "({ gpc: navigator.globalPrivacyControl ?? null, dnt: navigator.doNotTrack ?? null, storage: (() => { try { localStorage.length; return 'readable'; } catch { return 'blocked'; } })() })",
       );
@@ -658,7 +818,7 @@ app.on('window-all-closed', () => app.quit());
     // 8. Every request against the allowlist.
     const browserUserAgent = await evaluate<string>("navigator.userAgent");
     const allowed: Record<string, readonly string[]> = {
-      $pageview: ["route"],
+      $pageview: ["route", "entry_source", "entry_medium", "entry_campaign"],
       $pageleave: [
         "route",
         "visible",
@@ -667,7 +827,16 @@ app.on('window-all-closed', () => app.quit());
         "$prev_pageview_max_content_percentage",
       ],
       $web_vitals: ["$web_vitals_LCP_value", "$web_vitals_INP_value", "$web_vitals_CLS_value"],
-      download_clicked: ["download_type", "os_hint", "kind", "route", "location"],
+      download_clicked: [
+        "download_type",
+        "os_hint",
+        "kind",
+        "route",
+        "location",
+        "entry_source",
+        "entry_medium",
+        "entry_campaign",
+      ],
       github_link_clicked: ["route", "link_location"],
       docs_link_clicked: ["doc_section", "route", "location"],
       feature_section_viewed: ["feature_name"],
@@ -676,7 +845,12 @@ app.on('window-all-closed', () => app.quit());
       changelog_viewed: ["version"],
     };
     const events = captures.map((entry) => {
-      if (entry.method !== "POST" || entry.path !== "/i/v0/e/" || entry.host !== "eu.i.posthog.com")
+      if (
+        entry.method !== "POST" ||
+        entry.path !== "/ingest/i/v0/e/" ||
+        entry.host !== INGEST_HOST ||
+        routed(entry.method, entry.path) !== UPSTREAM
+      )
         throw new Error(`Unexpected request ${entry.method} ${entry.host}${entry.path}`);
       if (entry.referer || entry.cookie) throw new Error("A request carried a Referer or cookie.");
       if (PRIVATE.some((word) => entry.raw.includes(word)))
@@ -700,9 +874,11 @@ app.on('window-all-closed', () => app.quit());
         $current_url,
         $pathname,
         $host,
+        $lib_custom_api_host,
         ...fields
       } = properties;
       if (
+        $lib_custom_api_host !== `https://${INGEST_HOST}/ingest` ||
         source !== "website" ||
         $process_person_profile !== false ||
         $geoip_disable !== true ||
@@ -725,6 +901,15 @@ app.on('window-all-closed', () => app.quit());
         throw new Error(
           `Property outside the allowlist on ${event}: ${Object.keys(fields).join(",")}`,
         );
+      // Page views and download clicks carry all three entry codes, each a short fixed code.
+      if (
+        names.includes("entry_source") &&
+        ["entry_source", "entry_medium", "entry_campaign"].some(
+          (name) =>
+            typeof fields[name] !== "string" || !/^[a-z_]{1,20}$/.test(String(fields[name])),
+        )
+      )
+        throw new Error(`Entry codes malformed on ${event}: ${JSON.stringify(fields)}`);
       // Measurements are bounded numbers in their units, and each leave carries all three.
       const share = (value: unknown) =>
         typeof value === "number" &&
@@ -856,10 +1041,12 @@ app.on('window-all-closed', () => app.quit());
             errors,
           },
           limits: [
-            "Production-configured local build; eu.i.posthog.com answered by a loopback fixture, never PostHog",
+            "Production-configured local build; mrstreamer.app/ingest answered by a loopback fixture, never Vercel or PostHog",
+            "The fixture resolves each request through the packaged Vercel routes; Vercel's own forwarding, including the visitor's IP address as x-forwarded-for, and PostHog's hash and proxy health check are not observed",
             "PostHog ingestion, dashboards and the project's IP setting not observed",
             "GPC, Do Not Track and blocked storage emulated by page scripts in Electron's Chromium",
             "390px viewport is not a physical phone or Safari",
+            "Referrers are set through CDP Page.navigate with an unsafe-url policy, so the page sees whole private addresses; real sites usually send only their origin, and some send none",
             "The guide's layout shift and slow interaction are caused by helper scripts; Electron's Chromium and web-vitals measure them. Other browsers' vital support is not observed",
           ],
         },

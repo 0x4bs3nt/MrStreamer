@@ -1,6 +1,6 @@
 // Website analytics: a few fixed events per page, sent to the app statistics' PostHog project
-// without an SDK, in PostHog's cookieless mode. docs/privacy.md#website-analytics is the promise
-// this keeps:
+// without an SDK, in PostHog's cookieless mode, through the site's own /ingest route
+// (scripts/site-analytics.ts). docs/privacy.md#website-analytics is the promise this keeps:
 // - On unless the browser sends Global Privacy Control or Do Not Track, the visitor turned them
 //   off, or local storage fails. Local storage holds only an explicit "on" or "off".
 // - The page holds no identifier. Each event carries posthog-js's cookieless flag and placeholder
@@ -8,22 +8,28 @@
 //   IP address, user agent and host, and its own session id. It then deletes the IP address and
 //   user agent from the event.
 // - The address sent is the page's canonical one on mrstreamer.app, never location, so no query,
-//   fragment or referrer. The user agent is sent only as the hash input ingestion requires. No
-//   typed text or other device or browser detail is sent, and every other value is fixed here or
-//   written into the page by the build.
+//   fragment or referrer. Where the visit entered the site goes only as three fixed codes from
+//   referrals.ts, on page views and download clicks, kept in session storage for the tab. The user
+//   agent is sent only as the hash input ingestion requires. No typed text or other device or
+//   browser detail is sent, and every other value is fixed here or written into the page by the
+//   build.
 // - Measurements are numbers only: how far down the page was scrolled, as shares of it, and the
 //   Core Web Vitals LCP, INP and CLS as web-vitals reports them. Never an element, address or
 //   pixel position.
 // - At most MAX_EVENTS requests per page, each aborted after DEADLINE_MS. No retry or queue.
-// - Turning off sends nothing more, aborts requests still open and stops measuring. Turning on
-//   sends nothing until the next page opens.
+// - Turning off sends nothing more, aborts requests still open, stops measuring and removes the
+//   tab's entry. A page that opens off removes it too. Turning on sends nothing until the next page
+//   opens, whose entry is then unknown unless it came from a tagged link or another site.
 
+import { enterPage, forgetEntry, tabEntry, type Entry } from "./referrals.ts";
 import { onCLS, onINP, onLCP, type CLSMetric, type INPMetric, type LCPMetric } from "web-vitals";
 
-/** Where the build points capture: PostHog's EU ingestion, or a loopback endpoint for checks. */
+/** Where the build points capture: the site's route to PostHog's EU ingestion, or a loopback. */
 export interface SiteCapture {
   readonly endpoint: string;
   readonly token: string;
+  /** The site's own PostHog address the endpoint sits under, or null for a loopback check. */
+  readonly apiHost: string | null;
 }
 
 /** Requests one page may make, however long it stays open or however often it is clicked. */
@@ -69,7 +75,7 @@ const STORE: Download = { os_hint: "windows", kind: "store" };
 type Vital = (CLSMetric | INPMetric | LCPMetric)["name"];
 
 type SiteEvent =
-  | { readonly event: "$pageview"; readonly properties: { readonly route: string } }
+  | { readonly event: "$pageview"; readonly properties: Entry & { readonly route: string } }
   | {
       readonly event: "$pageleave";
       readonly properties: {
@@ -90,12 +96,13 @@ type SiteEvent =
     }
   | {
       readonly event: "download_clicked";
-      readonly properties: Download & {
-        /** Every installer link and the Store carry stable releases. Nightlies are on GitHub. */
-        readonly download_type: "stable";
-        readonly route: string;
-        readonly location: "hero" | "page";
-      };
+      readonly properties: Download &
+        Entry & {
+          /** Every installer link and the Store carry stable releases. Nightlies are on GitHub. */
+          readonly download_type: "stable";
+          readonly route: string;
+          readonly location: "hero" | "page";
+        };
     }
   | {
       readonly event: "github_link_clicked";
@@ -276,6 +283,8 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
         source: "website",
         $process_person_profile: false,
         $geoip_disable: true,
+        // What posthog-js sends behind a proxy, so PostHog's Web analytics sees the site's route.
+        ...(capture.apiHost && { $lib_custom_api_host: capture.apiHost }),
       },
     });
     // A string body is text/plain, so the browser sends it without a preflight. Events that come
@@ -320,6 +329,11 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     observer?.disconnect();
     measuring.abort();
   };
+  /** Analytics went off: nothing more is sent and the tab forgets where the visit entered. */
+  const turnedOff = (): void => {
+    stopSending();
+    forgetEntry();
+  };
 
   const controls = [...document.querySelectorAll<HTMLElement>("[data-site-analytics]")].map(
     (control) => {
@@ -351,20 +365,24 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
     } catch {
       status = "unavailable";
     }
-    if (status !== "on") stopSending();
+    if (status !== "on") turnedOff();
     render();
   };
 
   const reread = (): void => {
     status = storedStatus();
-    if (status !== "on") stopSending();
+    if (status !== "on") turnedOff();
     render();
   };
-  // A choice made in another tab applies here at once.
+  // A choice made in another tab applies here at once. An off applies even when it arrives late,
+  // after the choice is on again: this page stops and the tab forgets its entry. An on never
+  // restarts this page.
   addEventListener(
     "storage",
-    ({ key }) => {
-      if (status !== "refused" && (key === null || key === CHOICE)) reread();
+    ({ key, newValue }) => {
+      if (status === "refused" || (key !== null && key !== CHOICE)) return;
+      if (key === CHOICE && newValue === "off") turnedOff();
+      reread();
     },
     on,
   );
@@ -381,9 +399,22 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
   for (const { control, place } of controls)
     if (place === "footer")
       control.querySelector("[data-site-analytics-status]")?.setAttribute("role", "status");
-  if (!sending) return () => listeners.abort();
+  if (!sending) {
+    forgetEntry();
+    return () => listeners.abort();
+  }
 
-  send({ event: "$pageview", properties: { route } });
+  let entry = enterPage(location.search, document.referrer, location.origin);
+  send({ event: "$pageview", properties: { route, ...entry } });
+  // A page restored from the back-forward cache takes the tab's entry as it is now: a later page
+  // may have replaced or removed it.
+  addEventListener(
+    "pageshow",
+    ({ persisted }) => {
+      if (persisted && sending) entry = tabEntry();
+    },
+    on,
+  );
 
   // Core Web Vitals as web-vitals reports them: LCP once it is final, CLS and INP as the page is
   // hidden, and again at a later hide if they grew. A page without an interaction has no INP, and
@@ -456,7 +487,7 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
         const location = link.closest(".hero") ? "hero" : "page";
         send({
           event: "download_clicked",
-          properties: { ...download, download_type: "stable", route, location },
+          properties: { ...download, ...entry, download_type: "stable", route, location },
         });
       } else if (href.startsWith(REPOSITORY)) {
         const link_location = !link.closest("footer")

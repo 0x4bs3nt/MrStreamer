@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderPage } from "../scripts/pages.ts";
-import { siteAnalyticsConfiguration } from "../scripts/site-analytics.ts";
+import { INGEST_ROUTE, siteAnalyticsConfiguration } from "../scripts/site-analytics.ts";
 import { CHOICE, DEADLINE_MS, MAX_EVENTS, startSiteAnalytics } from "../src/analytics.ts";
+import { ENTRY } from "../src/referrals.ts";
 
 // Website analytics as a visitor meets them: the real pages' switches, and the requests that
 // leave the page. fetch is replaced, so each request's address, options and body are what a
@@ -39,7 +40,12 @@ const report = (name: "LCP" | "CLS" | "INP", value: number) =>
 const root = join(import.meta.dirname, "..");
 const home = readFileSync(join(root, "index.html"), "utf8");
 const missing = readFileSync(join(root, "404.html"), "utf8");
-const CAPTURE = { endpoint: "https://eu.i.posthog.com/i/v0/e/", token: "phc_test" };
+/** A production build's capture: the site's own route to PostHog. */
+const CAPTURE = {
+  endpoint: "https://mrstreamer.app/ingest/i/v0/e/",
+  token: "phc_test",
+  apiHost: "https://mrstreamer.app/ingest",
+};
 
 /** A request that stays open until it is aborted, as a browser's would. */
 const pending = (_url: string, init: RequestInit) =>
@@ -56,9 +62,11 @@ function open(html: string, address = "/"): void {
     .replace(/<script type="module"[^>]*><\/script>/g, "");
 }
 
-function start(html: string, address?: string): void {
+/** Opens a page, from `referrer` as a browser reports it: "" for none. */
+function start(html: string, address?: string, referrer = ""): void {
   stop();
   open(html, address);
+  Object.defineProperty(document, "referrer", { value: referrer, configurable: true });
   stop = startSiteAnalytics(CAPTURE);
 }
 
@@ -99,6 +107,8 @@ const hide = () => {
   Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));
 };
+/** Where a visit entered when nothing says: a typed address, a bookmark or a hidden referrer. */
+const unknown = { entry_source: "unknown", entry_medium: "unknown", entry_campaign: "none" };
 /** What every event carries besides its own properties, for a page at `route`. */
 const fixed = (route: string) => ({
   $current_url: `https://mrstreamer.app${route}`,
@@ -109,10 +119,12 @@ const fixed = (route: string) => ({
   source: "website",
   $process_person_profile: false,
   $geoip_disable: true,
+  $lib_custom_api_host: "https://mrstreamer.app/ingest",
 });
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   for (const reports of Object.values(vitals)) reports.length = 0;
   fetchMock = vi.fn(pending);
   vi.stubGlobal("fetch", fetchMock);
@@ -129,6 +141,7 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, "globalPrivacyControl");
   Reflect.deleteProperty(navigator, "doNotTrack");
   Reflect.deleteProperty(document, "visibilityState");
+  Reflect.deleteProperty(document, "referrer");
   for (const name of ["scrollHeight", "clientHeight"])
     Reflect.deleteProperty(document.documentElement, name);
   Reflect.deleteProperty(window, "scrollY");
@@ -151,9 +164,9 @@ describe("website analytics", () => {
       api_key: "phc_test",
       event: "$pageview",
       distinct_id: "$posthog_cookieless",
-      properties: { route: "/", ...fixed("/") },
+      properties: { route: "/", ...unknown, ...fixed("/") },
     });
-    expect(String(view?.init.body)).not.toMatch(/secret|hero|campaign/);
+    expect(String(view?.init.body)).not.toMatch(/secret|hero|campaign=/);
     expect(localStorage.length).toBe(0);
   });
 
@@ -173,7 +186,7 @@ describe("website analytics", () => {
     dispatchEvent(new Event("pagehide"));
     Reflect.deleteProperty(document, "visibilityState");
     expect(events()).toEqual([
-      ["$pageview", { route: "/", ...fixed("/") }],
+      ["$pageview", { route: "/", ...unknown, ...fixed("/") }],
       [
         "download_clicked",
         {
@@ -182,6 +195,7 @@ describe("website analytics", () => {
           download_type: "stable",
           route: "/",
           location: "hero",
+          ...unknown,
           ...fixed("/"),
         },
       ],
@@ -193,6 +207,7 @@ describe("website analytics", () => {
           download_type: "stable",
           route: "/",
           location: "page",
+          ...unknown,
           ...fixed("/"),
         },
       ],
@@ -204,6 +219,7 @@ describe("website analytics", () => {
           download_type: "stable",
           route: "/",
           location: "page",
+          ...unknown,
           ...fixed("/"),
         },
       ],
@@ -407,7 +423,7 @@ describe("website analytics", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(vitals.LCP).toHaveLength(0);
     start(home);
-    expect(events()).toEqual([["$pageview", { route: "/", ...fixed("/") }]]);
+    expect(events()).toEqual([["$pageview", { route: "/", ...unknown, ...fixed("/") }]]);
   });
 
   it("abort what is on its way when turned off, and send nothing after", () => {
@@ -463,12 +479,12 @@ describe("website analytics", () => {
     start(faq, "/faq#free");
     start(faq, "/faq#private-words");
     expect(events()).toEqual([
-      ["$pageview", { route: "/faq", ...fixed("/faq") }],
+      ["$pageview", { route: "/faq", ...unknown, ...fixed("/faq") }],
       ["faq_question_viewed", { faq_question: "free", via: "anchor", ...fixed("/faq") }],
-      ["$pageview", { route: "/faq", ...fixed("/faq") }],
+      ["$pageview", { route: "/faq", ...unknown, ...fixed("/faq") }],
     ]);
     start(missing, "/private/address?q=secret#words");
-    expect(events().at(-1)).toEqual(["$pageview", { route: "/404", ...fixed("/404") }]);
+    expect(events().at(-1)).toEqual(["$pageview", { route: "/404", ...unknown, ...fixed("/404") }]);
     expect(sent().every(({ init }) => !/private|secret|words/.test(String(init.body)))).toBe(true);
   });
 
@@ -490,6 +506,241 @@ describe("website analytics", () => {
   });
 });
 
+describe("where a visit entered the site", () => {
+  const download = renderPage("download/index.html", null, null);
+  /** The entry codes on each page view and download click, in order. */
+  const entries = () =>
+    sent()
+      .filter(({ body }) => body.event === "$pageview" || body.event === "download_clicked")
+      .map(({ body: { event, properties } }) => [
+        event,
+        properties["entry_source"],
+        properties["entry_medium"],
+        properties["entry_campaign"],
+      ]);
+  const bodies = () => sent().map(({ init }) => String(init.body));
+
+  it("take a listed campaign's codes and nothing else from the address", () => {
+    start(
+      home,
+      "/?utm_source=GitHub&utm_medium=readme&utm_campaign=release&utm_content=jane%40example.com&utm_term=iptv&gclid=Cj0secret",
+      "https://github.com/Mr-Streamer-OSS/MrStreamer",
+    );
+    click('.hero a[data-installer="dmg"]');
+    expect(entries()).toEqual([
+      ["$pageview", "github", "readme", "release"],
+      ["download_clicked", "github", "readme", "release"],
+    ]);
+    expect(sent()[0]?.body.properties).toMatchObject({
+      $current_url: "https://mrstreamer.app/",
+      $pathname: "/",
+    });
+    expect(sent()[0]?.body.properties).not.toHaveProperty("$referrer");
+    expect(sent()[0]?.body.properties).not.toHaveProperty("utm_source");
+    expect(
+      bodies().every((body) => !/jane|example|iptv|gclid|secret|utm_|Mr-Streamer/.test(body)),
+    ).toBe(true);
+    expect(JSON.parse(sessionStorage.getItem(ENTRY) ?? "")).toEqual({
+      entry_source: "github",
+      entry_medium: "readme",
+      entry_campaign: "release",
+    });
+    expect(sessionStorage.length).toBe(1);
+  });
+
+  it.each([
+    ["an unlisted source", "?utm_source=jane.doe%40example.com&utm_campaign=release", "google"],
+    ["a repeated source", "?utm_source=github&utm_source=reddit", "google"],
+    ["an empty source", "?utm_source=&utm_medium=readme", "google"],
+    ["a source with spaces", "?utm_source=%20github", "google"],
+  ])("ignore every tag with %s and fall back to the referrer", (_, query) => {
+    start(home, `/${query}`, "https://www.google.de/");
+    expect(entries()).toEqual([["$pageview", "google", "search", "none"]]);
+    expect(bodies().join()).not.toMatch(/jane|example|release|readme|reddit|google\.de/);
+  });
+
+  it("give a listed source its own medium, and no campaign, when the other tags are unlisted", () => {
+    start(home, "/?utm_source=reddit&utm_medium=paid_jane&utm_campaign=spring-sale-jane");
+    expect(entries()).toEqual([["$pageview", "reddit", "social", "none"]]);
+    expect(bodies().join()).not.toMatch(/jane|spring|paid/);
+  });
+
+  it.each([
+    ["https://www.google.com/", "google", "search"],
+    ["https://www.google.co.uk/", "google", "search"],
+    ["https://www.bing.com/", "bing", "search"],
+    ["https://duckduckgo.com/", "duckduckgo", "search"],
+    ["https://search.brave.com/", "brave", "search"],
+    ["https://github.com/Mr-Streamer-OSS/MrStreamer/releases", "github", "referral"],
+    ["https://apps.microsoft.com/detail/9N45GG76ZP4T", "microsoft_store", "referral"],
+    ["https://chatgpt.com/", "ai_assistant", "referral"],
+    ["https://old.reddit.com/r/IPTV/comments/abc/jane/", "reddit", "social"],
+    ["https://news.ycombinator.com/item?id=1", "hacker_news", "social"],
+    ["https://t.co/xyz", "x", "social"],
+    ["https://www.youtube.com/", "youtube", "social"],
+    ["https://jane-doe.example.net/my-post?user=jane", "other", "referral"],
+    ["https://notgoogle.com/", "other", "referral"],
+    ["https://www.google.com.jane.example/", "other", "referral"],
+    ["https://mail.google.com/", "other", "referral"],
+    ["android-app://com.slack/", "other", "referral"],
+    ["not an address", "other", "referral"],
+    ["", "unknown", "unknown"],
+    ["https://mrstreamer.app/faq", "unknown", "unknown"],
+  ])("count a first page from %j as %s", (referrer, source, medium) => {
+    start(home, "/", referrer);
+    expect(entries()).toEqual([["$pageview", source, medium, "none"]]);
+    expect(bodies().join()).not.toMatch(/jane|slack|example|xyz|IPTV|item|releases/);
+  });
+
+  it("keep the tab's entry across its pages until a tagged link or another site opens one", () => {
+    start(home, "/", "https://www.bing.com/");
+    start(download, "/download", "https://mrstreamer.app/");
+    click('a[data-installer="deb"]');
+    // A typed address or bookmark in the same tab has no referrer, like a page from a site that
+    // hides it: neither says the visit began again.
+    start(home, "/");
+    start(home, "/?utm_source=mastodon&utm_campaign=launch", "https://mastodon.social/");
+    start(download, "/download", "https://mrstreamer.app/");
+    start(home, "/", "https://news.ycombinator.com/");
+    click('.hero a[data-installer="dmg"]');
+    expect(entries()).toEqual([
+      ["$pageview", "bing", "search", "none"],
+      ["$pageview", "bing", "search", "none"],
+      ["download_clicked", "bing", "search", "none"],
+      ["$pageview", "bing", "search", "none"],
+      ["$pageview", "mastodon", "social", "launch"],
+      ["$pageview", "mastodon", "social", "launch"],
+      ["$pageview", "hacker_news", "social", "none"],
+      ["download_clicked", "hacker_news", "social", "none"],
+    ]);
+    // A closed tab takes its entry with it.
+    sessionStorage.clear();
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries().at(-1)).toEqual(["$pageview", "unknown", "unknown", "none"]);
+  });
+
+  it("ignore a stored entry that isn't made of listed codes", () => {
+    sessionStorage.setItem(
+      ENTRY,
+      JSON.stringify({ entry_source: "jane", entry_medium: "email", entry_campaign: "none" }),
+    );
+    start(download, "/download", "https://mrstreamer.app/");
+    sessionStorage.setItem(ENTRY, "not json");
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries()).toEqual([
+      ["$pageview", "unknown", "unknown", "none"],
+      ["$pageview", "unknown", "unknown", "none"],
+    ]);
+    expect(bodies().join()).not.toMatch(/jane|email/);
+  });
+
+  it("remove the entry when turned off, and start again from unknown when turned on", () => {
+    start(home, "/?utm_source=github&utm_medium=readme", "https://github.com/");
+    button()?.click();
+    expect(sessionStorage.getItem(ENTRY)).toBeNull();
+    // Off, a tagged page neither sends nor keeps its codes.
+    start(home, "/?utm_source=reddit", "https://www.reddit.com/");
+    expect(sessionStorage.getItem(ENTRY)).toBeNull();
+    button()?.click();
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries()).toEqual([
+      ["$pageview", "github", "readme", "none"],
+      ["$pageview", "unknown", "unknown", "none"],
+    ]);
+  });
+
+  it.each([
+    ["Global Privacy Control", "globalPrivacyControl", true],
+    ["Do Not Track", "doNotTrack", "1"],
+  ])("keep and send no entry with %s, and remove one kept before", (_, name, value) => {
+    sessionStorage.setItem(
+      ENTRY,
+      JSON.stringify({ entry_source: "github", entry_medium: "readme", entry_campaign: "none" }),
+    );
+    Object.defineProperty(navigator, name, { value, configurable: true });
+    start(home, "/?utm_source=github", "https://github.com/");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("remove the entry when another tab turns analytics off", () => {
+    start(home, "/", "https://www.google.com/");
+    localStorage.setItem(CHOICE, "off");
+    dispatchEvent(new StorageEvent("storage", { key: CHOICE }));
+    expect(sessionStorage.getItem(ENTRY)).toBeNull();
+  });
+
+  it("stop and remove the entry when another tab's off arrives after it turned on again", () => {
+    start(home, "/", "https://github.com/");
+    const signal = sent()[0]?.init.signal;
+    // The page was frozen while another tab turned off and on, and hears both late.
+    localStorage.setItem(CHOICE, "on");
+    dispatchEvent(new StorageEvent("storage", { key: CHOICE, oldValue: null, newValue: "off" }));
+    dispatchEvent(new StorageEvent("storage", { key: CHOICE, oldValue: "off", newValue: "on" }));
+    expect(signal?.aborted).toBe(true);
+    expect(sessionStorage.getItem(ENTRY)).toBeNull();
+    expect(footer()).toBe("Site analytics: on. Turn off What's counted");
+    click('.hero a[data-installer="dmg"]');
+    dispatchEvent(new Event("pagehide"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries().at(-1)).toEqual(["$pageview", "unknown", "unknown", "none"]);
+  });
+
+  it("give a page restored from the back-forward cache the tab's entry as it is now", () => {
+    start(home, "/", "https://github.com/");
+    // A later page in the tab came from Google, then the visitor went back.
+    sessionStorage.setItem(
+      ENTRY,
+      JSON.stringify({ entry_source: "google", entry_medium: "search", entry_campaign: "none" }),
+    );
+    dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    click('.hero a[data-installer="dmg"]');
+    sessionStorage.clear();
+    dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    click('.hero a[data-installer="dmg"]');
+    expect(entries()).toEqual([
+      ["$pageview", "github", "referral", "none"],
+      ["download_clicked", "google", "search", "none"],
+      ["download_clicked", "unknown", "unknown", "none"],
+    ]);
+  });
+
+  it("not keep an older entry when a new one can't be written", () => {
+    start(home, "/", "https://github.com/");
+    const storage = sessionStorage;
+    vi.stubGlobal("sessionStorage", {
+      getItem: (key: string) => storage.getItem(key),
+      setItem: () => {
+        throw new Error("Full");
+      },
+      removeItem: (key: string) => storage.removeItem(key),
+    });
+    start(home, "/", "https://www.google.com/");
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries()).toEqual([
+      ["$pageview", "github", "referral", "none"],
+      ["$pageview", "google", "search", "none"],
+      ["$pageview", "unknown", "unknown", "none"],
+    ]);
+  });
+
+  it("still count the first page's entry when session storage fails", () => {
+    const fail = () => {
+      throw new Error("Storage unavailable");
+    };
+    vi.stubGlobal("sessionStorage", { getItem: fail, setItem: fail, removeItem: fail });
+    start(home, "/?utm_source=github", "https://github.com/");
+    start(download, "/download", "https://mrstreamer.app/");
+    expect(entries()).toEqual([
+      ["$pageview", "github", "referral", "none"],
+      ["$pageview", "unknown", "unknown", "none"],
+    ]);
+    button()?.click();
+    expect(footer()).toBe("Site analytics: off. Turn on What's counted");
+  });
+});
+
 describe("website analytics build configuration", () => {
   const release = {
     MR_STREAMER_SITE_ANALYTICS_RELEASE_BUILD: "1",
@@ -499,8 +750,9 @@ describe("website analytics build configuration", () => {
 
   it("names EU production only for a release build with a public project key", () => {
     expect(siteAnalyticsConfiguration(release, true)).toEqual({
-      endpoint: "https://eu.i.posthog.com/i/v0/e/",
+      endpoint: "https://mrstreamer.app/ingest/i/v0/e/",
       token: "phc_abc_123",
+      apiHost: "https://mrstreamer.app/ingest",
     });
     expect(siteAnalyticsConfiguration(release, false)).toBeNull();
     expect(
@@ -524,6 +776,36 @@ describe("website analytics build configuration", () => {
     expect(siteAnalyticsConfiguration({}, true)).toBeNull();
   });
 
+  it("sends production only to the site's route, which the package forwards to EU capture alone", () => {
+    const endpoint = new URL(siteAnalyticsConfiguration(release, true)?.endpoint ?? "");
+    const route = new RegExp(INGEST_ROUTE.src);
+    expect(endpoint.origin).toBe("https://mrstreamer.app");
+    expect(route.test(endpoint.pathname)).toBe(true);
+    expect(INGEST_ROUTE.methods).toEqual(["POST"]);
+    expect(INGEST_ROUTE.dest).toBe("https://eu.i.posthog.com/i/v0/e/");
+    for (const path of [
+      "/ingest/i/v0/e",
+      "/ingest/i/v0/e/x",
+      "/ingest/flags",
+      "/ingest/decide",
+      "/ingest/static/array.js",
+      "/ingest/s/",
+      "/i/v0/e/",
+    ])
+      expect(route.test(path)).toBe(false);
+  });
+
+  it("names no proxy on a loopback check's events", () => {
+    const local = siteAnalyticsConfiguration(
+      { MR_STREAMER_SITE_ANALYTICS_LOCAL_ENDPOINT: "http://127.0.0.1:4555/i/v0/e/" },
+      false,
+    );
+    open(home);
+    stop = startSiteAnalytics(local);
+    expect(sent()[0]?.url).toBe("http://127.0.0.1:4555/i/v0/e/");
+    expect(sent()[0]?.body.properties).not.toHaveProperty("$lib_custom_api_host");
+  });
+
   it("lets an explicit loopback endpoint replace production, without its key", () => {
     const local = {
       ...release,
@@ -532,6 +814,7 @@ describe("website analytics build configuration", () => {
     expect(siteAnalyticsConfiguration(local, true)).toEqual({
       endpoint: "http://127.0.0.1:4555/i/v0/e/",
       token: "mrstreamer-local-verification",
+      apiHost: null,
     });
     for (const endpoint of [
       "http://example.com:4555/i/v0/e/",

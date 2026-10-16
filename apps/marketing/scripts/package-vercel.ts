@@ -4,7 +4,8 @@
 //   node scripts/package-vercel.ts    (after `vite build`)
 //
 // - static/: everything in dist/.
-// - config.json: each page answers its canonical address, with or without a trailing slash.
+// - config.json: each page answers its canonical address, with or without a trailing slash. A POST
+//   to /ingest/i/v0/e/ goes on to PostHog's EU capture, the only route that leaves the site.
 //   An unknown address or an HTML alias answers 404.html with status 404. No builds.json: without one the CLI deploys to the target it is told,
 //   where a builds.json naming a preview would win.
 //
@@ -18,11 +19,21 @@
 // - a Markdown page lacks source headings, or a public link or fragment is missing
 // - search engines could list 404.html
 // - robots.txt doesn't name the sitemap, or a route answers with a missing page
+// - the site's script sends to PostHog directly, past its own route
 import { execFileSync } from "node:child_process";
 import { INDEXNOW_KEY, INDEXNOW_MARKER, readIndexNowBuild } from "./indexnow.ts";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { PAGES, SITE } from "./pages.ts";
+import { INGEST_ROUTE } from "./site-analytics.ts";
 
 const LISTED = Object.fromEntries(PAGES.map(({ address, file }) => [address, file]));
 
@@ -37,6 +48,7 @@ cpSync(join(root, "dist"), files, { recursive: true });
 // before the package's files, the one below it after them.
 const missing = { status: 404, dest: "/404.html" };
 const routes = [
+  INGEST_ROUTE,
   {
     src: `^/${INDEXNOW_KEY}\\.txt$`,
     dest: `/${INDEXNOW_KEY}.txt`,
@@ -193,10 +205,16 @@ if (!read("robots.txt").includes(`Sitemap: ${SITE}/sitemap.xml`)) {
   problems.push("robots.txt doesn't name the sitemap.");
 }
 for (const dest of new Set(routes.flatMap((route) => ("dest" in route ? route.dest : [])))) {
+  if (dest === INGEST_ROUTE.dest) continue;
   if (!existsSync(join(files, dest))) {
     problems.push(`A route answers with ${dest}, which is missing.`);
   }
 }
+const scripts = readdirSync(join(files, "assets"))
+  .filter((name) => name.endsWith(".js"))
+  .map((name) => read(`assets/${name}`));
+if (scripts.some((script) => script.includes("i.posthog.com")))
+  problems.push("The site's script sends to PostHog directly, past its own /ingest route.");
 if (existsSync(join(output, "builds.json"))) problems.push("The package holds a builds.json.");
 
 if (problems.length > 0) throw new Error(`The package isn't ready:\n${problems.join("\n")}`);
