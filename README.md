@@ -94,6 +94,10 @@ Mr. Streamer looks for updates after it starts and every four hours. When one is
 
 Found a bug? [Report it](https://github.com/Mr-Streamer-OSS/MrStreamer/issues/new/choose) with your system, the Mr. Streamer version from Settings > About, and what happened.
 
+## What's next
+
+We're working hard on an iOS app, and it's in active development. iPadOS is planned next, with Apple TV to follow.
+
 ## Contributing
 
 Mr. Streamer is open source and under active development. For now it accepts small bug fixes: [CONTRIBUTING.md](CONTRIBUTING.md) explains how to report a bug, run the app and send a fix.
