@@ -225,7 +225,7 @@ describe("Downloads", () => {
       "Waiting while Northside plays",
       "Queued",
       "Disk full. Free 1.2 GB, then retry.",
-      "Downloads continue only while the app is open.",
+      "A download continues in the background; the next starts once the app is open.",
       "On this iPhone",
       "2024 · 1 h 52 min · 2.1 GB",
       "38 min left",

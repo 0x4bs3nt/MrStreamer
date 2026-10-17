@@ -1,3 +1,23 @@
+diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
+index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..83781ae41c782708f3834dfdef5b73ce8941088b 100644
+--- a/build/VideoPlayer.types.d.ts
++++ b/build/VideoPlayer.types.d.ts
+@@ -516,6 +516,7 @@ export type SubtitleTrack = {
+      * A string used by `expo-video` to identify the subtitle track.
+      *
+      * @platform android
++     * @platform ios
+      */
+     id?: string;
+     /**
+@@ -614,6 +615,7 @@ export type AudioTrack = {
+     /**
+      * A string used by expo-video to identify the audio track.
+      * @platform android
++     * @platform ios
+      */
+     id?: string;
+     /**
 diff --git a/build/VideoView.d.ts b/build/VideoView.d.ts
 index 04960571a7e48738769ab3729d70f620c5d63627..ebf38bed119644412e58865c868feaf789d194be 100644
 --- a/build/VideoView.d.ts
@@ -73,6 +93,71 @@ index c66e0fae98a838732c9a2deab6c5e2a0b7e5abc1..4316053e1257923913a199e80abe8259
        completionHandler(false)
      }
    }
+diff --git a/ios/Records/Tracks.swift b/ios/Records/Tracks.swift
+index dac369e8444a4b82886f8b6765f0f45e276dd588..c6535a7b9d711740b7e5546099a61b6f5adac26d 100644
+--- a/ios/Records/Tracks.swift
++++ b/ios/Records/Tracks.swift
+@@ -5,6 +5,9 @@ import AVKit
+ 
+ // swiftlint:disable redundant_optional_initialization - Initialization with nil is necessary
+ internal struct SubtitleTrack: Record {
++  @Field
++  var id: String? = nil
++
+   @Field
+   var language: String? = nil
+ 
+@@ -29,6 +32,7 @@ internal struct SubtitleTrack: Record {
+     let autoSelect = option.hasMediaCharacteristic(.isAuxiliaryContent) == false
+ 
+     return SubtitleTrack(
++      id: group?.trackId(of: option),
+       language: identifier,
+       label: option.displayName,
+       name: option.commonMetadata.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue,
+@@ -39,6 +43,7 @@ internal struct SubtitleTrack: Record {
+ }
+ 
+ internal struct AudioTrack: Record {
++  @Field var id: String? = nil
+   @Field var language: String? = nil
+   @Field var label: String? = nil
+   @Field var name: String? = nil
+@@ -54,6 +59,7 @@ internal struct AudioTrack: Record {
+     let autoSelect = option.hasMediaCharacteristic(.isAuxiliaryContent) == false
+ 
+     return AudioTrack(
++      id: group?.trackId(of: option),
+       language: identifier,
+       label: option.displayName,
+       name: option.commonMetadata.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue,
+@@ -63,6 +69,26 @@ internal struct AudioTrack: Record {
+   }
+ }
+ 
++// A media selection group can hold options with the same label and language, such as English
++// stereo and English surround, so an audio or subtitle record names its option by its position
++// among the group's options as well. That `id` belongs to the item that reported it.
++internal extension AVMediaSelectionGroup {
++  /// The `id` of a track record for `option`: its index among the group's options.
++  func trackId(of option: AVMediaSelectionOption) -> String? {
++    options.firstIndex(of: option).map(String.init)
++  }
++
++  /// The option a track record names: the one with its label and language and, when the record has
++  /// an `id`, at that index. A record without one names the first option with its label and language.
++  func option(trackId: String?, label: String?, language: String?) -> AVMediaSelectionOption? {
++    options.enumerated().first { index, option in
++      (trackId == nil || trackId == String(index))
++        && option.displayName == label
++        && option.locale?.identifier == language
++    }?.element
++  }
++}
++
+ internal struct VideoTrack: Record, Equatable {
+   @Field var id: String? = nil
+   @Field var url: URL? = nil
 diff --git a/ios/VideoAsset.swift b/ios/VideoAsset.swift
 index ea1043e4f62718244ddfab88394c85ff617c6224..ac7b85190a85b20ac5d1ab2c237fcdaea1296d80 100644
 --- a/ios/VideoAsset.swift
@@ -151,7 +236,7 @@ index 3c2fde463a10c78546947dacd8c0fda67f0494c7..3b6d520985d5af1038414fda3aafbd27
        }
  
 diff --git a/ios/VideoPlayerAudioTracks.swift b/ios/VideoPlayerAudioTracks.swift
-index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2e6ae526a17b862bf5931a141a56778d778076a8 100644
+index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..c09f5f4daddb409b1b64aafc2b2d1d14afc5b667 100644
 --- a/ios/VideoPlayerAudioTracks.swift
 +++ b/ios/VideoPlayerAudioTracks.swift
 @@ -24,8 +24,7 @@ class VideoPlayerAudioTracks {
@@ -164,6 +249,17 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2e6ae526a17b862bf5931a141a56778d
        availableAudioTracks = []
      }
  
+@@ -43,8 +42,8 @@ class VideoPlayerAudioTracks {
+     }
+ 
+     if let group = currentItem.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+-      let option = group.options.first {
+-        $0.displayName == audioTrack?.label && $0.locale?.identifier == audioTrack?.language
++      let option = audioTrack.flatMap {
++        group.option(trackId: $0.id, label: $0.label, language: $0.language)
+       }
+       currentItem.select(option, in: group)
+     }
 diff --git a/ios/VideoPlayerItem.swift b/ios/VideoPlayerItem.swift
 index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..e57285c6721905431e1ff44370b67bc3429e9fc0 100644
 --- a/ios/VideoPlayerItem.swift
@@ -178,7 +274,7 @@ index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..e57285c6721905431e1ff44370b67bc3
      }
    }
 diff --git a/ios/VideoPlayerSubtitles.swift b/ios/VideoPlayerSubtitles.swift
-index ab8464c918cf43c08b72dba12c366eaf658ba83e..6bf10ff2c4bc41b1988de4850e3dfaa45d5c5a1e 100644
+index ab8464c918cf43c08b72dba12c366eaf658ba83e..36c386770ace1694de98014befa5baf8e90371ed 100644
 --- a/ios/VideoPlayerSubtitles.swift
 +++ b/ios/VideoPlayerSubtitles.swift
 @@ -24,8 +24,7 @@ class VideoPlayerSubtitles {
@@ -191,6 +287,17 @@ index ab8464c918cf43c08b72dba12c366eaf658ba83e..6bf10ff2c4bc41b1988de4850e3dfaa4
        availableSubtitleTracks = []
      }
  
+@@ -41,8 +40,8 @@ class VideoPlayerSubtitles {
+     }
+ 
+     if let group = currentItem.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+-      let option = group.options.first {
+-        $0.displayName == subtitleTrack?.label && $0.locale?.identifier == subtitleTrack?.language
++      let option = subtitleTrack.flatMap {
++        group.option(trackId: $0.id, label: $0.label, language: $0.language)
+       }
+       currentItem.select(option, in: group)
+     }
 diff --git a/ios/VideoView.swift b/ios/VideoView.swift
 index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b92d1df549 100644
 --- a/ios/VideoView.swift
@@ -259,6 +366,26 @@ index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b9
    public override func didMoveToWindow() {
      // TV is doing a normal view controller present, so we should not execute
      // this code
+diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
+index 07a2cdf7ca129d069102d05071713d5aa4db5004..eea8dc14ddfd5affe80115da89ddf7d1abf558c9 100644
+--- a/src/VideoPlayer.types.ts
++++ b/src/VideoPlayer.types.ts
+@@ -592,6 +592,7 @@ export type SubtitleTrack = {
+    * A string used by `expo-video` to identify the subtitle track.
+    *
+    * @platform android
++   * @platform ios
+    */
+   id?: string;
+ 
+@@ -707,6 +708,7 @@ export type AudioTrack = {
+   /**
+    * A string used by expo-video to identify the audio track.
+    * @platform android
++   * @platform ios
+    */
+   id?: string;
+ 
 diff --git a/src/VideoView.tsx b/src/VideoView.tsx
 index 33849e854dd8989186d1af84e0a141075070a5ec..78aab27fe686b48fa06da139b65c2379a43de9b1 100644
 --- a/src/VideoView.tsx

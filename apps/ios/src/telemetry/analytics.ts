@@ -20,11 +20,10 @@ import {
 import type { CaptureTransport } from "./transport.ts";
 
 /**
- * Whether statistics are on before the viewer chooses. Off while the app has no Settings control
- * for them: nothing is recorded or sent until a choice can be made and changed. Turning this on
- * belongs in the same change as that control, with the policy and docs that describe it.
+ * Whether statistics are on before the viewer chooses: on, in a build with a capture configured.
+ * Settings shows it and turns it off; a saved choice, either way, is kept across launches.
  */
-export const STATISTICS_DEFAULT = false;
+export const STATISTICS_DEFAULT = true;
 
 /** Captures per minute. A viewer stays far below it; a runaway producer loses the rest. */
 const RATE_LIMIT = 60;
@@ -126,7 +125,10 @@ export class Analytics {
    * playing across a change reports nothing more, and on sends nothing about the time off.
    */
   configure(enabled: boolean): AnalyticsSettings {
-    if (this.available && this.record?.choice === (enabled ? "on" : "off")) {
+    const choice = enabled ? "on" : "off";
+    if (this.available && this.record && this.enabled() === enabled) {
+      // Choosing what's already in effect, the default included, only saves the choice.
+      if (this.record.choice !== choice) this.save({ ...this.record, choice });
       return this.settings.get();
     }
     this.revision++;
@@ -140,7 +142,7 @@ export class Analytics {
     this.available = true;
     this.save({
       ...record,
-      choice: enabled ? "on" : "off",
+      choice,
       pending: enabled ? record.pending : [],
       unfinished: null,
     });

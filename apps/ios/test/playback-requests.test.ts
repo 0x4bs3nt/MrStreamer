@@ -141,7 +141,7 @@ async function answer(details: SeriesDetails) {
 const live = (id: string) =>
   play(
     { id, subscriptionId: SUB, title: id, place: "", live: true, next: false, versions: false },
-    async () => ({ url: `live:${id}`, hls: true }),
+    async () => ({ url: `live:${id}`, container: "m3u8" }),
     { watch: true, login: [] },
   );
 

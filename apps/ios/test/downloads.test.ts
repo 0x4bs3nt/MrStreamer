@@ -5,17 +5,21 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 // Downloads through the app's own owners: the account, its two fake Xtream panels over HTTP (the
 // desktop tests' fake provider, one connection each, a closed one freed 300 ms later as its
 // default has it), the title lists, the one player and the downloads owner. expo-file-system is
-// `native-files.ts`, a model of Expo's DownloadTask over real files and real requests; the player
-// asks for an online stream over HTTP, as AVPlayer does, and holds it until it is replaced. The
-// Keychain is kept in memory, and a relaunch imports the app's modules again over the same
-// Documents and Keychain. The shared download actions answer through a recorded system sheet.
-// What only iOS can show (URLSession's own resume data and timing,
-// suspension in the background, playing the file) is not proved here.
+// `native-files.ts`, over real files; the app's native background transfer owner is
+// `native-downloads.ts`, a model of its contract over real requests. The player asks for an
+// online stream over HTTP, as AVPlayer does, and holds it until it is replaced. The Keychain is
+// kept in memory, and a relaunch imports the app's modules again over the same Documents,
+// Keychain and native ledger, while the last process's media requests go on, as a background
+// session's do. The shared download actions answer through a recorded system sheet. What only
+// iOS can show (URLSession's own resume data and timing, a suspended app's wakes, playing the
+// file) is not proved here.
 
 const memory = vi.hoisted(() => ({
   keychain: new Map<string, string>(),
   /** How long the Keychain takes to write a download's resume data. */
   keychainMs: 0,
+  /** While true, the Keychain won't read a download's item, as before the first unlock. */
+  locked: false,
   /** Holds the Keychain's removal of a download's resume data until `done`, saying when it starts. */
   removal: null as null | { started: () => void; done: Promise<void> },
   /** The last system sheet shown, and how to answer it. */
@@ -36,6 +40,7 @@ const memory = vi.hoisted(() => ({
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
+vi.mock("expo", () => import("./native-downloads.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
@@ -62,7 +67,10 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
-  getItemAsync: async (key: string) => memory.keychain.get(key) ?? null,
+  getItemAsync: async (key: string) => {
+    if (memory.locked && key.includes("download")) throw new Error("Interaction not allowed");
+    return memory.keychain.get(key) ?? null;
+  },
   setItemAsync: async (key: string, value: string) => {
     if (key.includes("download") && memory.keychainMs > 0) {
       await new Promise((done) => setTimeout(done, memory.keychainMs));
@@ -124,6 +132,7 @@ vi.mock("expo-video", () => ({
 }));
 
 const { native, File: DiskFile, Directory: Folder } = await import("./native-files.ts");
+const { background } = await import("./native-downloads.ts");
 
 interface FakeTitle {
   readonly id: number;
@@ -188,6 +197,9 @@ afterEach(async () => {
   one.stallMovieFile(movie().id, 0, 0);
   one.stallMovieFile(otherMovie().id, 0, 0);
   memory.appState = "active";
+  memory.locked = false;
+  native.held = null;
+  await background.forceQuit();
   // What an earlier launch left streaming ends before the next test asks the panels for files.
   await until(panelsIdle, "the panels to idle");
 });
@@ -202,15 +214,18 @@ async function until(ready: () => boolean, what: string, ms = 8_000) {
 }
 
 /**
- * The app as a launch starts it: what the last process transferred ends with it, as a foreground
- * session's tasks do, and fresh modules start over the same files and Keychain. A launch takes
- * longer than the panels take to free a closed connection; the last process writes nothing more.
+ * The app as a launch starts it: the last process ends, its media requests going on as a
+ * background session's do, and fresh modules start over the same files, Keychain and native
+ * ledger. With none going on, a launch takes longer than the panels take to free a closed
+ * connection; the last process writes nothing more.
  */
 async function launch() {
-  native.kill();
+  background.die();
   const list = new DiskFile(native.root, "documents", "downloads.json");
   const left = { list: list.exists ? list.textSync() : null, keychain: new Map(memory.keychain) };
-  await until(panelsIdle, "the last process's requests to be freed");
+  if (background.attempts.size === 0 && background.strays.size === 0) {
+    await until(panelsIdle, "the last process's requests to be freed");
+  }
   if (left.list === null) {
     if (list.exists) list.delete();
   } else list.writeSync(left.list);
@@ -230,8 +245,10 @@ async function launch() {
 }
 type App = Awaited<ReturnType<typeof launch>>;
 
-/** A fresh install: nothing in Documents or the Keychain. */
-function install() {
+/** A fresh install: nothing in Documents, the Keychain or the native ledger. */
+async function install() {
+  await background.forceQuit();
+  background.reset();
   const documents = new Folder(native.root, "documents");
   documents.delete();
   documents.create();
@@ -275,8 +292,14 @@ const statusOf = (app: App, id: string): DownloadStatus | undefined =>
   app.downloadList().items.find((item) => item.id === id)?.status;
 const isComplete = (app: App, id: string) => statusOf(app, id)?.kind === "complete";
 const doc = () => JSON.parse(new DiskFile(native.root, "documents", "downloads.json").textSync());
+/** An earlier build's resume data, in the app's own Keychain items. */
 const downloadSecrets = () =>
   [...memory.keychain.keys()].filter((key) => key.startsWith("s.download"));
+/** Downloads the native side keeps resume data for. */
+const nativeSecrets = () => [...background.secrets.keys()];
+const receivedOf = (app: App, id: string) =>
+  (statusOf(app, id) as { received?: number } | undefined)?.received;
+const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 const folder = (id: string) => new Folder(native.root, "documents", "downloads", id);
 const mediaFile = (id: string) =>
   folder(id)
@@ -306,27 +329,6 @@ function playFilm(app: App, subscriptionId: string, id: number) {
   app.playMovie(app.titleOf(lists.index, "movie", version)!, version, 0, () => undefined);
 }
 
-/**
- * A film paused at byte 20,000 with its resume data, whose resumed request then breaks off at
- * byte 40,000, the connection lost, while the panel still frees it. The file no longer stalls.
- */
-async function breakResumed(app: App) {
-  const { a } = await withProviders(app);
-  one.stallMovieFile(movie().id, 20_000, 60_000);
-  const film = await app.addDownload(movieRef(a));
-  const received = () => (statusOf(app, film.id) as { received?: number } | undefined)?.received;
-  await until(() => received() === 20_000, "the transfer to stall");
-  appGoes("background");
-  await until(() => downloadSecrets().length === 1 && panelsIdle(), "the pause");
-  one.stallMovieFile(movie().id, 40_000, 60_000);
-  native.requests.length = 0;
-  appGoes("active");
-  await until(() => received() === 40_000, "the resumed transfer to stall");
-  native.kill();
-  one.stallMovieFile(movie().id, 0, 0);
-  return film;
-}
-
 /** Sends the app to the background and back, as iOS reports it. */
 function appGoes(state: "background" | "active") {
   memory.appState = state;
@@ -335,7 +337,7 @@ function appGoes(state: "background" | "active") {
 
 describe("downloads", { timeout: 30_000 }, () => {
   it("transfers one at a time, a movie then an episode, and keeps no login with them", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a } = await withProviders(app);
     const { series, first } = episode();
@@ -367,7 +369,7 @@ describe("downloads", { timeout: 30_000 }, () => {
   });
 
   it("answers a title asked for twice with one download, and keeps two providers' same id apart", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a, b } = await withProviders(app, true);
     one.stallMovieFile(movie().id, 20_000, 30_000);
@@ -387,7 +389,7 @@ describe("downloads", { timeout: 30_000 }, () => {
   });
 
   it("cancels a transfer under way: its request ends and nothing of it stays", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a } = await withProviders(app);
     one.stallMovieFile(movie().id, 20_000, 30_000);
@@ -406,7 +408,7 @@ describe("downloads", { timeout: 30_000 }, () => {
   });
 
   it("fails while the provider refuses the file, and completes once retried", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a } = await withProviders(app);
     // Every connection the subscription allows is in use elsewhere.
@@ -429,108 +431,183 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(doc().items).toHaveLength(1);
   });
 
-  it("pauses in the background, keeps resume data only in the Keychain, and goes on after a relaunch", async () => {
-    install();
+  it("goes on in the background, and starts the next only once the app is open again", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 30_000, 1_500);
+    const film = await app.addDownload(movieRef(a));
+    const next = await app.addDownload(movieRef(a, otherMovie().id));
+    await until(() => receivedOf(app, film.id) === 30_000, "the transfer to stall");
+    appGoes("background");
+    // Neither paused nor asked again: the one request goes on and completes in the background.
+    await until(() => isComplete(app, film.id), "the copy, in the background");
+    expect(native.requests.map((each) => each.range)).toEqual([null]);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+    await sleep(1_500);
+    expect(statusOf(app, next.id)?.kind).toBe("queued");
+    expect(native.requests).toHaveLength(1);
+    appGoes("active");
+    await until(() => isComplete(app, next.id), "the next copy, once open");
+    expect(nativeSecrets()).toEqual([]);
+    expect(background.receipts).toEqual([]);
+  });
+
+  it("finds a transfer that went on after the app's process ended, and one that finished meanwhile", async () => {
+    await install();
     let app = await launch();
     const { a } = await withProviders(app);
-    one.stallMovieFile(movie().id, 30_000, 60_000);
+    one.stallMovieFile(movie().id, 30_000, 1_500);
     const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 30_000, "the transfer to stall");
+    // iOS ends the process and launches it again in the background: the request is still the
+    // download's transfer, and goes on to complete with no other asked for.
+    memory.appState = "background";
+    app = await launch();
+    await until(() => statusOf(app, film.id)?.kind === "transferring", "the request to be found");
+    await until(() => isComplete(app, film.id), "the copy");
+    expect(native.requests).toHaveLength(1);
+    expect(background.receipts).toEqual([]);
+
+    // One that finishes while no process hears it is taken in by the next launch.
+    appGoes("active");
+    one.stallMovieFile(otherMovie().id, 20_000, 1_000);
+    const other = await app.addDownload(movieRef(a, otherMovie().id));
+    await until(() => receivedOf(app, other.id) === 20_000, "the second transfer to stall");
+    background.die();
     await until(
-      () => (statusOf(app, film.id) as { received?: number } | undefined)?.received === 30_000,
-      "the transfer to stall",
+      () => background.attempts.size === 0 && background.receipts.length === 1,
+      "the request to finish unheard",
     );
+    app = await launch();
+    await until(() => isComplete(app, other.id), "the copy taken in");
+    expect(native.requests).toHaveLength(2);
+    expect(background.receipts).toEqual([]);
+  });
+
+  it("takes in only the receipt of a download's last attempt", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
     appGoes("background");
-    await until(() => downloadSecrets().length === 1, "the resume data");
-    await until(() => one.activeStreams() === 0, "the request to end");
-    expect(statusOf(app, film.id)?.kind).toBe("queued");
-    const [secret] = downloadSecrets();
-    expect(JSON.parse(memory.keychain.get(secret!)!).resumeData).toBeTruthy();
-    expect(everythingStored()).not.toContain("resumeData");
-    expect(doc().items[0]).toMatchObject({ state: "queued", received: 30_000 });
-    // Killed in the background; the next launch, in the foreground, goes on from where it paused.
-    native.requests.length = 0;
+    const film = await app.addDownload(movieRef(a));
+    expect(native.requests).toEqual([]);
+    // An attempt this download never authorized says it completed.
+    background.receipts.push({
+      receipt: "r-stale",
+      attempt: "a-stale",
+      id: film.id,
+      outcome: { kind: "complete", size: 1, expected: 1 },
+    });
     memory.appState = "active";
     app = await launch();
-    await until(() => isComplete(app, film.id), "the resumed copy");
-    expect(native.requests.map((each) => each.range)).toEqual(["bytes=30000-"]);
-    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
-    expect(downloadSecrets()).toEqual([]);
-  });
-
-  it("starts once more from the start when a resumed request breaks, after the provider freed it", async () => {
-    install();
-    const app = await launch();
-    const film = await breakResumed(app);
-    const ended = () => isComplete(app, film.id) || statusOf(app, film.id)?.kind === "failed";
-    await until(ended, "the download to end");
-    expect(statusOf(app, film.id)).toEqual({ kind: "complete" });
-    expect(native.requests.map((each) => each.range)).toEqual(["bytes=20000-", null]);
-    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
-    expect(downloadSecrets()).toEqual([]);
-  });
-
-  it("asks nothing more of a broken resumed download sent to the background, streamed over or removed", async () => {
-    install();
-    let app = await launch();
-    let film = await breakResumed(app);
-    // While the panel still frees the broken request's connection.
-    await new Promise((done) => setTimeout(done, 200));
-    appGoes("background");
-    await new Promise((done) => setTimeout(done, 1_500));
-    expect(native.requests.map((each) => each.range)).toEqual(["bytes=20000-"]);
-    expect(statusOf(app, film.id)?.kind).toBe("queued");
-    appGoes("active");
     await until(() => isComplete(app, film.id), "the copy");
-    expect(native.requests.at(-1)?.range).toBeNull();
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+    expect(background.receipts).toEqual([]);
+  });
 
-    // Its own provider's film takes the connection once the panel freed it.
-    install();
+  it("ends a request no download accounts for, and gives the provider its time, before asking it anything", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    appGoes("background");
+    const film = await app.addDownload(movieRef(a));
+    expect(native.requests).toEqual([]);
+    // A request the session has that no attempt names, holding the provider's one connection
+    // until the next launch's reconcile ends it.
+    one.stallMovieFile(otherMovie().id, 1, 60_000);
+    const login = `${ONE.username}/${encodeURIComponent(ONE.password)}`;
+    background.stray(`${one.url}/movie/${login}/${otherMovie().id}.mp4`);
+    await until(() => one.activeStreams() === 1, "the stray request");
+    // Launched in the foreground, its last process gone without hearing a change.
+    memory.appState = "active";
     app = await launch();
-    film = await breakResumed(app);
-    await new Promise((done) => setTimeout(done, 200));
-    playFilm(app, film.subscription!.id, otherMovie().id);
+    await until(
+      () => isComplete(app, film.id) || statusOf(app, film.id)?.kind === "failed",
+      "the download to end",
+    );
+    // The provider, still freeing the stray's connection, took the download's request.
+    expect(statusOf(app, film.id)).toEqual({ kind: "complete" });
+    expect(background.strays.size).toBe(0);
+    expect(native.requests).toHaveLength(1);
+    expect(native.requests[0]!.at - background.strayEndedAt).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("fails a stream, asking the provider nothing, while the native side's requests can't be read, and plays once they can", async () => {
+    await install();
+    let app = await launch();
+    await withProviders(app);
+    background.unavailable = true;
+    app = await launch();
+    const { a } = await withProviders(app);
+    const asked = one.fileRequests();
+    playFilm(app, a, otherMovie().id);
+    await until(() => app.playbackState.get().phase.kind === "failed", "the stream to fail");
+    expect(memory.played).toEqual([]);
+    expect(one.fileRequests()).toBe(asked);
+    background.unavailable = false;
+    appGoes("background");
+    appGoes("active");
+    app.playback.retry();
     await until(() => memory.played[0]?.status != null, "the film");
     expect(memory.played[0]).toMatchObject({ downloading: 0, status: 200 });
-    expect(native.requests.map((each) => each.range)).toEqual(["bytes=20000-"]);
-    expect(statusOf(app, film.id)?.kind).toBe("waiting");
     app.stop();
-    await until(() => isComplete(app, film.id), "the copy");
-    expect(native.requests.at(-1)?.range).toBeNull();
+  });
 
-    install();
-    app = await launch();
-    film = await breakResumed(app);
-    await new Promise((done) => setTimeout(done, 200));
-    await app.removeDownload(film.id);
-    await new Promise((done) => setTimeout(done, 1_500));
-    expect(native.requests.map((each) => each.range)).toEqual(["bytes=20000-"]);
-    expect(app.downloadList().items).toEqual([]);
-    expect(folder(film.id).exists).toBe(false);
+  it("keeps a broken request's resume data: open, it fails and Retry goes on; in the background, it goes on once open", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    await background.breakConnection();
+    await until(() => statusOf(app, film.id)?.kind === "failed", "the failure");
+    expect(statusOf(app, film.id)).toMatchObject({
+      kind: "failed",
+      failure: { kind: "stream", failure: { kind: "network" } },
+    });
+    expect(nativeSecrets()).toEqual([film.id]);
+    one.stallMovieFile(movie().id, 40_000, 60_000);
+    await app.retryDownload(film.id);
+    await until(() => receivedOf(app, film.id) === 40_000, "the resumed transfer to stall");
+    appGoes("background");
+    await background.breakConnection();
+    await until(() => statusOf(app, film.id)?.kind === "queued", "the download to wait");
+    one.stallMovieFile(movie().id, 0, 0);
+    appGoes("active");
+    await until(() => isComplete(app, film.id), "the copy");
+    expect(native.requests.map((each) => each.range)).toEqual([
+      null,
+      "bytes=20000-",
+      "bytes=40000-",
+    ]);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+    expect(nativeSecrets()).toEqual([]);
   });
 
   it("starts again, and says so, when the provider's file changed while it was paused", async () => {
-    install();
-    let app = await launch();
+    await install();
+    const app = await launch();
     const { a } = await withProviders(app);
     const id = otherMovie().id;
     one.stallMovieFile(id, 30_000, 60_000);
     const film = await app.addDownload(movieRef(a, id));
-    await until(
-      () => (statusOf(app, film.id) as { received?: number } | undefined)?.received === 30_000,
-      "the transfer to stall",
-    );
-    appGoes("background");
-    await until(() => downloadSecrets().length === 1, "the resume data");
+    await until(() => receivedOf(app, film.id) === 30_000, "the transfer to stall");
+    // Its provider's stream takes the connection: the transfer pauses, keeping its resume data.
+    playFilm(app, a, movie().id);
+    await until(() => memory.played[0]?.status != null, "the film");
+    expect(statusOf(app, film.id)?.kind).toBe("waiting");
+    expect(nativeSecrets()).toEqual([film.id]);
     const replacement = fixture("title-caption-track.mov");
     one.replaceMovieFile(id, replacement);
     one.stallMovieFile(id, 0, 0);
-    memory.appState = "active";
-    app = await launch();
     let restarted = false;
     const off = app.onDownloads(() => {
       const status = statusOf(app, film.id);
       if (status?.kind === "transferring" && status.restarted) restarted = true;
     });
+    app.stop();
     await until(() => isComplete(app, film.id), "the copy of the new file");
     off();
     expect(restarted).toBe(true);
@@ -538,15 +615,14 @@ describe("downloads", { timeout: 30_000 }, () => {
   });
 
   it("deletes a file left beside an unfinished download, rather than calling it complete", async () => {
-    install();
+    await install();
     let app = await launch();
     const { a } = await withProviders(app);
     one.stallMovieFile(movie().id, 20_000, 60_000);
     const film = await app.addDownload(movieRef(a));
-    await until(
-      () => (statusOf(app, film.id) as { received?: number } | undefined)?.received === 20_000,
-      "the transfer to stall",
-    );
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    // Quit by the viewer: iOS ends the request, with no resume data.
+    await background.forceQuit();
     // A whole file of the right size, but no completion was ever written down for it.
     const left = new DiskFile(folder(film.id), "media.mp4");
     left.writeSync("x".repeat(fixture(movie().fixture!).length));
@@ -556,8 +632,42 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(mediaFile(film.id)?.textSync()).not.toMatch(/^x+$/);
   });
 
+  it("hands resume data an earlier build kept to the native side; one the Keychain won't read waits for it", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 30_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 30_000, "the transfer to stall");
+    // An earlier build paused it, keeping its resume data in its own Keychain item.
+    background.die();
+    await background.pauseAll();
+    const kept = background.secrets.get(film.id)!;
+    background.secrets.clear();
+    background.receipts.length = 0;
+    const { keychainSecrets } = await import("../src/secrets.ts");
+    await keychainSecrets.write(
+      `download:${film.id}`,
+      JSON.stringify({ url: kept.url, resumeData: kept.data }),
+    );
+    one.stallMovieFile(movie().id, 0, 0);
+    memory.locked = true;
+    app = await launch();
+    await sleep(1_500);
+    expect(statusOf(app, film.id)?.kind).toBe("queued");
+    expect(native.requests).toHaveLength(1);
+    expect(downloadSecrets()).toHaveLength(1);
+    memory.locked = false;
+    app = await launch();
+    await until(() => isComplete(app, film.id), "the copy");
+    expect(native.requests.map((each) => each.range)).toEqual([null, "bytes=30000-"]);
+    expect(downloadSecrets()).toEqual([]);
+    expect(nativeSecrets()).toEqual([]);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+  });
+
   it("gives its provider's connection to a stream first, and goes on once the stream stops", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a, b } = await withProviders(app, true);
     one.stallMovieFile(movie().id, 20_000, 60_000);
@@ -585,8 +695,70 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(native.requests[0]?.range).toBe("bytes=20000-");
   });
 
+  it("waits while its provider's closing format session holds the connection, whatever plays next", async () => {
+    await install();
+    const app = await launch();
+    const { a, b } = await withProviders(app, true);
+    const item = (subscriptionId: string | null) => ({
+      id: "format",
+      subscriptionId,
+      title: "format",
+      place: "",
+      live: false,
+      next: false,
+      versions: false,
+    });
+    // Another provider's film, then a copy on the phone, plays after A's Matroska title.
+    for (const next of [b!, null]) {
+      let end!: () => void;
+      const ended = new Promise<void>((done) => (end = done));
+      Object.assign(globalThis, {
+        expo: {
+          modules: {
+            TitleFormats: {
+              create: () => undefined,
+              open: async () => ({ kind: "session", playlist: "file:session.m3u8" }),
+              close: () => undefined,
+              closed: () => ended,
+              failure: () => null,
+              trace: () => [],
+              addListener: () => ({ remove: () => undefined }),
+            },
+          },
+        },
+      });
+      const options = { watch: true, login: [] };
+      await app.playback.play(
+        item(a),
+        async () => ({ url: "file:a.mkv", container: "mkv" }),
+        options,
+      );
+      const film = await app.addDownload(movieRef(a));
+      expect(statusOf(app, film.id)?.kind).toBe("waiting");
+      native.requests.length = 0;
+      const playing = app.playback.play(
+        item(next),
+        async () => ({ url: "file:next.mp4", container: "mp4" }),
+        options,
+      );
+      // Longer than the provider's moment to free a connection: A's session still holds it.
+      await new Promise((done) => setTimeout(done, 1_500));
+      expect(native.requests).toEqual([]);
+      expect(statusOf(app, film.id)?.kind).toBe("waiting");
+      expect(app.playbackState.get().closing).toEqual([a]);
+      const closedAt = Date.now();
+      end();
+      await playing;
+      await until(() => native.requests.length > 0, "A's download, once its session closed");
+      // The provider's moment to free it runs from the session's actual end.
+      expect(Date.now() - closedAt).toBeGreaterThanOrEqual(900);
+      app.stop();
+      await app.removeDownload(film.id);
+    }
+  });
+
   it("fails a stream whose download doesn't let go of the connection, asking the provider nothing, and plays once tried again", async () => {
-    install();
+    await install();
     const app = await launch();
     const { a } = await withProviders(app);
     one.stallMovieFile(movie().id, 20_000, 60_000);
@@ -619,29 +791,45 @@ describe("downloads", { timeout: 30_000 }, () => {
     app.stop();
   });
 
-  it("removes a download paused while the Keychain still writes its resume data", async () => {
-    install();
+  it("removes a paused download with its resume data", async () => {
+    await install();
     const app = await launch();
     const { a } = await withProviders(app);
     one.stallMovieFile(movie().id, 20_000, 60_000);
     const film = await app.addDownload(movieRef(a));
-    await until(
-      () => (statusOf(app, film.id) as { received?: number } | undefined)?.received === 20_000,
-      "the transfer to stall",
-    );
-    memory.keychainMs = 200;
-    appGoes("background");
-    await until(() => native.open === 0, "the transfer to pause");
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    playFilm(app, a, otherMovie().id);
+    await until(() => memory.played[0]?.status != null, "the film");
+    expect(nativeSecrets()).toEqual([film.id]);
     await expect(app.removeDownload(film.id)).resolves.toBeUndefined();
     expect(app.downloadList().items).toEqual([]);
     expect(folder(film.id).exists).toBe(false);
+    expect(nativeSecrets()).toEqual([]);
     expect(downloadSecrets()).toEqual([]);
     expect(doc()).toMatchObject({ items: [], forgetting: [] });
-    appGoes("active");
+    app.stop();
+  });
+
+  it("cancels a transfer found after a relaunch: its request ends before its files go", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    app = await launch();
+    await until(() => statusOf(app, film.id)?.kind === "transferring", "the request to be found");
+    await app.removeDownload(film.id);
+    expect(background.attempts.size).toBe(0);
+    expect(native.open).toBe(0);
+    expect(folder(film.id).exists).toBe(false);
+    expect(app.downloadList().items).toEqual([]);
+    expect(nativeSecrets()).toEqual([]);
+    await until(() => background.receipts.length === 0, "the receipt to be acknowledged");
   });
 
   it("shows a finished copy before the Keychain lets go of its resume data, so an open Cancel keeps it", async () => {
-    install();
+    await install();
     const app = await launch();
     const { actionsOf } = await import("../src/download-controls.tsx");
     const { a } = await withProviders(app);
@@ -668,7 +856,7 @@ describe("downloads", { timeout: 30_000 }, () => {
   });
 
   it("ends a removed provider's unfinished downloads; its copy stays, plays offline and keeps its progress", async () => {
-    install();
+    await install();
     let app = await launch();
     const { a, b } = await withProviders(app, true);
     const kept = await app.addDownload(movieRef(a));

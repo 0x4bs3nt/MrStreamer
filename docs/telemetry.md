@@ -91,7 +91,7 @@ Events need the installation identity, which the first foreground observation cr
 
 ## iOS app
 
-The iOS app (`apps/ios/src/telemetry/`) has its own owner with the same event names, literals and bounds wherever it has the same observation. It is off by default: Settings' Privacy section has the switch, Share basic usage statistics, which saves the choice at once. With it off, or in a build without a capture configuration, nothing is recorded or sent; Settings says when a build sends nothing or only to a local endpoint.
+The iOS app (`apps/ios/src/telemetry/`) has its own owner with the same event names, literals and bounds wherever it has the same observation. It is on by default: Settings' Privacy section has the switch, Share basic usage statistics, which saves the choice at once and keeps it across launches, an earlier off included. With it off, or in a build without a capture configuration, nothing is recorded or sent; Settings says when a build sends nothing or only to a local endpoint.
 
 Every iOS event's properties are `app_version` (app.json's version), `app_build` (the binary's `CFBundleVersion`), `os: "ios"`, `os_major` (iOS's major version, when readable), `$process_person_profile: false` and `$geoip_disable: true`. There is no `arch`, `build_channel`, `update_channel`, `distribution` or `profile_origin`, and no device model, locale or other device detail. Filter app reports by `os` to keep iOS and desktop apart; `app_version` alone matches both.
 

@@ -65,7 +65,7 @@ const sourceOf = (ref: TitleRef) => async (signal: AbortSignal) => {
   const file = await titleFile(ref, signal);
   return {
     url: file.url,
-    hls: file.container === "m3u8",
+    container: file.container,
     ...(file.headers ? { headers: file.headers } : {}),
   };
 };

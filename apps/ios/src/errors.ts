@@ -72,6 +72,13 @@ function describeStreamFailure(failure: StreamFailure): string {
   }
 }
 
+/** The desktop's reading of a provider's HTTP status for a stream or a file. */
+export function statusFailure(status: number): StreamFailure {
+  if ([401, 403, 429, 458, 509].includes(status)) return { kind: "refused", status };
+  if (status === 404 || status === 410) return { kind: "unavailable", status };
+  return { kind: "provider-error", status };
+}
+
 /** A failure as a screen puts it: what happened, then what to do about it. */
 export interface Failure {
   readonly headline: string;

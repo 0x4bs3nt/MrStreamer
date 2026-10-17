@@ -1,10 +1,25 @@
-import { router, Stack } from "expo-router";
+import { router, Stack, useNavigation, useRoute } from "expo-router";
+import { useEffect } from "react";
 
 /**
  * Home, with Downloads and Settings opening from its system glass buttons, and Settings' provider
- * form above Settings.
+ * form above Settings. Home opens at its root from the other tabs: what it pushed closes as the
+ * viewer leaves for another tab, while Movies and Series keep their stacks. A screen over all the
+ * tabs, as Runtime proof, leaves it open to go back to.
  */
 export default function HomeLayout() {
+  const navigation = useNavigation();
+  const { key } = useRoute();
+  useEffect(
+    () =>
+      navigation.addListener("blur", () => {
+        const tabs = navigation.getState();
+        if (!tabs || tabs.routes[tabs.index]?.key === key) return;
+        const stack = tabs.routes.find((route) => route.key === key)?.state?.key;
+        if (stack) navigation.dispatch({ type: "POP_TO_TOP", target: stack });
+      }),
+    [navigation, key],
+  );
   return (
     <Stack
       screenOptions={{

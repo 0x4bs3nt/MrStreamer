@@ -29,6 +29,8 @@ case "${1:-}" in
     fi
     pnpm install --frozen-lockfile
     rm -rf build
+    # The FFmpeg libraries modules/title-formats links, from their pinned source.
+    scripts/build-ffmpeg.sh ios
     CI=1 npx expo prebuild --platform ios --clean
     xcodebuild archive -workspace ios/MrStreamer.xcworkspace -scheme MrStreamer \
       -configuration Release -destination generic/platform=iOS -archivePath "$archive" \

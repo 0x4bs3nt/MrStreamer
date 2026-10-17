@@ -161,7 +161,7 @@ const movie = (id: string): Playing => ({
   next: false,
   versions: false,
 });
-const open = async () => ({ url: "file:fixture", hls: false });
+const open = async () => ({ url: "file:fixture", container: "mp4" });
 const inWatch = { watch: true, login: [] } as const;
 const { act } = React;
 

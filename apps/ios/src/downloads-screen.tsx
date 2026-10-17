@@ -79,7 +79,9 @@ export function DownloadsScreen() {
       )}
       renderSectionFooter={({ section }) =>
         section.key === "queue" ? (
-          <Text style={styles.note}>Downloads continue only while the app is open.</Text>
+          <Text style={styles.note}>
+            A download continues in the background; the next starts once the app is open.
+          </Text>
         ) : null
       }
       renderItem={({ item }) => <Row item={item} />}

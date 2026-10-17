@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated 16 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 17 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
 
 Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
 
@@ -46,7 +46,7 @@ Statistics never include what you watch, title or channel names, your provider o
 
 ### Usage statistics on iPhone
 
-The iPhone app, in test builds through TestFlight, has its own **Share basic usage statistics** switch in Settings > Privacy. It is off until you turn it on, and while it's off the app records and sends nothing.
+The iPhone app, in test builds through TestFlight, has its own **Share basic usage statistics** switch in Settings > Privacy. It is on by default, without a prompt. If you turned it off, it stays off, and while it's off the app records and sends nothing. Builds without a configured PostHog project send nothing.
 
 While it's on, the app sends the same kinds of events as above, for what the iPhone app has: the first and daily observations, opening Home, Live, Movies, Series, title details, Search, Settings, Downloads or the player, starting a search, switching to another channel, adding, removing or refreshing a subscription, a live channel or a movie or episode starting and stopping and for how many seconds it played, and playback failing with one of the fixed reasons. Only time you could see or hear it counts: in the player, Picture in Picture or AirPlay, or a preview on Home you unmuted. Not paused, loading or the silent preview.
 
@@ -111,7 +111,7 @@ Your network operator and DNS provider can see which servers the app contacts.
 ## Your choices
 
 - **Statistics.** Turn off **Share basic usage statistics** in Settings > General > Privacy. Sending stops at once, events waiting to be sent are cleared, and it stays off after a restart. Turning it back on keeps the same identifier and sends nothing about the time it was off, including playback that continued meanwhile.
-- **Statistics on iPhone.** **Share basic usage statistics** in Settings > Privacy is off until you turn it on. Turning it off stops sending at once, clears events waiting to be sent, and stays off after the app restarts.
+- **Statistics on iPhone.** Turn off **Share basic usage statistics** in Settings > Privacy. Turning it off stops sending at once, clears events waiting to be sent, and stays off after the app restarts.
 - **Website analytics.** Turn off **Site analytics** at the foot of any page of mrstreamer.app. The choice applies to that browser only, and clearing the site's data from your browser turns them back on.
 - **Subtitle search** is off until you turn it on.
 - **Casting** happens only after you open the receiver list and pick a device.

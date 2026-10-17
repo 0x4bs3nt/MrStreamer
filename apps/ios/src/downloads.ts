@@ -3,26 +3,33 @@ import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
 import { AppFailure } from "@mrstreamer/contracts/errors";
 import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 import { RawTitleRef, type TitleRef } from "@mrstreamer/contracts/ondemand";
-import type { StreamFailure } from "@mrstreamer/contracts/playback";
 import { t } from "@mrstreamer/core/i18n";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
 import { Directory, File, Paths } from "expo-file-system";
 import { AppState } from "react-native";
 import { currentRoster, members, onRoster } from "./account.ts";
-import { transfer, type Transfer, type TransferEnd } from "./download-task.ts";
-import { appError, describeError, withoutLogin } from "./errors.ts";
+import {
+  transfers,
+  type Outcome,
+  type Progress,
+  type Receipt,
+  type Running,
+  type StartRequest,
+} from "./download-task.ts";
+import { appError, describeError, statusFailure } from "./errors.ts";
 import { readJson, writeJson } from "./files.ts";
 import { onReclaim, play, playbackState, playingItem, stop, type Playing } from "./playback.ts";
 import { keychainSecrets } from "./secrets.ts";
-import { currentSource, loginOf, sourceOf } from "./sources.ts";
+import { currentSource, sourceOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { detailsOf, episodesOf, titleFile, titleLists, titleOf } from "./titles.ts";
 import { recordProgress } from "./viewing.ts";
 
 // Movies and episodes downloaded to this iPhone: the queue, its one transfer at a time, and the
 // copies that play with no provider, as the desktop's downloads do. This module alone writes
-// downloads.json, the folders in Documents/downloads and the Keychain items `download:<id>`.
+// downloads.json and the folders in Documents/downloads, and alone decides what a transfer's end
+// means for its download.
 //
 // A download names the exact provider file by its subscription and the provider's own ids, so
 // two providers' titles of one id never meet. Its record holds what the copy shows and plays
@@ -30,25 +37,39 @@ import { recordProgress } from "./viewing.ts";
 // watched. No record holds an address, a header, a login or resume data. The file's address is
 // made from the subscription's login only as a transfer starts (`sources.ts`).
 //
-// One download transfers at a time, by `download-task.ts` (expo-file-system's native task, in a
-// foreground URLSession). A stream of the same subscription takes the connection back first: the
-// transfer pauses, and its request has ended before the stream's goes out (`onReclaim`). When it
-// doesn't end in time, the stream fails rather than ask the provider for a second connection. It
-// waits until nothing of that subscription streams; another subscription's stream, or a copy, lets
-// it go on. A provider can take a moment to free the connection of a request that ended, so the
-// next request of that subscription, a stream's, the queue's next download or a transfer's fresh
-// start after its resumed request broke, waits until `RELEASE_MS` after this app's last one
-// ended. Sending the app to the background pauses a transfer too: iOS suspends the app soon
-// after, and a foreground session doesn't run while it is suspended. A pause keeps URLSession's
-// resume data in the Keychain, since it names the address with the login; a transfer goes on
-// from it only when it was made for the very address the subscription gives now, and when it
-// can't, it starts again and says so (`restarted`). Should the app be killed before the pause is
-// written, the next launch starts that download again: nothing promises the pause comes first.
+// One download transfers at a time, by `download-task.ts`: the app's native owner of a background
+// URLSession. A transfer under way goes on while the app is in the background or suspended, and
+// after iOS ends the app's process. The queue starts the next only while the app is in the
+// foreground (AppState "active"); a transfer that ends in the background waits there for the app
+// to open again. This is not the desktop's queue, which goes on through the whole list.
 //
-// A copy is complete only once the native task said it moved every byte into place and the size
-// matches what the server announced. A launch trusts nothing else: a file left beside an unfinished
-// record is deleted and asked for again. Removing a subscription ends its unfinished downloads,
-// with their files and resume data; its copies stay and play, keeping their own progress.
+// Each request is an attempt, written down on its record before it starts; only that attempt's
+// ending (a receipt) changes the record, and the receipt is acknowledged once the record says
+// what it means, so an ending is never lost nor taken twice. At launch, nothing asks a provider
+// for a file or a stream, and nothing is cleaned up, until the subscriptions are read and every
+// request the native side has is accounted for: the one under way of a queued download goes on as
+// its transfer, any other is cancelled and has ended, and every receipt is taken in.
+//
+// A stream of the same subscription takes the connection back first: the transfer pauses, and its
+// request has ended before the stream's goes out (`onReclaim`). When it doesn't end in time, the
+// stream fails rather than ask the provider for a second connection. It waits until nothing of
+// that subscription streams; another subscription's stream, or a copy, lets it go on. A provider
+// can take a moment to free the connection of a request that ended, so the next request of that
+// subscription, a stream's, the queue's next download or a transfer's fresh start after its
+// resumed request was refused, waits until `RELEASE_MS` after this app's last one ended; after
+// requests that ended while nobody watched, every subscription waits that long from launch.
+//
+// Resume data stays with the native side, in the Keychain: a pause keeps it, as does a request
+// that broke when URLSession gives any, so the transfer goes on from there; when it can't, it
+// starts again and says so (`restarted`). A request that breaks while the app is open fails, and
+// its Retry goes on from there. Resume data an earlier build kept in `download:<id>` is handed to
+// the native side at launch, then removed.
+//
+// A copy is complete only once the native side moved every byte into place and the size matches
+// what the server announced, of the whole file. A file left beside an unfinished record is
+// deleted before its download starts again. Removing a subscription ends its unfinished
+// downloads, with their files and resume data; its copies stay and play, keeping their own
+// progress.
 
 const FILE = "downloads.json";
 /** Documents/downloads, which modules/downloads-folder keeps out of backups. */
@@ -70,6 +91,8 @@ const RELEASE_MS = 1000;
 const ARTWORK_MS = 20_000;
 /** A download's id: also its folder's name. */
 const ID = /^d-[a-z0-9-]+$/;
+/** NSURLErrorDomain codes that mean the iPhone has no connection at all. */
+const OFFLINE = new Set([-1009, -1018, -1020]);
 
 const About = lazy(() =>
   type({
@@ -107,7 +130,7 @@ const Stored = lazy(() =>
     about: About(),
     /** Pictures kept in its folder. */
     artwork: { poster: "boolean", wide: "boolean" },
-    /** A transfer under way is `queued` on disk: a launch starts it again. */
+    /** A transfer under way is `queued` on disk: a launch finds it again, or starts it again. */
     state: "'queued' | 'failed' | 'complete'",
     "failure?": Failure(),
     /** The whole file's bytes once the server said; once complete, the bytes on disk. */
@@ -115,6 +138,8 @@ const Stored = lazy(() =>
     /** Bytes received when it last paused or was written down. */
     received: "number",
     restarted: "boolean",
+    /** The last transfer attempt it authorized: only that attempt's ending changes it. */
+    "attempt?": "string",
     addedAt: "number",
     completedAt: "number | null",
     /** How far the copy was watched here. */
@@ -129,7 +154,7 @@ const Document = lazy(() =>
   type({
     version: "1",
     items: "object[]",
-    /** Ids whose Keychain item still has to go: launch removes them. */
+    /** Ids whose resume data still has to go: launch removes it. */
     forgetting: "string[]",
   }),
 );
@@ -141,28 +166,29 @@ interface Doc {
   readonly unreadable: readonly object[];
 }
 
-/** What a resume secret holds: the address the resume data was made for, and the data. */
-const Resume = lazy(() => type({ url: "string", resumeData: "string" }));
+/** What an earlier build kept in `download:<id>`: the address its resume data was made for. */
+const Legacy = lazy(() => type({ url: "string", resumeData: "string" }));
 
 /** The transfer under way. */
 interface Active {
   readonly id: string;
   readonly subscriptionId: string;
-  /** Null until the native task is made. */
-  transfer: Transfer | null;
+  /** Its native attempt once authorized: that attempt's receipt alone ends it. */
+  attempt: string | null;
   /** Why this side asked it to stop, which decides what its end means. */
   stopping: "pause" | "cancel" | null;
   /** The bytes the disk lacks for the rest, when that stopped it. */
   short: number | null;
   received: number;
   size: number | null;
-  /**
-   * The whole file's size as a request from the start announced it, which a complete copy has
-   * to match; null when unknown. A resumed request's announcement isn't taken: what URLSession
-   * reports for it isn't the whole file's on every server.
-   */
-  expected: number | null;
+  /** Bytes the record had as the attempt started, and whether it goes on from them. */
+  from: number;
+  resumed: boolean;
+  /** No progress of the attempt heard yet. */
+  fresh: boolean;
   rate: number | null;
+  measured: { at: number; received: number };
+  savedAt: number;
   restarted: boolean;
   /** Settles once it asks the provider nothing more: its last request ended, or it stopped. */
   closed: Promise<void>;
@@ -170,11 +196,10 @@ interface Active {
   over: Promise<void>;
 }
 
-/** How a transfer ended, as this module writes it down. */
+/** How a transfer ended, as this module takes it in. */
 type Ending =
-  | Exclude<TransferEnd, { readonly kind: "paused" }>
-  /** Paused, with the address its resume data was made for. */
-  | { readonly kind: "paused"; readonly resumeData: string | null; readonly url: string }
+  /** Its attempt's request ended, as the receipt says. */
+  | { readonly kind: "ended"; readonly receipt: Receipt }
   /** It never asked the provider: stopped first, or its subscription isn't signed in. */
   | { readonly kind: "stopped" }
   | { readonly kind: "failed"; readonly failure: StoredFailure };
@@ -190,21 +215,41 @@ export const downloadList = () => list.get();
 export const onDownloads = (listener: () => void) => list.subscribe(listener);
 
 let doc: Doc = { items: [], forgetting: [], unreadable: [] };
+/** downloads.json read as this build writes it: only then are folders it doesn't name removed. */
+let trusted = false;
 let started = false;
 let active: Active | null = null;
-/** The app is in the background: nothing transfers until it is back. */
-let away = false;
+/** The app is in the foreground: only then does the queue start a transfer. */
+let foreground = false;
+/**
+ * Whether the native side's requests and endings are taken in. Until "ready", nothing asks a
+ * provider for a file or a stream, and nothing is removed; "failed" is tried again in the
+ * foreground.
+ */
+let phase: "starting" | "ready" | "failed" = "starting";
+let readiness: Promise<void> = Promise.resolve();
 /** Copies whose file was gone when last looked. */
 const missing = new Set<string>();
 /** Unfinished downloads that ended with their subscription since launch. */
 let ended = 0;
 let made = 0;
+let attempts = 0;
 /** When this app's last request of each subscription ended, a download's or a stream's. */
 const released = new Map<string, number>();
-/** The subscription whose stream had the connection when playback last changed. */
-let streaming: string | null = null;
+/** When requests that ended while nobody watched were found: every subscription waits after it. */
+let releasedAll = -Infinity;
+/** The subscriptions whose connections playback held when it last changed. */
+let streaming: ReadonlySet<string> = new Set();
 /** Wakes the queue once a subscription's connection had time to be freed. */
 let later: ReturnType<typeof setTimeout> | null = null;
+/** Who waits for each attempt's receipt. */
+const awaited = new Map<string, (receipt: Receipt) => void>();
+/** Receipts heard before the downloads were ready, by receipt. */
+const early = new Map<string, Receipt>();
+/** Receipts being taken in, by receipt: an event and a reconcile may bring the same one. */
+const taking = new Set<string>();
+/** Downloads whose earlier build's resume data couldn't be read: they wait for the next launch. */
+const held = new Set<string>();
 
 const folderOf = (id: string) => new Directory(Paths.document, ROOT, id);
 /** A file type safe to name a file with; anything else is kept as "bin", as on the desktop. */
@@ -213,6 +258,7 @@ const extensionOf = (container: string) =>
 const mediaOf = (record: Stored) =>
   new File(folderOf(record.id), `media.${extensionOf(record.container)}`);
 const artworkOf = (id: string, artwork: "poster" | "wide") => new File(folderOf(id), artwork);
+/** An earlier build's Keychain item of a download's resume data. */
 const secretOf = (id: string) => `download:${id}`;
 /** What the player names a copy by. */
 const copyKey = (id: string) => `copy:${id}`;
@@ -244,9 +290,13 @@ function update(id: string, change: (record: Stored) => Stored, forget = false) 
   });
 }
 
-/** Removes a download's resume secret, keeping its id listed for the next launch until it goes. */
+/**
+ * Removes a download's resume data, the native side's and an earlier build's, keeping its id
+ * listed for the next launch until both are gone.
+ */
 async function forget(id: string) {
   try {
+    await transfers.forgetResume(id);
     await keychainSecrets.remove(secretOf(id));
     if (doc.forgetting.includes(id)) {
       commit({ ...doc, forgetting: doc.forgetting.filter((each) => each !== id) });
@@ -256,15 +306,18 @@ async function forget(id: string) {
   }
 }
 
-async function readResume(id: string): Promise<Infer<typeof Resume> | null> {
-  const saved = await keychainSecrets.read(secretOf(id)).catch(() => null);
+/** An earlier build's resume data of a download; rejects when the Keychain won't answer. */
+async function readLegacy(id: string): Promise<Infer<typeof Legacy> | null> {
+  const saved = await keychainSecrets.read(secretOf(id));
   if (!saved) return null;
   try {
-    const parsed = Resume()(JSON.parse(saved));
-    return parsed instanceof type.errors ? null : parsed;
+    const parsed = Legacy()(JSON.parse(saved));
+    if (!(parsed instanceof type.errors)) return parsed;
   } catch {
-    return null;
+    // Not resume data: as good as none.
   }
+  await keychainSecrets.remove(secretOf(id));
+  return null;
 }
 
 function freeBytes(): number | null {
@@ -276,15 +329,25 @@ function freeBytes(): number | null {
   }
 }
 
-/** The subscription whose stream has the provider's connection, if one does. */
-function borrowed(): string | null {
-  const { phase } = playbackState.get();
-  return phase.kind === "loading" || phase.kind === "playing" || phase.kind === "paused"
-    ? phase.item.subscriptionId
-    : null;
+/**
+ * The subscriptions whose provider connection playback holds: the one whose stream plays or is
+ * opening, and any whose format session let go of its stream but hasn't closed its request yet,
+ * which another subscription's play doesn't hide.
+ */
+function borrowed(): ReadonlySet<string> {
+  const { phase, closing } = playbackState.get();
+  const busy = new Set(closing);
+  if (phase.kind === "loading" || phase.kind === "playing" || phase.kind === "paused") {
+    if (phase.item.subscriptionId !== null) busy.add(phase.item.subscriptionId);
+  }
+  return busy;
 }
 
-function viewOf(record: Stored, names: ReadonlyMap<string, string>, busy: string | null): Download {
+function viewOf(
+  record: Stored,
+  names: ReadonlyMap<string, string>,
+  busy: ReadonlySet<string>,
+): Download {
   const name = names.get(record.subscriptionId);
   const transferring = active?.id === record.id ? active : null;
   return {
@@ -318,7 +381,7 @@ function viewOf(record: Stored, names: ReadonlyMap<string, string>, busy: string
                 rate: transferring.rate,
                 restarted: transferring.restarted,
               }
-            : busy === record.subscriptionId
+            : busy.has(record.subscriptionId)
               ? { kind: "waiting" }
               : { kind: "queued" },
     progress: record.progress && {
@@ -376,26 +439,30 @@ function look() {
 function halt(transferring: Active, why: "pause" | "cancel") {
   if (transferring.stopping === "cancel" || transferring.stopping === why) return;
   transferring.stopping = why;
-  if (why === "cancel") transferring.transfer?.cancel();
-  else transferring.transfer?.pause();
+  const { attempt } = transferring;
+  if (!attempt) return;
+  const asked = why === "cancel" ? transfers.cancel(attempt) : transfers.pause(attempt);
+  // Its receipt says how it ended.
+  void asked.catch(() => undefined);
 }
 
 /** Milliseconds until a request of `subscriptionId` may go out, after the last of ours ended. */
 function freeing(subscriptionId: string): number {
-  const at = released.get(subscriptionId);
-  return at === undefined ? 0 : Math.max(0, at + RELEASE_MS - Date.now());
+  const at = Math.max(released.get(subscriptionId) ?? -Infinity, releasedAll);
+  return Number.isFinite(at) ? Math.max(0, at + RELEASE_MS - Date.now()) : 0;
 }
 
 const after = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Starts the first download the queue can have now, unless one transfers. */
 function wake() {
-  if (!started || active || away) return;
+  if (phase !== "ready" || active || !foreground) return;
   const busy = borrowed();
   const ready = doc.items.filter(
     (record) =>
       record.state === "queued" &&
-      record.subscriptionId !== busy &&
+      !busy.has(record.subscriptionId) &&
+      !held.has(record.id) &&
       currentSource(record.subscriptionId) !== undefined,
   );
   const next = ready.find((record) => freeing(record.subscriptionId) === 0);
@@ -410,43 +477,69 @@ function wake() {
   }, wait);
 }
 
-function begin(record: Stored) {
-  const transferring: Active = {
+function activeOf(record: Stored, attempt: string | null): Active {
+  return {
     id: record.id,
     subscriptionId: record.subscriptionId,
-    transfer: null,
+    attempt,
     stopping: null,
     short: null,
     received: record.received,
     size: record.size,
-    expected: null,
+    from: record.received,
+    resumed: record.received > 0,
+    fresh: true,
     rate: null,
+    measured: { at: Date.now(), received: record.received },
+    savedAt: Date.now(),
     restarted: record.restarted,
     closed: Promise.resolve(),
     over: Promise.resolve(),
   };
+}
+
+function begin(record: Stored) {
+  const transferring = activeOf(record, null);
   active = transferring;
   tell();
-  const ran = run(record, transferring).catch((cause: unknown): Ending => {
+  follow(transferring, run(record, transferring));
+}
+
+/** Takes a request found under way at launch as the transfer of its queued download. */
+function adopt(record: Stored, running: Running) {
+  const transferring = activeOf(record, running.attempt);
+  if (running.received !== null) transferring.received = running.received;
+  if (running.expected !== null) transferring.size = running.expected;
+  active = transferring;
+  follow(
+    transferring,
+    receiptOf(running.attempt, record.subscriptionId).then((receipt) => ({
+      kind: "ended",
+      receipt,
+    })),
+  );
+}
+
+/** Writes down how `work` ends, then lets the queue go on. */
+function follow(transferring: Active, work: Promise<Ending>) {
+  const ran = work.catch((cause: unknown): Ending => {
     const error = appError(cause);
     return {
       kind: "failed",
-      failure: {
-        kind: "app",
-        error: { kind: "unexpected", detail: describeError(error) },
-      },
+      failure: { kind: "app", error: { kind: "unexpected", detail: describeError(error) } },
     };
   });
   transferring.closed = ran.then(() => undefined);
   transferring.over = ran
-    .then((ending) => settle(record.id, transferring, ending))
+    .then((ending) => settle(transferring, ending))
     .catch((cause: unknown) => {
       // Its end couldn't be written down. Failed as far as this run knows, so the queue doesn't
-      // take it again and again; the file says what it was, for the next launch.
+      // take it again and again; the file, and an unacknowledged receipt, say what it was for the
+      // next launch.
       doc = {
         ...doc,
         items: doc.items.map((each) =>
-          each.id === record.id && each.state === "queued"
+          each.id === transferring.id && each.state === "queued"
             ? { ...each, state: "failed", failure: { kind: "folder", detail: messageOf(cause) } }
             : each,
         ),
@@ -459,7 +552,20 @@ function begin(record: Stored) {
     });
 }
 
-/** Asks the provider for `record`'s file and has the native task write it into its folder. */
+/** The receipt of `attempt`, once its request ended. */
+function receiptOf(attempt: string, subscriptionId: string): Promise<Receipt> {
+  return new Promise<Receipt>((resolve) => awaited.set(attempt, resolve)).then((receipt) => {
+    // The provider may still be freeing the connection of the request that just ended.
+    released.set(subscriptionId, Date.now());
+    return receipt;
+  });
+}
+
+/** Resume data the provider or URLSession wouldn't go on from. */
+const unusable = (outcome: Outcome) =>
+  outcome.kind === "refused" || (outcome.kind === "network" && !outcome.resumable);
+
+/** Asks the provider for `record`'s file and has the native side write it into its folder. */
 async function run(record: Stored, transferring: Active): Promise<Ending> {
   const source = currentSource(record.subscriptionId);
   if (!source || transferring.stopping) return { kind: "stopped" };
@@ -479,120 +585,191 @@ async function run(record: Stored, transferring: Active): Promise<Ending> {
   } catch (cause) {
     return { kind: "failed", failure: { kind: "folder", detail: messageOf(cause) } };
   }
-  let saved = await readResume(record.id);
-  // Made for another address (another login, server or file type): it can't be trusted.
-  if (saved && saved.url !== file.url) {
-    saved = null;
-    await forget(record.id);
-  }
   const free = freeBytes();
   if (record.size !== null && free !== null) {
-    const needed = record.size - (saved ? record.received : 0);
+    const needed = record.size - record.received;
     if (free < needed) return { kind: "failed", failure: { kind: "disk-full", needed } };
   }
   if (transferring.stopping) return { kind: "stopped" };
-  const login = loginOf(record.subscriptionId);
-  const attempt = (resumeData: string | null): Promise<TransferEnd> => {
-    const from = resumeData ? record.received : 0;
-    if (!resumeData && record.received > 0) transferring.restarted = true;
-    transferring.received = from;
-    tell();
-    let first = true;
-    let savedAt = Date.now();
-    let measured = { at: Date.now(), received: from };
-    const native = transfer({
-      url: file.url,
-      ...(file.headers ? { headers: file.headers } : {}),
-      destination: media,
-      resumeData,
-      progress: (written, total) => {
-        if (active !== transferring) return;
-        // A server that sent the whole file again, as a changed file does, starts from zero.
-        const whole = !resumeData || written < from;
-        if (first && resumeData && written < from) transferring.restarted = true;
-        if (first && whole) transferring.expected = total;
-        if (first && total !== null) {
-          const room = freeBytes();
-          if (room !== null && room < total - written) {
-            transferring.short = total - written;
-            halt(transferring, "cancel");
-          }
-        }
-        first = false;
-        const now = Date.now();
-        if (now - measured.at >= 1000) {
-          const rate = ((written - measured.received) * 1000) / (now - measured.at);
-          transferring.rate = rate >= 0 ? rate : null;
-          measured = { at: now, received: written };
-        }
-        transferring.received = written;
-        transferring.size = total;
-        tellSoon();
-        if (now - savedAt >= SAVE_MS) {
-          savedAt = now;
-          try {
-            update(record.id, (latest) => ({
-              ...latest,
-              received: written,
-              size: total,
-              restarted: transferring.restarted,
-            }));
-          } catch {
-            // Written down when it pauses or ends.
-          }
-        }
-      },
-    });
-    transferring.transfer = native;
-    // The provider may still be freeing the connection of the request that just ended.
-    return native.ended.finally(() => released.set(record.subscriptionId, Date.now()));
+  const request = {
+    id: record.id,
+    ext: extensionOf(record.container),
+    url: file.url,
+    headers: { ...file.headers },
   };
-  const ending = await attempt(saved?.resumeData ?? null);
-  // Resume data URLSession wouldn't go on from, or a server that no longer takes it: once more
-  // from the start, before anything counts as failed.
-  const untrusted =
-    saved !== null &&
-    !transferring.stopping &&
-    (ending.kind === "refused" || ending.kind === "network" || ending.kind === "folder");
-  if (!untrusted) return withUrl(ending, file.url, login);
-  await forget(record.id);
+  const first = await attempt(record, transferring, request);
+  if (first.kind !== "ended" || !transferring.resumed || transferring.stopping) return first;
+  if (!unusable(first.receipt.outcome)) return first;
+  // Once more from the start, before anything counts as failed. Its record is as it was, so the
+  // receipt is acknowledged as it stands.
+  await transfers.forgetResume(record.id);
+  await transfers.acknowledge([first.receipt.receipt]);
   await after(freeing(record.subscriptionId));
   if (transferring.stopping || currentSource(record.subscriptionId) !== source) {
     return { kind: "stopped" };
   }
-  return withUrl(await attempt(null), file.url, login);
+  return attempt(record, transferring, request);
 }
 
-/** A pause's resume data with the address it was made for; failures without the login. */
-function withUrl(ending: TransferEnd, url: string, login: readonly string[]): Ending {
-  switch (ending.kind) {
-    case "paused":
-      return { kind: "paused", resumeData: ending.resumeData, url };
-    case "folder":
-    case "network":
-      return { ...ending, detail: withoutLogin(ending.detail, login) };
-    default:
-      return ending;
+/** Authorizes one attempt, written down on the record first, and waits for its receipt. */
+async function attempt(
+  record: Stored,
+  transferring: Active,
+  request: Omit<StartRequest, "attempt">,
+): Promise<Ending> {
+  const token = `a-${Date.now().toString(36)}-${(++attempts).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  update(record.id, (latest) => ({ ...latest, attempt: token }));
+  transferring.attempt = token;
+  transferring.fresh = true;
+  const receipt = receiptOf(token, record.subscriptionId);
+  let resumed: boolean;
+  try {
+    resumed = await transfers.start({ ...request, attempt: token });
+  } catch (cause) {
+    awaited.delete(token);
+    transferring.attempt = null;
+    const error = appError(cause);
+    return {
+      kind: "failed",
+      failure: { kind: "app", error: { kind: "unexpected", detail: describeError(error) } },
+    };
+  }
+  transferring.resumed = resumed;
+  transferring.from = resumed ? record.received : 0;
+  if (!resumed && record.received > 0) transferring.restarted = true;
+  transferring.received = transferring.from;
+  transferring.measured = { at: Date.now(), received: transferring.from };
+  transferring.savedAt = Date.now();
+  tell();
+  return { kind: "ended", receipt: await receipt };
+}
+
+/** Hears a transfer's progress: on screen a few times a second, on disk every few seconds. */
+function moved({ attempt, received: written, expected: total }: Progress) {
+  const transferring = active;
+  if (!transferring || transferring.attempt !== attempt) return;
+  if (transferring.fresh) {
+    transferring.fresh = false;
+    // A server that sent the whole file again, as a changed file does, starts from zero.
+    if (transferring.resumed && written < transferring.from) transferring.restarted = true;
+    if (total !== null) {
+      const room = freeBytes();
+      if (room !== null && room < total - written) {
+        transferring.short = total - written;
+        halt(transferring, "cancel");
+      }
+    }
+  }
+  const now = Date.now();
+  const { measured } = transferring;
+  if (now - measured.at >= 1000) {
+    const rate = ((written - measured.received) * 1000) / (now - measured.at);
+    transferring.rate = rate >= 0 ? rate : null;
+    transferring.measured = { at: now, received: written };
+  }
+  transferring.received = written;
+  transferring.size = total;
+  tellSoon();
+  if (now - transferring.savedAt >= SAVE_MS) {
+    transferring.savedAt = now;
+    try {
+      update(transferring.id, (latest) => ({
+        ...latest,
+        received: written,
+        size: total,
+        restarted: transferring.restarted,
+      }));
+    } catch {
+      // Written down when it ends.
+    }
   }
 }
 
-/** Writes down how a transfer ended: a copy, a failure, or where it paused. */
-async function settle(id: string, transferring: Active, ending: Ending) {
-  const record = find(id);
-  // Removed meanwhile: the removal deletes its files and secret.
-  if (!record) return;
-  const { received, size, restarted, expected } = transferring;
-  const where = { ...record, received, size, restarted };
-  const fail = (failure: StoredFailure) =>
-    update(id, () => ({ ...where, state: "failed", failure }), true);
-  /** Queued to start again from the start: nothing it got can be gone on from. */
-  const requeue = () => update(id, () => ({ ...withoutFailure(where), state: "queued" }), true);
+/** Hears a receipt: the transfer waiting for it takes it, or it is taken in on its own. */
+function heard(receipt: Receipt) {
+  const waiting = awaited.get(receipt.attempt);
+  if (waiting) {
+    awaited.delete(receipt.attempt);
+    waiting(receipt);
+  } else if (phase === "ready") {
+    void take(receipt, null)
+      .catch(() => undefined)
+      .finally(() => {
+        tell();
+        wake();
+      });
+  } else {
+    early.set(receipt.receipt, receipt);
+  }
+}
+
+/** Writes down how a transfer ended. */
+async function settle(transferring: Active, ending: Ending) {
   switch (ending.kind) {
+    case "stopped":
+      return;
+    case "failed":
+      update(transferring.id, (latest) =>
+        latest.state === "queued"
+          ? {
+              ...latest,
+              received: transferring.received,
+              size: transferring.size,
+              restarted: transferring.restarted,
+              state: "failed",
+              failure: ending.failure,
+            }
+          : latest,
+      );
+      return;
+    case "ended":
+      return take(ending.receipt, transferring);
+  }
+}
+
+/**
+ * Takes a receipt in, then acknowledges it: written down first, so a receipt lost meanwhile is
+ * found again and taken in once. Only the attempt a queued download authorized last changes it;
+ * an older attempt's, or one of a download removed, finished or failed since, changes nothing.
+ */
+async function take(receipt: Receipt, transferring: Active | null): Promise<void> {
+  if (taking.has(receipt.receipt)) return;
+  taking.add(receipt.receipt);
+  try {
+    const record = find(receipt.id);
+    if (record?.state === "queued" && record.attempt === receipt.attempt) {
+      await apply(record, receipt.outcome, transferring);
+    }
+    await transfers.acknowledge([receipt.receipt]);
+  } finally {
+    taking.delete(receipt.receipt);
+  }
+}
+
+/** Writes down what an attempt's end means for its download: a copy, a failure, or queued. */
+async function apply(record: Stored, outcome: Outcome, transferring: Active | null) {
+  const { id } = record;
+  const where = transferring
+    ? {
+        ...record,
+        received: transferring.received,
+        size: transferring.size,
+        restarted: transferring.restarted,
+      }
+    : record;
+  const fail = (failure: StoredFailure) =>
+    update(id, () => ({ ...where, state: "failed", failure }));
+  const requeue = () => update(id, () => ({ ...withoutFailure(where), state: "queued" }));
+  switch (outcome.kind) {
     case "complete": {
       const media = mediaOf(record);
       const bytes = media.exists ? (media.size ?? 0) : 0;
-      // Only what URLSession moved into place, at the size the server announced, is a copy.
-      if (bytes <= 0 || (expected !== null && bytes !== expected)) {
+      // Only what the native side moved into place, at the whole size announced, is a copy.
+      if (
+        bytes <= 0 ||
+        bytes !== outcome.size ||
+        (outcome.expected !== null && bytes !== outcome.expected)
+      ) {
         if (media.exists) media.delete();
         fail({
           kind: "stream",
@@ -614,53 +791,36 @@ async function settle(id: string, transferring: Active, ending: Ending) {
       );
       break;
     }
-    case "paused": {
-      if (ending.resumeData) {
-        const kept = await keychainSecrets
-          .write(secretOf(id), JSON.stringify({ url: ending.url, resumeData: ending.resumeData }))
-          .then(
-            () => true,
-            () => false,
-          );
-        // Removed while the Keychain wrote it: it goes again.
-        if (!find(id)) {
-          await forget(id);
-          return;
-        }
-        if (kept) {
-          update(id, () => ({ ...withoutFailure(where), state: "queued" }));
-          return;
-        }
-      }
+    case "paused":
       requeue();
       break;
-    }
     case "cancelled":
-      if (transferring.short !== null) fail({ kind: "disk-full", needed: transferring.short });
+      if (transferring?.short != null) fail({ kind: "disk-full", needed: transferring.short });
       else requeue();
       break;
-    case "stopped":
-      return;
-    case "failed":
-      fail(ending.failure);
-      break;
     case "refused":
-      fail({ kind: "stream", failure: refusal(ending.status) });
+      fail({ kind: "stream", failure: statusFailure(outcome.status) });
       break;
     case "folder":
-      fail({ kind: "folder", detail: ending.detail });
+      fail({ kind: "folder", detail: "The file couldn't be moved into its folder." });
       break;
     case "network":
-      // Broken off by a pause this side asked for, or by iOS suspending the app: it goes on from
-      // the start later, rather than failing.
-      if (transferring.stopping || away) requeue();
-      else fail({ kind: "stream", failure: { kind: "network", detail: ending.detail } });
+      // Broken off while nobody watched (in the background, or with the app's process ended) or
+      // while this side stopped it: it goes on once the app is open, from where it broke when
+      // URLSession kept that. In front of the viewer, it fails, and its Retry goes on.
+      if (!transferring || transferring.stopping || !foreground) requeue();
+      else {
+        const detail = OFFLINE.has(outcome.code)
+          ? t("You seem to be offline.")
+          : t("The connection to the provider failed.");
+        fail({ kind: "stream", failure: { kind: "network", detail } });
+      }
       break;
   }
   // Shown before the Keychain answers: until then a screen would still offer the transfer's
   // Cancel, and act on it, for what is now a copy or a failure.
   tell();
-  await forget(id);
+  if (outcome.kind === "complete") await forget(id);
 }
 
 function withoutFailure(record: Stored): Stored {
@@ -668,18 +828,11 @@ function withoutFailure(record: Stored): Stored {
   return rest;
 }
 
-/** The desktop's reading of an HTTP status for a stream. */
-function refusal(status: number): StreamFailure {
-  if ([401, 403, 429, 458, 509].includes(status)) return { kind: "refused", status };
-  if (status === 404 || status === 410) return { kind: "unavailable", status };
-  return { kind: "provider-error", status };
-}
-
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
 /**
- * Takes a download's record out at once, so nothing writes it back, with its secret listed to go.
- * Throws, changing nothing, when Documents won't take it.
+ * Takes a download's record out at once, so nothing writes it back, with its resume data listed
+ * to go. Throws, changing nothing, when Documents won't take it.
  */
 function drop(id: string) {
   commit({
@@ -690,7 +843,7 @@ function drop(id: string) {
   missing.delete(id);
 }
 
-/** After `drop`: its transfer stops, a copy that plays stops, and its secret and folder go. */
+/** After `drop`: its transfer stops, a copy that plays stops, and its resume data and folder go. */
 async function clear(id: string) {
   const transferring = active?.id === id ? active : null;
   if (transferring) {
@@ -708,7 +861,7 @@ async function clear(id: string) {
 }
 
 /** Ends the unfinished downloads of subscriptions no longer saved; copies stay. */
-function reconcile() {
+function endRemoved() {
   const roster = currentRoster();
   if (roster.kind !== "ready") return;
   const saved = new Set(roster.members.map((member) => member.entry.id));
@@ -726,19 +879,36 @@ function reconcile() {
   }
 }
 
+/** Waits for the downloads to be ready; rejects, asking nothing, when they couldn't be. */
+async function whenReady(): Promise<void> {
+  startDownloads();
+  await readiness;
+  if (phase !== "ready") {
+    throw new AppFailure({
+      kind: "stream",
+      failure: {
+        kind: "network",
+        detail: t("A download still holds the provider's connection."),
+      },
+    });
+  }
+}
+
 /**
  * Gives a subscription's connection back to its stream: the transfer pauses, or is cancelled, and
  * the provider gets `RELEASE_MS` to free it. Rejects, so the stream fails without asking the
- * provider, when the transfer's request still hasn't ended; the stream's Try again asks again.
+ * provider, when the transfer's request still hasn't ended, or the downloads aren't ready; the
+ * stream's Try again asks again.
  */
 async function reclaim(subscriptionId: string): Promise<void> {
+  await whenReady();
   const transferring = active;
   if (transferring?.subscriptionId === subscriptionId) {
     halt(transferring, "pause");
     const closed = (ms: number) =>
       Promise.race([transferring.closed.then(() => true), after(ms).then(() => false)]);
-    // Without a native task yet, a halted transfer asks the provider nothing.
-    if (transferring.transfer && !(await closed(RECLAIM_MS))) {
+    // Without a native attempt yet, a halted transfer asks the provider nothing.
+    if (transferring.attempt && !(await closed(RECLAIM_MS))) {
       halt(transferring, "cancel");
       if (!(await closed(RECLAIM_MS))) {
         throw new AppFailure({
@@ -755,7 +925,7 @@ async function reclaim(subscriptionId: string): Promise<void> {
   if (wait > 0) await after(wait);
 }
 
-/** Reads downloads.json; deletes what an earlier run left: secrets, files and folders. */
+/** Reads downloads.json; deletes what an earlier run listed to go. */
 function load() {
   const read = readJson(FILE);
   const parsed = read === null ? null : Document()(read);
@@ -768,13 +938,19 @@ function load() {
     else items.push(record);
   }
   doc = { items, forgetting: valid ? parsed.forgetting : [], unreadable };
+  trusted = valid;
   for (const id of doc.forgetting) void forget(id);
-  if (!valid) return;
-  // Folders no entry names, left by a removal that couldn't finish; an entry this build can't
-  // read keeps its own.
+}
+
+/** Deletes folders no entry names, left by a removal that couldn't finish. */
+function sweep() {
+  if (!trusted) return;
+  // An entry this build can't read keeps its own.
   const named = new Set([
-    ...items.map((record) => record.id),
-    ...unreadable.flatMap((item) => ("id" in item && typeof item.id === "string" ? [item.id] : [])),
+    ...doc.items.map((record) => record.id),
+    ...doc.unreadable.flatMap((item) =>
+      "id" in item && typeof item.id === "string" ? [item.id] : [],
+    ),
   ]);
   try {
     const root = new Directory(Paths.document, ROOT);
@@ -789,9 +965,99 @@ function load() {
   }
 }
 
+/** Settles once the subscriptions are read, so none restoring counts as removed. */
+function rosterRead(): Promise<void> {
+  return new Promise((resolve) => {
+    if (currentRoster().kind === "ready") return resolve();
+    const off = onRoster(() => {
+      if (currentRoster().kind !== "ready") return;
+      off();
+      resolve();
+    });
+  });
+}
+
 /**
- * At launch: reads the downloads, then follows the subscriptions, the player and the app's
- * state, starting the queue when it can. Calling it again does nothing.
+ * Hands resume data an earlier build kept in its own Keychain items to the native side, then
+ * removes them. One the Keychain won't read now waits for the next launch rather than start
+ * again without it.
+ */
+async function migrate() {
+  for (const record of doc.items) {
+    if (record.state === "complete" || doc.forgetting.includes(record.id)) continue;
+    try {
+      const saved = await readLegacy(record.id);
+      if (!saved) continue;
+      await transfers.importResume(record.id, saved.url, saved.resumeData);
+    } catch {
+      held.add(record.id);
+      continue;
+    }
+    await keychainSecrets.remove(secretOf(record.id)).catch(() => undefined);
+  }
+}
+
+/** Takes in, oldest first, every receipt heard before the downloads were ready. */
+async function drain() {
+  for (const [key, receipt] of early) {
+    early.delete(key);
+    await take(receipt, null);
+  }
+}
+
+/**
+ * Accounts for every request and ending the native side has before anything else acts on
+ * downloads: the request of a queued download's last attempt goes on as its transfer; any other
+ * is cancelled and has ended; every receipt is taken in. Then resume data an earlier build kept
+ * moves, folders no record names go, and removed subscriptions' downloads end.
+ */
+async function prepare() {
+  await rosterRead();
+  const { running, receipts, closed } = await transfers.reconcile();
+  for (const receipt of receipts) early.set(receipt.receipt, receipt);
+  // Requests that ended unheard, or that no attempt accounted for and were just ended.
+  let unwatched = receipts.length > 0 || closed > 0;
+  for (const each of running) {
+    if (active?.attempt === each.attempt) continue;
+    const record = find(each.id);
+    if (!active && record?.state === "queued" && record.attempt === each.attempt) {
+      adopt(record, each);
+    } else {
+      await transfers.cancel(each.attempt);
+      unwatched = true;
+    }
+  }
+  // When those requests ended isn't known: the providers get their time from now.
+  if (unwatched) releasedAll = Date.now();
+  await drain();
+  await migrate();
+  sweep();
+  endRemoved();
+}
+
+/** Prepares the downloads, then lets the queue go. */
+function prepareThenWake(): Promise<void> {
+  phase = "starting";
+  return prepare()
+    .then(drain)
+    .then(
+      () => {
+        phase = "ready";
+      },
+      () => {
+        phase = "failed";
+      },
+    )
+    .finally(() => {
+      tell();
+      wake();
+    });
+}
+
+/**
+ * At launch: reads the downloads, accounts for the native side's requests and endings, then
+ * follows the subscriptions, the player and the app's state, starting the queue when it can.
+ * Calling it again does nothing.
  */
 export function startDownloads(): void {
   if (started) return;
@@ -803,34 +1069,36 @@ export function startDownloads(): void {
   }
   look();
   onReclaim(reclaim);
-  away = AppState.currentState === "background";
+  transfers.addListener("receipt", heard);
+  transfers.addListener("progress", moved);
+  foreground = AppState.currentState === "active";
   AppState.addEventListener("change", (state) => {
-    const now = state === "background";
-    if (now === away) return;
-    away = now;
-    if (away && active) halt(active, "pause");
-    if (!away) {
-      look();
-      tell();
-      wake();
-    }
+    const now = state === "active";
+    if (now === foreground) return;
+    foreground = now;
+    // A transfer under way goes on in the background; the queue starts no other there.
+    if (!foreground) return;
+    look();
+    tell();
+    if (phase === "failed") readiness = prepareThenWake();
+    else wake();
   });
   playbackState.subscribe(() => {
     const busy = borrowed();
-    if (streaming !== null && streaming !== busy) released.set(streaming, Date.now());
+    // The provider gets its moment to free the connection from when playback let go of it.
+    for (const id of streaming) if (!busy.has(id)) released.set(id, Date.now());
     streaming = busy;
-    if (active && active.subscriptionId === busy) halt(active, "pause");
+    if (active && busy.has(active.subscriptionId)) halt(active, "pause");
     tell();
     wake();
   });
   onRoster(() => {
-    reconcile();
+    if (phase === "ready") endRemoved();
     tell();
     wake();
   });
-  reconcile();
   tell();
-  wake();
+  readiness = prepareThenWake();
 }
 
 /** The download of exactly this movie or episode of this subscription, if there is one. */
@@ -920,6 +1188,10 @@ function newId(): string {
  * can't be written.
  */
 export async function removeDownload(id: string): Promise<void> {
+  const record = find(id);
+  if (!record) return;
+  // A copy has no request open; an unfinished download's may only be known once ready.
+  if (record.state !== "complete") await whenReady();
   if (!find(id)) return;
   drop(id);
   await clear(id);
@@ -970,7 +1242,7 @@ export function playDownload(id: string): void {
         tell();
         throw new AppFailure({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
       }
-      return { url: media.uri, hls: false };
+      return { url: media.uri, container: record.container };
     },
     {
       watch: true,

@@ -1,0 +1,36 @@
+diff --git a/ios/Legacy/EXSessionTasks/EXSessionHandler.m b/ios/Legacy/EXSessionTasks/EXSessionHandler.m
+index 8b1e4261d2194cd36ef4d14a1e809dca6dd9b35b..c18129ada6b72a6f3f9f8e37c87fe30d6b5beaac 100644
+--- a/ios/Legacy/EXSessionTasks/EXSessionHandler.m
++++ b/ios/Legacy/EXSessionTasks/EXSessionHandler.m
+@@ -43,6 +43,12 @@ EX_REGISTER_SINGLETON_MODULE(SessionHandler);
+ 
+ - (void)application:(UIApplication *)application handleEventsForBackgroundURLSession:(NSString *)identifier completionHandler:(void (^)(void))completionHandler
+ {
++  // Mr. Streamer: its own sessions are named by UUIDs (NetworkingHelpers.swift). Another owner's
++  // session is answered at once, so Expo's aggregate handler isn't left waiting on this one.
++  if ([[NSUUID alloc] initWithUUIDString:identifier] == nil) {
++    completionHandler();
++    return;
++  }
+   _completionHandlers[identifier] = completionHandler;
+ }
+ 
+diff --git a/ios/Legacy/FileSystemBackgroundSessionHandler.swift b/ios/Legacy/FileSystemBackgroundSessionHandler.swift
+index 74fae4fd0f0eca5a1622aaf956322bf7d6b3bcb3..e77aa03e5145a9ac792742597c642557f210a3cb 100644
+--- a/ios/Legacy/FileSystemBackgroundSessionHandler.swift
++++ b/ios/Legacy/FileSystemBackgroundSessionHandler.swift
+@@ -35,6 +35,14 @@ public final class FileSystemBackgroundSessionHandler: ExpoAppDelegateSubscriber
+ 
+   #if os(iOS) || os(tvOS)
+   public func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
++    // Mr. Streamer: Expo calls the system's handler once every subscriber answered, and this one
++    // would wait for its own session's events on any session's wake. Another owner's session
++    // (the app's background downloads) is answered at once.
++    let own = "\(Bundle.main.bundleIdentifier ?? "expo.modules.filesystem").expo-file-system.network-task.background"
++    guard identifier == own else {
++      completionHandler()
++      return
++    }
+     let token = completion.receiveHandler(identifier, completion: completionHandler)
+     DispatchQueue.main.asyncAfter(deadline: .now() + Self.backgroundCompletionTimeout) { [weak self] in
+       self?.completion.expire(identifier, token: token)

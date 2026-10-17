@@ -589,7 +589,7 @@ export function playChannel(channel: Channel, place: string, options: { watch: b
     const stream = await sourceOf(subscriptionId).provider.liveStream(variant.id, signal);
     return {
       url: stream.url,
-      hls: stream.format === "hls",
+      container: stream.format === "hls" ? "m3u8" : "ts",
       ...(stream.headers ? { headers: stream.headers } : {}),
     };
   };

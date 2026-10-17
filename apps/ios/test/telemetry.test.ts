@@ -169,23 +169,13 @@ const channel = (id = "c1") => ({
 });
 const opens = async () => ({
   url: `http://panel.example/live/${encodeURIComponent(USERNAME)}/${PASSWORD}/1.m3u8`,
-  hls: true,
+  container: "m3u8",
 });
 const login = [USERNAME, PASSWORD];
 
 describe("before the viewer chooses", () => {
-  it("records and sends nothing until statistics are turned on", async () => {
-    const app = await launch();
-    app.onTelemetryScreen("/");
-    await app.play(channel(), opens, { watch: true, login });
-    playing(true);
-    plays(5);
-    app.stop();
-    await quiet();
-    expect(captured).toEqual([]);
-    expect(stored()?.pending ?? []).toEqual([]);
-
-    app.setStatistics(true);
+  it("are on from the first launch of a build with a capture", async () => {
+    await launch();
     await until(() => captured.length === 2);
     expect(names()).toEqual(["installation_observed", "app_active_day"]);
     const [first, second] = captured;
@@ -200,6 +190,20 @@ describe("before the viewer chooses", () => {
       $geoip_disable: true,
       activity_date: "2026-10-16",
     });
+  });
+
+  it("record and send nothing in a build without a capture", async () => {
+    delete process.env["EXPO_PUBLIC_MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"];
+    const app = await launch();
+    app.onTelemetryScreen("/");
+    await app.play(channel(), opens, { watch: true, login });
+    playing(true);
+    plays(5);
+    app.stop();
+    expect(app.setStatistics(true)).toEqual({ enabled: true, transport: "unconfigured" });
+    await quiet();
+    expect(captured).toEqual([]);
+    expect(stored()?.pending ?? []).toEqual([]);
   });
 });
 
@@ -265,7 +269,7 @@ describe("playback", () => {
       title,
       async () => {
         if (refuse) throw new app.AppFailure({ kind: "invalid-login" });
-        return { url: `http://panel.example/movie/${PASSWORD}/1.mp4`, hls: false };
+        return { url: `http://panel.example/movie/${PASSWORD}/1.mp4`, container: "mp4" };
       },
       { watch: true, login },
     );

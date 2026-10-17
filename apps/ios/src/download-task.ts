@@ -1,119 +1,122 @@
-import { DownloadTask, File } from "expo-file-system";
+import { requireNativeModule } from "expo";
 
-// One transfer of a provider file to disk by expo-file-system's native `DownloadTask`, for
-// downloads.ts. The bytes go from URLSession to the file without passing through JavaScript; this
-// side hears progress and how the transfer ended.
+// Transfers of provider files to disk by the app's own native owner, modules/background-downloads,
+// for downloads.ts. It runs one background URLSession: a transfer goes on while the app is
+// suspended, and after iOS ends the app's process, which the next launch finds again. The bytes go
+// from URLSession to the file without passing through JavaScript.
 //
-// The task runs in a foreground URLSession (`sessionType: "foreground"`): it ends with the app's
-// process, so no transfer goes on after a kill that the next launch couldn't see or cancel. Expo's
-// background session would carry on, but registers nothing for its tasks after a relaunch: the
-// finished file would be thrown away and the provider's connection held meanwhile. Pausing asks
-// URLSession for resume data, which it gives only when the server allows a range and names the
-// file (ETag or Last-Modified); resuming sends those back as `If-Range`, so a changed file comes
-// whole from the start rather than appended.
+// downloads.ts authorizes each request as an attempt of one download (`start`); the native side
+// finishes only such an attempt, moving its file into `Documents/downloads/<id>/media.<ext>`, and
+// writes down how it ended as a receipt. A receipt stays until it is acknowledged, after its
+// download's record says what it means; `reconcile` answers what is still under way and every
+// receipt not acknowledged, having first ended any request no attempt accounts for. Events are
+// hints for the screens: what `reconcile` answers is what counts.
+//
+// Resume data stays on the native side, in the Keychain: a pause keeps it, and so does a request
+// that broke, when URLSession gives any. A start goes on from it only when it was made for the very
+// address given, which `If-Range` then checks against the provider's file. Nothing here holds an
+// address once given; a receipt holds none, nor the system's words.
 
-export type TransferEnd =
-  /** URLSession wrote every byte and moved the file to `destination`. */
-  | { readonly kind: "complete"; readonly size: number }
-  /**
-   * Paused on request: `resumeData` when URLSession can go on from here. It names the request's
-   * address, which carries the login, so it is a secret.
-   */
-  | { readonly kind: "paused"; readonly resumeData: string | null }
-  /** Cancelled on request. */
+/** How an attempt ended. */
+export type Outcome =
+  /** Every byte is in its file; `expected` is the whole file's size the server announced. */
+  | { readonly kind: "complete"; readonly size: number; readonly expected: number | null }
+  /** Paused on request; it can go on when `resumable`. */
+  | { readonly kind: "paused"; readonly resumable: boolean }
+  /** Cancelled on request; its resume data went with it. */
   | { readonly kind: "cancelled" }
   /** The server answered `status`; nothing was moved into place. */
   | { readonly kind: "refused"; readonly status: number }
-  /** The file couldn't be moved into place. */
-  | { readonly kind: "folder"; readonly detail: string }
-  /** The connection failed or broke; `detail` is the system's words, never the address. */
-  | { readonly kind: "network"; readonly detail: string };
+  /** The file couldn't be moved into its folder. */
+  | { readonly kind: "folder" }
+  /** The request broke: `code` in NSURLErrorDomain, or 0; it can go on when `resumable`. */
+  | { readonly kind: "network"; readonly code: number; readonly resumable: boolean };
 
-export interface TransferRequest {
+/** One attempt's ending, until it is acknowledged. */
+export interface Receipt {
+  readonly receipt: string;
+  readonly attempt: string;
+  /** The download it was an attempt of. */
+  readonly id: string;
+  readonly outcome: Outcome;
+}
+
+/** An attempt whose request may still be open; bytes as last heard in this process, if any. */
+export interface Running {
+  readonly attempt: string;
+  readonly id: string;
+  readonly received: number | null;
+  readonly expected: number | null;
+}
+
+/** Bytes on disk so far, and the whole file's size, null until the server says. */
+export interface Progress {
+  readonly attempt: string;
+  readonly received: number;
+  readonly expected: number | null;
+}
+
+export interface StartRequest {
+  readonly id: string;
+  readonly attempt: string;
+  /** The file's type, as the copy's file is named: `media.<ext>`. */
+  readonly ext: string;
+  /** The provider's address of the file, login included. */
   readonly url: string;
-  readonly headers?: Readonly<Record<string, string>>;
-  readonly destination: File;
-  /** Goes on from an earlier pause instead of asking from the start. */
-  readonly resumeData: string | null;
-  /** Bytes on disk so far, and the whole file's size, null until the server says. */
-  readonly progress: (written: number, total: number | null) => void;
+  readonly headers: Readonly<Record<string, string>>;
 }
 
-export interface Transfer {
-  readonly ended: Promise<TransferEnd>;
-  /** Asks the task to pause; `ended` answers `paused`, or how it ended first. */
-  pause(): void;
-  /**
-   * Stops the task; `ended` answers `cancelled`, or how it ended first. Does nothing once the task
-   * ended, so a caller still writing down a pause can cancel safely.
-   */
-  cancel(): void;
+/** Why the native side refused a command, as its rejection's `code` says. */
+export type Refusal = "invalid" | "busy" | "unavailable" | "corrupt" | "keychain" | "folder";
+
+interface Subscription {
+  remove(): void;
 }
 
-/** How expo-file-system's native code words its rejections, inside the message. */
-const STATUS = /server returned HTTP (\d{3})/;
-const MOVE = /Failed to move downloaded file/;
-
-/** Starts a transfer at once. */
-export function transfer(request: TransferRequest): Transfer {
-  const options = {
-    sessionType: "foreground" as const,
-    ...(request.headers ? { headers: { ...request.headers } } : {}),
-    onProgress: ({ bytesWritten, totalBytes }: { bytesWritten: number; totalBytes: number }) =>
-      request.progress(bytesWritten, totalBytes >= 0 ? totalBytes : null),
-  };
-  const task = request.resumeData
-    ? DownloadTask.fromSavable(
-        {
-          url: request.url,
-          fileUri: request.destination.uri,
-          isDirectory: false,
-          resumeData: request.resumeData,
-        },
-        options,
-      )
-    : new DownloadTask(request.url, request.destination, options);
-  let asked: "pause" | "cancel" | null = null;
+interface BackgroundDownloads {
   /**
-   * Set once the native operation settled, before the handle is released. Expo still calls into
-   * native code for a paused task's cancel, and a released handle rejects that call.
+   * What is under way and every receipt not acknowledged, at one moment, once any request no
+   * attempt accounts for has ended; `closed` counts those, which leave no receipt. Rejects while
+   * its record can't be read.
    */
-  let over = false;
-  const run = request.resumeData ? task.resumeAsync() : task.downloadAsync();
-  const ended = run
-    .then((file): TransferEnd => {
-      // A cancel while a pause was answered settles as that pause; the caller asked for neither.
-      if (asked === "cancel") return { kind: "cancelled" };
-      if (file) return { kind: "complete", size: file.size ?? 0 };
-      return { kind: "paused", resumeData: task.savable().resumeData ?? null };
-    })
-    .catch((cause: unknown): TransferEnd => {
-      if (asked === "cancel") return { kind: "cancelled" };
-      const message = cause instanceof Error ? cause.message : String(cause);
-      const status = STATUS.exec(message)?.[1];
-      if (status) return { kind: "refused", status: Number(status) };
-      if (MOVE.test(message)) return { kind: "folder", detail: message };
-      return { kind: "network", detail: message };
-    })
-    .finally(() => {
-      over = true;
-      task.release();
-    });
-  return {
-    ended,
-    pause() {
-      if (asked || over) return;
-      asked = "pause";
-      try {
-        task.pause();
-      } catch {
-        // Not active any more: `ended` says how it ended.
-      }
-    },
-    cancel() {
-      if (asked === "cancel" || over) return;
-      asked = "cancel";
-      task.cancel();
-    },
-  };
+  reconcile(): Promise<{ running: Running[]; receipts: Receipt[]; closed: number }>;
+  /**
+   * Authorizes `attempt` and starts its request; answers whether it goes on from resume data.
+   * The same attempt again answers as the first did. Rejects while an earlier attempt may still
+   * have a request open, and when its download's folder isn't there.
+   */
+  start(request: StartRequest): Promise<boolean>;
+  /** Answers once the attempt's request has ended; its receipt follows. */
+  pause(attempt: string): Promise<void>;
+  /**
+   * Revokes the attempt, so it moves no file, and removes its download's resume data; answers
+   * once its request has ended.
+   */
+  cancel(attempt: string): Promise<void>;
+  /** Forgets receipts written down; other receipts stay. */
+  acknowledge(receipts: readonly string[]): Promise<void>;
+  /** Removes a download's resume data. */
+  forgetResume(id: string): Promise<void>;
+  /** Takes resume data an earlier build kept, unless the download has newer. */
+  importResume(id: string, url: string, data: string): Promise<void>;
+  addListener(event: "progress", listener: (progress: Progress) => void): Subscription;
+  addListener(event: "receipt", listener: (receipt: Receipt) => void): Subscription;
+}
+
+export const transfers = requireNativeModule<BackgroundDownloads>("BackgroundDownloads");
+
+const REFUSALS: Readonly<Record<string, Refusal>> = {
+  ERR_DOWNLOADS_INVALID: "invalid",
+  ERR_DOWNLOADS_BUSY: "busy",
+  ERR_DOWNLOADS_UNAVAILABLE: "unavailable",
+  ERR_DOWNLOADS_CORRUPT: "corrupt",
+  ERR_DOWNLOADS_KEYCHAIN: "keychain",
+  ERR_DOWNLOADS_FOLDER: "folder",
+};
+
+/** What a rejection of the native side says, or null when it isn't one of its refusals. */
+export function refusalOf(cause: unknown): Refusal | null {
+  const code =
+    typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : "";
+  return REFUSALS[code] ?? null;
 }
