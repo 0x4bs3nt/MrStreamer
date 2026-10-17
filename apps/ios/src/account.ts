@@ -6,7 +6,17 @@ import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/cor
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
 import { appError, hostOf } from "./errors.ts";
-import { buildLibrary, type Channel, type Library, type LiveSource } from "./library.ts";
+import {
+  combine,
+  combineSteps,
+  inTasks,
+  partSteps,
+  type Channel,
+  type Labelled,
+  type Library,
+  type LiveSource,
+  type Part,
+} from "./library.ts";
 import { play, playbackState, request, stop } from "./playback.ts";
 import { keychainSecrets } from "./secrets.ts";
 import { currentSource, dropSource, loginOf, setSource, sourceOf, type Source } from "./sources.ts";
@@ -615,39 +625,72 @@ export function playChannel(channel: Channel, place: string, options: { watch: b
   );
 }
 
-// Every subscription's channels together, worked out again only when one's channels change.
-let built: { readonly sources: readonly LiveSource[]; readonly library: Library } | null = null;
+// Every subscription's channels together. Each subscription's part (library.ts) is kept, with the
+// catalogue it came from, while that catalogue shows: another's arrival, a new label, a failure or
+// a removal joins the kept parts at once. A catalogue that lands is worked out in short tasks,
+// one at a time, while the channels shown before stay; a first one counts as loading. Work for a
+// catalogue the roster no longer shows, reloaded, replaced or removed meanwhile, is dropped.
 
-function libraryOf(sources: readonly LiveSource[]): Library {
-  const same =
-    built !== null &&
-    built.sources.length === sources.length &&
-    built.sources.every(
-      (each, at) =>
-        each.subscriptionId === sources[at]?.subscriptionId &&
-        each.label === sources[at]?.label &&
-        each.catalogue === sources[at]?.catalogue,
-    );
-  if (built && same) return built.library;
-  const library = buildLibrary(sources);
-  built = { sources, library };
-  return library;
-}
+/** Parts by subscription id: only those whose channels show. */
+const parts = new Map<string, { readonly catalogue: LiveCatalogue; readonly part: Part }>();
+/** The parts last joined and the library they make. */
+let joined: { readonly parts: readonly Labelled[]; readonly library: Library } | null = null;
+/** Whether `work` is running. */
+let working = false;
 
-roster.subscribe(() => {
-  const all = members();
-  const sources = all.flatMap((member) => {
+/** Each subscription whose channels show, with the last of them that loaded. */
+const liveSources = (all = members()): LiveSource[] =>
+  all.flatMap((member) => {
     const listed = lastOf(member.live);
     return listed
       ? [{ subscriptionId: member.entry.id, label: member.label, catalogue: listed }]
       : [];
   });
+
+/** Whether the roster still shows `source`'s catalogue for its subscription. */
+const shows = (source: LiveSource) =>
+  liveSources().some(
+    (each) => each.subscriptionId === source.subscriptionId && each.catalogue === source.catalogue,
+  );
+
+/** `sources` as parts to join: each one's kept part, or `fresh` for the one it was worked out for. */
+const labelled = (sources: readonly LiveSource[], fresh?: Part): Labelled[] =>
+  sources.flatMap(({ subscriptionId, label }) => {
+    const part = fresh?.subscriptionId === subscriptionId ? fresh : parts.get(subscriptionId)?.part;
+    return part ? [{ label, part }] : [];
+  });
+
+function libraryOf(shown: readonly Labelled[]): Library {
+  const same =
+    joined !== null &&
+    joined.parts.length === shown.length &&
+    joined.parts.every(
+      (each, at) => each.part === shown[at]?.part && each.label === shown[at]?.label,
+    );
+  if (joined && same) return joined.library;
+  const library = combine(shown);
+  joined = { parts: shown, library };
+  return library;
+}
+
+/** Shows the channels from the parts there are, and works out those still to come. */
+function publish() {
+  const all = members();
+  const sources = liveSources(all);
+  for (const id of parts.keys()) {
+    if (!sources.some((source) => source.subscriptionId === id)) parts.delete(id);
+  }
+  const pending = sources.some(
+    (source) => parts.get(source.subscriptionId)?.catalogue !== source.catalogue,
+  );
+  const shown = labelled(sources);
+  if (shown.length === 0) joined = null;
   const failing = all.filter((member) => member.live.kind === "failed" || member.needsSecret);
-  const loading = all.some((member) => member.live.kind === "loading");
+  const loading = pending || all.some((member) => member.live.kind === "loading");
   const [first] = failing;
   catalogue.set(
-    sources.length > 0
-      ? { kind: "ready", library: libraryOf(sources), failing }
+    shown.length > 0
+      ? { kind: "ready", library: libraryOf(shown), failing }
       : loading || !first
         ? { kind: "loading" }
         : {
@@ -659,4 +702,34 @@ roster.subscribe(() => {
                 : { kind: "needs-secret", subscriptionId: first.entry.id },
           },
   );
-});
+  if (pending) void work();
+}
+
+/** Works out each catalogue that has no part yet, one after another, then shows it joined. */
+async function work() {
+  if (working) return;
+  working = true;
+  try {
+    for (;;) {
+      const source = liveSources().find(
+        (each) => parts.get(each.subscriptionId)?.catalogue !== each.catalogue,
+      );
+      if (!source) return;
+      const wanted = () => shows(source);
+      const part = await inTasks(partSteps(source), wanted);
+      if (!part) continue;
+      const shown = labelled(liveSources(), part);
+      const library = await inTasks(combineSteps(shown), wanted);
+      // Checked again: an answer may have changed the roster since the last slice.
+      if (!library || !wanted()) continue;
+      parts.set(source.subscriptionId, { catalogue: source.catalogue, part });
+      // Shown as joined unless the roster changed meanwhile; `libraryOf` joins it again then.
+      joined = { parts: shown, library };
+      publish();
+    }
+  } finally {
+    working = false;
+  }
+}
+
+roster.subscribe(publish);

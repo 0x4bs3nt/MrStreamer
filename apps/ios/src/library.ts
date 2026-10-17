@@ -1,9 +1,10 @@
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { isAdultCategory } from "@mrstreamer/core/adult";
-import { normalizeCatalogue } from "@mrstreamer/core/catalogue/normalize";
-import { liveChannels } from "@mrstreamer/core/catalogue/variants";
+import { normalizeSteps } from "@mrstreamer/core/catalogue/normalize";
+import { liveChannelSteps } from "@mrstreamer/core/catalogue/variants";
 import type { LiveCatalogue } from "@mrstreamer/core/provider";
+import { finish, pacer, type Steps } from "@mrstreamer/core/steps";
 import { matchRanges, searchWords } from "@mrstreamer/core/text";
 
 // The live catalogues of every saved subscription as the app's screens show them, together, by
@@ -14,6 +15,10 @@ import { matchRanges, searchWords } from "@mrstreamer/core/text";
 // added. A channel is never joined across subscriptions: the same channel from two providers is
 // two rows, each marked `ambiguous` and named for its subscription. Channels for adults are left
 // out, as the desktop app leaves them out until Settings shows them; iOS has no such setting yet.
+//
+// Working out one subscription's part took a third of a second with 6,000 channels in a Release
+// build on the iOS simulator, so the account owner keeps each part until its catalogue changes and works a new one out in
+// short tasks (`inTasks`); joining the parts is `combine`. `buildLibrary` does both at once.
 
 /** A channel with the subscription it plays from. */
 export interface Channel extends LiveChannel {
@@ -54,9 +59,28 @@ export interface LiveSource {
   readonly catalogue: LiveCatalogue;
 }
 
-/** One subscription's channels and categories, without those for adults. */
-function member({ subscriptionId, catalogue }: LiveSource) {
-  const { categories, streams } = normalizeCatalogue(catalogue);
+/** One subscription's channels and categories, without those for adults: its part of a library. */
+export interface Part {
+  readonly subscriptionId: string;
+  /** In the provider's order. */
+  readonly channels: readonly Channel[];
+  /** By the provider's channel id and the id of each of its streams. */
+  readonly byId: ReadonlyMap<string, Channel>;
+  readonly categories: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly group: string | null;
+    readonly channels: readonly Channel[];
+  }[];
+}
+
+/** Works out a subscription's part, pausing between slices of its channels. */
+export function* partSteps({
+  subscriptionId,
+  catalogue,
+}: Pick<LiveSource, "subscriptionId" | "catalogue">): Steps<Part> {
+  const due = pacer();
+  const { categories, streams } = yield* normalizeSteps(catalogue);
   const adultCategories = new Set(
     catalogue.categories.filter((each) => isAdultCategory(each.name)).map((each) => each.id),
   );
@@ -65,20 +89,25 @@ function member({ subscriptionId, catalogue }: LiveSource) {
       .filter((each) => each.adult || each.categoryIds.some((id) => adultCategories.has(id)))
       .map((each) => each.id),
   );
-  /** By the provider's channel id and the id of each of its streams. */
   const byId = new Map<string, Channel>();
   const channels: Channel[] = [];
-  for (const listed of liveChannels(streams).channels) {
+  for (const listed of (yield* liveChannelSteps(streams)).channels) {
+    if (due()) yield;
     if (listed.variants.some((variant) => adultStreams.has(variant.id))) continue;
     const channel = { ...listed, subscriptionId, key: ownedKey({ subscriptionId, id: listed.id }) };
     channels.push(channel);
     byId.set(channel.id, channel);
-    for (const variant of channel.variants) byId.set(variant.id, channel);
+    // A channel can have thousands of streams.
+    for (const variant of channel.variants) {
+      if (due()) yield;
+      byId.set(variant.id, channel);
+    }
   }
   // A channel shows in each of its streams' categories once, where its first stream there is.
   const inCategory = new Map<string, Channel[]>();
   const placed = new Set<string>();
   for (const stream of streams) {
+    if (due()) yield;
     const channel = byId.get(stream.id);
     if (!channel) continue;
     for (const categoryId of stream.categoryIds) {
@@ -101,14 +130,35 @@ function member({ subscriptionId, catalogue }: LiveSource) {
   };
 }
 
+/** Every subscription's channels at once: each part worked out, then joined. */
 export function buildLibrary(sources: readonly LiveSource[]): Library {
-  const members = sources.map(member);
-  const labels = new Map(sources.map((each) => [each.subscriptionId, each.label]));
+  return combine(
+    sources.map((source) => ({ label: source.label, part: finish(partSteps(source)) })),
+  );
+}
+
+/** A subscription's part with the name lists give it. */
+export interface Labelled {
+  readonly label: string;
+  readonly part: Part;
+}
+
+/** The parts of every subscription whose channels show, in the order they were added, joined. */
+export function combine(parts: readonly Labelled[]): Library {
+  return finish(combineSteps(parts));
+}
+
+/** `combine`, pausing between slices of the channels. */
+export function* combineSteps(parts: readonly Labelled[]): Steps<Library> {
+  const due = pacer();
+  const members = parts.map(({ part }) => part);
+  const labels = new Map(parts.map(({ label, part }) => [part.subscriptionId, label]));
 
   // A name two subscriptions list marks every channel shown under it.
   const listedBy = new Map<string, string | null>();
   for (const { subscriptionId, channels } of members) {
     for (const { title } of channels) {
+      if (due()) yield;
       const owner = listedBy.get(title);
       if (owner === undefined) listedBy.set(title, subscriptionId);
       else if (owner !== subscriptionId) listedBy.set(title, null);
@@ -118,12 +168,14 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
   const byKey = new Map<string, Channel>();
   for (const { subscriptionId, channels, byId } of members) {
     for (const channel of channels) {
+      if (due()) yield;
       shown.set(
         channel,
         listedBy.get(channel.title) === null ? { ...channel, ambiguous: true } : channel,
       );
     }
     for (const [id, channel] of byId) {
+      if (due()) yield;
       byKey.set(ownedKey({ subscriptionId, id }), shown.get(channel) ?? channel);
     }
   }
@@ -135,6 +187,7 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
   >();
   for (const { subscriptionId, categories } of members) {
     for (const category of categories) {
+      if (due()) yield;
       const name = category.group ?? category.title;
       let shelves = regions.get(name);
       if (!shelves) regions.set(name, (shelves = new Map()));
@@ -159,7 +212,8 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
   }
 
   const placeOf = new Map<string, string>();
-  const listed = [...regions].map(([name, joined]): Region => {
+  const listed: Region[] = [];
+  for (const [name, joined] of regions) {
     const shelves = [...joined.values()].map(({ id, title, channels }) => ({
       id,
       title,
@@ -169,6 +223,7 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
     const channels: Channel[] = [];
     for (const shelf of shelves) {
       for (const channel of shelf.channels) {
+        if (due()) yield;
         if (seen.has(channel.key)) continue;
         seen.add(channel.key);
         channels.push(channel);
@@ -178,8 +233,8 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
         placeOf.set(channel.key, label ? `${place} · ${label}` : place);
       }
     }
-    return { name, shelves, channels };
-  });
+    listed.push({ name, shelves, channels });
+  }
 
   // Channels in no category their provider lists, as a panel that lists no categories leaves
   // every channel, come last on their own, as the desktop's Live shows every channel without a
@@ -188,6 +243,7 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
   const unplaced: Channel[] = [];
   for (const { channels } of members) {
     for (const each of channels) {
+      if (due()) yield;
       const channel = shown.get(each) ?? each;
       if (placeOf.has(channel.key)) continue;
       const label = channel.ambiguous ? labels.get(channel.subscriptionId) : undefined;
@@ -205,6 +261,25 @@ export function buildLibrary(sources: readonly LiveSource[]): Library {
     listed.push({ name: others, shelves: [], channels: unplaced });
   }
   return { regions: listed, byKey, placeOf };
+}
+
+/** How long one task works through steps before it lets taps through; chosen, not measured. */
+const TASK_MS = 8;
+
+/**
+ * Works `steps` out a few slices per task, starting in the next one, so the JS thread handles
+ * taps and paints between them. Resolves null, leaving them unfinished, once `wanted` fails.
+ */
+export async function inTasks<A>(steps: Steps<A>, wanted: () => boolean): Promise<A | null> {
+  for (;;) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (!wanted()) return null;
+    const started = Date.now();
+    do {
+      const next = steps.next();
+      if (next.done) return next.value;
+    } while (Date.now() - started < TASK_MS);
+  }
 }
 
 /** Channels whose names hold every word of `query`, in the catalogue's order. */

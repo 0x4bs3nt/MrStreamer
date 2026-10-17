@@ -6,28 +6,51 @@
 //     1" and DAZN1.de.
 //   - Otherwise only when every channel sharing the id is the same channel under another name or
 //     quality: "NPO 1" and "NPO1", "National Geographic" under NatGeo.nl.
+import { pacer, type Steps } from "../steps.ts";
 import { normalize } from "../text.ts";
 
-/** The guide id of each channel that can keep one, by channel id. */
-export function trustedGuideIds(
+/** The guide id of each channel that can keep one, by channel id, pausing as ../steps.ts says. */
+export function* trustedGuideIds(
   claims: readonly {
     readonly channel: { readonly id: string; readonly title: string };
     readonly guideId: string;
   }[],
-): Map<string, string> {
-  const namesByGuideId = new Map<string, string[][]>();
+): Steps<Map<string, string>> {
+  const due = pacer();
+  /**
+   * Each guide id's channel names, and whether a name may keep it, by the name's words: a
+   * placeholder id can hold thousands of channels of one name, which are decided once.
+   */
+  const byGuideId = new Map<string, { names: string[][]; keeps: Map<string, boolean> }>();
   for (const { channel, guideId } of claims) {
-    const names = namesByGuideId.get(guideId);
-    if (names) names.push(words(channel.title));
-    else namesByGuideId.set(guideId, [words(channel.title)]);
+    if (due()) yield;
+    const shared = byGuideId.get(guideId);
+    if (shared) shared.names.push(words(channel.title));
+    else byGuideId.set(guideId, { names: [words(channel.title)], keeps: new Map() });
   }
   const trusted = new Map<string, string>();
   for (const { channel, guideId } of claims) {
+    if (due()) yield;
+    const shared = byGuideId.get(guideId);
+    if (!shared) continue;
     const name = words(channel.title);
-    const sharing = namesByGuideId.get(guideId) ?? [];
-    if (alike(name, idWords(guideId)) || sharing.every((other) => alike(other, name))) {
-      trusted.set(channel.id, guideId);
+    const said = name.join(" ");
+    let keeps = shared.keeps.get(said);
+    if (keeps === undefined) {
+      keeps = alike(name, idWords(guideId));
+      if (!keeps) {
+        // Else only when every name under the id is alike, compared a slice at a time.
+        keeps = true;
+        for (const other of shared.names) {
+          if (due()) yield;
+          if (alike(other, name)) continue;
+          keeps = false;
+          break;
+        }
+      }
+      shared.keeps.set(said, keeps);
     }
+    if (keeps) trusted.set(channel.id, guideId);
   }
   return trusted;
 }

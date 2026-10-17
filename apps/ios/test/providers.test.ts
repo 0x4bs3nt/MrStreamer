@@ -22,6 +22,9 @@ const memory = vi.hoisted(() => ({
   /** Login checks held until a test lets them through. */
   held: [] as Array<() => void>,
   holdLogins: false,
+  /** Channel lists held until a test lets them through. */
+  heldChannels: [] as Array<() => void>,
+  holdChannels: false,
   /** Passwords the Keychain has stored but whose write it hasn't answered yet. */
   heldSecrets: [] as Array<() => void>,
   holdSecrets: false,
@@ -103,6 +106,9 @@ vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
   memory.caching.push(new Headers(init?.headers).get("Cache-Control"));
   const login = url.pathname.endsWith("/player_api.php") && !url.searchParams.has("action");
   if (login && memory.holdLogins) await new Promise<void>((go) => memory.held.push(go));
+  if (url.searchParams.get("action") === "get_live_streams" && memory.holdChannels) {
+    await new Promise<void>((go) => memory.heldChannels.push(go));
+  }
   return passThrough(input, init);
 });
 
@@ -260,6 +266,8 @@ beforeEach(() => {
   memory.played.length = 0;
   memory.holdLogins = false;
   memory.held.length = 0;
+  memory.holdChannels = false;
+  memory.heldChannels.length = 0;
   memory.holdSecrets = false;
   memory.caching.length = 0;
   for (const panel of [one, two]) {
@@ -270,6 +278,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const go of memory.held.splice(0)) go();
+  for (const go of memory.heldChannels.splice(0)) go();
   // A write still held belongs to an app that stopped: it never answers.
   memory.heldSecrets.length = 0;
   vi.useRealTimers();
@@ -657,6 +666,30 @@ describe("everything together", () => {
     ]);
   });
 
+  it("names a renamed subscription where its channels show, at once", async () => {
+    const { app, a, b } = await twoProviders();
+    const [first] = channels(app).filter((each) => each.subscriptionId === a);
+    if (!first) throw new Error("No channel");
+    await app.update(b, { name: "Cabin" });
+    const now = app.currentCatalogue();
+    if (now.kind !== "ready") throw new Error("No library");
+    expect(now.library.placeOf.get(`${b}:${first.id}`)).toMatch(/· Cabin$/);
+  });
+
+  it("shows a subscription's channels while a new password signs it in, then the new list", async () => {
+    const { app, b } = await twoProviders();
+    const before = app.currentCatalogue();
+    const editing = app.update(b, { password: TWO.password });
+    await until(() => {
+      expect(channelsReady(app, 2)).toBe(true);
+      const now = app.currentCatalogue();
+      return now.kind === "ready" && before.kind === "ready" && now.library !== before.library;
+    }, "the new list");
+    await editing;
+    expect(member(app, b)?.live.kind).toBe("ready");
+    expect(channelsReady(app, 2)).toBe(true);
+  });
+
   it("counts a change of channel, not the first one or the same one again", async () => {
     const { app, a, b } = await twoProviders();
     const [first, second] = channels(app).filter((each) => each.subscriptionId === a);
@@ -688,6 +721,33 @@ describe("removing a subscription", () => {
     // The last one gone: Connect.
     expect(ids(app)).toEqual([]);
     expect(JSON.parse(memory.files.get(doc("state.json")) ?? "{}").subscription).toBeNull();
+  });
+
+  it("never shows the channels of one removed while they are worked out", async () => {
+    const app = await launch();
+    const a = await app.add({ server: one.url, ...ONE });
+    if (!a) throw new Error("The add was cancelled");
+    await until(() => channelsReady(app, 1), "the first's channels");
+    memory.holdChannels = true;
+    const b = await app.add({ server: two.url, ...TWO });
+    if (!b) throw new Error("The add was cancelled");
+    let removing: Promise<void> | null = null;
+    // Removed as its channels land, before a task has worked them out.
+    const off = app.onRoster(() => {
+      if (!removing && member(app, b)?.live.kind === "ready") {
+        removing = app.remove(b, { keepHistory: true });
+      }
+    });
+    await until(() => memory.heldChannels.length === 1, "the second's channel list");
+    memory.heldChannels.shift()?.();
+    await until(() => removing !== null, "the second's channels");
+    off();
+    await removing;
+    await new Promise((done) => setTimeout(done, 100));
+    expect(ids(app)).toEqual([a]);
+    expect(app.currentCatalogue().kind).toBe("ready");
+    expect(channels(app).every((each) => each.subscriptionId === a)).toBe(true);
+    expect(channels(app).length).toBeGreaterThan(0);
   });
 
   it("brings its history back when the account is added again", async () => {

@@ -83,7 +83,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
   are one, and a channel is never joined across subscriptions. Two channels of one name say which
   subscription each is from. Channels in no category their provider lists come last, as Other
   channels, or as All channels when none lists categories, so Live shows every channel the
-  desktop does.
+  desktop does. Each subscription's share is kept until its list changes; a new list is worked
+  out a few slices per task (core's `steps.ts`), so input is handled between them, while what
+  showed before stays.
 - `src/titles.ts`: every subscription's movie and series lists, indexed together by core's
   `indexCatalogue` (each kind in a task of its own, so input is handled between them): a movie two
   list under one TMDB id is one title with both versions, never by name. Core's collections and

@@ -473,6 +473,58 @@ describe("channels with several streams", () => {
     ]);
   });
 
+  it("joins a channel a panel lists a thousand times into one, in the panel's order", () => {
+    const raw: LiveCatalogue = {
+      categories: [
+        { id: "1", name: "Events" },
+        { id: "2", name: "Events HD" },
+      ],
+      // Numbered down, the lowest id last; a logo and catch-up only on later streams.
+      channels: Array.from({ length: 1200 }, (_, at) => ({
+        id: String(5000 - at),
+        name: at % 2 ? "Event Offline SD" : "Event Offline HD",
+        number: at + 1,
+        logoUrl: at === 700 ? "http://logo/event.png" : null,
+        categoryIds: [at % 3 ? "1" : "2"],
+        guideId: null,
+        catchupDays: at === 900 ? 3 : null,
+      })),
+    };
+    const { channels } = liveChannels(normalizeCatalogue(raw).streams);
+    expect(channels).toHaveLength(1);
+    expect(channels[0]).toMatchObject({
+      id: "3801",
+      title: "Event Offline",
+      number: 1,
+      tags: [],
+      logoUrl: "http://logo/event.png",
+      categoryIds: ["2", "1"],
+      catchupDays: 3,
+    });
+    expect(channels[0]?.variants.map(({ id }) => id)).toEqual(raw.channels.map(({ id }) => id));
+  });
+
+  it("decides a guide id hundreds of channels share by every name under it", () => {
+    const placeholder = (names: readonly string[]) =>
+      guided(
+        ["NL | Events"],
+        names.map((name): [string, number, string] => [name, 0, "placeholder.tv"]),
+      );
+    const same = Array.from({ length: 800 }, () => "NL | Event Offline HD");
+    // One name: the id is the channel's under another name. Its country isn't the category's,
+    // so each stream stays a channel of its own.
+    const kept = liveChannels(normalizeCatalogue(placeholder(same)).streams);
+    expect(kept.channels).toHaveLength(800);
+    expect(new Set([...kept.guideIds.values()].flat())).toEqual(new Set(["placeholder.tv"]));
+    expect(kept.channels.every((channel) => channel.searchIdentity === undefined)).toBe(true);
+    // Another name under it at the end: nobody keeps the id, and the streams join.
+    const mixed = liveChannels(
+      normalizeCatalogue(placeholder([...same, "NL | Other Show HD"])).streams,
+    );
+    expect(mixed.guideIds.size).toBe(0);
+    expect(mixed.channels.map(({ variants }) => variants.length)).toEqual([800, 1]);
+  });
+
   // Invented names in the style of a public playlist: the country and the feed in the guide id,
   // the picture's lines in the name.
   it("joins a playlist's SD and HD feeds of a channel, and keeps other feeds and countries apart", () => {
