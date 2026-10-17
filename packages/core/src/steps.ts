@@ -14,6 +14,12 @@ export function pacer(): () => boolean {
   return () => ++count % SLICE === 0;
 }
 
+/**
+ * How a host whose one thread also handles input works `steps` out: a few slices per task,
+ * resolving null and leaving them unfinished once `wanted` fails. The iOS app's is `inTasks`.
+ */
+export type InTasks = <A>(steps: Steps<A>, wanted: () => boolean) => Promise<A | null>;
+
 /** Runs `steps` to the end without pausing. */
 export function finish<A>(steps: Steps<A>): A {
   for (;;) {

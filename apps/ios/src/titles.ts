@@ -15,7 +15,7 @@ import { metadataStore, type MetadataStatus } from "@mrstreamer/core/metadata/st
 import { tmdb, type Tmdb, type TmdbKind } from "@mrstreamer/core/metadata/tmdb";
 import {
   byIds,
-  indexCatalogue,
+  indexSteps,
   kindOf,
   searchPage,
   type IndexedCatalogue,
@@ -29,6 +29,7 @@ import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/on
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
 import { File, Paths } from "expo-file-system";
 import { members, onRoster, shownOf, type Member } from "./account.ts";
+import { inTasks } from "./library.ts";
 import { currentSource, sourceOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
@@ -53,7 +54,10 @@ const lists = store<TitleLists>({ kind: "idle" });
 /** Rises whenever TMDB's metadata changes what lists show. */
 const metadataVersion = store(0);
 const metadataStatus = store<MetadataStatus | null>(null);
-/** How long the last read of the lists took: fetched and parsed, then indexed. Milliseconds. */
+/**
+ * How long the last read of the lists took: fetched and read, then indexed, from start to finish
+ * of the tasks that did it. Milliseconds.
+ */
 const timings = store<{ readonly fetched: number; readonly indexed: number } | null>(null);
 
 export const useTitleLists = () => useStore(lists);
@@ -98,7 +102,7 @@ const metadata = metadataStore({
   },
 });
 
-/** One subscription's lists, as `indexCatalogue` takes them. */
+/** One subscription's lists, as `indexSteps` takes them. */
 interface Listed {
   readonly subscriptionId: string;
   readonly catalogue: OnDemandCatalogue;
@@ -172,20 +176,14 @@ function relist() {
 }
 
 async function index(listed: readonly Listed[], signal: AbortSignal) {
-  // After the answer that brought the lists, so the screens draw first.
-  await nextTask();
-  if (signal.aborted) return;
-  const index = indexCatalogue(listed, language);
-  // Each kind in a task of its own, so taps are handled between them: the three back to back
-  // held the JS thread for 0.7 s with 25,000 titles.
-  let took = 0;
-  for (const kind of ["movie", "series"] as const) {
-    await nextTask();
-    if (signal.aborted) return;
-    const started = Date.now();
-    kindOf(index, kind);
-    took += Date.now() - started;
-  }
+  // Indexing 25,000 movies held the JS thread for a third of a second or more in a Release build
+  // on the iOS simulator, so both kinds are worked out a few slices per task, starting after the
+  // answer that brought the lists, and only a finished index shows: what showed before stays
+  // meanwhile, and screens never index a kind while they draw.
+  const started = Date.now();
+  const index = await inTasks(indexSteps(listed, language), () => !signal.aborted);
+  if (!index) return;
+  const took = Date.now() - started;
   const fetched = Math.max(
     0,
     ...members().map((member) => (member.titles.kind === "ready" ? member.titles.took : 0)),
@@ -199,9 +197,6 @@ async function index(listed: readonly Listed[], signal: AbortSignal) {
     if (!signal.aborted) metadata.want(wantedOf(index), language);
   }, 0);
 }
-
-/** Resolves in a later task, after whatever input waits. */
-const nextTask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const tmdbKind = (kind: TitleKind): TmdbKind => (kind === "movie" ? "movie" : "tv");
 

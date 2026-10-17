@@ -8,10 +8,11 @@
 // TMDB id is one title with the versions of both, so lists count and show it once, and what plays
 // is still one version of one subscription. Nothing joins by name: a row without a TMDB id stays
 // on its own, whichever subscription lists another of its name, and so does a row for adults.
-import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { Title, TitleKind, TitleVersion } from "@mrstreamer/contracts/ondemand";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { adultIn } from "../adult.ts";
 import type { OnDemandCatalogue, ProviderTitle } from "../provider.ts";
+import { finish, pacer, type Steps } from "../steps.ts";
 import { normalize } from "../text.ts";
 import { suitability } from "./languages.ts";
 import { titleName, type TitleName } from "./names.ts";
@@ -55,8 +56,8 @@ export function indexCatalogue(
   sources: readonly CatalogueSource[],
   language: string,
 ): IndexedCatalogue {
-  const movies = once(() => indexKind("movie", sources, language));
-  const series = once(() => indexKind("series", sources, language));
+  const movies = once(() => finish(indexKind("movie", sources, language)));
+  const series = once(() => finish(indexKind("series", sources, language)));
   return {
     language,
     get movies() {
@@ -66,6 +67,20 @@ export function indexCatalogue(
       return series();
     },
   };
+}
+
+/**
+ * The catalogue `indexCatalogue` makes, with both kinds indexed before it is done, pausing
+ * between slices of the work: a host whose one thread handles taps works it out in tasks, and
+ * reading either kind afterwards costs nothing.
+ */
+export function* indexSteps(
+  sources: readonly CatalogueSource[],
+  language: string,
+): Steps<IndexedCatalogue> {
+  const movies = yield* indexKind("movie", sources, language);
+  const series = yield* indexKind("series", sources, language);
+  return { language, movies, series };
 }
 
 /** A provider's row with its name read, and whether it is for adults. */
@@ -82,40 +97,48 @@ interface Named {
  */
 const namedRows = new WeakMap<OnDemandCatalogue, Partial<Record<TitleKind, readonly Named[]>>>();
 
-/** A catalogue's rows of a kind, each id once. */
-function namedOf(catalogue: OnDemandCatalogue, kind: TitleKind): readonly Named[] {
-  let kept = namedRows.get(catalogue);
-  if (!kept) namedRows.set(catalogue, (kept = {}));
-  return (kept[kind] ??= (() => {
-    const [categories, raw] =
-      kind === "movie"
-        ? [catalogue.movieCategories, catalogue.movies]
-        : [catalogue.seriesCategories, catalogue.series];
-    // The adult flag is a standard field; a category named for adults also counts.
-    const isAdult = adultIn(categories);
-    const seen = new Set<string>();
-    return raw.flatMap((item, listedOrder): Named[] => {
-      if (seen.has(item.id)) return [];
-      seen.add(item.id);
-      return [
-        { item, listedOrder, name: titleName(item.name, item.releaseDate), adult: isAdult(item) },
-      ];
+/** A catalogue's rows of a kind, each id once; kept only once every row is read. */
+function* namedOf(catalogue: OnDemandCatalogue, kind: TitleKind): Steps<readonly Named[]> {
+  const kept = namedRows.get(catalogue)?.[kind];
+  if (kept) return kept;
+  const due = pacer();
+  const [categories, raw] =
+    kind === "movie"
+      ? [catalogue.movieCategories, catalogue.movies]
+      : [catalogue.seriesCategories, catalogue.series];
+  // The adult flag is a standard field; a category named for adults also counts.
+  const isAdult = adultIn(categories);
+  const seen = new Set<string>();
+  const named: Named[] = [];
+  for (const [listedOrder, item] of raw.entries()) {
+    if (due()) yield;
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    named.push({
+      item,
+      listedOrder,
+      name: titleName(item.name, item.releaseDate),
+      adult: isAdult(item),
     });
-  })());
+  }
+  namedRows.set(catalogue, { ...namedRows.get(catalogue), [kind]: named });
+  return named;
 }
 
-function indexKind(
+function* indexKind(
   kind: TitleKind,
   sources: readonly CatalogueSource[],
   language: string,
-): IndexedKind {
+): Steps<IndexedKind> {
+  const due = pacer();
   // One group per film: the versions sharing a TMDB id, of whichever subscription, or a row on
   // its own without one. A row for adults stays on its own, so the film's other versions don't
   // go with it.
   const groups: Listed[][] = [];
   const byTmdbId = new Map<string, Listed[]>();
   for (const { subscriptionId, catalogue } of sources) {
-    for (const row of namedOf(catalogue, kind)) {
+    for (const row of yield* namedOf(catalogue, kind)) {
+      if (due()) yield;
       const listed = { ...row, subscriptionId };
       const key = row.item.tmdbId && !row.adult ? row.item.tmdbId : null;
       const group = key ? byTmdbId.get(key) : undefined;
@@ -132,14 +155,20 @@ function indexKind(
   /** Every version's name, title by title, for search. */
   const names: string[] = [];
   const byId = new Map<string, Title>();
+  // A title can gather thousands of versions, so the work pauses between slices of versions.
   for (const group of groups) {
-    const versions = group.map((listed): Version => ({
-      ...listed,
-      // With one version there is nothing to choose between.
-      fit: group.length === 1 ? 1 : suitability(listed.name.tags, language),
-    }));
+    const versions: Version[] = [];
+    for (const listed of group) {
+      if (due()) yield;
+      versions.push({
+        ...listed,
+        // With one version there is nothing to choose between.
+        fit: group.length === 1 ? 1 : suitability(listed.name.tags, language),
+      });
+    }
     // The version suiting the language best first, then the newest; equals keep the order of
-    // the subscriptions.
+    // the subscriptions. One sort, without a pause: it is short next to the rest, 25,000 versions
+    // of one film in about 10 ms in Node.
     if (versions.length > 1) {
       versions.sort((a, b) => b.fit - a.fit || (b.item.addedAt ?? 0) - (a.item.addedAt ?? 0));
     }
@@ -153,6 +182,7 @@ function indexKind(
     let addedAt = 0;
     let anyAddedAt = 0;
     for (const { item, name, fit } of versions) {
+      if (due()) yield;
       year ??= name.year;
       posterUrl ??= item.posterUrl;
       backdropUrl ??= item.backdropUrl;
@@ -162,6 +192,20 @@ function indexKind(
     }
     const shown = { subscriptionId: first.subscriptionId, id: first.item.id };
     const tmdbId = first.item.tmdbId ?? null;
+    const listedVersions: TitleVersion[] = [];
+    for (const { subscriptionId, item, name, listedOrder } of versions) {
+      if (due()) yield;
+      listedVersions.push({
+        subscriptionId,
+        id: item.id,
+        tags: name.tags,
+        name: item.name,
+        container: item.container,
+        addedAt: item.addedAt,
+        listedOrder,
+        ...(item.episodeFiles ? { episodeFiles: item.episodeFiles } : {}),
+      });
+    }
     const title: Title = {
       kind,
       // The TMDB id names it wherever versions gather under one, whichever shows first.
@@ -180,25 +224,26 @@ function indexKind(
       adult: versions.length === 1 && first.adult,
       tmdbId,
       genres: [],
-      versions: versions.map(({ subscriptionId, item, name, listedOrder }) => ({
-        subscriptionId,
-        id: item.id,
-        tags: name.tags,
-        name: item.name,
-        container: item.container,
-        addedAt: item.addedAt,
-        listedOrder,
-        ...(item.episodeFiles ? { episodeFiles: item.episodeFiles } : {}),
-      })),
+      versions: listedVersions,
     };
     titles.push(title);
-    names.push(
-      versions.length === 1 ? first.item.name : group.map(({ item }) => item.name).join(" "),
-    );
+    if (versions.length === 1) {
+      names.push(first.item.name);
+    } else {
+      const spelled: string[] = [];
+      for (const { item } of group) {
+        if (due()) yield;
+        spelled.push(item.name);
+      }
+      names.push(spelled.join(" "));
+    }
   }
-  const shown = sources.length > 1 ? marked(titles) : titles;
+  const shown = sources.length > 1 ? yield* marked(titles) : titles;
   for (const title of shown) {
-    for (const version of title.versions) byId.set(ownedKey(version), title);
+    for (const version of title.versions) {
+      if (due()) yield;
+      byId.set(ownedKey(version), title);
+    }
   }
   return {
     titles: shown,
@@ -223,7 +268,8 @@ function indexKind(
  * with versions of several subscriptions needs no mark, and titles for adults are told apart
  * among themselves.
  */
-function marked(titles: readonly Title[]): readonly Title[] {
+function* marked(titles: readonly Title[]): Steps<readonly Title[]> {
+  const due = pacer();
   /** Which subscription lists what shows as this, or null once a second one does. */
   const listedBy = new Map<string, string | null>();
   const reads = (title: Title) =>
@@ -231,16 +277,26 @@ function marked(titles: readonly Title[]): readonly Title[] {
   for (const title of titles) {
     const key = reads(title);
     for (const { subscriptionId } of title.versions) {
+      if (due()) yield;
       const owner = listedBy.get(key);
       if (owner === undefined) listedBy.set(key, subscriptionId);
       else if (owner !== subscriptionId) listedBy.set(key, null);
     }
   }
-  return titles.map((title) => {
+  const shown: Title[] = [];
+  for (const title of titles) {
     const { subscriptionId } = title;
-    const own = title.versions.every((version) => version.subscriptionId === subscriptionId);
-    return own && listedBy.get(reads(title)) === null ? { ...title, ambiguous: true } : title;
-  });
+    let own = true;
+    for (const version of title.versions) {
+      if (due()) yield;
+      if (version.subscriptionId !== subscriptionId) {
+        own = false;
+        break;
+      }
+    }
+    shown.push(own && listedBy.get(reads(title)) === null ? { ...title, ambiguous: true } : title);
+  }
+  return shown;
 }
 
 export function kindOf(catalogue: IndexedCatalogue, kind: TitleKind): IndexedKind {

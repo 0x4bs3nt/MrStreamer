@@ -25,6 +25,9 @@ const memory = vi.hoisted(() => ({
   /** Channel lists held until a test lets them through. */
   heldChannels: [] as Array<() => void>,
   holdChannels: false,
+  /** Movie lists held until a test lets them through. */
+  heldMovies: [] as Array<() => void>,
+  holdMovies: false,
   /** Passwords the Keychain has stored but whose write it hasn't answered yet. */
   heldSecrets: [] as Array<() => void>,
   holdSecrets: false,
@@ -108,6 +111,9 @@ vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
   if (login && memory.holdLogins) await new Promise<void>((go) => memory.held.push(go));
   if (url.searchParams.get("action") === "get_live_streams" && memory.holdChannels) {
     await new Promise<void>((go) => memory.heldChannels.push(go));
+  }
+  if (url.searchParams.get("action") === "get_vod_streams" && memory.holdMovies) {
+    await new Promise<void>((go) => memory.heldMovies.push(go));
   }
   return passThrough(input, init);
 });
@@ -268,6 +274,8 @@ beforeEach(() => {
   memory.held.length = 0;
   memory.holdChannels = false;
   memory.heldChannels.length = 0;
+  memory.holdMovies = false;
+  memory.heldMovies.length = 0;
   memory.holdSecrets = false;
   memory.caching.length = 0;
   for (const panel of [one, two]) {
@@ -279,6 +287,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const go of memory.held.splice(0)) go();
   for (const go of memory.heldChannels.splice(0)) go();
+  for (const go of memory.heldMovies.splice(0)) go();
   // A write still held belongs to an app that stopped: it never answers.
   memory.heldSecrets.length = 0;
   vi.useRealTimers();
@@ -748,6 +757,49 @@ describe("removing a subscription", () => {
     expect(app.currentCatalogue().kind).toBe("ready");
     expect(channels(app).every((each) => each.subscriptionId === a)).toBe(true);
     expect(channels(app).length).toBeGreaterThan(0);
+  });
+
+  it("never shows the movies of one removed while they are read or indexed, keeping the other's", async () => {
+    for (const when of ["read", "indexed"] as const) {
+      const app = await launch();
+      const a = await app.add({ server: one.url, ...ONE });
+      if (!a) throw new Error("The add was cancelled");
+      await until(() => titlesOf(app).length > 0, "the first's lists");
+      const before = app.titleLists();
+      const shownFrom = new Set<string>();
+      const offLists = app.onTitleLists(() => {
+        for (const title of titlesOf(app)) {
+          for (const version of title.versions) shownFrom.add(version.subscriptionId);
+        }
+      });
+      memory.holdMovies = true;
+      const b = await app.add({ server: two.url, ...TWO });
+      if (!b) throw new Error("The add was cancelled");
+      await until(() => memory.heldMovies.length === 1, "the second's movie list");
+      let removing: Promise<void> | null = null;
+      // Removed as its rows are read, or as its lists land, before a task has indexed them.
+      const off = app.onRoster(() => {
+        if (!removing && when === "indexed" && member(app, b)?.titles.kind === "ready") {
+          removing = app.remove(b, { keepHistory: true });
+        }
+      });
+      memory.heldMovies.shift()?.();
+      if (when === "read") removing = app.remove(b, { keepHistory: true });
+      await until(() => removing !== null, "the second's lists");
+      off();
+      await removing;
+      await new Promise((done) => setTimeout(done, 100));
+      offLists();
+      expect(ids(app)).toEqual([a]);
+      expect(shownFrom.has(b)).toBe(false);
+      if (when === "read") expect(app.titleLists()).toBe(before);
+      expect(titlesOf(app).length).toBeGreaterThan(0);
+      expect(
+        titlesOf(app).every((title) => title.versions.every((v) => v.subscriptionId === a)),
+      ).toBe(true);
+      await app.remove(a, { keepHistory: true });
+      memory.holdMovies = false;
+    }
   });
 
   it("brings its history back when the account is added again", async () => {

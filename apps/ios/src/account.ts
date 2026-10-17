@@ -136,7 +136,7 @@ const uncached: typeof fetch = (input, init) => {
 };
 
 const providerFor = (account: XtreamAccount): Provider =>
-  xtreamProvider(account, { userAgent: USER_AGENT, live: "hls", fetch: uncached });
+  xtreamProvider(account, { userAgent: USER_AGENT, live: "hls", fetch: uncached, inTasks });
 
 /** The registry as last written. */
 let registry: Registry = EMPTY_REGISTRY;

@@ -87,8 +87,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
   out a few slices per task (core's `steps.ts`), so input is handled between them, while what
   showed before stays.
 - `src/titles.ts`: every subscription's movie and series lists, indexed together by core's
-  `indexCatalogue` (each kind in a task of its own, so input is handled between them): a movie two
-  list under one TMDB id is one title with both versions, never by name. Core's collections and
+  `indexSteps`, both kinds a few slices per task so input is handled between them, and shown only
+  once finished: a movie two list under one TMDB id is one title with both versions, never by
+  name. The provider reads each list's rows a few slices per task too. Core's collections and
   search, details with TMDB's facts, and the file each version streams from, asked of its own
   subscription. TMDB's metadata comes from core's store (`metadata/store.ts`, shared with the
   desktop) and is kept in Caches.

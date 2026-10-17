@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { byIds, indexCatalogue, search, searchPage } from "../src/ondemand/catalogue.ts";
+import {
+  byIds,
+  indexCatalogue,
+  indexSteps,
+  search,
+  searchPage,
+} from "../src/ondemand/catalogue.ts";
 import { collections } from "../src/ondemand/collections.ts";
 import {
   movieDetails,
@@ -16,6 +22,7 @@ import {
   type RenditionFacts,
 } from "../src/ondemand/tracks.ts";
 import type { OnDemandCatalogue } from "../src/provider.ts";
+import { finish } from "../src/steps.ts";
 import { continueWatching, isFinished, type TitleRow } from "../src/viewing/titles.ts";
 
 /** The subscription every title of these tests is listed by. */
@@ -416,6 +423,20 @@ describe("one title per film across subscriptions", () => {
       ["movie:b:3", "b:3", ["b:3"], true],
       ["movie:tmdb:300", "b:4", ["b:4"], false],
     ]);
+  });
+
+  it("indexes in steps, both kinds at once, what it indexes as each kind is read", () => {
+    for (const language of ["en", "nl"]) {
+      for (const from of [sources, sources.toReversed()]) {
+        const read = indexCatalogue(from, language);
+        const stepped = finish(indexSteps(from, language));
+        for (const kind of ["movies", "series"] as const) {
+          expect(stepped[kind].titles).toEqual(read[kind].titles);
+          expect([...stepped[kind].byId]).toEqual([...read[kind].byId]);
+        }
+        expect(search(stepped, "movie", "casino")).toEqual(search(read, "movie", "casino"));
+      }
+    }
   });
 
   it("never joins a movie and a series that share a TMDB id", () => {

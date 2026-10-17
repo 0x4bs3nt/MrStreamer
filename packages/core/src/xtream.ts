@@ -22,6 +22,7 @@ import {
   type ProviderOptions,
   type ProviderTitle,
 } from "./provider.ts";
+import { finish, pacer, type InTasks, type Steps } from "./steps.ts";
 
 export interface XtreamAccount {
   /** Normalised origin plus an optional path prefix, without a trailing slash. */
@@ -123,6 +124,12 @@ export interface XtreamOptions extends ProviderOptions {
    * HLS, such as AVPlayer on iOS. Catch-up recordings are MPEG-TS either way.
    */
   readonly live?: StreamFormat;
+  /**
+   * Checks and reads the rows of movie and series lists a few slices per task, as the iOS app's
+   * one JS thread, which also handles taps, needs; without it, all at once. The request's time
+   * limit still covers only the answer's arrival, and an abort stops the reading.
+   */
+  readonly inTasks?: InTasks;
 }
 
 /**
@@ -187,9 +194,10 @@ export function xtreamProvider(account: XtreamAccount, options: XtreamOptions): 
     ));
 
   /**
-   * A long list, parsed in one go: only the catalogue worker reads these, off the main thread,
-   * where one parse is several times faster than reading row by row. A refused login is an
-   * error, never an empty list that could replace the lists the app has.
+   * A long list, parsed in one go: one parse is several times faster than reading row by row.
+   * The desktop's catalogue worker reads these off the main thread and checks every row at once;
+   * with `options.inTasks`, rows are checked a few slices per task, and an abort stops that. A
+   * refused login is an error, never an empty list that could replace the lists the app has.
    */
   const getRows = <A>(
     params: string,
@@ -199,7 +207,14 @@ export function xtreamProvider(account: XtreamAccount, options: XtreamOptions): 
     request(params, CATALOGUE_TIMEOUT_MS, signal, async (response) => {
       const body: unknown = JSON.parse(await response.text());
       if (isRejectedLogin(body)) throw new AppFailure({ kind: "invalid-login" });
-      return rows(body).flatMap(map);
+      const mapping = mapSteps(rows(body), map);
+      if (!options.inTasks) return finish(mapping);
+      const mapped = await options.inTasks(mapping, () => !signal?.aborted);
+      if (mapped !== null) return mapped;
+      // Left unfinished once the caller aborted: its reason, whatever it is, which `request`
+      // passes on as it is.
+      if (signal?.aborted) throw signal.reason;
+      throw new Error("The list was left unread");
     });
 
   return {
@@ -433,7 +448,7 @@ const StreamRow = lazy(() =>
   }),
 );
 
-/** The movie and series list rows, built on first use: only the catalogue worker reads the lists. */
+/** The movie and series list rows, built on first use: on the desktop, only its worker reads them. */
 const rowSchemas = lazy(() => ({
   MovieRow: type({
     stream_id: idLike,
@@ -754,6 +769,17 @@ function isRejectedLogin(body: unknown): boolean {
   if (parsed instanceof type.errors) return false;
   const info = fields(parsed.user_info);
   return info !== undefined && !isTruthy(info.auth);
+}
+
+/** Every row `map` reads, in order, pausing between slices of them. */
+function* mapSteps<A>(raw: readonly unknown[], map: (raw: unknown) => A[]): Steps<A[]> {
+  const due = pacer();
+  const mapped: A[] = [];
+  for (const row of raw) {
+    if (due()) yield;
+    for (const each of map(row)) mapped.push(each);
+  }
+  return mapped;
 }
 
 function rows(body: unknown): unknown[] {
