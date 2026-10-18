@@ -20,7 +20,10 @@ const State = lazy(() =>
     recent: "string[]",
     /** Channels watched lately, by `ownedKey`, the latest first. */
     "recentChannels?": "string[]",
-    /** The region or category group Live last showed. */
+    /**
+     * The region or category group last chosen in Live, which Home's On now shows until channels
+     * are watched. Live itself opens on every country.
+     */
     region: "string | null",
   }),
 );

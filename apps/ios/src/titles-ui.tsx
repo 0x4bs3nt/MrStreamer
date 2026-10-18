@@ -158,18 +158,7 @@ export function Shelf({
   const width = Math.min(usePosterWidth(3), 120);
   return (
     <View style={styles.shelf}>
-      <Pressable
-        accessibilityRole={onAll ? "button" : "header"}
-        accessibilityLabel={onAll ? `${name}, all ${total ?? titles.length}` : name}
-        disabled={!onAll}
-        onPress={onAll}
-        style={styles.shelfHead}
-      >
-        <Text style={styles.shelfName} numberOfLines={1}>
-          {name}
-        </Text>
-        {onAll ? <Text style={styles.chevron}>›</Text> : null}
-      </Pressable>
+      <ShelfHead name={name} total={total ?? titles.length} onAll={onAll} />
       <FlatList
         horizontal
         data={titles}
@@ -191,6 +180,32 @@ export function Shelf({
         windowSize={3}
       />
     </View>
+  );
+}
+
+/** A shelf's heading, which opens all of it as a button when `onAll` is given. */
+export function ShelfHead({
+  name,
+  total,
+  onAll,
+}: {
+  name: string;
+  total: number;
+  onAll?: (() => void) | undefined;
+}) {
+  return (
+    <Pressable
+      accessibilityRole={onAll ? "button" : "header"}
+      accessibilityLabel={onAll ? `${name}, all ${total}` : name}
+      disabled={!onAll}
+      onPress={onAll}
+      style={styles.shelfHead}
+    >
+      <Text style={styles.shelfName} numberOfLines={1}>
+        {name}
+      </Text>
+      {onAll ? <Text style={styles.chevron}>›</Text> : null}
+    </Pressable>
   );
 }
 

@@ -6,12 +6,15 @@ own native adapters: the Keychain, app storage and one native player so far. Not
 the desktop's install, build or packages.
 
 It connects Xtream subscriptions, one or several, and shows everything from all of them
-together, as the desktop does: there is no subscription to switch to. Live lists a country's channels with their
-providers' logos, the country first in its row of category tabs, and plays them; Movies and Series browse the
+together, as the desktop does: there is no subscription to switch to. Live opens on All, every
+provider's channels of every country once, with their providers' logos; For you leads with the
+channel watched last behind Play, then recent channels and category shelves, and Categories has
+every category as a tile that opens its channels; a country is an optional filter before those
+tabs (`src/live-screen.tsx`). Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
 A movie or an episode plays in Watch from where it stopped. Home leads with the preview, then
-channels to preview (On now: recent ones, else Live's country), Continue watching, the watchlist
+channels to preview (On now: recent ones, else the country last chosen in Live), Continue watching, the watchlist
 and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
 channel's category where the desktop shows its programme: iOS reads no guide yet. Search finds
 movies, series and channels. A movie's details and each episode row have a download button whose
@@ -164,7 +167,7 @@ Each responsibility has one owner, a plain module with a store the screens read:
   127.0.0.1, its picture and each sound track copied as they are. Nothing of a new play reaches
   the provider until the last session's request has ended.
 - `src/storage.ts`: what the app keeps between launches, apart from secrets and the registry, in
-  `state.json` in Documents: recent channels by subscription and the Live country, and beta 2's
+  `state.json` in Documents: recent channels by subscription, the country last chosen in Live for Home, and beta 2's
   subscription for an older build to show. `src/files.ts` writes every file whole, through a file
   beside it. Removing a subscription keeps its history unless the viewer deletes it too.
 - `src/telemetry/`: product statistics, on until the viewer turns them off in Settings. One owner

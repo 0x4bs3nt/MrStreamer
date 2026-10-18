@@ -405,7 +405,7 @@ function Nothing({
 }) {
   const searched = useMemo(() => {
     if (!library || lists.kind !== "ready") return null;
-    const channels = new Set(library.regions.flatMap((region) => region.channels)).size;
+    const channels = library.channels.length;
     const number = new Intl.NumberFormat();
     const counted = (count: number, one: string, many: string) =>
       `${number.format(count)} ${count === 1 ? one : many}`;

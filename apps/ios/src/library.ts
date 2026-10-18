@@ -43,6 +43,8 @@ export interface Region {
 
 export interface Library {
   readonly regions: readonly Region[];
+  /** Every channel once, by key, in the regions' order: what Live's All lists. */
+  readonly channels: readonly Channel[];
   /** By channel key, and by the `ownedKey` of each of its streams. */
   readonly byKey: ReadonlyMap<string, Channel>;
   /**
@@ -50,6 +52,8 @@ export interface Library {
    * subscription lists under the same name adds its subscription: "Netherlands · News · Home".
    */
   readonly placeOf: ReadonlyMap<string, string>;
+  /** Each subscription's name, by id: what an `ambiguous` channel is told apart by. */
+  readonly labels: ReadonlyMap<string, string>;
 }
 
 /** One subscription's live catalogue, with the name lists give it. */
@@ -260,7 +264,18 @@ export function* combineSteps(parts: readonly Labelled[]): Steps<Library> {
   } else if (unplaced.length > 0) {
     listed.push({ name: others, shelves: [], channels: unplaced });
   }
-  return { regions: listed, byKey, placeOf };
+  // A channel in categories of several regions shows in each, but once in all of them.
+  const channels: Channel[] = [];
+  const seen = new Set<string>();
+  for (const region of listed) {
+    for (const channel of region.channels) {
+      if (due()) yield;
+      if (seen.has(channel.key)) continue;
+      seen.add(channel.key);
+      channels.push(channel);
+    }
+  }
+  return { regions: listed, channels, byKey, placeOf, labels };
 }
 
 /** How long one task works through steps before it lets taps through; chosen, not measured. */
@@ -286,11 +301,5 @@ export async function inTasks<A>(steps: Steps<A>, wanted: () => boolean): Promis
 export function searchChannels(library: Library, query: string): readonly Channel[] {
   const words = searchWords(query);
   if (words.length === 0) return [];
-  const found = new Set<Channel>();
-  for (const region of library.regions) {
-    for (const channel of region.channels) {
-      if (matchRanges(channel.title, words).length > 0) found.add(channel);
-    }
-  }
-  return [...found];
+  return library.channels.filter((channel) => matchRanges(channel.title, words).length > 0);
 }
