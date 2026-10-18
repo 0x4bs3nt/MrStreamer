@@ -217,14 +217,16 @@ describe("durable usage and logical-play summaries", () => {
       owner.noteFeature("home");
       owner.noteRendererExit("crashed");
     }
+    await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 70; i++) {
       const token = owner.beginPlayback("vod")!;
       const binding = owner.bindPlayback(token, "local")!;
       owner.notePlaybackState(token, binding, 1, "playing");
       owner.endPlayback(token);
+      await vi.advanceTimersByTimeAsync(0);
     }
-    await vi.advanceTimersByTimeAsync(0);
-    // One live + 59 title summaries admitted. Capacity here can shed oldest summary work.
+    // One live plus 59 titles admitted, independently of saturated reliability and usage.
+    expect(events.filter((event) => event.event === "stream_summary")).toHaveLength(60);
     expect(
       events.some((event) => event.event === "stream_started" || event.event === "stream_stopped"),
     ).toBe(false);
@@ -338,6 +340,32 @@ describe("durable usage and logical-play summaries", () => {
     stale();
     await vi.advanceTimersByTimeAsync(0);
     expect((await store.load())?.summaries?.usage ?? null).toBeNull();
+  });
+
+  it("never persists an oversized record even when only protected identity work remains", async () => {
+    clock();
+    const first = await start();
+    const before = await first.store.load();
+    let saved = false;
+    const owner = new Analytics({
+      dataDir: first.directory,
+      origin: Promise.resolve("unknown"),
+      properties: { ...properties, app_version: "1".repeat(128 * 1024) + ".0.0" },
+      store: {
+        load: async () => before,
+        save: async () => {
+          saved = true;
+        },
+      },
+      transport: { kind: "local", send: async () => "accepted" },
+    });
+    owners.push(owner);
+    await owner.settings();
+    owner.noteFeature("home");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await owner.settings()).toEqual({ enabled: true, transport: "unavailable" });
+    expect(saved).toBe(false);
+    expect((await first.store.load())?.installationId).toBe(before?.installationId);
   });
 
   it("fails closed at the existing 1.5s checkpoint deadline without resetting identity or consent", async () => {

@@ -1139,6 +1139,10 @@ function bounded(record: AnalyticsRecord): AnalyticsRecord {
     if (index < 0) break;
     pending.splice(index, 1);
   }
+  // Even a malformed oversized build envelope cannot escape the byte bound. If preserving the
+  // first observation leaves no valid eviction, fail closed through the existing save owner.
+  if (Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES)
+    throw new Error("Analytics state exceeds its byte budget.");
   return result;
 }
 
