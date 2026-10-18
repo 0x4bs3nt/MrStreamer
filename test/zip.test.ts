@@ -33,6 +33,28 @@ describe("reading a file out of a ZIP", () => {
     expect(readZipEntry(ZIP64, "appxmanifest.xml")).toBeNull();
   });
 
+  it.each([
+    ["ZIP", storedZip("AppxManifest.xml", Buffer.from("<Package/>")), "<Package/>"],
+    [
+      "ZIP64",
+      ZIP64,
+      '<Package><Identity Name="Example.App" Publisher="CN=Example" Version="1.0.4.0" ProcessorArchitecture="x64" /></Package>',
+    ],
+  ] as const)(
+    "reads %s entries when the archive comment contains an end-record signature",
+    (_, zip, expected) => {
+      for (const length of [4, 40, 0xffff]) {
+        const comment = Buffer.alloc(length, 0x61);
+        comment.set([0x50, 0x4b, 0x05, 0x06]);
+        const archive = Buffer.concat([zip, comment]);
+        archive.writeUInt16LE(comment.length, zip.length - 2);
+
+        expect(readZipEntry(archive, "AppxManifest.xml")?.toString()).toBe(expected);
+        expect(readZipEntry(archive, "missing.xml")).toBeNull();
+      }
+    },
+  );
+
   it("refuses what isn't a ZIP, and a file that no longer matches its checksum", () => {
     expect(() => readZipEntry(Buffer.from("MSIX"), "AppxManifest.xml")).toThrow("Not a ZIP file");
 

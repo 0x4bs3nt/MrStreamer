@@ -11,7 +11,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import type { GuideSlot, GuideStatus, MapFilter } from "@mrstreamer/contracts/guide";
-import type { IpcInput, IpcOutput } from "@mrstreamer/contracts/ipc";
+import type { IpcInput } from "@mrstreamer/contracts/ipc";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import type {
   CollectionId,
@@ -32,7 +32,7 @@ import type { WatchlistSort } from "@mrstreamer/contracts/watchlist";
 import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
 import { player } from "../player/player.ts";
 import { hostOf } from "./format.ts";
-import { call, listen } from "./ipc.ts";
+import { call, listen, searchCall } from "./ipc.ts";
 
 /** Listings move on as programmes end; asking again each minute is enough for progress. */
 const LISTINGS_REFRESH_MS = 60_000;
@@ -187,7 +187,7 @@ export const queries = {
   programmes: (query: string) =>
     queryOptions({
       queryKey: ["guide", "search", query],
-      queryFn: () => call("guide.search", { query }),
+      queryFn: ({ signal }) => searchCall("guide.search", { query }, signal, "palette"),
       staleTime: LISTINGS_REFRESH_MS,
       enabled: query.trim().length > 0,
     }),
@@ -208,21 +208,18 @@ export const queries = {
   /**
    * What a search finds in the programmes of one list's channels, on now and later until
    * `until`: a category's, the given ones, or every channel, by each channel's `ownedKey`. The
-   * answer names the search it is for, so rows can keep to one answer while the next is asked for.
+   * answer names its query; failures remain distinct from successful empty programme matches.
    */
   listSearch: (
-    list: Omit<IpcInput<"guide.searchList">, "query" | "until">,
+    list: Omit<IpcInput<"guide.searchList">, "query" | "until" | "request">,
     query: string,
     until: number,
   ) =>
     queryOptions({
       queryKey: ["guide", "searchList", list, query, until],
-      queryFn: async () => ({
+      queryFn: async ({ signal }) => ({
         query,
-        // A search the main process can't answer still finds channels by name.
-        matches: await call("guide.searchList", { ...list, query, until }).catch(
-          (): IpcOutput<"guide.searchList"> => ({}),
-        ),
+        matches: await searchCall("guide.searchList", { ...list, query, until }, signal, "live"),
       }),
       enabled: query !== "",
       staleTime: LISTINGS_REFRESH_MS / 2,

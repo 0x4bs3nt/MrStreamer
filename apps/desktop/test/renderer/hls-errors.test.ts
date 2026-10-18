@@ -40,7 +40,9 @@ it.each(["subtitle-playlist", "subtitle-segment"] as const)(
     await expect(engine.started).resolves.toBeUndefined();
     expect(failures).toEqual([]);
     stream.error("video");
-    expect(failures).toEqual([{ kind: "network", detail: "fragLoadError" }]);
+    expect(failures).toEqual([
+      { kind: "network", detail: "fragLoadError", failure: { kind: "hls", requestId: null } },
+    ]);
   },
 );
 it("still rejects genuine audio failures before the first picture", async () => {
@@ -50,5 +52,9 @@ it("still rejects genuine audio failures before the first picture", async () => 
     audioLanguage: null,
   });
   streams.latest().error("audio");
-  await expect(engine.started).rejects.toEqual({ kind: "network", detail: "fragLoadError" });
+  await expect(engine.started).rejects.toEqual({
+    kind: "network",
+    detail: "fragLoadError",
+    failure: { kind: "hls", requestId: null },
+  });
 });

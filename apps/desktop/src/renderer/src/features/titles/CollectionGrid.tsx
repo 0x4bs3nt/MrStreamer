@@ -4,6 +4,7 @@
 //   The arrow keys move the selection through the grid, Page Up and Down by a screen, Home and End
 //   to the ends; Enter opens the title. The pointer only hovers.
 import { useQueries } from "@tanstack/react-query";
+import { usePresentationVisible } from "../../lib/presentation.ts";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
@@ -76,9 +77,13 @@ export function useCollection(
   sort?: CollectionSort,
   filters?: TitleFilters,
 ) {
+  const visible = usePresentationVisible();
   const { pages, load } = usePages(`${kind}:${id}:${sort ?? ""}:${JSON.stringify(filters ?? {})}`);
   const loaded = useQueries({
-    queries: pages.map((page) => queries.collection(kind, id, sort, page * PAGE, PAGE, filters)),
+    queries: pages.map((page) => ({
+      ...queries.collection(kind, id, sort, page * PAGE, PAGE, filters),
+      enabled: visible,
+    })),
   });
   const byPage = new Map(pages.map((page, index) => [page, loaded[index]?.data]));
   const first = byPage.get(0);

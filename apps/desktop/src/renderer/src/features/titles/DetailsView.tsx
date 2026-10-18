@@ -27,6 +27,7 @@ import type {
   SeriesDetails,
   Title,
   TitleDetails,
+  TitleRef,
 } from "@mrstreamer/contracts/ondemand";
 import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import type { EpisodeMark, TitleProgress } from "@mrstreamer/contracts/viewing";
@@ -68,7 +69,7 @@ import {
   MovieDownload,
 } from "../downloads/DownloadControls.tsx";
 import { SeriesDownload } from "../downloads/SeriesDownload.tsx";
-import { transferred, useDownloads } from "../../lib/downloads.ts";
+import { transferred, useDownloadOf } from "../../lib/downloads.ts";
 import { SaveButton, SaveError } from "../watchlist/SaveButton.tsx";
 import { EpisodeMenu, MarkNotice, useEpisodeMarks } from "./EpisodeMarks.tsx";
 import { RelatedTitles } from "./RelatedTitles.tsx";
@@ -668,12 +669,43 @@ function creditsOf(episode: Partial<EpisodeDetails>): string {
     .join(" · ");
 }
 
+/** Only the selected file's progress updates the still and facts, leaving episode selection alone. */
+function EpisodeTransfer({ title }: { title: Extract<TitleRef, { kind: "episode" }> }) {
+  const download = useDownloadOf(title.subscriptionId, title);
+  const done = download ? transferred(download) : null;
+  if (done === null) return null;
+  return (
+    <span aria-hidden className="absolute right-0 bottom-0 left-0 h-[3px] bg-white/20">
+      <span
+        className="block h-full bg-white"
+        style={{ width: `${Math.min(100, Math.max(0, done * 100))}%` }}
+      />
+    </span>
+  );
+}
+
+function EpisodeFacts({
+  title,
+  facts,
+}: {
+  title: Extract<TitleRef, { kind: "episode" }>;
+  facts: string;
+}) {
+  const download = useDownloadOf(title.subscriptionId, title);
+  return (
+    <>
+      <EpisodeDownloadStatus download={download} />
+      {download && facts && <span aria-hidden>·</span>}
+      <span className="min-w-0 truncate">{facts}</span>
+    </>
+  );
+}
+
 function Episodes({ details }: { details: SeriesDetails }) {
   // How far the episodes got in this version's own subscription, and the ones marked there:
   // another subscription's are other files. While that can't be read, a row says nothing of how
   // its episode stands and offers no mark.
   const { standing } = useStanding(details);
-  const downloads = useDownloads().data;
   const stateOf = standing && episodeStates(standing.progress, standing.marks);
   const target = standing ? continuation(details, standing.progress, standing.marks) : null;
   const marking = useEpisodeMarks(ownedId(details.title), standing);
@@ -732,14 +764,6 @@ function Episodes({ details }: { details: SeriesDetails }) {
             sameOwned(target.episode, episodeFileVersion(episode, target.episode.id));
           const partly = state?.kind === "partial" ? state.progress : undefined;
           const file = episodeRef(episodeFileVersion(episode, partly?.title.id));
-          const download =
-            downloads?.items.find(
-              (item) =>
-                item.subscription?.id === file.subscriptionId &&
-                item.title.kind === file.kind &&
-                item.title.id === file.id,
-            ) ?? null;
-          const done = download ? transferred(download) : null;
           const saving = marks.busy && marks.change?.episode.id === episode.id;
           const facts = [
             episode.airDate ? airDate(episode.airDate) : null,
@@ -779,17 +803,7 @@ function Episodes({ details }: { details: SeriesDetails }) {
                     size="wide"
                     className="text-[0.625rem]"
                   />
-                  {done !== null && (
-                    <span
-                      aria-hidden
-                      className="absolute right-0 bottom-0 left-0 h-[3px] bg-white/20"
-                    >
-                      <span
-                        className="block h-full bg-white"
-                        style={{ width: `${Math.min(100, Math.max(0, done * 100))}%` }}
-                      />
-                    </span>
-                  )}
+                  <EpisodeTransfer title={file} />
                 </span>
                 <span className="min-w-0">
                   <span className="flex items-baseline gap-3">
@@ -803,9 +817,7 @@ function Episodes({ details }: { details: SeriesDetails }) {
                     )}
                   </span>
                   <span className="flex h-4 min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                    <EpisodeDownloadStatus download={download} />
-                    {download && facts && <span aria-hidden>·</span>}
-                    <span className="min-w-0 truncate">{facts}</span>
+                    <EpisodeFacts title={file} facts={facts} />
                   </span>
                   {partly && (
                     <Progress value={partly.position / partly.duration} className="mt-2 w-40" />

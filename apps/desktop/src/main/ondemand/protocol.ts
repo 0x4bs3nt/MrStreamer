@@ -74,6 +74,8 @@ export interface WorkerStatus {
   readonly movies: number;
   readonly series: number;
   readonly fetchedAt: number | null;
+  /** Private accepted-catalogue identity. Absent on legacy snapshots. */
+  readonly catalogueStamp?: string;
   readonly importRevision?: string;
 }
 

@@ -4,6 +4,7 @@
 // subscriptions: one of them plays, and how far it got is that version's subscription's alone.
 import {
   isCancelledError,
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -29,6 +30,7 @@ import {
 } from "../player/title-player.ts";
 import { call } from "./ipc.ts";
 import { queries, updateSubscriptionPreferences } from "./queries.ts";
+import { usePresentationVisible } from "./presentation.ts";
 
 export {
   automaticVersion,
@@ -156,26 +158,39 @@ export function useInContinueWatching(title: Title): boolean {
 
 /**
  * Continue watching from the viewing record, at most `limit`: core's `continueEntries`, with the
- * titles from the lists, so showing the row asks the provider nothing.
+ * titles from the lists, so showing the row asks the provider nothing. Disabled rows have no
+ * title inputs; covered pages keep their inputs and displayed data while reads wait.
  */
-export function useContinueWatching(limit = CONTINUE_LIMIT): {
+export function useContinueWatching(
+  limit = CONTINUE_LIMIT,
+  enabled = true,
+): {
   readonly entries: readonly ContinueEntry[];
   readonly loading: boolean;
   readonly error: Error | null;
 } {
+  const visible = usePresentationVisible();
   const viewing = useQuery(queries.viewing());
   // All the record offers: the limit applies to what is left to show.
-  const items = viewing.data?.continueWatching ?? [];
-  const marks = viewing.data?.marked ?? [];
+  const items = enabled ? (viewing.data?.continueWatching ?? []) : [];
+  const marks = enabled ? (viewing.data?.marked ?? []) : [];
   /** The version each entry played: the movie, or the episode's series. */
   const played = ({ title }: TitleProgress): OwnedId =>
     title.kind === "movie" ? ownedId(title) : seriesOf(title);
   const versions = (kind: "movie" | "episode") =>
     items.flatMap((item) => (item.title.kind === kind ? [played(item)] : []));
-  const movies = useQuery(queries.titles("movie", versions("movie")));
-  const series = useQuery(
-    queries.titles("series", [...versions("episode"), ...marks.map((mark) => mark.series)]),
-  );
+  const movieVersions = versions("movie");
+  const seriesVersions = [...versions("episode"), ...marks.map((mark) => mark.series)];
+  const movies = useQuery({
+    ...queries.titles("movie", movieVersions),
+    enabled: visible && movieVersions.length > 0,
+    placeholderData: keepPreviousData,
+  });
+  const series = useQuery({
+    ...queries.titles("series", seriesVersions),
+    enabled: visible && seriesVersions.length > 0,
+    placeholderData: keepPreviousData,
+  });
   const byVersion = new Map(
     [...(movies.data ?? []), ...(series.data ?? [])].flatMap((title) =>
       title.versions.map((version) => [`${title.kind}:${ownedKey(version)}`, title] as const),

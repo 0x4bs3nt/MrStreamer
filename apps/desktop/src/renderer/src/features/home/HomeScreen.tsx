@@ -20,6 +20,7 @@ import { PosterTile, StillTile } from "../../components/TitleArt.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { useNow } from "../../lib/clock.ts";
+import { usePresentationVisible } from "../../lib/presentation.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import {
   categoryOf,
@@ -85,6 +86,7 @@ function useBrowse(): (list: ChannelList) => void {
 }
 
 export function HomeScreen({ active }: { active: boolean }) {
+  const visible = usePresentationVisible();
   const browse = useBrowse();
   const subscriptions = useSubscriptions();
   const mappedOnly =
@@ -123,6 +125,9 @@ export function HomeScreen({ active }: { active: boolean }) {
   const posters = fit(POSTER_REM);
   const preferences = useQuery(queries.preferences());
   const rows = homeRows(preferences.data?.homeRows);
+  const allowed = (id: HomeRowId) =>
+    preferences.isSuccess && rows.some((row) => row.id === id && row.visible);
+  const needs = (id: HomeRowId) => visible && allowed(id);
   const channelRows = { favourites, recent, category: inCategory };
   const isChannelRow = (id: HomeRowId): id is keyof typeof channelRows => id in channelRows;
   const promoted = rows
@@ -134,12 +139,25 @@ export function HomeScreen({ active }: { active: boolean }) {
     recent: recent.slice(0, promoted === "recent" ? 6 : columns),
     category: inCategory.slice(0, promoted === "category" ? 6 : columns),
   };
-  const newMovies = useHomeTitles("movie", posters, titleCollection);
-  const newSeries = useHomeTitles("series", posters, titleCollection);
-  // Home's first Watchlist page always excludes adult saves; the full list has its own query.
   const onDemand = subscriptions.some(hasTitles);
-  const saved = useQuery({ ...queries.watchlist("saved", 0, PAGE, true), enabled: onDemand }).data;
-  const continuing = useContinueWatching();
+  const newMovies = useHomeTitles(
+    "movie",
+    posters,
+    titleCollection,
+    onDemand && needs("new-movies"),
+  );
+  const newSeries = useHomeTitles(
+    "series",
+    posters,
+    titleCollection,
+    onDemand && needs("new-series"),
+  );
+  // Home's first Watchlist page always excludes adult saves; the full list has its own query.
+  const saved = useQuery({
+    ...queries.watchlist("saved", 0, PAGE, true),
+    enabled: onDemand && needs("watchlist"),
+  }).data;
+  const continuing = useContinueWatching(undefined, allowed("continue"));
   const resume = useResume();
   const removal = useRemoveFromContinue();
   const playing = notForAdults(usePlayer((state) => state.channel));
@@ -158,7 +176,11 @@ export function HomeScreen({ active }: { active: boolean }) {
     ],
     [playing, last, shown.favourites, shown.recent, shown.category],
   );
-  const listings = useQuery(queries.listings(listed)).data ?? {};
+  const listings =
+    useQuery({
+      ...queries.listings(listed),
+      enabled: visible && listed.length > 0,
+    }).data ?? {};
   // Without a last channel, a favourite on now, or the first in your category, stands still.
   const hero =
     playing ??
@@ -176,7 +198,7 @@ export function HomeScreen({ active }: { active: boolean }) {
     useQuery({
       queryKey: ["ondemand", "home-recommendations", seeds],
       queryFn: () => call("ondemand.recommendations", { seeds }),
-      enabled: onDemand && seeds.length > 0,
+      enabled: onDemand && needs("recommendations") && seeds.length > 0,
       staleTime: Infinity,
     }).data ?? [];
   const notice = catalogueState(categories);
@@ -478,8 +500,12 @@ function useHomeTitles(
   kind: TitleKind,
   count: number,
   collection: "all" | "new-month",
+  enabled: boolean,
 ): readonly Title[] {
-  const page = useQuery(queries.collection(kind, collection, undefined, 0, Math.max(count, 1)));
+  const page = useQuery({
+    ...queries.collection(kind, collection, undefined, 0, Math.max(count, 1)),
+    enabled,
+  });
   return page.data?.titles.slice(0, count) ?? NO_TITLES;
 }
 

@@ -8,6 +8,20 @@ export function normalize(text: string): string {
     .trim();
 }
 
+/** Punctuation between letters/digits may join a name; ordinary spaces never do. */
+const JOINER = /(?<=[\p{L}\p{N}]\p{M}*)['’ʼ\p{Pd}](?=[\p{L}\p{N}])/gu;
+
+/** The ordinary spelling and, when different, one joined apostrophe/hyphen alternative. */
+export function searchSpellings(text: string): readonly string[] {
+  const normal = normalize(text);
+  if (!normal) return [];
+  const compatible = text.normalize("NFKC");
+  const withoutJoiners = compatible.replace(JOINER, "");
+  if (withoutJoiners === compatible) return [normal];
+  const joined = normalize(withoutJoiners);
+  return normal === joined ? [normal] : [normal, joined];
+}
+
 /** A search's words, folded as `normalize` folds text: " Één, HD" becomes "een" and "hd". */
 export function searchWords(query: string): string[] {
   return normalize(query).split(" ").filter(Boolean);
@@ -31,15 +45,35 @@ export function matchRanges(
     folded += piece;
     for (let unit = 0; unit < piece.length; unit++) sources.push([index, index + character.length]);
   }
+  // Keep original character ranges when a joined spelling spans an apostrophe or hyphen.
+  const joiners = new Set([...text.matchAll(JOINER)].map((match) => match.index));
+  let joined = "";
+  const joinedSources: (readonly [number, number])[] = [];
+  for (const [at, source] of sources.entries()) {
+    if (joiners.has(source[0])) continue;
+    joined += folded[at];
+    joinedSources.push(source);
+  }
+  const spellings = [[folded, sources] as const];
+  if (joined !== folded) spellings.push([joined, joinedSources]);
   const found: [number, number][] = [];
   for (const word of words) {
-    let at = folded.indexOf(word);
-    if (at === -1) return [];
-    for (; at !== -1; at = folded.indexOf(word, at + word.length)) {
-      const start = sources[at]?.[0];
-      const end = sources[at + word.length - 1]?.[1];
-      if (start !== undefined && end !== undefined) found.push([start, end]);
+    let matched = false;
+    for (const [spelling, positions] of spellings) {
+      for (
+        let at = spelling.indexOf(word);
+        at !== -1;
+        at = spelling.indexOf(word, at + word.length)
+      ) {
+        const start = positions[at]?.[0];
+        const end = positions[at + word.length - 1]?.[1];
+        if (start !== undefined && end !== undefined) {
+          found.push([start, end]);
+          matched = true;
+        }
+      }
     }
+    if (!matched) return [];
   }
   // Words that overlap or touch read as one mark.
   const ranges: [number, number][] = [];

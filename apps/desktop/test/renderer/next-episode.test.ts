@@ -42,6 +42,7 @@ vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
         ended = listener;
       },
       position: () => run.start,
+      played: () => 0,
       seekWithin: () => false,
       onSubtitles() {},
       hideSubtitles() {},

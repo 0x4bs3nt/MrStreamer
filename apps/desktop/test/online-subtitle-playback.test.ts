@@ -257,7 +257,7 @@ describe.skipIf(!hasTools)("saved subtitles of the actual playback session", () 
     }
   }, 30_000);
 
-  it("keeps a playing episode's rights after 200 other titles' details were read, asking the provider whether it still lists the file", async () => {
+  it("restores a playing episode's fresh file evidence after memory eviction and renews it after refresh", async () => {
     const all = await started(210);
     const { provider, service, runtime, titles, playback, subtitles, subscriptionId } = all;
     const { open, relist } = secondEpisode(all);
@@ -284,11 +284,15 @@ describe.skipIf(!hasTools)("saved subtitles of the actual playback session", () 
       });
       await subtitles.show(playing.sessionId, saved.selection);
       expect((await subtitles.search(playing.sessionId)).results).toHaveLength(1);
-      // Its series was asked for once, and kept again.
+      // Fresh persisted evidence survives memory eviction without another provider request.
+      expect(provider.detailRequests()).toBe(asked);
+      await titles.refresh(subscriptionId);
+      await subtitles.saved(playing.sessionId);
       expect(provider.detailRequests()).toBe(asked + 1);
 
-      // Not kept again, and the provider has no answer: nothing is taken for listed.
+      // A new accepted catalogue needs renewal even if the display is still cached.
       await readOthers();
+      await titles.refresh(subscriptionId);
       provider.failDetails(503);
       await expect(subtitles.saved(playing.sessionId)).rejects.toBeDefined();
       await expect(subtitles.search(playing.sessionId)).rejects.toBeDefined();

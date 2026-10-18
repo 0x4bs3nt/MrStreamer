@@ -34,6 +34,7 @@ import * as Fiber from "effect/Fiber";
 import { describe, expect, it, vi } from "vitest";
 import { guideIndexerLayer } from "../src/main/platform/guide-indexer.ts";
 import { guideSearcherLayer } from "../src/main/platform/guide-searcher.ts";
+import type { GuideSearchRequest } from "../src/main/platform/guide-searcher.ts";
 import { guideStoreLayer } from "../src/main/platform/guide-store.ts";
 import { guideIndexWorker, guideSearchWorker, runtimeFor, tempDir } from "./support.ts";
 
@@ -89,11 +90,12 @@ const tv = (...elements: string[]) =>
 function catalogue(
   count = 1,
   before: Readonly<Record<string, readonly string[]>> = {},
+  subscriptionId = ID,
 ): CatalogueChannels {
   const all = Array.from({ length: count }, (_, at): LiveChannel => {
     const id = String(at + 1);
     return {
-      subscriptionId: ID,
+      subscriptionId,
       id,
       name: `Channel ${id}`,
       title: `Channel ${id}`,
@@ -165,6 +167,7 @@ async function standalone({
   aliases = {},
   searchWorker = guideSearchWorker,
   searchTimeout,
+  subscriptions = [],
 }: {
   readonly channels?: number;
   /** Guide ids a channel names before its own, by channel id. */
@@ -172,6 +175,8 @@ async function standalone({
   /** Starts the search worker, as the app does unless a test says otherwise. */
   readonly searchWorker?: (options: WorkerOptions) => Worker;
   readonly searchTimeout?: number;
+  /** Other saved accounts, each with its own store and catalogue but the same download fixture. */
+  readonly subscriptions?: readonly string[];
 } = {}) {
   const dir = await tempDir();
   /** Where the sources are kept. */
@@ -265,32 +270,35 @@ async function standalone({
         ),
     })),
   ).pipe(Layer.provide(guideStoreLayer));
+  const stores = new Map([[ID, dir]]);
+  for (const id of subscriptions) stores.set(id, await tempDir());
   const listed = catalogue(channels, aliases);
+  const catalogues = new Map(subscriptions.map((id) => [id, catalogue(channels, aliases, id)]));
   const ports = Layer.mergeAll(
     store,
     indexer,
     guideSearcherLayer(searchWorker, searchTimeout),
     Layer.succeed(GuideSource, {
       sources: sourcesDir,
-      saved: Effect.succeed([
-        {
-          id: ID,
+      saved: Effect.succeed(
+        [...stores].map(([id, store]) => ({
+          id,
           revision: 1,
           key: "account",
-          store: dir,
+          store,
           archive: GUIDE_ARCHIVE_MS,
           download: async () => ({ kind: "document" as const, ...(await answer()) }),
-        },
-      ]),
+        })),
+      ),
     }),
     // Every read of the channels waits while the test holds them.
     Layer.succeed(GuideCatalogue, {
-      channels: () =>
+      channels: (id) =>
         Effect.andThen(
           Effect.promise(async () => {
             if (listing) await listing.wait();
           }),
-          Effect.succeed(listed),
+          Effect.succeed(catalogues.get(id) ?? listed),
         ),
     }),
     Layer.succeed(GuideAddresses, {
@@ -319,6 +327,7 @@ async function standalone({
   return {
     dir,
     sourcesDir,
+    stores,
     runtime,
     run,
     guide,
@@ -1070,6 +1079,174 @@ describe("work stopped on its way to becoming the guide", () => {
   });
 });
 
+describe("searching across saved accounts", () => {
+  const shows = [
+    { id: ID, now: "1950", later: "2100", title: "News own" },
+    { id: "second", now: "2000", later: "2030", title: "News second" },
+    { id: "third", now: "1900", later: "2200", title: "News third" },
+  ];
+  const ids = shows.map(({ id }) => id);
+
+  /** Real searches, except accounts whose index has become unreadable to the worker. */
+  async function accounts() {
+    let unreadable: readonly string[] = [];
+    const fixture = await standalone({
+      subscriptions: ids.slice(1),
+      searchWorker: (options) => {
+        const worker = guideSearchWorker(options);
+        const post = worker.postMessage.bind(worker);
+        worker.postMessage = (request: GuideSearchRequest) =>
+          post({
+            ...request,
+            search: {
+              ...request.search,
+              path: unreadable.some((dir) => request.search.path.startsWith(`${dir}/`))
+                ? `${request.search.path}.missing`
+                : request.search.path,
+            },
+          });
+        return worker;
+      },
+    });
+    for (const { id, now, later, title } of shows) {
+      fixture.serve(
+        tv(
+          programme("one.test", now, later, `${title} now`),
+          programme("one.test", later, "2300", `${title} later`),
+          programme("not-listed.test", "1800", "2300", "News unlisted"),
+        ),
+      );
+      await fixture.run(fixture.guide.refresh(id));
+    }
+    // A lower-priority source must not replace the programmes of an account's own guide.
+    fixture.serveElsewhere(tv(programme("one.test", "1800", "2300", "News wrong source")));
+    await fixture.addSource();
+    return {
+      ...fixture,
+      fail(ids: readonly string[]) {
+        unreadable = ids.flatMap((id) => fixture.stores.get(id) ?? []);
+      },
+    };
+  }
+
+  it.each(ids)("keeps healthy programme sources and ordering when %s fails", async (broken) => {
+    const { run, guide, fail } = await accounts();
+    fail([broken]);
+    const found = await run(guide.search("news"));
+    expect(
+      found.map(({ channel, programme }) => [channel.subscriptionId, programme.title]),
+    ).toEqual(
+      [
+        ["third", "News third now"],
+        [ID, "News own now"],
+        ["second", "News second now"],
+        ["second", "News second later"],
+        [ID, "News own later"],
+        ["third", "News third later"],
+      ].filter(([id]) => id !== broken),
+    );
+  });
+
+  it.each(ids)("keeps healthy owned channel matches when %s fails", async (broken) => {
+    const { run, guide, fail } = await accounts();
+    fail([broken]);
+    const channels = ids.map((subscriptionId) => ({ subscriptionId, id: "1" }));
+    const expected = [
+      [ID, { now: true, later: { start: at("21:00"), title: "News own later" } }],
+      ["second", { now: true, later: { start: at("20:30"), title: "News second later" } }],
+      ["third", { now: true, later: { start: at("22:00"), title: "News third later" } }],
+    ] as const;
+    expect(await run(guide.searchChannels("news", channels, at("23:00")))).toEqual(
+      Object.fromEntries(
+        expected
+          .filter(([subscriptionId]) => subscriptionId !== broken)
+          .map(([subscriptionId, match]) => [ownedKey({ subscriptionId, id: "1" }), match]),
+      ),
+    );
+  });
+
+  it("keeps the global first-fifty cap and merges healthy accounts by programme time", async () => {
+    const { run, guide, fail, serve } = await accounts();
+    fail([ID]);
+    for (const [offset, id] of ["second", "third"].entries()) {
+      serve(
+        tv(
+          ...Array.from({ length: 26 }, (_, index) => {
+            const minute = index * 2 + offset;
+            return programme(
+              "one.test",
+              String(2100 + minute),
+              String(2101 + minute),
+              `Bulletin ${minute}`,
+            );
+          }),
+        ),
+      );
+      await run(guide.refresh(id));
+    }
+    expect(
+      (await run(guide.search("bulletin"))).map(({ channel, programme }) => [
+        channel.subscriptionId,
+        programme.title,
+      ]),
+    ).toEqual(
+      Array.from({ length: 50 }, (_, minute) => [
+        minute % 2 === 0 ? "second" : "third",
+        `Bulletin ${minute}`,
+      ]),
+    );
+  });
+
+  it("reports typed failure when every relevant account fails, including a filtered channel search", async () => {
+    const { run, guide, fail } = await accounts();
+    fail(ids);
+    await expect(run(guide.search("news"))).rejects.toBeInstanceOf(Failed);
+    await expect(
+      run(
+        guide.searchChannels(
+          "news",
+          ids.map((subscriptionId) => ({ subscriptionId, id: "1" })),
+          at("23:00"),
+        ),
+      ),
+    ).rejects.toBeInstanceOf(Failed);
+    // Unrequested saved accounts cannot turn a failed search into an empty success.
+    await expect(
+      run(guide.searchChannels("news", [{ subscriptionId: ID, id: "1" }], at("23:00"))),
+    ).rejects.toBeInstanceOf(Failed);
+  });
+
+  it("counts a successfully read empty result, but no guide cannot hide the only failure", async () => {
+    const { run, guide, fail, stores } = await accounts();
+    fail([ID]);
+    expect(await run(guide.search("unmatched"))).toEqual([]);
+    expect(
+      await run(
+        guide.searchChannels(
+          "unmatched",
+          ids.map((subscriptionId) => ({ subscriptionId, id: "1" })),
+          at("23:00"),
+        ),
+      ),
+    ).toEqual({});
+    // Remove shared and other own guides so those saved accounts cannot be searched at all.
+    for (const source of await run(guide.sources)) await run(guide.removeSource(source.id));
+    for (const [id, store] of stores) {
+      if (id !== ID) await run(guide.forget({ id, store }));
+    }
+    await expect(run(guide.search("news"))).rejects.toBeInstanceOf(Failed);
+    await expect(
+      run(
+        guide.searchChannels(
+          "news",
+          ids.map((subscriptionId) => ({ subscriptionId, id: "1" })),
+          at("23:00"),
+        ),
+      ),
+    ).rejects.toBeInstanceOf(Failed);
+  });
+});
+
 describe("a search that doesn't answer", () => {
   it.each(["its time running out", "the app quitting"] as const)(
     "settles once its worker has ended, when it is stopped and %s come together",
@@ -1114,7 +1291,7 @@ describe("a search that doesn't answer", () => {
     },
   );
 
-  it("is given up after its time, its worker ended, and the next search starts another", async () => {
+  it("reports a timed out search, ends its worker, and starts another for the next search", async () => {
     let started = 0;
     const { run, guide, serve } = await standalone({
       searchWorker: (options) => {
@@ -1126,8 +1303,14 @@ describe("a search that doesn't answer", () => {
     serve(tv(programme("one.test", "2000", "2100", "News")));
     await run(guide.refresh(ID));
 
-    expect(await run(guide.search("news"))).toEqual([]);
-    expect(await run(guide.search("news"))).toEqual([]);
+    await expect(run(guide.search("news"))).rejects.toMatchObject({
+      error: { kind: "unexpected", detail: "The guide's search took too long." },
+    });
+    await expect(
+      run(guide.searchChannels("news", [{ subscriptionId: ID, id: "1" }], NOW + 60_000)),
+    ).rejects.toMatchObject({
+      error: { kind: "unexpected", detail: "The guide's search took too long." },
+    });
     expect(started).toBe(2);
   });
 
@@ -1183,4 +1366,66 @@ describe("a search of many matching titles", () => {
     expect(found[0]?.programme.title).toBe("Ordinary show 0");
     expect(found[49]?.programme.title).toBe("Ordinary show 49");
   });
+});
+
+it("drops abandoned queued guide searches and waits for active termination before starting useful work", async () => {
+  const ending = held();
+  const active = Promise.withResolvers<void>();
+  const launched: string[] = [];
+  let starts = 0;
+  const runtime = runtimeFor(
+    guideSearcherLayer((options) => {
+      starts++;
+      const worker = new Worker(
+        `
+      const { parentPort } = require("node:worker_threads");
+      parentPort.on("message", request => {
+        parentPort.postMessage({ observed: request.search.path });
+        if (request.search.path !== "blocked") parentPort.postMessage({ id: request.id, kind: "first", found: [] });
+      });
+    `,
+        { ...options, eval: true },
+      );
+      worker.on("message", (message: { observed?: string }) => {
+        if (!message.observed) return;
+        launched.push(message.observed);
+        if (message.observed === "blocked") active.resolve();
+      });
+      const terminate = worker.terminate.bind(worker);
+      if (starts === 1)
+        worker.terminate = async () => {
+          await ending.wait();
+          return terminate();
+        };
+      return worker;
+    }),
+  );
+  try {
+    const searcher = await runtime.runPromise(GuideSearcher);
+    const running = new AbortController(),
+      queued = new AbortController();
+    const ask = (path: string, signal: AbortSignal) =>
+      searcher.first({ path, words: ["fixture"], at: NOW, channels: [1], limit: 50 }, signal);
+    let stopped = false;
+    const first = ask("blocked", running.signal).catch(() => {
+      stopped = true;
+    });
+    await active.promise;
+    const abandoned = ask("abandoned", queued.signal);
+    const useful = ask("useful", new AbortController().signal);
+    queued.abort();
+    await expect(abandoned).rejects.toThrow();
+    running.abort();
+    await ending.arrived;
+    expect(stopped).toBe(false);
+    expect(launched).toEqual(["blocked"]);
+    ending.release();
+    await first;
+    expect(await useful).toEqual([]);
+    expect(launched).toEqual(["blocked", "useful"]);
+    expect(starts).toBe(2);
+  } finally {
+    ending.release();
+    await runtime.dispose();
+  }
 });

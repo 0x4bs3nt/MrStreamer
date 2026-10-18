@@ -2,7 +2,8 @@ import type { AnalyticsPlaybackState } from "@mrstreamer/contracts/analytics";
 import { observeMediaPlayback } from "./analytics.ts";
 // Playback engines behind one interface, so the rest of the UI only ever talks to `Engine`. The
 // main process delivers each stream in codecs these engines decode; see src/main/playback.
-import Hls from "hls.js";
+import Hls, { type ErrorData } from "hls.js";
+import type { PlaybackFailureSelector } from "@mrstreamer/contracts/ipc";
 import mpegts from "mpegts.js";
 import type { StreamFormat } from "@mrstreamer/contracts/playback";
 import { t } from "@mrstreamer/core/i18n";
@@ -35,6 +36,8 @@ export interface EngineError {
    */
   readonly kind: "network" | "media" | "unsupported" | "wrong-container";
   readonly detail: string;
+  /** HLS transport context, captured before teardown. Never contains an upstream address. */
+  readonly failure?: PlaybackFailureSelector;
 }
 
 export function isEngineError(value: unknown): value is EngineError {
@@ -107,7 +110,7 @@ export function createEngine(
 ): Engine {
   if (format === "mpegts") return mpegtsEngine(video, url, ends);
   if (Hls.isSupported()) return hlsEngine(video, url, sound, ends);
-  return nativeEngine(video, url, ends);
+  return nativeEngine(video, url, ends, { kind: "hls", requestId: null });
 }
 
 function mpegtsEngine(video: HTMLVideoElement, url: string, ends: number | null): Engine {
@@ -221,15 +224,11 @@ function hlsEngine(
       hls.destroy();
     },
     ends,
+    { kind: "hls", requestId: null },
   );
   hls.on(Hls.Events.ERROR, (_event, data) => {
     if (tracks.subtitleError(data) || !data.fatal) return;
-    if (data.type === Hls.ErrorTypes.NETWORK_ERROR)
-      return life.fail({ kind: "network", detail: data.details });
-    const unsupported =
-      data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR ||
-      data.details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR;
-    life.fail({ kind: unsupported ? "unsupported" : "media", detail: data.details });
+    life.fail(hlsError(data, url));
   });
   hls.loadSource(url);
   hls.attachMedia(video);
@@ -253,13 +252,70 @@ function hlsEngine(
   };
 }
 
+/** Maps an HLS failure before teardown discards its loader and fragment context. */
+function hlsError(data: ErrorData, source: string): EngineError {
+  // hls.js also groups malformed/empty playlist content under NETWORK_ERROR.
+  const parsing = [
+    Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
+    Hls.ErrorDetails.LEVEL_PARSING_ERROR,
+    Hls.ErrorDetails.LEVEL_EMPTY_ERROR,
+  ].includes(data.details);
+  const network = data.type === Hls.ErrorTypes.NETWORK_ERROR && !parsing;
+  const unsupported =
+    data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR ||
+    data.details === Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR;
+  // Only loader failures select a request. Parsing errors can also carry a URL or fragment, even
+  // when hls.js labels them network errors. A key failure must never select its media fragment.
+  const transport = [
+    Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
+    Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
+    Hls.ErrorDetails.LEVEL_LOAD_ERROR,
+    Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT,
+    Hls.ErrorDetails.AUDIO_TRACK_LOAD_ERROR,
+    Hls.ErrorDetails.AUDIO_TRACK_LOAD_TIMEOUT,
+    Hls.ErrorDetails.FRAG_LOAD_ERROR,
+    Hls.ErrorDetails.FRAG_LOAD_TIMEOUT,
+    Hls.ErrorDetails.KEY_LOAD_ERROR,
+    Hls.ErrorDetails.KEY_LOAD_TIMEOUT,
+  ].includes(data.details);
+  const address =
+    data.response?.url ??
+    data.context?.url ??
+    data.url ??
+    (data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR ||
+    data.details === Hls.ErrorDetails.FRAG_LOAD_TIMEOUT
+      ? (data.part?.url ?? data.frag?.url)
+      : undefined);
+  const base = URL.parse(source);
+  const request = address ? URL.parse(address) : null;
+  const prefix = base?.pathname.replace(/\.m3u8$/, "/");
+  const requestId =
+    network &&
+    transport &&
+    base &&
+    request &&
+    request.origin === base.origin &&
+    (request.pathname === base.pathname ||
+      (prefix?.endsWith("/") &&
+        request.pathname.startsWith(prefix) &&
+        /^[0-9a-z]+$/.test(request.pathname.slice(prefix.length))))
+      ? request.pathname
+      : null;
+  return {
+    kind: network ? "network" : unsupported ? "unsupported" : "media",
+    detail: data.details,
+    failure: { kind: "hls", requestId },
+  };
+}
+
 /** Chromium's own player. Plays progressive files and raw audio streams such as AAC radio. */
 export function nativeEngine(
   video: HTMLVideoElement,
   url: string,
   ends: number | null = null,
+  failure?: PlaybackFailureSelector,
 ): Engine {
-  const life = lifecycle(video, () => {}, ends);
+  const life = lifecycle(video, () => {}, ends, failure);
   video.src = url;
   void video.play().catch(() => {});
   return {
@@ -294,7 +350,12 @@ function failedEngine(name: EngineName, video: HTMLVideoElement, error: EngineEr
  * A stream that `ends` is over once it played that many milliseconds, or when the element reaches
  * the end of what arrived, which no watchdog counts as a stall: the engine says it ended instead.
  */
-function lifecycle(video: HTMLVideoElement, teardown: () => void, ends: number | null) {
+function lifecycle(
+  video: HTMLVideoElement,
+  teardown: () => void,
+  ends: number | null,
+  failure?: PlaybackFailureSelector,
+) {
   const observation = observeMediaPlayback(video);
   let settled = false;
   let finished = false;
@@ -373,6 +434,7 @@ function lifecycle(video: HTMLVideoElement, teardown: () => void, ends: number |
   function fail(error: EngineError): void {
     if (finished) return;
     finished = true;
+    if (failure && !error.failure) error = { ...error, failure };
     detach();
     if (!settled) {
       settled = true;
@@ -388,7 +450,12 @@ function lifecycle(video: HTMLVideoElement, teardown: () => void, ends: number |
     const error = video.error;
     const unsupported = error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED;
     fail({
-      kind: unsupported ? "unsupported" : "media",
+      kind:
+        error?.code === MediaError.MEDIA_ERR_NETWORK
+          ? "network"
+          : unsupported
+            ? "unsupported"
+            : "media",
       detail: error?.message || t("The stream could not be decoded."),
     });
   };

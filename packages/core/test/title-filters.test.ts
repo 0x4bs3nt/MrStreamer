@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
-import { indexCatalogue } from "../src/ondemand/catalogue.ts";
+import { indexCatalogue, searchPage } from "../src/ondemand/catalogue.ts";
 import { filterOptions, filterTitles, type FilterFiles } from "../src/ondemand/filters.ts";
 import { languageHints, suitability, versionLabels } from "../src/ondemand/languages.ts";
 import type { OnDemandCatalogue, ProviderTitle } from "../src/provider.ts";
@@ -40,6 +40,29 @@ const tracks = (audio: readonly (string | null)[], subtitles: readonly (string |
 });
 
 describe("current-kind library filters", () => {
+  it("applies every ranked-search filter to one real file while retaining the title's choices", () => {
+    const files: FilterFiles = new Map([
+      [key("en"), [{ tags: ["FHD", "EN"], tracks: tracks(["en"], ["nl"]) }]],
+      [key("nl"), [{ tags: ["4K", "NL"], tracks: tracks(["nl"], ["en"]) }]],
+    ]);
+    expect(
+      searchPage(index, "movie", "harbour", undefined, 1, {
+        filters: { quality: "4k", language: "nl", verified: { kind: "subtitles", language: "nl" } },
+        files,
+      }),
+    ).toEqual({ titles: [], total: 0, unfiltered: 1 });
+    const page = searchPage(index, "movie", "harbour", undefined, 1, {
+      filters: { quality: "4k", language: "nl", verified: { kind: "audio", language: "nl" } },
+      files,
+    });
+    expect(page).toMatchObject({
+      total: 1,
+      unfiltered: 1,
+      titles: [{ id: "nl", subscriptionId: "provider", tags: ["NL", "4K"] }],
+    });
+    expect(page.titles[0]?.versions).toEqual(index.movies.titles[0]?.versions);
+  });
+
   it("keeps original sound and multiple subtitle marks out of generic multiple-language hints", () => {
     expect(languageHints(["VO"])).toEqual(["unknown"]);
     expect(languageHints(["MULTISUB"])).toEqual(["unknown"]);

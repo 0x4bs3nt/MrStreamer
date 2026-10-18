@@ -189,9 +189,25 @@ export function metric(
 
 export function validateMeasurement(input: unknown): Measurement {
   const result = Result.assert(input);
+  const searchRuns =
+    result.tool === "app" && result.workload["warmSearchRunsPerQuery"]
+      ? positiveCount(
+          String(result.workload["warmSearchRunsPerQuery"]),
+          "warmSearchRunsPerQuery",
+          100,
+        )
+      : 0;
   const expected =
     result.tool === "app"
-      ? APP_METRICS
+      ? {
+          ...APP_METRICS,
+          ...(searchRuns
+            ? result.workload["searchResultCache"] === "uncached"
+              ? APP_UNCACHED_SEARCH_METRICS
+              : APP_SEARCH_METRICS
+            : {}),
+          ...(result.workload["coldSearch"] ? { "cold process exact title search": "ms" } : {}),
+        }
       : result.tool === "guide"
         ? GUIDE_METRICS
         : result.tool === "viewing"
@@ -235,7 +251,9 @@ export function validateMeasurement(input: unknown): Measurement {
       const count =
         name === "installed size (MB)" || name === "streams opened, Home to Watch (count)"
           ? 1
-          : runs;
+          : name in APP_SEARCH_METRICS || name in APP_UNCACHED_SEARCH_METRICS
+            ? searchRuns
+            : runs;
       if (measure.samples.length !== count) throw new Error(`Incomplete samples: ${name}`);
     }
     if (!result.calibration?.length) throw new Error("Missing renderer calibration");
@@ -513,6 +531,20 @@ export const APP_METRICS = {
   "long series details, name shown": "ms",
   "long series details, episodes shown": "ms",
   "installed size (MB)": "MB",
+} as const;
+
+/** Optional, complete warm-cache palette corpus. It never changes the ordinary app metric set. */
+export const APP_SEARCH_METRICS = {
+  "warm palette: H.264 + AAC": "ms",
+  "warm palette: TEST | Index at the end": "ms",
+  "warm palette: news": "ms",
+} as const;
+
+/** Same normalized corpus, with a warm catalogue and distinct uncached raw queries. */
+export const APP_UNCACHED_SEARCH_METRICS = {
+  "uncached palette: H.264 + AAC": "ms",
+  "uncached palette: TEST | Index at the end": "ms",
+  "uncached palette: news": "ms",
 } as const;
 
 export function electronVersion(executable: string): string {

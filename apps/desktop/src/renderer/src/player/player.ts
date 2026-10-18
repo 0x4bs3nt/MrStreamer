@@ -756,7 +756,10 @@ async function recover(
   repaired: boolean,
 ): Promise<void> {
   const [upstream, stream] = await Promise.all([
-    call("playback.failure", { sessionId: session.sessionId }).catch(() => null),
+    call("playback.failure", {
+      sessionId: session.sessionId,
+      ...(error.failure ? { selector: error.failure } : {}),
+    }).catch(() => null),
     call("playback.playing", { sessionId: session.sessionId }).catch(() => null),
   ]);
   if (mine !== selection) return;

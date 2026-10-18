@@ -410,6 +410,77 @@ it("replaces a missing copy through Delete then Add and keeps unrelated copies",
   expect(ipc.argsOf("downloads.add")[0]?.title.id).toBe("0-1");
 });
 
+it("uses events received during an awaited addition for subsequent skip, retry and missing-copy decisions", async () => {
+  const first = ipc.hold("downloads.add");
+  const page = await mount();
+  await page.open();
+  await page.click("Download 5 episodes");
+  await until(() => expect(ipc.argsOf("downloads.add")).toHaveLength(1));
+  await page.changed([
+    download(episodes[0]!, { kind: "complete" }),
+    download(episodes[2]!, { kind: "queued" }),
+    {
+      ...download(episodes[1]!, { kind: "failed", failure: { kind: "disk-full", needed: null } }),
+      id: "new-failure",
+    },
+    { ...download(episodes[3]!, { kind: "missing" }), id: "new-missing" },
+  ]);
+  await act(async () => first.resolve(download(episodes[4]!, { kind: "queued" })));
+  await until(() =>
+    expect(page.container.textContent).toContain(
+      "Queued 3 episodes. 1 already downloaded, 1 already queued.",
+    ),
+  );
+  expect(ipc.argsOf("downloads.add").map(({ title }) => title.id)).toEqual(["2-2", "2-1"]);
+  expect(ipc.argsOf("downloads.retry")).toEqual([{ id: "new-failure" }]);
+  expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "new-missing" }]);
+});
+
+it("cancels against the latest full snapshot after every awaited removal", async () => {
+  const first = ipc.hold("downloads.remove");
+  const page = await mount([
+    download(episodes[4]!, { kind: "queued" }),
+    download(episodes[0]!, { kind: "queued" }),
+  ]);
+  await page.open();
+  await page.click("Cancel the rest");
+  await until(() => expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "d-2-2" }]));
+  await page.changed([
+    download(episodes[0]!, { kind: "complete" }),
+    { ...download(episodes[2]!, { kind: "queued" }), id: "new-queued" },
+  ]);
+  await act(async () => first.resolve(null));
+  await until(() =>
+    expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "d-2-2" }, { id: "new-queued" }]),
+  );
+});
+
+it("keeps visible series counts and aggregate progress current for its own files", async () => {
+  const files = episodes.slice(1, 4).map((episode) => download(episode, { kind: "complete" }));
+  const running = (received: number) =>
+    download(episodes[0]!, {
+      kind: "transferring",
+      received,
+      size: 100,
+      rate: null,
+      restarted: false,
+    });
+  const page = await mount([...files, running(20)]);
+  const progress = () =>
+    page.container.querySelector<HTMLElement>(
+      'button[aria-label="Download options: 3 of 5"] .w-8 > span',
+    )?.style.width;
+  await until(() => expect(progress()).toBe("64%"));
+  await page.changed([...files, running(80)]);
+  await until(() => expect(progress()).toBe("76%"));
+  await page.changed([...files, download(episodes[0]!, { kind: "complete" })]);
+  await until(() =>
+    expect(
+      page.container.querySelector('[aria-label="Download options: Download 1 new"]'),
+    ).not.toBeNull(),
+  );
+});
+
 it.each(["success", "failure"])(
   "stops additions and suppresses a late %s after episode files change",
   async (outcome) => {

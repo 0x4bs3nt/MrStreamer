@@ -34,10 +34,13 @@ import { Failed, failedWith } from "@mrstreamer/core/failure";
 import type { CatalogueChannels, GuideChannels } from "@mrstreamer/core/guide/programmes";
 import type { LiveCatalogue } from "@mrstreamer/core/provider";
 import { normalize } from "@mrstreamer/core/text";
+import { indexNames, nameQuery, scoreNames, type SearchNames } from "@mrstreamer/core/search/names";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -239,6 +242,15 @@ function make(options: LibraryOptions) {
     const fetchOne = (yield* Semaphore.make(FETCHES_AT_ONCE)).withPermits(1);
     /** Each subscription's catalogue, by its id, once read from disk or fetched. */
     const catalogues = new Map<string, IndexedCatalogue>();
+    /** Concurrent first reads share one disk read, without tying its life to one caller. */
+    const loading = new Map<
+      string,
+      {
+        readonly subscription: SavedSubscription;
+        readonly token: object;
+        readonly fiber: Fiber.Fiber<IndexedCatalogue | null>;
+      }
+    >();
     const refreshing = new Map<
       string,
       {
@@ -265,15 +277,55 @@ function make(options: LibraryOptions) {
       Effect.gen(function* () {
         const kept = catalogues.get(subscription.id);
         if (kept) return kept;
-        const stored = yield* Effect.promise(() =>
-          readJsonFile(cachePath(subscription), CachedCatalogue()),
-        );
-        if (stored?.key !== subscription.key) return null;
-        const file = readCatalogue(stored);
-        // Read by another call meanwhile, or fetched: that one stands.
-        const now = catalogues.get(subscription.id) ?? index(file, subscription.id, file.outdated);
-        catalogues.set(subscription.id, now);
-        return now;
+        const under = loading.get(subscription.id);
+        let running =
+          under &&
+          sameSource(subscription, under.subscription) &&
+          subscription.importRevision === under.subscription.importRevision
+            ? under
+            : null;
+        if (!running) {
+          if (under) {
+            loading.delete(subscription.id);
+            yield* Fiber.interrupt(under.fiber);
+          }
+          const token = {};
+          const fiber = yield* Effect.forkIn(
+            Effect.gen(function* () {
+              const stored = yield* Effect.promise(() =>
+                readJsonFile(cachePath(subscription), CachedCatalogue()),
+              );
+              if (
+                stored?.key !== subscription.key ||
+                loading.get(subscription.id)?.token !== token ||
+                !(yield* subscriptions.stands(subscription))
+              )
+                return null;
+              const file = readCatalogue(stored);
+              // A refresh accepted while disk was being read takes precedence.
+              const now =
+                catalogues.get(subscription.id) ?? index(file, subscription.id, file.outdated);
+              catalogues.set(subscription.id, now);
+              return now;
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (loading.get(subscription.id)?.token === token)
+                    loading.delete(subscription.id);
+                }),
+              ),
+            ),
+            scope,
+          );
+          running = { subscription, token, fiber };
+          loading.set(subscription.id, running);
+        }
+        // Removal or a newer source can stop this owned read. A waiting caller still cancels
+        // independently while awaiting it; only the read's own interruption means a cache miss.
+        const result = yield* Fiber.await(running.fiber);
+        if (Exit.isSuccess(result)) return result.value;
+        if (Cause.hasInterruptsOnly(result.cause)) return null;
+        return yield* Effect.failCause(result.cause);
       });
 
     const statusOf = (subscriptionId: string, shown: IndexedCatalogue | null): CatalogueStatus => {
@@ -528,7 +580,7 @@ function make(options: LibraryOptions) {
               );
             return plainChannels([...new Set(found)].map(lists.shown));
           }
-          if (query) return search(searched.channels, searched.searchNames, query);
+          if (query) return search(searched.channels, filter.query ?? "");
           if (!filter.category) return plainChannels(lists.channels);
           return plainChannels(lists.byCategory.get(ownedKey(filter.category)) ?? []);
         }),
@@ -555,6 +607,9 @@ function make(options: LibraryOptions) {
 
       forget: (subscription: SavedSubscription) =>
         Effect.gen(function* () {
+          const pending = loading.get(subscription.id);
+          loading.delete(subscription.id);
+          if (pending) yield* Fiber.interrupt(pending.fiber);
           catalogues.delete(subscription.id);
           failures.delete(subscription.id);
           // An added subscription's cache went with its folder.
@@ -741,22 +796,31 @@ function combine(members: readonly IndexedCatalogue[]): Combined {
   };
 }
 
+/** Independent name fields for relevance; guide mapping keeps its existing folded-name contract. */
+const rankedNames = new WeakMap<readonly LiveChannel[], readonly SearchNames[]>();
+
 /**
- * Every query word must appear in the channel name. Names that start with the query rank first,
- * then names with a word starting with it, then the rest. Ties keep the subscriptions' order,
- * and within one its provider's.
+ * Every query word must appear among the channel's names. Exact names precede prefixes, word
+ * starts and substrings, with the displayed name preferred within a tier. Ties keep the
+ * subscriptions' order, and within one its provider's. Grouping still uses the whole catalogue.
  */
-function search(
-  channels: readonly LiveChannel[],
-  names: readonly string[],
-  query: string,
-): readonly LiveChannel[] {
-  const words = query.split(" ");
+function search(channels: readonly LiveChannel[], query: string): readonly LiveChannel[] {
+  const asked = nameQuery(query);
+  let names = rankedNames.get(channels);
+  if (!names) {
+    names = channels.map((channel) =>
+      indexNames(
+        channel.title,
+        channel.variants.map((variant) => variant.name),
+      ),
+    );
+    rankedNames.set(channels, names);
+  }
   const ranked: { channel: LiveChannel; rank: number; order: number }[] = [];
   for (const [order, channel] of channels.entries()) {
-    const name = names[order] ?? "";
-    if (!words.every((word) => name.includes(word))) continue;
-    const rank = name.startsWith(query) ? 0 : ` ${name}`.includes(` ${query}`) ? 1 : 2;
+    const fields = names[order];
+    const rank = fields && scoreNames(asked, fields);
+    if (rank === undefined) continue;
     ranked.push({ channel, rank, order });
   }
   ranked.sort((a, b) => a.rank - b.rank || a.order - b.order);

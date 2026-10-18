@@ -102,6 +102,8 @@ export interface FakeProviderOptions {
   readonly guideHours?: { readonly past: number; readonly ahead: number };
   /** About how many movies and series to list, besides the test titles. */
   readonly titles?: number;
+  /** Exact series count, independent of movie count, including a requested long series. */
+  readonly series?: number;
   /**
    * Answers every request for a movie's or episode's file with the whole file, whatever range it
    * asks for, as a provider that knows no byte ranges does.
@@ -318,9 +320,9 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
   const catalogue = options.channelOf
     ? { ...built, channels: built.channels.map(options.channelOf) }
     : built;
-  const listed = buildTitles(options.titles ?? 120, options.second ?? false);
+  const listed = buildTitles(options.titles ?? 120, options.second ?? false, options.series);
   const titles = options.longSeries
-    ? { ...listed, series: [longSeries(), ...listed.series] }
+    ? { ...listed, series: [longSeries(), ...listed.series].slice(0, options.series) }
     : listed;
   const movieFiles = new Map(titles.movies.map((movie) => [String(movie.id), movie]));
   const episodeFiles = new Map(
@@ -1177,7 +1179,11 @@ const TEST_MOVIES: readonly {
 export const TITLES_ADDED = 1_790_000_000;
 
 /** Builds roughly `size` movies and series. The same size always gives the same titles. */
-function buildTitles(size: number, second: boolean): FakeTitles {
+function buildTitles(
+  size: number,
+  second: boolean,
+  seriesCount = Math.max(2, Math.floor(size / 4)),
+): FakeTitles {
   const random = mulberry32(size + 7);
   const base = TITLES_ADDED;
   const movieCategories = [
@@ -1262,7 +1268,7 @@ function buildTitles(size: number, second: boolean): FakeTitles {
         tmdb: "90000",
       },
     ];
-    for (let index = 0; series.length < Math.max(2, Math.floor(size / 4)); index++) {
+    for (let index = 0; series.length < seriesCount; index++) {
       const id = 80_001 + index;
       series.push({
         id,
@@ -1321,7 +1327,7 @@ function buildTitles(size: number, second: boolean): FakeTitles {
       seasons: [[episode(799_990, "title-h264-aac.mp4", "mp4")]],
     },
   ];
-  for (let index = 0; series.length < Math.max(2, Math.floor(size / 4)); index++) {
+  for (let index = 0; series.length < seriesCount; index++) {
     const word = WORDS[(index * 7) % WORDS.length] ?? "Earth";
     const id = 80_001 + index;
     series.push({

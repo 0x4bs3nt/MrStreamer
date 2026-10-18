@@ -5,7 +5,7 @@
 // subtitle service.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, createElement, type ReactElement } from "react";
+import { act, createElement, Profiler, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
@@ -356,6 +356,82 @@ describe("a copy playing offline", () => {
 
 describe("a movie's Download in its details", () => {
   const ref = { kind: "movie", subscriptionId: SUBSCRIPTION, id: "m1" } as const;
+
+  it("ignores other files' progress, follows exact identity and reassociation, and keeps the first duplicate", async () => {
+    const own = download({ status: { kind: "queued" } });
+    const collisions = [
+      download({ id: "other-account", subscription: { id: "other", name: "Other" } }),
+      download({ id: "detached", subscription: null }),
+      download({
+        id: "episode",
+        title: { kind: "episode", id: "m1", seriesId: "s", season: 1, episode: 1 },
+      }),
+      own,
+      download({ id: "duplicate", status: { kind: "missing" } }),
+    ];
+    ipc.always("downloads.list", list(collisions));
+    let commits = 0;
+    const details = await show(
+      createElement(
+        Profiler,
+        {
+          id: "movie",
+          onRender: () => {
+            commits++;
+          },
+        },
+        createElement(MovieDownload, { title: ref }),
+      ),
+      "button",
+    );
+    await until(() => labelled(details, "Queued, cancel download") !== null);
+    commits = 0;
+    await act(async () => {
+      ipc.emit(
+        "downloads.changed",
+        list([
+          ...collisions,
+          download({
+            id: "unrelated",
+            title: { kind: "movie", id: "other" },
+            status: { kind: "transferring", received: 62, size: 100, rate: null, restarted: false },
+          }),
+        ]),
+      );
+      await settle();
+    });
+    expect(commits).toBe(0);
+    expect(labelled(details, "Queued, cancel download")).not.toBeNull();
+    const transferring = {
+      ...own,
+      status: {
+        kind: "transferring" as const,
+        received: 42,
+        size: 100,
+        rate: null,
+        restarted: false,
+      },
+    };
+    await changed(
+      list([...collisions.slice(0, 3), transferring, collisions[4]!]),
+      () => labelled(details, "Downloading 42%, cancel download") !== null,
+    );
+    await click(labelled(details, "Downloading 42%, cancel download"));
+    expect(ipc.argsOf("downloads.remove")).toEqual([{ id: own.id }]);
+    // With both exact records detached, no collision grants a copy of this file.
+    const detached = collisions.map((file) =>
+      file.id === own.id || file.id === "duplicate" ? { ...file, subscription: null } : file,
+    );
+    await changed(list(detached), () => button(details, "Download") !== undefined);
+    await changed(
+      list(detached.map((file) => (file.id === own.id ? own : file))),
+      () => labelled(details, "Queued, cancel download") !== null,
+    );
+    await changed(
+      list(detached.filter((file) => file.id !== own.id)),
+      () => button(details, "Download") !== undefined,
+    );
+  });
 
   it("queues the exact version and follows it to Watch offline", async () => {
     ipc.always("downloads.list", list([]));

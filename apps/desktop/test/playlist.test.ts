@@ -321,23 +321,89 @@ describe("playlist subscriptions", () => {
     const subtitles = /URI="([^"]+)"/.exec(master)![1]!;
     const [video] = addresses(master);
     expect((await fetch(subtitles)).status).toBe(404);
-    expect(await playback.failure(session.sessionId)).toBeNull();
+    expect(
+      await playback.failure(session.sessionId, {
+        kind: "hls",
+        requestId: new URL(video!).pathname,
+      }),
+    ).toBeNull();
     host.serve("/alpha/lines.m3u8", "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nline.vtt\n");
     const [line] = addresses(await (await fetch(subtitles)).text());
     expect((await fetch(line!)).status).toBe(404);
-    expect(await playback.failure(session.sessionId)).toBeNull();
+    expect(
+      await playback.failure(session.sessionId, {
+        kind: "hls",
+        requestId: new URL(video!).pathname,
+      }),
+    ).toBeNull();
     host.serve("/alpha/low/stream.m3u8", 503);
     expect((await fetch(video!)).status).toBe(503);
-    expect(await playback.failure(session.sessionId)).toEqual({
+    expect(
+      await playback.failure(session.sessionId, {
+        kind: "hls",
+        requestId: new URL(video!).pathname,
+      }),
+    ).toEqual({
       kind: "provider-error",
       status: 503,
     });
     // A successful subtitle playlist must not clear the picture's genuine failure either.
     expect((await fetch(subtitles)).status).toBe(200);
-    expect(await playback.failure(session.sessionId)).toEqual({
+    expect(
+      await playback.failure(session.sessionId, {
+        kind: "hls",
+        requestId: new URL(video!).pathname,
+      }),
+    ).toEqual({
       kind: "provider-error",
       status: 503,
     });
+  });
+
+  it("attributes HLS failures only to the selected request and clears only its successful retry", async () => {
+    const host = await playlistHost();
+    const { subscriptions, playback } = await app(await tempDir());
+    await subscriptions.add(linkOnly(`${host.origin}/list.m3u`));
+    const session = await playback.open("Alpha.test@HD", ["h264", "aac"]);
+    const [variant] = addresses(await (await fetch(session.url)).text());
+    const segments = addresses(await (await fetch(variant!)).text());
+    const selected = (url: string | null) => ({
+      kind: "hls" as const,
+      requestId: url ? new URL(url).pathname : null,
+    });
+    host.serve("/alpha/low/segment-0.ts", 404);
+    expect((await fetch(segments[0]!)).status).toBe(404);
+    expect(await playback.failure(session.sessionId, selected(segments[0]!))).toEqual({
+      kind: "unavailable",
+      status: 404,
+    });
+    expect(await playback.failure(session.sessionId, selected(segments[1]!))).toBeNull();
+    expect(await playback.failure(session.sessionId, selected(null))).toBeNull();
+    expect(await playback.failure(session.sessionId)).toBeNull();
+    // Neither a playlist reload nor another segment resolves the failed segment.
+    await (await fetch(session.url)).text();
+    await (await fetch(variant!)).text();
+    await (await fetch(segments[1]!)).arrayBuffer();
+    expect(await playback.failure(session.sessionId, selected(segments[0]!))).toEqual({
+      kind: "unavailable",
+      status: 404,
+    });
+    host.serve("/alpha/low/segment-0.ts", CLIP);
+    await (await fetch(segments[0]!)).arrayBuffer();
+    expect(await playback.failure(session.sessionId, selected(segments[0]!))).toBeNull();
+    // Proxy identity belongs to this session, not just a segment number.
+    const before = session.sessionId;
+    const next = await playback.open("Alpha.test@HD", ["h264", "aac"]);
+    const [nextVariant] = addresses(await (await fetch(next.url)).text());
+    const [nextSegment] = addresses(await (await fetch(nextVariant!)).text());
+    host.serve("/alpha/low/segment-0.ts", 403);
+    expect((await fetch(nextSegment!)).status).toBe(403);
+    expect(await playback.failure(next.sessionId, selected(nextSegment!))).toEqual({
+      kind: "refused",
+      status: 403,
+    });
+    expect(await playback.failure(next.sessionId, selected(segments[0]!))).toBeNull();
+    expect(await playback.failure(before, selected(segments[0]!))).toBeNull();
   });
 
   it("play a channel after a restart, reading the playlist again for its address", async () => {

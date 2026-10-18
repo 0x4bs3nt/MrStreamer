@@ -92,6 +92,13 @@ const loginInput = () =>
   });
 export type LoginInput = IpcInput<"subscription.add">;
 
+/** Identifies one guide-search invocation within a renderer view. Main supplies sender/frame. */
+const searchRequest = () =>
+  type({
+    view: type("string").atLeastLength(1).atMostLength(128),
+    id: type("string").atLeastLength(1).atMostLength(128),
+  });
+
 /** Input schema for every IPC method. The main process validates each call before handling it. */
 export const ipcInputs = {
   "subscription.list": none,
@@ -165,7 +172,9 @@ export const ipcInputs = {
     }).narrow(({ from, to }) => to > from && to - from <= GUIDE_RANGE.hours * 60 * 60 * 1000),
   /** One programme of a channel, by a slot's `guide` and `start`: what the slot leaves out. */
   "guide.programme": () => type({ channel: owned(), guide: "string", start: "number" }),
-  "guide.search": () => type({ query: "string" }),
+  "guide.search": () => type({ query: "string", "request?": searchRequest() }),
+  /** Cancels only this sender frame's named guide-search invocation. */
+  "guide.cancelSearch": searchRequest,
   /**
    * Searches the programmes of one list's channels, named as `library.channels` names a list: a
    * category's channels, the given channels, or every channel. `until` ends the day searched, in
@@ -175,6 +184,7 @@ export const ipcInputs = {
     type({
       query: "string",
       until: "number",
+      "request?": searchRequest(),
       "category?": owned(),
       "channels?": owned().array(),
     }),
@@ -308,7 +318,11 @@ export const ipcInputs = {
     type({ copy: "string > 0", decoders: decoders(), "measurement?": PlaybackControl() }),
   "playback.close": () => type({ sessionId: "string" }),
   "playback.closeAll": none,
-  "playback.failure": () => type({ sessionId: "string" }),
+  "playback.failure": () =>
+    type({
+      sessionId: "string",
+      "selector?": { kind: "'hls'", requestId: "string <= 256 | null" },
+    }),
   "playback.tracks": () => type({ sessionId: "string" }),
   "playback.playing": () => type({ sessionId: "string" }),
   "output.status": none,
@@ -540,6 +554,7 @@ export interface IpcOutputs {
   "guide.programme": Programme | null;
   /** Programmes on now or later whose title matches, on now first. */
   "guide.search": readonly ProgrammeMatch[];
+  "guide.cancelSearch": null;
   /**
    * Per channel of the list, by its `ownedKey`, whether the programme on now matches and the first
    * later one that does. Every channel of the list is searched, so none is cut off; those without
@@ -772,6 +787,9 @@ export interface IpcOutputs {
 }
 
 export type IpcMethod = keyof IpcOutputs;
+/** An HLS cause belongs only to this opaque local proxy path. Null selects no HTTP cause. */
+export type PlaybackFailureSelector = NonNullable<IpcInput<"playback.failure">["selector"]>;
+
 export type IpcInput<M extends IpcMethod> = ReturnType<(typeof ipcInputs)[M]>["infer"];
 export type IpcOutput<M extends IpcMethod> = IpcOutputs[M];
 

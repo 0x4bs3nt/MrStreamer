@@ -21,3 +21,12 @@ describe("what a search marks in a name", () => {
     expect(marked("BBC News at Six", "  ")).toEqual([]);
   });
 });
+
+it("marks joined apostrophe and hyphen matches using the actual displayed span", () => {
+  expect(marked("Spider-Man", "spiderman")).toEqual(["Spider-Man"]);
+  expect(marked("Spiderman / Spider-Man", "spiderman")).toEqual(["Spiderman", "Spider-Man"]);
+  expect(marked("O’Brien", "obrien")).toEqual(["O’Brien"]);
+  expect(marked("Spider Man", "spiderman")).toEqual([]);
+  expect(marked("Café-Noir", "cafenoir")).toEqual(["Café-Noir"]);
+  expect(marked("Café-Noir", "cafenoir")).toEqual(["Café-Noir"]);
+});

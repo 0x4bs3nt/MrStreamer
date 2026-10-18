@@ -7,6 +7,85 @@ import { Settings } from "../src/main/services/preferences.ts";
 import { fakeProvider, promised, runtimeFor, tempDir, testConfig } from "./support.ts";
 
 describe("current movie and series filters", { timeout: 20000 }, () => {
+  it("ranks the whole filtered search before its page cap, counts both totals, and keeps companion versions", async () => {
+    const provider = await fakeProvider({ titles: 1 });
+    const other = await fakeProvider({ titles: 1, second: true });
+    const seed = provider.titles.movies[0]!;
+    const rows = Array.from({ length: 650 }, (_, index) => ({
+      ...seed,
+      id: 70000 + index,
+      name: `Story ${index} HD (EN)`,
+      tmdb: String(100000 + index),
+      added: 1,
+      adult: false,
+    }));
+    provider.serveTitles((all) => ({ ...all, movies: rows, series: [] }));
+    other.serveTitles((all) => ({
+      ...all,
+      movies: rows.map((row, index) => ({
+        ...row,
+        name: index % 100 === 0 ? `Story ${index} 4K (FR)` : `Story ${index} HD (FR)`,
+      })),
+      series: [],
+    }));
+    const runtime = runtimeFor(mainLayer(testConfig(await tempDir())));
+    const subscriptions = await promised(runtime, Subscriptions);
+    const titles = await promised(runtime, OnDemand);
+    const first = await subscriptions.add({
+      server: provider.url,
+      username: "demo",
+      password: "demo",
+    });
+    const second = await subscriptions.add({
+      server: other.url,
+      username: "demo",
+      password: "demo",
+    });
+    await titles.refresh(first.id);
+    await titles.refresh(second.id);
+
+    const broad = await titles.searchKind("movie", "story", { quality: "hd", language: "fr" });
+    expect(broad).toMatchObject({ total: 643, unfiltered: 650 });
+    expect(broad.titles.map((title) => title.id)).toEqual(
+      rows
+        .filter((_, index) => index % 100 !== 0)
+        .slice(0, 300)
+        .map((row) => String(row.id)),
+    );
+    expect(broad.titles.every((title) => title.subscriptionId === second.id)).toBe(true);
+
+    const sparse = await titles.searchKind("movie", "story", { quality: "4k", language: "fr" });
+    expect(sparse).toMatchObject({ total: 7, unfiltered: 650 });
+    expect(sparse.titles.map((title) => title.id)).toEqual([
+      "70000",
+      "70100",
+      "70200",
+      "70300",
+      "70400",
+      "70500",
+      "70600",
+    ]);
+    expect(sparse.titles.every((title) => title.subscriptionId === second.id)).toBe(true);
+    expect(sparse.titles.every((title) => title.versions.length === 2)).toBe(true);
+    expect(sparse.titles[0]?.versions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ subscriptionId: first.id, id: "70000" }),
+        expect.objectContaining({ subscriptionId: second.id, id: "70000" }),
+      ]),
+    );
+    expect(await titles.searchKind("movie", "story", { quality: "sd" })).toEqual({
+      titles: [],
+      total: 0,
+      unfiltered: 650,
+    });
+    expect(await titles.searchKind("movie", "missing", { quality: "hd" })).toEqual({
+      titles: [],
+      total: 0,
+      unfiltered: 0,
+    });
+    expect([provider.detailRequests(), other.detailRequests()]).toEqual([0, 0]);
+  });
+
   it("keeps complete choices for colliding provider IDs and variants, and drops a replaced file's observations", async () => {
     const provider = await fakeProvider({ titles: 1 });
     const other = await fakeProvider({ titles: 1, second: true });

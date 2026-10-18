@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
 import { ownedId, ownedKey, type SubscriptionSummary } from "@mrstreamer/contracts/subscription";
+import type { Title } from "@mrstreamer/contracts/ondemand";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { ListingMatch, Programme } from "@mrstreamer/contracts/guide";
 import { normalizeCatalogue } from "@mrstreamer/core/catalogue/normalize";
@@ -424,7 +425,8 @@ describe("real search components with two subscriptions", () => {
     listed.resolve(plain(current));
     old.resolve(stamps(all));
     await settled();
-    expect(p.rows().every((row) => !row.hasAttribute("aria-label"))).toBe(true);
+    expect(p.rows()).toHaveLength(8);
+    expect(p.button("Show copies")).toBeUndefined();
     fresh.resolve(stamps(current));
     await settled();
     expect(p.rows()).toHaveLength(3);
@@ -433,7 +435,7 @@ describe("real search components with two subscriptions", () => {
     ).toHaveLength(2);
   });
 
-  it("starts cold catalogue stamps during typing but waits for both authoritative stamps and programmes", async () => {
+  it("shows safe name singletons while cold catalogue stamps and programmes are pending", async () => {
     const p = await page("guide");
     const groups = ipc.hold("library.searchGroups");
     const programmes = ipc.hold("guide.searchList");
@@ -446,13 +448,20 @@ describe("real search components with two subscriptions", () => {
     expect(p.rows()).toHaveLength(8);
     programmes.resolve({});
     await settled();
-    expect(p.rows().every((row) => !row.hasAttribute("aria-label"))).toBe(true);
+    expect(p.rows()).toHaveLength(8);
+    expect(p.button("Show copies")).toBeUndefined();
     groups.resolve(stamps(all));
     await settled();
     expect(p.rows()).toHaveLength(2);
     expect(ipc.argsOf("library.channels")).toEqual([]);
     expect(ipc.argsOf("library.searchGroups")).toHaveLength(1);
-    expect(ipc.argsOf("guide.searchList")).toEqual([{ query: "VRT", until: expect.any(Number) }]);
+    expect(ipc.argsOf("guide.searchList")).toEqual([
+      {
+        query: "VRT",
+        until: expect.any(Number),
+        request: { view: "live", id: expect.any(String) },
+      },
+    ]);
   });
 
   it("keeps Search all channels filtered without a second grouping read", async () => {
@@ -1028,6 +1037,8 @@ describe("real search components with two subscriptions", () => {
     expect(rows[0]!.textContent).toContain("Morning news");
     expect(rows[0]!.textContent).toContain("On now");
     expect(rows[1]!.textContent).toContain("Evening news");
+    expect(rows[1]!.getAttribute("aria-selected")).toBe("true");
+    await p.press("ArrowUp", p.field());
     await p.press("Enter", p.field());
     expect(p.watch).toHaveBeenLastCalledWith(
       expect.objectContaining({ subscriptionId: green[1]!.subscriptionId, id: green[1]!.id }),
@@ -1102,4 +1113,203 @@ describe("real search components with two subscriptions", () => {
       ).toEqual([false, true, true, true]);
     },
   );
+});
+
+it("does not announce empty while titles or programmes are pending", async () => {
+  const p = await page("palette", "");
+  ipc.always("library.channels", []);
+  const titles = ipc.hold("ondemand.search");
+  const programmes = ipc.hold("guide.search");
+  await p.type("missing");
+  await settled(150);
+  expect(p.scope().textContent).toContain("Searching");
+  expect(p.scope().textContent).not.toContain("No matches");
+  titles.resolve({ movies: [], series: [] });
+  await settled();
+  expect(p.scope().textContent).not.toContain("No matches");
+  programmes.resolve([]);
+  await settled();
+  expect(p.scope().textContent).toContain("No matches");
+});
+
+it("keeps a selected programme when channel results arrive before it", async () => {
+  const p = await page("palette", "");
+  const names = ipc.hold("library.channels");
+  ipc.always("ondemand.search", { movies: [], series: [] });
+  ipc.always("guide.search", [{ channel: green[1]!, programme: programme("Current news") }]);
+  await p.type("current");
+  await settled(150);
+  await settled();
+  expect(p.scope().querySelector('[aria-selected="true"]')?.textContent).toContain("Current news");
+  names.resolve(responses(all));
+  await settled();
+  const selected = p.scope().querySelector('[aria-selected="true"]');
+  expect(selected?.textContent).toContain("Current news");
+  await p.press("Enter", p.field());
+  expect(p.watch).toHaveBeenLastCalledWith(expect.objectContaining(ownedId(green[1]!)));
+});
+
+it("blocks old palette rows immediately within the input event, and respects IME keys", async () => {
+  const p = await page("palette");
+  const old = p.rows()[0]!;
+  await act(async () => {
+    p.field().dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }),
+    );
+  });
+  expect(p.watch).not.toHaveBeenCalled();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      p.field(),
+      "Canvas",
+    );
+    p.field().dispatchEvent(new Event("input", { bubbles: true }));
+    old.click();
+    p.field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(p.watch).not.toHaveBeenCalled();
+  expect(p.scope().querySelector('[role="tree"]')?.getAttribute("aria-disabled")).toBe("true");
+  await p.type("");
+  expect(p.scope().querySelector('[role="tree"]')).toBeNull();
+});
+
+it("blocks old Live rows in the raw debounce window and keeps names usable on guide failure", async () => {
+  const p = await page("guide");
+  await p.search("VRT");
+  const old = p.rows()[0]!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+      p.field(),
+      "Canvas",
+    );
+    p.field().dispatchEvent(new Event("input", { bubbles: true }));
+    old.click();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(p.watch).not.toHaveBeenCalled();
+  ipc.refuse("guide.searchList", { kind: "unexpected", detail: "Fixture failure" });
+  await settled(150);
+  await settled();
+  expect(p.rows()).toHaveLength(1);
+  expect(p.scope().textContent).toContain("Service unavailable");
+  await p.press("ArrowDown", p.field());
+  await p.press("Enter");
+  expect(p.watch).toHaveBeenLastCalledWith(expect.objectContaining(ownedId(blue[2]!)));
+});
+
+it("reports a failed palette source without announcing final empty", async () => {
+  const p = await page("palette", "");
+  ipc.always("library.channels", []);
+  ipc.always("ondemand.search", { movies: [], series: [] });
+  ipc.refuse("guide.search", { kind: "unexpected", detail: "Fixture failure" });
+  await p.type("missing");
+  await settled(150);
+  await settled();
+  expect(p.scope().textContent).toContain("Service unavailable");
+  expect(p.scope().textContent).not.toContain("No matches");
+});
+
+it("keeps the selected Live name when programme-only matches prepend", async () => {
+  const p = await page("guide");
+  const programmes = ipc.hold("guide.searchList");
+  await p.type("Canvas");
+  await settled(150);
+  await settled();
+  expect(p.rows()).toHaveLength(1);
+  await p.press("ArrowDown", p.field());
+  programmes.resolve({ [ownedKey(blue[0]!)]: { now: true, later: null } });
+  await settled();
+  expect(p.rows()).toHaveLength(2);
+  expect(document.activeElement?.textContent).toContain("VRT Canvas");
+  await p.press("Enter");
+  expect(p.watch).toHaveBeenLastCalledWith(expect.objectContaining(ownedId(blue[2]!)));
+});
+
+it("drops out-of-order palette replies and cancels on close before reopening", async () => {
+  const p = await page("palette", "");
+  ipc.always("guide.cancelSearch", null);
+  const namesA = ipc.hold("library.channels");
+  const programmesA = ipc.hold("guide.search");
+  const titlesA = ipc.hold("ondemand.search");
+  await p.type("Alpha");
+  await settled(150);
+  const first = ipc.argsOf("guide.search")[0]!.request;
+  const namesB = ipc.hold("library.channels");
+  const programmesB = ipc.hold("guide.search");
+  ipc.always("ondemand.search", { movies: [], series: [] });
+  await p.type("Beta");
+  expect(ipc.argsOf("guide.cancelSearch")).toEqual([first]);
+  await settled(150);
+  const second = ipc.argsOf("guide.search")[1]!.request;
+  ipc.always(
+    "library.channels",
+    responses(all.filter((channel) => channel.title === "VRT Canvas")),
+  );
+  ipc.always("guide.search", []);
+  await p.type("Canvas");
+  await settled(150);
+  await settled();
+  expect(p.rows()).toHaveLength(1);
+  expect(p.rows()[0]!.textContent).toContain("VRT Canvas");
+  namesB.resolve(responses(all));
+  programmesB.resolve([]);
+  namesA.resolve(responses(all));
+  programmesA.resolve([]);
+  titlesA.resolve({ movies: [], series: [] });
+  await settled();
+  expect(p.rows()).toHaveLength(1);
+  expect(p.rows()[0]!.textContent).toContain("VRT Canvas");
+  expect(ipc.argsOf("guide.cancelSearch")).toEqual([first, second]);
+  const closing = ipc.hold("guide.search");
+  await p.type("Closing");
+  await settled(150);
+  const third = ipc.argsOf("guide.search").at(-1)!.request;
+  await act(async () => useUi.setState({ searchOpen: false }));
+  expect(ipc.argsOf("guide.cancelSearch").at(-1)).toEqual(third);
+  closing.resolve([]);
+  await settled();
+  await act(async () => useUi.setState({ searchOpen: true, searchFrom: "VRT" }));
+  await settled();
+  expect(p.field().value).toBe("VRT");
+});
+
+it("keeps a selected movie's owned version when channels arrive and opens that version on Enter", async () => {
+  const p = await page("palette", "");
+  const names = ipc.hold("library.channels");
+  const title: Title = {
+    kind: "movie",
+    key: "movie:tmdb:fixture",
+    subscriptionId: GREEN,
+    id: "movie-fixture",
+    name: "Fixture FR",
+    title: "Fixture",
+    originalTitle: null,
+    originalLanguage: "fr",
+    tags: ["FR"],
+    year: 1995,
+    posterUrl: null,
+    backdropUrl: null,
+    rating: null,
+    addedAt: null,
+    adult: false,
+    tmdbId: "fixture",
+    genres: [],
+    versions: [{ subscriptionId: GREEN, id: "movie-fixture", tags: ["FR"] }],
+  };
+  ipc.always("ondemand.search", { movies: [title], series: [] });
+  ipc.always("guide.search", []);
+  await p.type("fixture");
+  await settled(150);
+  await settled();
+  expect(p.scope().querySelector('[aria-selected="true"]')?.textContent).toContain("Fixture");
+  names.resolve(responses(all));
+  await settled();
+  expect(p.scope().querySelector('[aria-selected="true"]')?.textContent).toContain("Fixture");
+  await p.press("Enter", p.field());
+  expect(useUi.getState().details).toMatchObject({
+    kind: "movie",
+    subscriptionId: GREEN,
+    id: "movie-fixture",
+  });
+  expect(p.watch).not.toHaveBeenCalled();
 });

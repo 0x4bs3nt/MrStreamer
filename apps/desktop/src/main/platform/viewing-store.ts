@@ -80,6 +80,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { attempt, Database, transaction, unavailable } from "./database.ts";
 import { prepareVerifiedFiles, VERIFIED_FILES_TABLE } from "./verified-files.ts";
+import { prepareDetailCache, DETAIL_CACHE_TABLE } from "./detail-cache.ts";
 import {
   prepareSavedSubtitles,
   SAVED_SUBTITLES_TABLE,
@@ -294,6 +295,7 @@ export function observedViewingStoreLayer(
 function prepare(db: DatabaseSync): void {
   db.exec(SCHEMA);
   prepareVerifiedFiles(db);
+  prepareDetailCache(db);
   prepareSavedSubtitles(db);
   // Records from before movies and series lack the payload column, and later ones the time a
   // title left Continue watching. Checked and added under the write lock, since two copies of the
@@ -309,13 +311,15 @@ function prepare(db: DatabaseSync): void {
     if (!has("titles", "since")) db.exec("alter table titles add column since integer");
   });
   // A build from before marks that erased an account deleted its events and left its marks.
+  // The same confirmed erasure also clears display details written by a newer build.
   const erased = db
     .prepare(
       "select distinct account from marked_series as kept where not exists (select 1 from events where events.account = kept.account)",
     )
     .all();
   for (const { account } of erased) {
-    if (typeof account === "string") deleteForGood(db, MARK_TABLES, account);
+    if (typeof account === "string")
+      deleteForGood(db, [...MARK_TABLES, DETAIL_CACHE_TABLE], account);
   }
   const stored = db.prepare("select value from meta where key = 'state-version'").get();
   if (stored?.["value"] !== String(STATE_VERSION)) rebuild(db);
@@ -329,7 +333,11 @@ function deleteForGood(db: DatabaseSync, tables: readonly string[], account: str
   db.exec("pragma secure_delete = on");
   try {
     transaction(db, () => {
-      for (const table of tables) db.prepare(`delete from ${table} where account = ?`).run(account);
+      for (const table of tables) {
+        // Shared descriptions still retain an opened-title history through their ids/timestamps.
+        const shared = table === DETAIL_CACHE_TABLE ? " or account = ''" : "";
+        db.prepare(`delete from ${table} where account = ?${shared}`).run(account);
+      }
     });
   } finally {
     db.exec("pragma secure_delete = off");
@@ -769,6 +777,7 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
             ...MARK_TABLES,
             ...WATCHLIST_TABLES,
             VERIFIED_FILES_TABLE,
+            DETAIL_CACHE_TABLE,
             SAVED_SUBTITLES_TABLE,
             SUBTITLE_RESULTS_TABLE,
             SUBTITLE_PROOFS_TABLE,

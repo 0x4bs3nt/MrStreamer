@@ -24,6 +24,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { databaseLayer } from "./platform/database.ts";
+import { DetailCache, detailCacheLayer } from "./platform/detail-cache.ts";
 import { diagnosticsLogLayer } from "./platform/diagnostics-log.ts";
 import { downloadStoreLayer } from "./platform/downloads-store.ts";
 import { guideIndexerLayer } from "./platform/guide-indexer.ts";
@@ -92,6 +93,7 @@ export type MainServices =
   | ViewingRecord
   | Watchlist
   | Licences
+  | DetailCache
   | VerifiedFiles
   | SavedSubtitles
   | SubtitleAccounts
@@ -113,6 +115,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
   );
   const database = databaseLayer(dataDir);
   const verifiedFiles = verifiedFilesLayer.pipe(Layer.provide(database));
+  const detailCache = detailCacheLayer.pipe(Layer.provide(database));
   const savedSubtitles = savedSubtitlesLayer.pipe(Layer.provide(database));
   const services = Layer.mergeAll(
     Library.layer({ usage: config.usage }),
@@ -134,7 +137,13 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     SubtitleAccounts.layer(dataDir, config.secrets),
   ).pipe(
     Layer.provideMerge(
-      Layer.mergeAll(accounts, verifiedFiles, savedSubtitles, PlaybackCoordination.layer),
+      Layer.mergeAll(
+        accounts,
+        verifiedFiles,
+        savedSubtitles,
+        detailCache,
+        PlaybackCoordination.layer,
+      ),
     ),
   );
 

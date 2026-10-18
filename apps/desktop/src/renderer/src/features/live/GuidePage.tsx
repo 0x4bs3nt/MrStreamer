@@ -157,9 +157,15 @@ export function GuidePage({ active }: { active: boolean }) {
   const [typed, setTyped] = useState({ key, text: "" });
   if (typed.key !== key) setTyped({ key, text: "" });
   const text = typed.key === key ? typed.text : "";
-  const setText = (text: string) => setTyped({ key, text });
+  const rawSearch = useRef(text);
+  rawSearch.current = text;
+  const setText = (text: string) => {
+    rawSearch.current = text;
+    setTyped({ key, text });
+  };
   const search = useListSearch(list, channels, text);
-  const searching = search.query !== "";
+  const searching = text.trim() !== "";
+  const canUseSearch = () => search.actionable && rawSearch.current === text;
   useSearchUsage("live", search.query, active);
   const field = useRef<HTMLInputElement>(null);
 
@@ -200,6 +206,7 @@ export function GuidePage({ active }: { active: boolean }) {
     });
   };
   const playRow = (index: number) => {
+    if (!canUseSearch()) return;
     const row = searchRows?.[index];
     const channel =
       row && !row.copy ? automaticSearchCopy(row.group, favourites, subscriptions) : rows[index];
@@ -289,10 +296,22 @@ export function GuidePage({ active }: { active: boolean }) {
       ),
       0,
     );
-    setChosen({ index, channel: rows[index] ?? null });
+    setChosen({ index: searching ? 0 : index, channel: searching ? null : (rows[index] ?? null) });
     setExpandedKey(null);
     setExpandedCopies(new Set());
-  }, [key, loaded, search.query]);
+  }, [key, loaded, text]);
+
+  useLayoutEffect(() => {
+    if (!searching || !search.actionable || chosen.channel !== null || rows.length === 0) return;
+    const playing = player.current();
+    const index = Math.max(
+      rows.findIndex((channel, at) =>
+        rowPlays(channel, searchRows?.[at], playing ? ownedKey(playing) : null),
+      ),
+      0,
+    );
+    setChosen({ index, channel: rows[index]!, searchKey: searchRows?.[index]?.key });
+  }, [searching, search.actionable, chosen.channel, rows, searchRows]);
 
   // ⌘K and the search button search everything for what this list is searched for.
   useEffect(() => {
@@ -319,6 +338,7 @@ export function GuidePage({ active }: { active: boolean }) {
     order,
     reorder,
     searchRows,
+    canUseSearch,
     expandedCopies,
     toggleCopies,
     playRow,
@@ -341,6 +361,7 @@ export function GuidePage({ active }: { active: boolean }) {
     order,
     reorder,
     searchRows,
+    canUseSearch,
     expandedCopies,
     toggleCopies,
     playRow,
@@ -365,6 +386,8 @@ export function GuidePage({ active }: { active: boolean }) {
       )
         return;
       const now = state.current;
+      if (!now.canUseSearch() && ["Enter", " ", "ArrowRight", "ArrowLeft", "f"].includes(event.key))
+        return;
       // An order being made has the keys to itself: nothing plays, stars or opens meanwhile.
       if (now.order.draft) return orderKey(event, now.order);
       const { toggle, toggleFavourite, showList } = now;
@@ -655,87 +678,108 @@ export function GuidePage({ active }: { active: boolean }) {
                 </button>
               </p>
             )}
-            {listed && listed.length === 0 ? (
-              <p className="px-9 text-sm text-muted-foreground">
-                {list.kind === "favourites" ? t("No favourites yet.") : t("No channels.")}
+            {searching && (search.pending || search.failed) && (
+              <p role="status" className="px-9 text-xs text-muted-foreground">
+                {search.failed ? `${t("Guide")}: ${t("Service unavailable")}` : t("Searching")}
               </p>
-            ) : listed && searching && rows.length === 0 ? (
-              <NothingFound
-                list={title}
-                query={search.query}
-                onSearchAll={
-                  list.kind === "all"
-                    ? null
-                    : () => {
-                        // The search moves to every channel with what it holds.
-                        setTyped({ key: listKey({ kind: "all" }), text });
-                        showList({ kind: "all" });
-                      }
-                }
-              />
-            ) : liveView === "grid" ? (
-              listed && (
-                <GuideGrid
+            )}
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              inert={!search.actionable}
+              onClickCapture={(event) => {
+                if (canUseSearch()) return;
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              {listed && listed.length === 0 ? (
+                <p className="px-9 text-sm text-muted-foreground">
+                  {list.kind === "favourites" ? t("No favourites yet.") : t("No channels.")}
+                </p>
+              ) : listed && searching && rows.length === 0 ? (
+                search.pending || search.failed ? null : (
+                  <NothingFound
+                    list={title}
+                    query={search.query}
+                    onSearchAll={
+                      list.kind === "all"
+                        ? null
+                        : () => {
+                            // The search moves to every channel with what it holds.
+                            setTyped({ key: listKey({ kind: "all" }), text });
+                            showList({ kind: "all" });
+                          }
+                    }
+                  />
+                )
+              ) : liveView === "grid" ? (
+                listed && (
+                  <GuideGrid
+                    key={`${key}\n${search.query}`}
+                    ref={grid}
+                    channels={gridRows}
+                    playingKey={playingKey}
+                    showCursor={keyboard && focus === "channels"}
+                    onWatch={(channel) => {
+                      if (canUseSearch()) watchLive(channel);
+                    }}
+                    onKeys={() => setFocus("channels")}
+                    onPlayArchive={(channel, programme) => {
+                      if (!canUseSearch()) return;
+                      player.playArchive(channel, programme);
+                      openWatch();
+                    }}
+                  />
+                )
+              ) : (
+                <ChannelTable
+                  categories={categoryMap}
                   key={`${key}\n${search.query}`}
-                  ref={grid}
-                  channels={gridRows}
+                  channels={rows}
+                  searchRows={searchRows}
+                  searchFocus={searchFocus}
+                  expandedCopies={expandedCopies}
+                  onToggleCopies={toggleCopies}
+                  onSelectSearch={(index) =>
+                    setChosen({
+                      index,
+                      channel: rows[index] ?? null,
+                      searchKey: searchRows?.[index]?.key,
+                    })
+                  }
+                  selected={draft || (keyboard && focus === "channels") ? selected : null}
                   playingKey={playingKey}
-                  showCursor={keyboard && focus === "channels"}
-                  onWatch={watchLive}
-                  onKeys={() => setFocus("channels")}
-                  onPlayArchive={(channel, programme) => {
+                  expandedKey={expandedKey}
+                  favourites={favourites}
+                  words={search.words}
+                  matches={search.matches}
+                  order={
+                    draft && {
+                      saved: draft.listed,
+                      focus: draft.focus,
+                      locked: waiting || changed,
+                      onSelect: order.select,
+                      onFocused: order.focused,
+                      onMove: order.move,
+                    }
+                  }
+                  onWatch={(channel, index) => {
+                    setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
+                    playRow(index);
+                  }}
+                  onWatchArchive={(channel, index, programme) => {
+                    if (!canUseSearch()) return;
+                    setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
                     player.playArchive(channel, programme);
                     openWatch();
                   }}
+                  onToggleSchedule={(key) => {
+                    if (canUseSearch()) setExpandedKey((current) => (current === key ? null : key));
+                  }}
+                  onToggleFavourite={toggleFavourite}
                 />
-              )
-            ) : (
-              <ChannelTable
-                categories={categoryMap}
-                key={`${key}\n${search.query}`}
-                channels={rows}
-                searchRows={searchRows}
-                searchFocus={searchFocus}
-                expandedCopies={expandedCopies}
-                onToggleCopies={toggleCopies}
-                onSelectSearch={(index) =>
-                  setChosen({
-                    index,
-                    channel: rows[index] ?? null,
-                    searchKey: searchRows?.[index]?.key,
-                  })
-                }
-                selected={draft || (keyboard && focus === "channels") ? selected : null}
-                playingKey={playingKey}
-                expandedKey={expandedKey}
-                favourites={favourites}
-                words={search.words}
-                matches={search.matches}
-                order={
-                  draft && {
-                    saved: draft.listed,
-                    focus: draft.focus,
-                    locked: waiting || changed,
-                    onSelect: order.select,
-                    onFocused: order.focused,
-                    onMove: order.move,
-                  }
-                }
-                onWatch={(channel, index) => {
-                  setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
-                  playRow(index);
-                }}
-                onWatchArchive={(channel, index, programme) => {
-                  setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
-                  player.playArchive(channel, programme);
-                  openWatch();
-                }}
-                onToggleSchedule={(key) =>
-                  setExpandedKey((current) => (current === key ? null : key))
-                }
-                onToggleFavourite={toggleFavourite}
-              />
-            )}
+              )}
+            </div>
           </main>
         </div>
       )}

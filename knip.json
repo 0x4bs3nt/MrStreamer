@@ -10,7 +10,12 @@
       ]
     },
     "apps/desktop": {
-      "entry": ["scripts/*.{ts,mjs}", "test/e2e/*.ts"]
+      "entry": [
+        "scripts/*.{ts,mjs}",
+        "test/e2e/*.ts",
+        "test/renderer/download-performance.config.ts",
+        "test/renderer/download-performance.probe.ts"
+      ]
     },
     "apps/marketing": {
       "entry": ["scripts/*.ts"]

@@ -217,7 +217,9 @@ const made = new Map<TitleKind, { index: IndexedCatalogue; version: number; made
 export function collectionsOf(index: IndexedCatalogue, kind: TitleKind): Collections {
   const version = metadataVersion.get();
   const kept = made.get(kind);
-  if (kept && kept.index === index && kept.version === version) return kept.made;
+  const now = Date.now();
+  if (kept && kept.index === index && kept.version === version && kept.made.validAt(now))
+    return kept.made;
   const tk = tmdbKind(kind);
   const result = collections({
     kind,
@@ -226,7 +228,8 @@ export function collectionsOf(index: IndexedCatalogue, kind: TitleKind): Collect
     metadata: (id) => metadata.get(tk, id),
     names: (id) => metadata.name(tk, id, language),
     services: metadata.services(tk),
-    now: Date.now(),
+    expiresAt: (id) => metadata.expiresAt(tk, id),
+    now,
   });
   made.set(kind, { index, version, made: result });
   return result;
@@ -273,9 +276,14 @@ export function collectionOf(index: IndexedCatalogue, kind: TitleKind, id: Colle
 /** Titles of `kind` whose names hold every word of `query`, by any name TMDB gave them too. */
 export function searchTitles(index: IndexedCatalogue, kind: TitleKind, query: string) {
   const tk = tmdbKind(kind);
-  const page = searchPage(index, kind, query, (title) =>
-    title.tmdbId ? metadata.searchName(tk, title.tmdbId) : "",
-  );
+  const page = searchPage(index, kind, query, (title) => {
+    if (!title.tmdbId) return "";
+    const shown = metadata.name(tk, title.tmdbId, language);
+    return {
+      ...(shown ? { title: shown.name, original: shown.original } : {}),
+      names: metadata.searchAliases(tk, title.tmdbId),
+    };
+  });
   return { ...page, titles: page.titles.map(named) };
 }
 

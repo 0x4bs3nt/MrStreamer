@@ -28,6 +28,13 @@ const { values: options, positionals } = parseArgs({
     rounds: { type: "string", default: String(MINIMUM_COMPARISON_SAMPLES) },
     runs: { type: "string", default: "3" },
     subscriptions: { type: "string", default: "1" },
+    titles: { type: "string" },
+    series: { type: "string" },
+    "search-runs": { type: "string" },
+    "uncached-search": { type: "boolean", default: false },
+    "cold-search": { type: "boolean", default: false },
+    "baseline-app-dir": { type: "string" },
+    "candidate-app-dir": { type: "string" },
     output: { type: "string" },
     "baseline-revision": { type: "string" },
     "candidate-revision": { type: "string" },
@@ -47,6 +54,10 @@ const rounds = positiveCount(options.rounds, "rounds", 20);
 const samples = positiveCount(options.runs, "runs", 20);
 const subscriptions = positiveCount(options.subscriptions, "subscriptions", 4);
 const [baseline, candidate, ...appArgs] = positionals;
+const argumentsOf = (build: "baseline" | "candidate") => {
+  const directory = options[`${build}-app-dir`];
+  return [...(directory ? [directory] : []), ...appArgs];
+};
 const offline = options["baseline-json"] && options["candidate-json"];
 if (!offline && (!baseline || !candidate)) throw new Error(usage);
 const folder = resolve(options.output ?? join(".local/measurements", `compare-${Date.now()}`));
@@ -61,8 +72,10 @@ try {
     runs.candidate.push(JSON.parse(readFileSync(options["candidate-json"]!, "utf8")));
     rawFiles.push(resolve(options["baseline-json"]!), resolve(options["candidate-json"]!));
   } else {
-    for (const executable of [baseline!, candidate!])
-      warmups.push({ executable, ...(await warmUp(executable)) });
+    for (const build of ["baseline", "candidate"] as const) {
+      const executable = build === "baseline" ? baseline! : candidate!;
+      warmups.push({ executable, ...(await warmUp(executable, argumentsOf(build))) });
+    }
     for (let round = 0; round < rounds; round++) {
       const order =
         round % 2 === 0
@@ -83,10 +96,16 @@ try {
             String(samples),
             "--subscriptions",
             String(subscriptions),
+            ...["titles", "series", "search-runs"].flatMap((name) => {
+              const value = options[name as "titles" | "series" | "search-runs"];
+              return value ? [`--${name}`, value] : [];
+            }),
+            ...(options["uncached-search"] ? ["--uncached-search"] : []),
+            ...(options["cold-search"] ? ["--cold-search"] : []),
             ...(revision ? ["--revision", revision] : []),
             build === "baseline" ? baseline! : candidate!,
             "--",
-            ...appArgs,
+            ...argumentsOf(build),
           ],
           { stdio: "inherit" },
         );
@@ -166,11 +185,11 @@ try {
   console.log(`Retained comparison: ${folder}`);
 }
 
-async function warmUp(executable: string) {
+async function warmUp(executable: string, args: readonly string[]) {
   const profile = mkdtempSync(join(tmpdir(), "mr-streamer-warm-"));
   const port = 20000 + Math.floor(Math.random() * 20000);
   const started = performance.now();
-  const app = launch(executable, appArgs, { port, profile });
+  const app = launch(executable, args, { port, profile });
   try {
     const page = await connect(port, "page", { app });
     try {

@@ -18,6 +18,7 @@ import { downloadsQuery } from "../lib/downloads.ts";
 import { appError, describeError } from "../lib/errors.ts";
 import { queries, useLastChannel, useSubscriptionPreferences } from "../lib/queries.ts";
 import { cn } from "../lib/utils.ts";
+import { PresentationVisible } from "../lib/presentation.ts";
 import { outputs, useOutput } from "../player/output.ts";
 import { player, usePlayer } from "../player/player.ts";
 import { titlePlayer } from "../player/title-player.ts";
@@ -152,22 +153,24 @@ function Shell({ liveOnly }: { liveOnly: boolean }) {
         className={cn("h-[calc(100%-var(--receiver-bar,0px))]", covered && "invisible")}
         inert={!pageActive || settingsOpen ? true : undefined}
       >
-        {view === "home" ? (
-          <HomeScreen active={pageActive} />
-        ) : view === "live" ? (
-          <GuidePage active={pageActive} />
-        ) : view === "watchlist" ? (
-          <WatchlistPage active={pageActive} />
-        ) : view === "downloads" ? (
-          <DownloadsPage />
-        ) : (
-          // Its own page per kind, so one never shows the other's lists while its own load.
-          <TitlesPage
-            key={view}
-            kind={view === "movies" ? "movie" : "series"}
-            active={pageActive}
-          />
-        )}
+        <PresentationVisible value={!covered}>
+          {view === "home" ? (
+            <HomeScreen active={pageActive} />
+          ) : view === "live" ? (
+            <GuidePage active={pageActive} />
+          ) : view === "watchlist" ? (
+            <WatchlistPage active={pageActive} />
+          ) : view === "downloads" ? (
+            <DownloadsPage />
+          ) : (
+            // Its own page per kind, so one never shows the other's lists while its own load.
+            <TitlesPage
+              key={view}
+              kind={view === "movies" ? "movie" : "series"}
+              active={pageActive}
+            />
+          )}
+        </PresentationVisible>
       </div>
       {/* Closed under Settings, whose Escape would otherwise reach the sheet's focus first. */}
       {details && !covered && !settingsOpen && (

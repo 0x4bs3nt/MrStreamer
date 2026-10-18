@@ -297,6 +297,40 @@ describe("one title per film", () => {
     expect(made.list("4k").map((title) => title.id)).toEqual(["33"]);
   });
 
+  it("keeps warm lists stable only until the next rolling, year or metadata cutoff", () => {
+    const day = 86_400_000;
+    const now = Date.UTC(2026, 11, 31, 12);
+    const titles = indexOf(
+      { ...catalogue, movies: [movie("1", "Film (MULTI)", "1", now - 6 * day)] },
+      "en",
+    ).movies.titles;
+    const make = (at: number, expiry = Infinity) =>
+      collections({
+        kind: "movie",
+        titles,
+        language: "en",
+        metadata: () => null,
+        names: () => null,
+        services: [],
+        now: at,
+        expiresAt: () => expiry,
+      });
+    const made = make(now);
+    expect(made.validAt(now)).toBe(true);
+    expect(made.validAt(now - 1)).toBe(false);
+    expect(made.list("new-week")).toBe(made.list("new-week"));
+    expect(made.validAt(Date.UTC(2027, 0, 1) - 1)).toBe(true);
+    expect(made.validAt(Date.UTC(2027, 0, 1))).toBe(false);
+    const afterYear = make(Date.UTC(2027, 0, 1));
+    expect(afterYear.validAt(now + day - 1)).toBe(true);
+    expect(afterYear.validAt(now + day)).toBe(false);
+    const expires = make(now, now + 1000);
+    expect(expires.validAt(now + 999)).toBe(true);
+    expect(expires.validAt(now + 1000)).toBe(false);
+    // Expired or absent metadata does not force a rebuild on every offline read.
+    expect(make(now, now - 1).validAt(now)).toBe(true);
+  });
+
   it("finds the title by any of its versions, and by any version's name", () => {
     const index = indexOf(catalogue, "en");
     const third = { subscriptionId: SUBSCRIPTION, id: "3" };

@@ -2,7 +2,15 @@ import { useSearchUsage } from "../../app/analytics.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, Search, Star } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import type { ProgrammeMatch } from "@mrstreamer/contracts/guide";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { Title } from "@mrstreamer/contracts/ondemand";
@@ -71,15 +79,44 @@ const TITLE_RESULTS = 6;
 
 function Palette() {
   const resultsId = useId();
+  const visible = useUi((state) => state.searchOpen);
   // Mounted each time it opens.
   const [query, setQuery] = useState(() => useUi.getState().searchFrom);
   const debounced = useDebounced(query, 120);
   useSearchUsage("global", debounced, true);
   // Share the Guide's catalogue read so the first name search builds during the typing delay.
-  useQuery({ ...queries.searchGroups(), enabled: query.trim() !== "" });
-  const channels = useQuery(queries.search(debounced));
-  const programmes = useQuery(queries.programmes(debounced));
-  const titles = useQuery(queries.titleSearch(debounced));
+  useQuery({ ...queries.searchGroups(), enabled: visible && query.trim() !== "" });
+  const raw = useRef(query);
+  const current = visible && query === debounced && query.trim() !== "";
+  const asked = current ? debounced : "";
+  const channels = useQuery({
+    ...queries.search(asked),
+    queryKey: current ? queries.search(asked).queryKey : ["library", "search", "paused", debounced],
+    placeholderData: (previous) => (current ? undefined : previous),
+  });
+  const programmes = useQuery({
+    ...queries.programmes(asked),
+    queryKey: current
+      ? queries.programmes(asked).queryKey
+      : ["guide", "search", "paused", debounced],
+    placeholderData: (previous) => (current ? undefined : previous),
+  });
+  const titles = useQuery({
+    ...queries.titleSearch(asked),
+    queryKey: current
+      ? queries.titleSearch(asked).queryKey
+      : ["ondemand", "search", "paused", debounced],
+    placeholderData: (previous) => (current ? undefined : previous),
+  });
+  const pending =
+    !current ||
+    channels.isFetching ||
+    programmes.isFetching ||
+    titles.isFetching ||
+    channels.isPending ||
+    programmes.isPending ||
+    titles.isPending;
+  const failed = channels.isError || programmes.isError || titles.isError;
   const categories = useCategoryMap();
   // Results come from every subscription: one says whose it is where another reads the same.
   const sourceOf = useSourceOf();
@@ -92,9 +129,9 @@ function Palette() {
     [channels.data],
   );
   const [open, setOpen] = useState<string | null>(null);
-  const [active, setActive] = useState(0);
+  const [selected, select] = useState<string | null>(null);
   const results = useMemo((): Result[] => {
-    if (!debounced.trim()) return [];
+    if (!query.trim() || !debounced.trim()) return [];
     return [
       ...groups.flatMap((group): Result[] => {
         const channel = group.copies[0]!;
@@ -121,13 +158,16 @@ function Palette() {
         key: `${ownedKey(match.channel)}:${match.programme.start}`,
       })),
     ];
-  }, [debounced, groups, expanded, titles.data, programmes.data]);
+  }, [query, debounced, groups, expanded, titles.data, programmes.data]);
 
-  useEffect(() => {
-    setActive(0);
-    setExpanded(new Set());
-    setOpen(null);
-  }, [debounced]);
+  const identity = (result: Result) =>
+    result.kind === "title" ? `title/${result.title.key}` : `${result.kind}/${result.key}`;
+  const kept = results.findIndex((result) => identity(result) === selected);
+  const active = Math.max(kept, 0);
+  const setActive = (index: number) => select(results[index] ? identity(results[index]!) : null);
+  useLayoutEffect(() => {
+    if (current && results[active]) select(identity(results[active]!));
+  }, [current, results, active]);
 
   // Keep the highlighted result in view while moving through the list with the keyboard.
   const list = useRef<HTMLDivElement>(null);
@@ -138,7 +178,8 @@ function Palette() {
   /** Group rows use Automatic; expanded copies keep their real subscription and quality choices. */
   const choose = (index: number) => {
     const result = results[index];
-    if (!result) return;
+    if (!result || !current || raw.current !== debounced || !useUi.getState().searchOpen) return;
+    setActive(index);
     if (result.kind === "channel")
       watchChannel(
         result.copy ? result.channel : automaticSearchCopy(result.group, favourites, subscriptions),
@@ -163,9 +204,10 @@ function Palette() {
       event.altKey
     )
       return;
+    if (!current || raw.current !== debounced) return;
     if (event.key === "Enter" && event.target instanceof HTMLButtonElement) return;
-    if (event.key === "ArrowDown") setActive((index) => Math.min(index + 1, results.length - 1));
-    else if (event.key === "ArrowUp") setActive((index) => Math.max(index - 1, 0));
+    if (event.key === "ArrowDown") setActive(Math.min(active + 1, results.length - 1));
+    else if (event.key === "ArrowUp") setActive(Math.max(active - 1, 0));
     else if (event.key === "Enter") choose(active);
     else if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
       const result = results[active];
@@ -197,9 +239,15 @@ function Palette() {
           aria-haspopup="tree"
           aria-expanded={results.length > 0}
           aria-controls={results.length > 0 ? resultsId : undefined}
-          aria-activedescendant={results[active] ? `${resultsId}-${active}` : undefined}
+          aria-activedescendant={current && results[active] ? `${resultsId}-${active}` : undefined}
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            raw.current = event.target.value;
+            select(null);
+            setExpanded(new Set());
+            setOpen(null);
+            setQuery(event.target.value);
+          }}
           placeholder={t("Search channels, movies, series and programmes")}
           spellCheck={false}
           className="h-16 flex-1 bg-transparent text-lg text-foreground outline-none placeholder:text-muted-foreground/70"
@@ -216,6 +264,13 @@ function Palette() {
       {results.length > 0 && (
         <div
           ref={list}
+          inert={!current}
+          aria-disabled={!current}
+          onClickCapture={(event) => {
+            if (current && raw.current === debounced) return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           id={resultsId}
           role="tree"
           aria-label={t("Search results")}
@@ -282,6 +337,7 @@ function Palette() {
                   aria-level={1}
                   aria-selected={index === active}
                   data-index={index}
+                  onFocus={() => setActive(index)}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => choose(index)}
                   className={cn(
@@ -325,7 +381,14 @@ function Palette() {
                 onWatch={() => choose(index)}
                 onSelect={() => setActive(index)}
                 onToggle={() => {
-                  setActive(index);
+                  const selectedRow = results[active];
+                  if (
+                    expanded.has(group.key) &&
+                    selectedRow?.kind === "channel" &&
+                    selectedRow.copy &&
+                    selectedRow.group.key === group.key
+                  )
+                    setActive(index);
                   setExpanded((current) => {
                     const next = new Set(current);
                     if (next.has(group.key)) next.delete(group.key);
@@ -338,7 +401,29 @@ function Palette() {
           })}
         </div>
       )}
-      {debounced.trim() && results.length === 0 && !channels.isPending && (
+      {query.trim() && (pending || failed) && (
+        <div
+          role="status"
+          className="border-t border-border px-5 py-3 text-xs text-muted-foreground"
+        >
+          {(
+            [
+              [t("Channels"), channels],
+              [t("Movies and series"), titles],
+              [t("Guide"), programmes],
+            ] as const
+          )
+            .flatMap(([label, source]) =>
+              source.isError
+                ? [`${label}: ${t("Service unavailable")}`]
+                : !current || source.isPending || source.isFetching
+                  ? [`${label}: ${t("Searching")}`]
+                  : [],
+            )
+            .join(" · ")}
+        </div>
+      )}
+      {current && results.length === 0 && !pending && !failed && (
         <div className="border-t border-border px-5 py-3 text-xs text-muted-foreground">
           {t("No matches")}
         </div>

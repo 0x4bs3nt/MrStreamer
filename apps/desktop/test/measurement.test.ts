@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   APP_METRICS,
+  APP_SEARCH_METRICS,
   compareMeasurements,
   metric,
   positiveCount,
@@ -70,6 +71,21 @@ function report(): Measurement {
 }
 
 describe("measurement result contract", () => {
+  it("requires every warm search query and its declared sample count", () => {
+    const measured = report();
+    measured.workload["warmSearchRunsPerQuery"] = 30;
+    for (const [name, unit] of Object.entries(APP_SEARCH_METRICS))
+      measured.metrics[name] = metric(
+        unit,
+        Array.from({ length: 30 }, () => 150),
+      );
+    expect(validateMeasurement(measured).metrics["warm palette: news"]?.samples).toHaveLength(30);
+    measured.metrics["warm palette: news"]!.samples.pop();
+    expect(() => validateMeasurement(measured)).toThrow(/Incomplete samples/);
+    delete measured.metrics["warm palette: news"];
+    expect(() => validateMeasurement(measured)).toThrow(/complete metric/);
+  });
+
   it("compares complete samples with absolute deltas, spread and warning-only budgets", () => {
     const before = report(),
       after = report();

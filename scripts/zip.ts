@@ -42,8 +42,18 @@ export function readZipEntry(archive: Buffer, name: string): Buffer | null {
 
 /** Where the list of files starts and how many it names, from the ZIP64 record when there is one. */
 function centralDirectory(archive: Buffer): { offset: number; entries: number } {
-  const end = archive.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
-  if (end === -1 || archive.readUInt32LE(end) !== END) throw new Error("It has no end record.");
+  // A comment can contain the signature too. The real record's comment reaches the archive's
+  // end and is at most 65535 bytes, following the record's 22 fixed bytes.
+  let end = archive.length - 22;
+  const first = Math.max(0, end - 0xffff);
+  for (; end >= first; end--) {
+    if (
+      archive.readUInt32LE(end) === END &&
+      end + 22 + archive.readUInt16LE(end + 20) === archive.length
+    )
+      break;
+  }
+  if (end < first) throw new Error("It has no end record.");
   if (end >= 20 && archive.readUInt32LE(end - 20) === ZIP64_LOCATOR) {
     const record = Number(archive.readBigUInt64LE(end - 12));
     if (archive.readUInt32LE(record) !== ZIP64_END) throw new Error("Its ZIP64 record is missing.");

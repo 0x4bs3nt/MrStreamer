@@ -1,10 +1,10 @@
 // Whole-series queueing uses the details' selected provider version and the exact file each
 // episode row plays. The main process owns persistence, deduplication and transfer scheduling.
 import { Menu } from "@base-ui/react/menu";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDownToLine, Check, ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { Download } from "@mrstreamer/contracts/downloads";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
 import type { SeriesDetails, TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { TitleProgress, EpisodeMark } from "@mrstreamer/contracts/viewing";
 import { episodeFileVersion, seriesEpisodeOrder } from "@mrstreamer/core/ondemand/details";
@@ -14,7 +14,7 @@ import { t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import { downloadsQuery, transferred, useDownloads } from "../../lib/downloads.ts";
+import { downloadOf, downloadsQuery, transferred } from "../../lib/downloads.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
 import { episodeRef } from "../../player/title-player.ts";
@@ -22,13 +22,6 @@ import { DownloadPill } from "./DownloadControls.tsx";
 
 const queued = (download: Download) =>
   ["queued", "waiting", "transferring"].includes(download.status.kind);
-const downloadOf = (items: readonly Download[], title: TitleRef) =>
-  items.find(
-    (item) =>
-      item.subscription?.id === title.subscriptionId &&
-      item.title.kind === title.kind &&
-      item.title.id === title.id,
-  );
 type Result = {
   readonly revision: number;
   readonly added: number;
@@ -55,16 +48,22 @@ export function SeriesDownload({
   version: string;
   disabled?: boolean;
 }) {
-  const list = useDownloads();
   const client = useQueryClient();
-  const stateOf = episodeStates(progress, marks);
-  const titles = seriesEpisodeOrder(details).map((episode) => {
-    const state = stateOf(episode);
-    return episodeRef(
-      episodeFileVersion(episode, state.kind === "partial" ? state.progress.title.id : undefined),
-    );
-  });
-  const files = titles.map((title) => downloadOf(list.data?.items ?? [], title));
+  const titles = useMemo(() => {
+    const stateOf = episodeStates(progress, marks);
+    return seriesEpisodeOrder(details).map((episode) => {
+      const state = stateOf(episode);
+      return episodeRef(
+        episodeFileVersion(episode, state.kind === "partial" ? state.progress.title.id : undefined),
+      );
+    });
+  }, [details, progress, marks]);
+  const select = useCallback(
+    (list: DownloadList) => titles.map((title) => downloadOf(list, title)),
+    [titles],
+  );
+  const list = useQuery({ ...downloadsQuery(), select });
+  const files = list.data ?? [];
   const complete = files.filter((file) => file?.status.kind === "complete").length;
   const active = files.filter((file) => file && queued(file)).length;
   const failed = files.filter((file) => file?.status.kind === "failed").length;
@@ -77,7 +76,7 @@ export function SeriesDownload({
   const [busy, setBusy] = useState(false);
   const [queueResult, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selection = JSON.stringify(titles);
+  const selection = useMemo(() => JSON.stringify(titles), [titles]);
   const life = useRef({ mounted: true, busy: false, selection, disabled, revision: 0 });
   if (life.current.selection !== selection || life.current.disabled !== disabled) {
     life.current.revision++;
@@ -109,10 +108,7 @@ export function SeriesDownload({
     for (const title of selected) {
       if (!life.current.mounted || life.current.disabled || life.current.revision !== selectedScope)
         break;
-      const current = downloadOf(
-        client.getQueryData(downloadsQuery().queryKey)?.items ?? [],
-        title,
-      );
+      const current = downloadOf(client.getQueryData(downloadsQuery().queryKey), title);
       if (current?.status.kind === "complete") {
         skippedComplete++;
         continue;
@@ -174,10 +170,7 @@ export function SeriesDownload({
     const errors: string[] = [];
     for (const title of titles) {
       if (!life.current.mounted) break;
-      const current = downloadOf(
-        client.getQueryData(downloadsQuery().queryKey)?.items ?? [],
-        title,
-      );
+      const current = downloadOf(client.getQueryData(downloadsQuery().queryKey), title);
       if (!current || !queued(current)) continue;
       try {
         await call("downloads.remove", { id: current.id });
@@ -273,15 +266,16 @@ export function SeriesDownload({
                   disabled={busy || !list.data}
                   closeOnClick
                   className={itemClass}
-                  onClick={() =>
+                  onClick={() => {
+                    const current = client.getQueryData(downloadsQuery().queryKey);
                     void queue(
                       titles.filter(
                         (title) =>
-                          downloadOf(list.data!.items, title)?.status.kind === "failed" ||
+                          downloadOf(current, title)?.status.kind === "failed" ||
                           result?.failures.some((failure) => failure.title.id === title.id),
                       ),
-                    )
-                  }
+                    );
+                  }}
                 >
                   {t("Retry failed")}
                 </Menu.Item>

@@ -12,6 +12,7 @@
 // A refresh takes two calls. The lists it fetches wait aside until the main process, which knows
 // the saved login, says whether they still count: only then do they show and reach the disk.
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { workerData, parentPort } from "node:worker_threads";
 import { type } from "arktype";
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
@@ -123,6 +124,7 @@ const CachedCatalogue = lazy(() =>
     key: "string",
     fetchedAt: "number",
     "importRevision?": "string",
+    "catalogueStamp?": "string",
     movieCategories: Category().array(),
     movies: ProviderTitle().array(),
     seriesCategories: Category().array(),
@@ -135,6 +137,7 @@ interface Loaded {
   /** The subscription whose titles these are. */
   readonly subscriptionId: string;
   readonly fetchedAt: number;
+  readonly catalogueStamp?: string;
   readonly importRevision?: string;
   readonly catalogue: OnDemandCatalogue;
   readonly movies: number;
@@ -227,10 +230,12 @@ function remember(
   fetchedAt: number,
   catalogue: OnDemandCatalogue,
   importRevision?: string,
+  catalogueStamp?: string,
 ): Loaded {
   const kept: Loaded = {
     subscriptionId,
     fetchedAt,
+    ...(catalogueStamp ? { catalogueStamp } : {}),
     ...(importRevision ? { importRevision } : {}),
     catalogue,
     movies: catalogue.movies.length,
@@ -312,23 +317,31 @@ function persist(owner: CatalogueOwner, kept: Loaded): void {
 function save(): Promise<void> {
   if (waiting) clearTimeout(waiting);
   waiting = null;
-  for (const { owner, kept } of unsaved.values()) {
+  for (const pending of unsaved.values()) {
+    const { owner, kept } = pending;
     writing = writing
       .then(async () => {
-        if (loaded.get(owner.subscriptionId) !== kept) return;
+        if (
+          loaded.get(owner.subscriptionId) !== kept ||
+          unsaved.get(owner.subscriptionId) !== pending
+        )
+          return;
         const { fetchedAt, catalogue } = kept;
         await writeJsonFile(cachePath(owner), {
           version: 2,
           key: owner.key,
           fetchedAt,
+          ...(kept.catalogueStamp ? { catalogueStamp: kept.catalogueStamp } : {}),
           ...(kept.importRevision ? { importRevision: kept.importRevision } : {}),
           ...catalogue,
         });
         await removeFile(legacyCachePath(owner));
+        if (unsaved.get(owner.subscriptionId) === pending) unsaved.delete(owner.subscriptionId);
       })
+      // Keep the newest still-owned snapshot dirty. A later save or flush tries once again;
+      // no retry loop can hold shutdown open or revive lists forgotten in the meantime.
       .catch(() => {});
   }
-  unsaved.clear();
   return writing;
 }
 
@@ -361,7 +374,13 @@ function current(owner: CatalogueOwner): Promise<Loaded | null> {
     if (file?.key !== key || readings.get(subscriptionId) !== token) return null;
     return (
       loaded.get(subscriptionId) ??
-      remember(subscriptionId, file.version === 2 ? file.fetchedAt : 0, file, file.importRevision)
+      remember(
+        subscriptionId,
+        file.version === 2 ? file.fetchedAt : 0,
+        file,
+        file.importRevision,
+        file.catalogueStamp,
+      )
     );
   })();
   reading.set(subscriptionId, done);
@@ -459,8 +478,9 @@ function filterFiles(found: Shown, kind: TitleKind, known: readonly KnownFile[])
 /** The collections of a kind as a viewer of `language` sees them, with the metadata so far. */
 function collectionsOf(found: Shown, kind: TitleKind): Collections {
   const key = `${kind}|${metadataVersion}`;
+  const now = Date.now();
   let made = found.collections.get(key);
-  if (!made) {
+  if (!made || !made.validAt(now)) {
     const { language } = found.index;
     const tmdbKind = kind === "movie" ? "movie" : "tv";
     made = collections({
@@ -470,7 +490,8 @@ function collectionsOf(found: Shown, kind: TitleKind): Collections {
       metadata: (tmdbId) => metadata.get(tmdbKind, tmdbId),
       names: (tmdbId) => metadata.name(tmdbKind, tmdbId, language),
       services: metadata.services(tmdbKind),
-      now: Date.now(),
+      expiresAt: (id) => metadata.expiresAt(tmdbKind, id),
+      now,
     });
     // Older metadata only takes memory.
     for (const old of found.collections.keys()) {
@@ -486,6 +507,7 @@ function statusOf(found: Loaded | null): WorkerStatus {
     movies: found?.movies ?? 0,
     series: found?.series ?? 0,
     fetchedAt: found?.fetchedAt ?? null,
+    ...(found?.catalogueStamp ? { catalogueStamp: found.catalogueStamp } : {}),
     ...(found?.importRevision ? { importRevision: found.importRevision } : {}),
   };
 }
@@ -568,7 +590,13 @@ async function finishRefresh({
   if (aside?.revision !== revision) return statusOf(await current(owner));
   fetched.delete(subscriptionId);
   if (!keep) return statusOf(await current(owner));
-  const kept = remember(subscriptionId, Date.now(), aside.catalogue, owner.importRevision);
+  const kept = remember(
+    subscriptionId,
+    Date.now(),
+    aside.catalogue,
+    owner.importRevision,
+    randomUUID(),
+  );
   // Written after answering, so the lists show without waiting for the disk. Quitting writes
   // them first; a write it cuts short all the same leaves the previous lists for the next start,
   // which refreshes them when due.
@@ -577,10 +605,14 @@ async function finishRefresh({
 }
 
 /** TMDB's names for a title, so search finds it by its translations and its original name too. */
-function aliases(title: Title): string {
-  return title.tmdbId
-    ? metadata.searchName(title.kind === "movie" ? "movie" : "tv", title.tmdbId)
-    : "";
+function aliases(title: Title) {
+  if (!title.tmdbId) return "";
+  const kind = title.kind === "movie" ? "movie" : "tv";
+  const shown = metadata.name(kind, title.tmdbId, viewerLanguage);
+  return {
+    ...(shown ? { title: shown.name, original: shown.original } : {}),
+    names: metadata.searchAliases(kind, title.tmdbId),
+  };
 }
 
 /** TMDB's picture of a saved title the lists hold no more, when TMDB told of one. */
@@ -663,17 +695,17 @@ const handlers: {
   searchKind: async ({ language, kind, query, limit, owners, filters, files = [] }) => {
     speaking(language);
     const found = await catalogueOf(owners, language);
-    // Filters apply to every match before the cut; without them only the best `limit` are kept.
-    if (!filters) {
-      const page = searchPage(found.index, kind, query, aliases, limit);
-      return { titles: page.titles.map((title) => named(title, language)), total: page.total };
-    }
-    const unfiltered = search(found.index, kind, query, aliases, Infinity);
-    const matches = filterTitles(unfiltered, filters, filterFiles(found, kind, files));
+    const page = searchPage(
+      found.index,
+      kind,
+      query,
+      aliases,
+      limit,
+      filters ? { filters, files: filterFiles(found, kind, files) } : undefined,
+    );
     return {
-      titles: matches.slice(0, limit).map((title) => named(title, language)),
-      total: matches.length,
-      unfiltered: unfiltered.length,
+      ...page,
+      titles: page.titles.map((title) => named(title, language)),
     };
   },
   filterOptions: async ({ owners, language, kind, files, adults }) => {

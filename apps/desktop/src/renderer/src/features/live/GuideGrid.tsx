@@ -46,6 +46,7 @@ import { ChannelLogo } from "../../components/ChannelLogo.tsx";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { useNow } from "../../lib/clock.ts";
+import { usePresentationVisible } from "../../lib/presentation.ts";
 import { comingTime, endOfDay, pastTime, progressOf, timeLeft } from "../../lib/format.ts";
 import { queries } from "../../lib/queries.ts";
 import { useOutput } from "../../player/output.ts";
@@ -167,6 +168,7 @@ export function GuideGrid({
   );
   const archiveDays = useMemo(() => longestArchive(channels), [channels]);
   const now = useNow();
+  const visible = usePresentationVisible();
   const minute = Math.floor(now / MINUTE_MS) * MINUTE_MS;
   const scroller = useRef<HTMLDivElement>(null);
   const msPx = (HOUR_REM * rem) / HOUR_MS;
@@ -311,13 +313,14 @@ export function GuideGrid({
     drawn,
   );
   const reads = useQueries({
-    queries: pages.map((page) =>
-      queries.range(
+    queries: pages.map((page) => ({
+      ...queries.range(
         channels.slice(page.rows * PAGE_ROWS, (page.rows + 1) * PAGE_ROWS),
         page.time * PAGE_MS,
         (page.time + 1) * PAGE_MS,
       ),
-    ),
+      enabled: visible,
+    })),
   });
   const answers = new Map<string, Readonly<Record<string, readonly GuideSlot[]>>>();
   for (const [index, page] of pages.entries()) {

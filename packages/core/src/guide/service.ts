@@ -541,7 +541,7 @@ export class Guide extends Context.Service<
      */
     programme(channel: OwnedId, guide: string, start: number): Effect.Effect<Programme | null>;
     /** Programmes on now or later whose title matches, in any guide, on now first. */
-    search(query: string): Effect.Effect<readonly ProgrammeMatch[]>;
+    search(query: string): Effect.Effect<readonly ProgrammeMatch[], Failed>;
     /**
      * What a search finds in the programmes of the given channels, by each channel's `ownedKey`:
      * on now, and the first later one that starts before `until`. Every channel given is searched.
@@ -550,7 +550,7 @@ export class Guide extends Context.Service<
       query: string,
       channels: readonly OwnedId[],
       until: number,
-    ): Effect.Effect<Record<string, ListingMatch>>;
+    ): Effect.Effect<Record<string, ListingMatch>, Failed>;
     /**
      * For each saved subscription, in their order: how many channels its guides cover and from
      * which, what is under way with its own guide and how its latest download ended, or that it
@@ -2138,8 +2138,8 @@ function make() {
       });
 
     /**
-     * A search in the search worker, answering `fallback` when it fails. Stopped, it waits for
-     * the worker's answer all the same, so the files it reads are held until the worker is done.
+     * Operational search failures stay failures, rather than claiming a successful empty result.
+     * Removal returns the empty fallback; interruption waits for the worker before releasing files.
      */
     const searching = <A>(
       subscriptionId: string,
@@ -2152,15 +2152,15 @@ function make() {
         searches.set(subscriptionId, under.add(stop));
         const answer = search(stop.signal)
           .catch((cause: unknown) => {
-            if (!stop.signal.aborted) console.warn("[guide] a search failed", cause);
-            return fallback;
+            if (stop.signal.aborted) return fallback;
+            throw cause;
           })
           .finally(() => under.delete(stop));
-        return Effect.promise(() => answer).pipe(
+        return Effect.tryPromise({ try: () => answer, catch: failedWith }).pipe(
           Effect.onInterrupt(() =>
             Effect.promise(() => {
               stop.abort();
-              return answer;
+              return answer.catch(() => {});
             }),
           ),
         );
@@ -2170,15 +2170,16 @@ function make() {
 
     /**
      * What `lookup` answers per channel id, in each subscription's own guides, for those of
-     * `channels` whose subscription is saved, by each channel's `ownedKey`.
+     * `channels` whose subscription is saved, by each channel's `ownedKey`. Keeps successful
+     * reads when another subscription fails; fails only when none of the relevant reads succeed.
      */
-    const perChannel = <A>(
+    const perChannel = <A, E = never>(
       channels: readonly OwnedId[],
       lookup: (
         found: Found,
         subscriptionId: string,
         ids: readonly string[],
-      ) => Effect.Effect<Record<string, A>>,
+      ) => Effect.Effect<Record<string, A>, E>,
     ) =>
       Effect.gen(function* () {
         // A list may hold tens of thousands of channels: other work gets its turn between slices.
@@ -2193,12 +2194,21 @@ function make() {
           yield* rest(slice());
         }
         const answers: Record<string, A> = {};
+        let failure: E | undefined;
+        let succeeded = false;
         for (const subscription of yield* source.saved) {
           const ids = asked.get(subscription.id);
           if (!ids) continue;
-          const found = yield* withContext(subscription, (context) =>
-            lookup(context, subscription.id, ids),
+          const result = yield* Effect.result(
+            withContext(subscription, (context) => lookup(context, subscription.id, ids)),
           );
+          if (result._tag === "Failure") {
+            failure ??= result.failure;
+            continue;
+          }
+          const found = result.success;
+          if (found === null) continue;
+          succeeded = true;
           for (const id in found) {
             const answer = found[id];
             if (answer !== undefined)
@@ -2206,6 +2216,7 @@ function make() {
             yield* rest(slice());
           }
         }
+        if (!succeeded && failure !== undefined) return yield* Effect.fail(failure);
         return answers;
       });
 
@@ -2469,23 +2480,41 @@ function make() {
         Effect.gen(function* () {
           const matches: ProgrammeMatch[] = [];
           let at = 0;
+          let failure: Failed | undefined;
+          let succeeded = false;
           for (const subscription of yield* source.saved) {
             // Each subscription's own first fifty hold every one of the first fifty of them all.
-            const found = yield* withContext(subscription, (context) =>
-              Effect.map(
-                searching(
-                  subscription.id,
-                  (signal) =>
-                    searchAt(context.guides, context.channels, query, context.at, searcher, signal),
-                  [],
+            const result = yield* Effect.result(
+              withContext(subscription, (context) =>
+                Effect.map(
+                  searching(
+                    subscription.id,
+                    (signal) =>
+                      searchAt(
+                        context.guides,
+                        context.channels,
+                        query,
+                        context.at,
+                        searcher,
+                        signal,
+                      ),
+                    [],
+                  ),
+                  (programmes) => ({ at: context.at, programmes }),
                 ),
-                (programmes) => ({ at: context.at, programmes }),
               ),
             );
+            if (result._tag === "Failure") {
+              failure ??= result.failure;
+              continue;
+            }
+            const found = result.success;
             if (!found) continue;
+            succeeded = true;
             at = found.at;
             matches.push(...found.programmes);
           }
+          if (!succeeded && failure !== undefined) return yield* failure;
           const onNow = (match: ProgrammeMatch) => (match.programme.start <= at ? 0 : 1);
           return matches
             .sort((a, b) => onNow(a) - onNow(b) || a.programme.start - b.programme.start)

@@ -858,6 +858,43 @@ describe("when the store tells the UI of metadata", { timeout: 30_000 }, () => {
     await vi.waitFor(() => expect(keyless.told).toEqual([{ content: true, at: tmdb.clock.time }]));
   });
 
+  it("keeps independent raw search aliases, including punctuation, within their validity", async () => {
+    const path = join(await tempDir(), "metadata.json.gz");
+    let now = Date.now();
+    await writeFile(
+      path,
+      gzipSync(
+        JSON.stringify({
+          version: 1,
+          entries: {
+            "movie:1": {
+              at: now,
+              names: { en: "Spider-Man", nl: "Other Translation" },
+              original: "O’Brien",
+            },
+          },
+        }),
+      ),
+    );
+    const store = metadataStore({
+      path,
+      client: null,
+      region: "NL",
+      onChange: () => {},
+      now: () => now,
+    });
+    await vi.waitFor(() =>
+      expect(store.searchAliases("movie", "1")).toEqual([
+        "Spider-Man",
+        "Other Translation",
+        "O’Brien",
+      ]),
+    );
+    now += 183 * DAY;
+    expect(store.searchAliases("movie", "1")).toEqual([]);
+    expect(store.searchAliases("movie", "missing")).toEqual([]);
+  });
+
   it("finds a title by TMDB's names once the kept metadata has loaded, though it was searched before", async () => {
     const tmdb = slowTmdb();
     const path = await kept(tmdb, 3);

@@ -209,6 +209,19 @@ export async function runDownloads(
         await wait(() => exists(element));
         actions.push({ action: label, at: now() });
         await page.evaluate(`${element}.scrollIntoView({ block: "nearest" })`);
+        // A dismissed search can still cover the newly mounted details during its exit.
+        // Wait until the real pointer can reach the control, rather than clicking its scrim.
+        await wait(() =>
+          page.evaluate<boolean>(`(() => {
+            const target = ${element};
+            if (!target || target.matches(":disabled")) return false;
+            // Outer targets can intentionally dismiss a dialog through its backdrop.
+            if (!target.closest('[role="dialog"]')) return true;
+            const box = target.getBoundingClientRect();
+            return box.width > 0 && box.height > 0 &&
+              target.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+          })()`),
+        );
         const point = await page.evaluate<{ x: number; y: number }>(`(() => {
           const box = ${element}.getBoundingClientRect();
           return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -311,23 +324,25 @@ export async function runDownloads(
         clipped: boolean;
         /** Whether a control of the bar reaches past the bar or the window. */
         overflows: boolean;
-        /** The pages' room in the bar, and what their names take of it, in CSS px. */
+        /** The pages' or Back's room in the bar, and what they need, in CSS px. */
         room: number;
         needs: number;
         downloads: { text: string; label: string | null; current: string | null; width: number }[];
       }>(`(() => {
         const bar = document.querySelector('header');
         const label = ${JSON.stringify(t("Downloads"))};
+        const pages = bar.querySelector('nav') ?? [...bar.querySelectorAll('button')]
+          .find(b => b.textContent.trim() === ${JSON.stringify(t("Back"))})?.parentElement;
         return {
           pages: [...bar.querySelectorAll('nav button')].map(b => b.textContent.trim()),
-          clipped: (n => !!n && n.scrollWidth > n.clientWidth)(bar.querySelector('nav')) ||
+          clipped: (n => !!n && n.scrollWidth > n.clientWidth)(pages) ||
             [...bar.querySelectorAll('button')].some(b => (r => (p => r.left < p.left - 0.5 || r.right > p.right + 0.5)(b.parentElement.getBoundingClientRect()))(b.getBoundingClientRect())),
           overflows: bar.scrollWidth > bar.clientWidth || [...bar.querySelectorAll('button')]
             .some(b => (r => r.left < 0 || r.right > innerWidth)(b.getBoundingClientRect())),
-          room: bar.querySelector('nav')?.clientWidth ?? 0,
+          room: pages?.clientWidth ?? 0,
           needs: (n => n && n.children.length
             ? n.lastElementChild.getBoundingClientRect().right - n.firstElementChild.getBoundingClientRect().left
-            : 0)(bar.querySelector('nav')),
+            : 0)(pages),
           downloads: [...bar.querySelectorAll('button')]
             .filter(b => b.getAttribute('aria-label')?.startsWith(label))
             .map(b => ({ text: b.textContent.trim(), label: b.getAttribute('aria-label'),
@@ -695,13 +710,18 @@ export async function runDownloads(
     await online.wait(async () => stopped(labelOf(await barOf(online))));
     let narrow = 960;
     let arrowAlone = await settledBar(online);
-    for (; narrow > 520; narrow -= 20) {
+    // Traffic-light/control insets and system fonts change where Back needs the room.
+    // Find the fold itself, keeping the same no-clipping assertion at every width.
+    const stoppedBesideBack: Record<number, Bar> = {};
+    notices["stoppedBesideBack"] = stoppedBesideBack;
+    for (; narrow >= 320; narrow -= 20) {
       await layOut(online, narrow);
       arrowAlone = fits(`stopped at ${narrow} CSS px`, await settledBar(online), stopped);
+      stoppedBesideBack[narrow] = arrowAlone;
       if (arrowAlone.downloads[0]!.text === "") break;
     }
     if (arrowAlone.downloads[0]!.text !== "")
-      throw new Error("Download stopped kept its words down to 520 CSS px.");
+      throw new Error("Download stopped never folded beside Back within 960 to 320 CSS px.");
     await online.capture(`notice-stopped-arrow-${narrow}`);
     await online.click(
       "Download it, held by the provider",
@@ -871,12 +891,12 @@ export async function runDownloads(
     notices["stopped"] = fits("stopped", await barOf(online), named(t("Download stopped")));
     await online.capture("notice-download-stopped");
     await atWidths(online, "stopped", named(t("Download stopped")));
-    // Settings over the page has Back in the pages' place, which folds the same way: at 520 CSS
-    // px, as a window zoomed past its least width has it, the words go and Back stays whole.
+    // Settings has Back in the pages' place too. Keep the 960/520 px checks, then require the
+    // arrow at the fold found over details, rather than assuming 520 px needs it on every OS.
     await online.click("Open Settings", labelled(t("Settings")));
     await online.wait(() => online.exists(notice()));
     const overSettings: Record<number, Bar> = {};
-    for (const width of [960, 520]) {
+    for (const width of new Set([960, 520, narrow])) {
       await layOut(online, width);
       overSettings[width] = fits(
         `over Settings at ${width} CSS px`,
@@ -886,7 +906,7 @@ export async function runDownloads(
       await online.capture(`notice-stopped-over-settings-${width}`);
     }
     notices["stoppedOverSettings"] = overSettings;
-    if (overSettings[520]!.downloads[0]!.text !== "")
+    if (overSettings[narrow]!.downloads[0]!.text !== "")
       throw new Error("The notice kept its words where Back had no room for them.");
     await layOut(online, null);
     await online.click("Close Settings", labelled(t("Settings")));
@@ -1215,7 +1235,7 @@ export async function runDownloads(
             "Development build on this platform; no installer or native-platform proof",
             "Decoded audio does not prove audible output",
             "Main's connections are recorded in JavaScript; Chromium's own, over CDP",
-            "Bars narrower than the window's 960 px least width (760 and 520 CSS px) are CDP viewport emulation",
+            "Bars narrower than the window's 960 px least width are CDP viewport emulation",
           ],
         },
         null,

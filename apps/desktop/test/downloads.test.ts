@@ -776,6 +776,8 @@ describe.skipIf(!hasTools)("downloads", () => {
     tmdb.failSeasons("hold");
     const asked = tmdb.seasonRequests().length;
     const adding = downloads.add(episode(provider, saved.id).ref);
+    // Removal aborts the held request immediately; observe its rejection before the assertion below.
+    void adding.catch(() => {});
     await vi.waitFor(() => expect(tmdb.seasonRequests().length).toBeGreaterThan(asked));
     await roster.remove(saved.id, true);
     // TMDB answers only now, once the subscription has gone.

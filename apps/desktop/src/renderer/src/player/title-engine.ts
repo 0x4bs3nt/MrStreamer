@@ -21,7 +21,7 @@ import { subtitleDecoder, type SubtitleCodec } from "@mrstreamer/core/subtitles/
 import { readFeedLine } from "@mrstreamer/core/subtitles/feed";
 import type { SubtitleChange } from "@mrstreamer/core/subtitles/screen";
 import { t } from "@mrstreamer/core/i18n";
-import type { EngineError, StreamInfo } from "./engine.ts";
+import { isEngineError, type EngineError, type StreamInfo } from "./engine.ts";
 import { readMp4Start } from "./mp4.ts";
 import {
   addTextCue,
@@ -96,6 +96,8 @@ export interface TitleEngine {
   onSubtitles(listener: (state: SubtitleState | null) => void): void;
   /** Seconds into the title. */
   position(): number;
+  /** Milliseconds of clock progress in this run, excluding pause, seeking and buffering. */
+  played(): number;
   /** Moves within what is already here; false when the caller must start a run from there. */
   seekWithin(position: number): boolean;
   /**
@@ -169,11 +171,19 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   let from: number | null = null;
   let lastTime = 0;
   let lastProgressAt = Date.now();
+  let lastCheckAt = lastProgressAt;
+  let played = 0;
   /** When the run was asked for. */
   const waitingSince = Date.now();
   let lastReadAheadAt = waitingSince;
   const watchdog = setInterval(() => {
     const now = Date.now();
+    const sinceCheck = now - lastCheckAt;
+    lastCheckAt = now;
+    if (from !== null && !video.paused && !video.seeking && video.currentTime > lastTime + 0.05) {
+      // A jump or a faster playback rate cannot earn more stability than elapsed playing time.
+      played += Math.min((video.currentTime - lastTime) * 1000, sinceCheck);
+    }
     const waitingFrom = Math.max(waitingSince, lastReadAheadAt);
     // Nothing to show yet, paused or not: the provider answered and then stalled. Later than
     // the proxy's own wait for a run's start, whose answer says more.
@@ -201,11 +211,21 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   const onError = () => {
     const error = video.error;
     fail({
-      kind: error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED ? "unsupported" : "media",
+      kind:
+        error?.code === MediaError.MEDIA_ERR_NETWORK
+          ? "network"
+          : error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+            ? "unsupported"
+            : "media",
       detail: error?.message || t("The title could not be decoded."),
     });
   };
   const onEnded = () => endedListener?.();
+  // A seek can start and finish between watchdog ticks. Neither its jump nor its wait is played.
+  const onSeek = () => {
+    lastTime = video.currentTime;
+    lastCheckAt = lastProgressAt = Date.now();
+  };
   /** Resolves once the subtitle picture due where the run starts is drawn. */
   let drawnAtStart = Promise.resolve();
   // The clock moving on from where the run placed it is the start, as soon as it happens.
@@ -231,6 +251,8 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   video.addEventListener("error", onError);
   video.addEventListener("ended", onEnded);
   video.addEventListener("timeupdate", onTime);
+  video.addEventListener("seeking", onSeek);
+  video.addEventListener("seeked", onSeek);
   function stopWatching() {
     if (subtitleWait !== null) clearTimeout(subtitleWait);
     subtitleWait = null;
@@ -239,6 +261,8 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     video.removeEventListener("error", onError);
     video.removeEventListener("ended", onEnded);
     video.removeEventListener("timeupdate", onTime);
+    video.removeEventListener("seeking", onSeek);
+    video.removeEventListener("seeked", onSeek);
     stopFollowing();
   }
 
@@ -279,6 +303,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
    */
   const updated = (target: SourceBuffer) =>
     new Promise<void>((done, failed) => {
+      if (abort.signal.aborted) return failed(abort.signal.reason);
       const settled = new AbortController();
       const settle = (finish: () => void) => () => {
         settled.abort();
@@ -289,6 +314,13 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
         "error",
         settle(() => failed(new Error("The player refused the title."))),
         { signal: settled.signal },
+      );
+      abort.signal.addEventListener(
+        "abort",
+        settle(() => failed(abort.signal.reason)),
+        {
+          signal: settled.signal,
+        },
       );
     });
 
@@ -318,11 +350,16 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     await new Promise((opened) =>
       mediaSource.addEventListener("sourceopen", opened, { once: true }),
     );
+    if (abort.signal.aborted) return;
     const query = new URLSearchParams({ start: run.start.toFixed(3) });
     if (run.audio !== null) query.set("audio", String(run.audio));
     if (run.subtitle !== null) query.set("subtitle", String(run.subtitle));
     if (run.convertSound) query.set("sound", "convert");
-    const response = await fetch(`${run.url}?${query}`, { signal: abort.signal });
+    // Only fetch and body reads describe delivery failures. Parsing and MSE refusals below
+    // belong to local media recovery, regardless of the exception's diagnostic text.
+    const response = await fetch(`${run.url}?${query}`, { signal: abort.signal }).catch(
+      networkFailure,
+    );
     if (!response.ok || !response.body) {
       throw {
         kind: response.status === 415 ? "unsupported" : "network",
@@ -339,7 +376,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     let head = new Uint8Array(0);
     let start = readMp4Start(head);
     while (start.codecs === null || start.firstFragment === null) {
-      const { value, done } = await reader.read();
+      const { value, done } = await reader.read().catch(networkFailure);
       if (done || head.length > HEAD_LIMIT) {
         throw {
           kind: "unsupported",
@@ -364,11 +401,13 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     buffer = mediaSource.addSourceBuffer(type);
     buffer.timestampOffset = pictureStart - start.firstFragment;
     await append(buffer, head);
+    if (abort.signal.aborted) return;
     // The picture decodes from the keyframe before the start and shows from the start itself,
     // unless the file only allowed a later one.
     from = Math.max(run.start, buffer.buffered.length > 0 ? buffer.buffered.start(0) : run.start);
     video.currentTime = from;
     lastTime = from;
+    lastCheckAt = Date.now();
     // Chromium says which cues are due a moment after the position moves; the picture due here
     // is drawn without waiting for that.
     // A picture that can't be drawn doesn't hold the start back.
@@ -393,7 +432,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     for (;;) {
       await room();
       if (abort.signal.aborted) return;
-      const { value, done } = await reader.read();
+      const { value, done } = await reader.read().catch(networkFailure);
       if (done) break;
       await append(buffer, value);
     }
@@ -504,9 +543,9 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   play().catch((error: unknown) => {
     if (abort.signal.aborted) return;
     fail(
-      typeof error === "object" && error !== null && "kind" in error && "detail" in error
-        ? (error as EngineError)
-        : { kind: "network", detail: error instanceof Error ? error.message : String(error) },
+      isEngineError(error)
+        ? error
+        : { kind: "media", detail: error instanceof Error ? error.message : String(error) },
     );
   });
 
@@ -528,6 +567,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
       listener(state);
     },
     position: () => video.currentTime,
+    played: () => played,
     seekWithin(position) {
       const ranges = buffer?.buffered;
       if (!ranges) return false;
@@ -574,6 +614,14 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
 }
 
 const CODECS: readonly SubtitleCodec[] = ["pgs", "dvb", "teletext", "captions"];
+
+/** Marks a rejected transport operation at its boundary, without interpreting its message. */
+function networkFailure(error: unknown): never {
+  throw {
+    kind: "network",
+    detail: error instanceof Error ? error.message : String(error),
+  } satisfies EngineError;
+}
 
 function isCodec(value: string | null): value is SubtitleCodec {
   return CODECS.some((codec) => codec === value);

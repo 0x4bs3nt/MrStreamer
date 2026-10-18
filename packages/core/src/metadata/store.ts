@@ -313,6 +313,7 @@ export function metadataStore(deps: MetadataDeps) {
         const shown = current(title.kind, title.tmdbId);
         const counted = answered(title.kind, title.tmdbId);
         file.entries[key] = entry;
+        searchNames.delete(key);
         // A wrong "same" would leave lists stale, so anything but equal is content, and an entry
         // that had expired is always content: lists built before and after it differ.
         if (shown && sameValue({ ...shown, at: 0 }, { ...entry, at: 0 })) {
@@ -338,7 +339,6 @@ export function metadataStore(deps: MetadataDeps) {
         names,
         original,
       });
-      searchNames.delete(key);
       changed(change);
     });
   }
@@ -356,8 +356,11 @@ export function metadataStore(deps: MetadataDeps) {
         for (let page = 1, pages = 1; page <= Math.min(pages, SERVICE_PAGES); page++) {
           if (replaced() || unreachable()) return;
           const found = await ask(() => client.onService(kind, service.id, deps.region, page));
-          // A page TMDB won't give ends this service's list, not the others'.
-          if (!found || found === "missing") break;
+          // An exhausted transient failure abandons this crawl: partial membership must not
+          // replace a complete snapshot or receive another week of freshness. A missing page
+          // is terminal for this service only, as before.
+          if (!found) return;
+          if (found === "missing") break;
           ids.push(...found.ids);
           pages = found.pages;
           await new Promise((done) => setTimeout(done, 1000 / PER_SECOND));
@@ -365,6 +368,8 @@ export function metadataStore(deps: MetadataDeps) {
         lists[kind].push({ ...service, ids });
       }
     }
+    // Even the final request can settle after a new wanted list or language takes over.
+    if (replaced() || refused) return;
     file.services = { region: deps.region, at: now(), ...lists };
     changed("content", true);
   }
@@ -388,6 +393,21 @@ export function metadataStore(deps: MetadataDeps) {
   }
 
   return {
+    /**
+     * The raw expiry of a title, or the region's services without an id. A derived snapshot
+     * compares this with its own start time, so a cutoff crossed while building isn't lost.
+     * Infinity means this dependency is absent.
+     */
+    expiresAt(kind: TmdbKind, tmdbId?: string): number {
+      const at =
+        tmdbId === undefined
+          ? file.services?.region === deps.region
+            ? file.services.at
+            : undefined
+          : file.entries[keyOf(kind, tmdbId)]?.at;
+      return at === undefined ? Infinity : at + EXPIRE_MS;
+    },
+
     /**
      * The titles the catalogue lists; fetches what is missing or old, in the background. A list
      * given while fetching is fetched next.
@@ -454,14 +474,25 @@ export function metadataStore(deps: MetadataDeps) {
       return { name, original: original && original !== name ? original : null };
     },
 
+    /** Raw, independent translations and original name for relevance and punctuation recall. */
+    searchAliases(kind: TmdbKind, tmdbId: string): readonly string[] {
+      const entry = current(kind, tmdbId);
+      if (!entry || entry.missing) return [];
+      return [...Object.values(entry.names ?? {}), entry.original].filter(
+        (name): name is string => typeof name === "string" && name !== "",
+      );
+    },
+
     /** Every name TMDB gave a title, folded for search, or "" before it said. */
     searchName(kind: TmdbKind, tmdbId: string): string {
       const key = keyOf(kind, tmdbId);
+      // Check time before the memo: a warm alias must expire just like get/name, key or no key.
+      const entry = current(kind, tmdbId);
+      if (!entry || entry.missing) return "";
       let found = searchNames.get(key);
       if (found === undefined) {
-        const entry = current(kind, tmdbId);
-        const names = Object.values(entry?.names ?? {}).filter((name) => name !== null);
-        found = normalize([...names, entry?.original ?? ""].join(" "));
+        const names = Object.values(entry.names ?? {}).filter((name) => name !== null);
+        found = normalize([...names, entry.original ?? ""].join(" "));
         searchNames.set(key, found);
       }
       return found;

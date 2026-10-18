@@ -4,12 +4,14 @@
 // the title from the lists while the provider answers, and TMDB's details once they arrive.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, createElement } from "react";
+import { act, createElement, Profiler } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Episode, SeriesDetails, Title } from "@mrstreamer/contracts/ondemand";
+import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
 import { DetailsView } from "../../src/renderer/src/features/titles/DetailsView.tsx";
 import { syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
+import { syncDownloads } from "../../src/renderer/src/lib/downloads.ts";
 
 /** The series version these tests open, as requests name it. */
 const HARBOUR = { subscriptionId: SUBSCRIPTION, id: "harbour" };
@@ -88,6 +90,141 @@ const until = (check: () => void) =>
     // A busy suite can take a while; a stuck sheet still fails.
     { timeout: 5000 },
   );
+
+it("leaves episode selection alone on other-file progress and updates its own facts, still and action", async () => {
+  ipc.reset();
+  const file: Download = {
+    id: "copy",
+    title: { kind: "episode", id: "1-1", seriesId: "harbour", season: 1, episode: 1 },
+    subscription: { id: SUBSCRIPTION, name: "Fixture" },
+    name: "Night Harbour",
+    episodeName: "Episode 1",
+    year: 2024,
+    duration: 2700,
+    originalLanguage: "nl",
+    posterUrl: null,
+    wideUrl: null,
+    size: 100,
+    status: { kind: "transferring", received: 20, size: 100, rate: null, restarted: false },
+    progress: null,
+  };
+  const list = (items: readonly Download[]): DownloadList => ({
+    items,
+    bytes: 0,
+    free: null,
+    ended: 0,
+  });
+  const other = { ...file, id: "other", title: { kind: "movie" as const, id: "unrelated" } };
+  ipc.always("ondemand.titles", [series]);
+  ipc.always("ondemand.details", details);
+  ipc.always(
+    "ondemand.season",
+    details.seasons[0]!.episodes.map((episode) => ({
+      ...episode,
+      rating: null,
+      cast: [],
+      directors: [],
+    })),
+  );
+  ipc.always("viewing.progress", []);
+  ipc.always("downloads.list", list([other]));
+  ipc.always("downloads.remove", null);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["subscriptions"], [SAVED]);
+  const stop = syncDownloads(client);
+  const root = createRoot(document.createElement("div"));
+  let commits = 0;
+  unmount = () => {
+    stop();
+    act(() => root.unmount());
+    client.clear();
+  };
+  await act(async () =>
+    root.render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(
+          Profiler,
+          {
+            id: "details",
+            onRender: () => {
+              commits++;
+            },
+          },
+          createElement(DetailsView, {
+            target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
+          }),
+        ),
+      ),
+    ),
+  );
+  await until(() => expect(text()).toContain("Episode 2"));
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  commits = 0;
+  await act(async () =>
+    ipc.emit(
+      "downloads.changed",
+      list([
+        {
+          ...other,
+          status: {
+            kind: "transferring",
+            received: 42,
+            size: 100,
+            rate: null,
+            restarted: false,
+          },
+        },
+      ]),
+    ),
+  );
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(commits).toBe(0);
+  expect(text()).not.toContain("Downloading");
+  await act(async () => ipc.emit("downloads.changed", list([file, other])));
+  await until(() => expect(text()).toContain("Downloading 20%"));
+  const cancel = document.querySelector<HTMLButtonElement>(
+    '[aria-label="Cancel download of S1 E1"]',
+  );
+  expect(cancel).not.toBeNull();
+  const row = cancel!.parentElement!.parentElement!;
+  expect(
+    [...row.querySelectorAll<HTMLElement>("[style]")].some(
+      (element) => element.style.width === "20%",
+    ),
+  ).toBe(true);
+  await act(async () =>
+    ipc.emit(
+      "downloads.changed",
+      list([
+        {
+          ...file,
+          status: { kind: "transferring", received: 80, size: 100, rate: null, restarted: false },
+        },
+        other,
+      ]),
+    ),
+  );
+  await until(() => expect(row.textContent).toContain("Downloading 80%"));
+  expect(
+    [...row.querySelectorAll<HTMLElement>("[style]")].some(
+      (element) => element.style.width === "80%",
+    ),
+  ).toBe(true);
+  await act(async () =>
+    ipc.emit("downloads.changed", list([{ ...file, status: { kind: "complete" } }, other])),
+  );
+  await until(() =>
+    expect(document.querySelector('[aria-label="Watch S1 E1 offline"]')).not.toBeNull(),
+  );
+  expect(row.textContent).toContain("Downloaded");
+  expect(
+    [...row.querySelectorAll<HTMLElement>("[style]")].some(
+      (element) => element.style.width === "80%",
+    ),
+  ).toBe(false);
+});
 
 describe("a series' episodes", () => {
   it("show TMDB's details for the season shown, and ask for another only once it opens", async () => {

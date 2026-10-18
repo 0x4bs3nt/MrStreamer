@@ -234,3 +234,34 @@ it("palette responses retain full-catalogue ambiguity when the query excludes a 
   expect(grouped.map((copy) => copy.searchGroup)).toEqual(partial.map((copy) => copy.searchGroup));
   expect(list.every((copy) => !Object.hasOwn(copy, "searchIdentity"))).toBe(true);
 });
+
+it("ranks exact displayed channel names before prefixes and finds joined punctuation spellings", async () => {
+  const provider = await fakeProvider();
+  const names = ["Heating", "The Heat", "Heat", "Spider-Man", "O'Brien"];
+  provider.serveChannels((channels) =>
+    channels.slice(0, names.length).map((channel, index) => ({
+      ...channel,
+      name: names[index]!,
+      guideId: null,
+      adult: false,
+    })),
+  );
+  const { library, subscriptions } = await started(await tempDir());
+  const subscription = await subscriptions.add({
+    server: provider.url,
+    username: "demo",
+    password: "demo",
+  });
+  await library.refresh(subscription.id);
+  expect((await library.channels({ query: "heat" })).map((channel) => channel.title)).toEqual([
+    "Heat",
+    "Heating",
+    "The Heat",
+  ]);
+  expect((await library.channels({ query: "spiderman" })).map((channel) => channel.title)).toEqual([
+    "Spider-Man",
+  ]);
+  expect((await library.channels({ query: "obrien" })).map((channel) => channel.title)).toEqual([
+    "O'Brien",
+  ]);
+});

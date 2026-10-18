@@ -60,7 +60,7 @@ import { appError } from "../lib/errors.ts";
 import { call, listen } from "../lib/ipc.ts";
 import { titleDecoders } from "./decoders.ts";
 import type { EngineError } from "./engine.ts";
-import { onLiveStart, player, rememberSubtitles } from "./player.ts";
+import { onLiveStart, player, rememberSubtitles, STABLE_PLAYBACK_MS } from "./player.ts";
 import {
   clearSubtitles,
   setSubtitleDelay,
@@ -290,6 +290,8 @@ let subtitleChoice = 0;
 let lastWasDownloaded = false;
 /** The sound was converted after a copy failed to start; later runs keep converting. */
 let convertSound = false;
+/** Reconnects used by this title. Brief returns and track/seek runs keep the remaining budget. */
+let reconnects = 0;
 let checkpoint: ReturnType<typeof setInterval> | null = null;
 /** Settles once the main process answered the last save of how far a title got. */
 let saving: Promise<void> = Promise.resolve();
@@ -526,6 +528,8 @@ function playAt(speed: number): void {
 }
 
 function stopEngine(): void {
+  // Preserve earned stability when a seek or track change replaces a healthy run, too.
+  if (engine && engine.played() >= STABLE_PLAYBACK_MS) reconnects = 0;
   observation.unbind();
   engine?.destroy();
   engine = null;
@@ -606,7 +610,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
     await started.started;
   } catch (error) {
     if (mine !== generation) return;
-    await recover(mine, start, asEngineError(error), attempt, false, paused);
+    await recover(mine, start, asEngineError(error), false, paused);
     return;
   }
   if (mine !== generation) return;
@@ -628,7 +632,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
   started.onFailure((error) => {
     if (mine !== generation) return;
     const paused = store.getState().phase.kind === "paused";
-    void recover(mine, started.position(), error, 0, true, paused);
+    void recover(mine, started.position(), error, true, paused);
   });
 }
 
@@ -641,12 +645,14 @@ async function recover(
   mine: number,
   position: number,
   error: EngineError,
-  attempt: number,
   wasPlaying: boolean,
   paused: boolean,
 ): Promise<void> {
   const upstream = session
-    ? await call("playback.failure", { sessionId: session.id }).catch(() => null)
+    ? await call("playback.failure", {
+        sessionId: session.id,
+        ...(error.failure ? { selector: error.failure } : {}),
+      }).catch(() => null)
     : null;
   if (mine !== generation) return;
   const fallback = !upstream && !wasPlaying && !convertSound && error.kind !== "network";
@@ -657,20 +663,19 @@ async function recover(
   stopEngine();
   if (fallback) {
     convertSound = true;
-    await run(position, attempt, paused);
+    await run(position, reconnects, paused);
     return;
   }
   const problem = problemOf(upstream, error);
-  const delay = RECONNECT_DELAYS_MS[attempt];
+  const delay = RECONNECT_DELAYS_MS[reconnects];
   if (problem.kind !== "network" || delay === undefined) {
     store.setState({ phase: { kind: "failed", problem } });
     return;
   }
-  store.setState({
-    phase: { kind: "reconnecting", attempt: attempt + 1, of: RECONNECT_DELAYS_MS.length },
-  });
+  const attempt = ++reconnects;
+  store.setState({ phase: { kind: "reconnecting", attempt, of: RECONNECT_DELAYS_MS.length } });
   await new Promise((resolve) => setTimeout(resolve, delay));
-  if (mine === generation) await run(position, attempt + 1, paused);
+  if (mine === generation) await run(position, attempt, paused);
 }
 
 function problemOf(upstream: StreamFailure | null, error: EngineError): TitleProblem {
@@ -1157,6 +1162,7 @@ export const titlePlayer = {
     openedAt = Date.now();
     play++;
     convertSound = false;
+    reconnects = 0;
     lastSubtitle = null;
     lastWasDownloaded = false;
     subtitleChoice++;
@@ -1315,6 +1321,7 @@ export const titlePlayer = {
   retry(): void {
     const { now, phase, position, continued, audioId, subtitle } = store.getState();
     if (!now || phase.kind !== "failed") return;
+    reconnects = 0;
     if (receiver && now.kind === "provider") {
       // A receiver that is gone has to be connected to again, which loads the title there again.
       if (phase.problem.kind === "receiver" && phase.problem.lost) return outputs.reconnect();

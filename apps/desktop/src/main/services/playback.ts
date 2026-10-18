@@ -62,6 +62,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable, Transform } from "node:stream";
 import type { CopySession } from "@mrstreamer/contracts/downloads";
 import type { RawTitleRef, TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { PlaybackFailureSelector } from "@mrstreamer/contracts/ipc";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import type {
   ArchiveWindow,
@@ -782,8 +783,11 @@ export class Playback extends Context.Service<
      * its turn. A stream of another subscription plays on.
      */
     closeOf(subscriptionId: string): Effect.Effect<void>;
-    /** Why the session's last upstream request failed, or null. */
-    failure(sessionId: string): Effect.Effect<StreamFailure | null>;
+    /** The selected HLS request's cause, or the session cause for non-HLS and receiver playback. */
+    failure(
+      sessionId: string,
+      selector?: PlaybackFailureSelector,
+    ): Effect.Effect<StreamFailure | null>;
     /**
      * A channel's sound and subtitle tracks, from its program table; null until its stream has
      * started, and for movies and episodes.
@@ -1176,6 +1180,14 @@ function make(deps: PlaybackDeps) {
       const ended = new AbortController();
       response.on("close", () => ended.abort());
       const signal = AbortSignal.any([session.closed.signal, ended.signal]);
+      const complete = addresses.begin(id);
+      const outcome = (failure: StreamFailure | null) => {
+        if (subtitle || signal.aborted) return;
+        complete(failure);
+        // Receivers report only a stopped load, without an HLS request context. Preserve their
+        // existing cause contract; request selection is for this computer's hls.js engine.
+        if (session.receiver && failure) session.failure = failure;
+      };
       const range: Record<string, string> = request.headers.range
         ? { Range: request.headers.range }
         : {};
@@ -1203,12 +1215,14 @@ function make(deps: PlaybackDeps) {
             response.destroy();
           } else if (!opened) {
             const failure = upstream.ok ? noStream : upstream.failure;
-            if (!subtitle) session.failure = failure;
+            outcome(failure);
             response.writeHead("status" in failure ? failure.status : 502).end();
           } else if (opened.playlist) {
             await sendPlaylist(session, addresses, opened, response, subtitle);
+            outcome(null);
           } else {
             await passOn(opened, response);
+            outcome(null);
           }
           return;
         }
@@ -1230,6 +1244,7 @@ function make(deps: PlaybackDeps) {
             session.delivered = { ...session.delivered, variantId: variant.id };
             failedAt.delete(variant.url);
             await sendPlaylist(session, addresses, opened, response);
+            outcome(null);
             // Once per session: the player reloads a live playlist every few seconds.
             if (!kept) report("ok");
             return;
@@ -1253,14 +1268,14 @@ function make(deps: PlaybackDeps) {
           if (failure.kind === "refused") break;
           failedAt.set(variant.url, Date.now());
         }
-        session.failure = failure;
+        outcome(failure);
         response.writeHead("status" in failure ? failure.status : 502).end();
       } catch (cause) {
         if (!signal.aborted && !subtitle) {
-          session.failure = {
+          outcome({
             kind: "network",
             detail: cause instanceof Error ? cause.message : String(cause),
-          };
+          });
         }
         response.destroy();
       }
@@ -1297,7 +1312,7 @@ function make(deps: PlaybackDeps) {
         const marker = subtitle || subtitleUrls.has(target) ? "subs-" : "";
         return session.proxied(`${marker}${addresses.idOf(target, pin)}`);
       });
-      if (!subtitle) session.failure = null;
+      if (session.receiver && !subtitle) session.failure = null;
       response.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
       response.end(playlist);
     }
@@ -4126,7 +4141,22 @@ function make(deps: PlaybackDeps) {
               }
             : null;
         }),
-      failure: (sessionId: string) => Effect.sync(() => sessions.get(sessionId)?.failure ?? null),
+      failure: (sessionId: string, selector?: PlaybackFailureSelector) =>
+        Effect.sync(() => {
+          const session = sessions.get(sessionId);
+          if (!session || session.closed.signal.aborted) return null;
+          if (session.kind !== "live" || !session.hls) return selector ? null : session.failure;
+          // HLS never borrows a session-wide cause. Only a path issued by this session can select
+          // a retained request; parser, native and watchdog errors select no request.
+          if (session.receiver) return selector ? null : session.failure;
+          const path = selector?.requestId;
+          if (!path) return null;
+          if (path === `/stream/${session.token}.m3u8`) return session.hls.failureOf(null);
+          const prefix = `/stream/${session.token}/`;
+          if (!path.startsWith(prefix)) return null;
+          const id = path.slice(prefix.length);
+          return /^[0-9a-z]+$/.test(id) ? session.hls.failureOf(id) : null;
+        }),
 
       tracks: (sessionId: string) =>
         Effect.sync(() => {

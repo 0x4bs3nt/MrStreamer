@@ -45,7 +45,6 @@ import {
   TmdbError,
   type EpisodeAbout,
   type TitleAbout,
-  type Tmdb,
 } from "@mrstreamer/core/metadata/tmdb";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
 import { DEFAULT_TITLE_LANGUAGE } from "@mrstreamer/core/ondemand/languages";
@@ -54,10 +53,12 @@ import { qualityHint } from "@mrstreamer/core/ondemand/filters";
 import type { FilterOptions, TitleFilters } from "@mrstreamer/contracts/title-filters";
 import type { SavedTitle, TitleFacts } from "@mrstreamer/core/ondemand/watchlist";
 import type { ProviderDetails } from "@mrstreamer/core/provider";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -75,6 +76,7 @@ import type {
   WorkerSetup,
   WorkerStatus,
 } from "../ondemand/protocol.ts";
+import { DetailCache, type ProviderDetailKey, type DetailKey } from "../platform/detail-cache.ts";
 import { VerifiedFiles } from "../platform/verified-files.ts";
 import { Settings } from "./preferences.ts";
 import {
@@ -85,8 +87,27 @@ import {
   type PlaylistRefresh,
 } from "./subscription.ts";
 
-/** How many titles' details stay in memory. Opening one again then asks no one. */
+/** Provider details retained in memory; freshness still requires the current catalogue and age. */
 const DETAILS_KEPT = 200;
+const DAY = 24 * 60 * 60 * 1000;
+const TMDB_REFRESH = 150 * DAY;
+const TMDB_EXPIRE = 182 * DAY;
+
+interface Timed<A> {
+  readonly at: number;
+  readonly value: A;
+}
+
+interface Flight<A, E = never> {
+  readonly source: Source;
+  readonly token: object;
+  readonly fiber: Fiber.Fiber<A, E>;
+}
+
+/** Future timestamps are due after a clock correction, just like expired records. */
+function younger(at: number, now: number, age: number): boolean {
+  return Number.isFinite(at) && at <= now && now - at < age;
+}
 /** How many seasons TMDB described stay in memory, each in one language. */
 const SEASONS_KEPT = 100;
 /** How long TMDB gets to describe a title, or a season; the provider's details stand after that. */
@@ -264,13 +285,13 @@ interface TitleKey extends OwnedId {
   readonly kind: TitleKind;
 }
 
-/**
- * What opening a title downloaded from the provider, as of the refresh of the lists that `lists`
- * counts, with the title as the lists showed it then, for when they no longer list it.
- */
+/** Provider display plus the catalogue and source evidence under which it was renewed. */
 interface Downloaded {
   readonly raw: ProviderDetails;
-  readonly lists: number;
+  readonly at: number;
+  readonly catalogueStamp: string | undefined;
+  /** A successful renewal against a legacy catalogue is current only within this service. */
+  readonly renewed: boolean;
   readonly title: Title;
   readonly version: OwnedId;
   readonly sourceRevision: number;
@@ -280,6 +301,7 @@ function make(deps: OnDemandDeps) {
   return Effect.gen(function* () {
     const subscriptions = yield* Subscriptions;
     const settings = yield* Settings;
+    const cache = Option.getOrNull(yield* Effect.serviceOption(DetailCache));
     const verifiedFiles = Option.getOrNull(yield* Effect.serviceOption(VerifiedFiles));
     /** The language whose versions titles show and play first. */
     const language = Effect.map(
@@ -338,28 +360,120 @@ function make(deps: OnDemandDeps) {
     >();
     /** Counts restarts of the worker. */
     let generation = 0;
-    /**
-     * Rises, per subscription, with each refresh of its lists. Details downloaded before ask the
-     * provider again, as it may list new episodes.
-     */
-    const listsVersions = new Map<string, number>();
-    const listsOf = (subscriptionId: string) => listsVersions.get(subscriptionId) ?? 0;
-    /** What opening a title downloaded, by subscription, language, kind and id, oldest first. */
     const details = new Map<string, Downloaded>();
-    /**
-     * What TMDB said about the titles opened, by the same keys; null where TMDB doesn't have the
-     * title. One it didn't answer about, or had no key for, isn't kept, so opening it asks again.
-     */
-    const abouts = new Map<string, TitleAbout | null>();
-    /** The questions to TMDB about titles on their way, by the same keys. */
-    const asking = new Map<string, Fiber.Fiber<void>>();
-    /** Of those, the ones whose details were given without TMDB's. */
+    const providerFlights = new Map<string, Flight<Downloaded, Failed>>();
+    const abouts = new Map<string, Timed<TitleAbout | null>>();
+    const asking = new Map<string, Flight<TitleAbout | null | undefined>>();
     const late = new Set<string>();
-    /**
-     * What TMDB said about the seasons opened, by TMDB id, season and language, oldest first;
-     * null where TMDB doesn't have the season.
-     */
-    const seasons = new Map<string, readonly EpisodeAbout[] | null>();
+    const seasons = new Map<string, Timed<readonly EpisodeAbout[] | null>>();
+    const seasonFlights = new Map<string, Flight<readonly EpisodeAbout[] | null | undefined>>();
+    const reconfigured = new WeakSet<Fiber.Fiber<unknown, unknown>>();
+    /** A forgotten source cannot start new work while Roster still holds its saved login. */
+    const forgotten = new Set<string>();
+    const currentSources = new Map<string, Source>();
+    const sourceKey = (source: SavedSubscription) => JSON.stringify([source.id, source.revision]);
+    const stands = (source: Source) =>
+      Effect.map(
+        subscriptions.stands(source),
+        (saved) =>
+          saved &&
+          !forgotten.has(sourceKey(source)) &&
+          sameSource(source, currentSources.get(source.id)),
+      );
+    const cancelSource = (id: string) =>
+      Effect.gen(function* () {
+        const fibers: Fiber.Fiber<unknown, unknown>[] = [];
+        for (const flights of [providerFlights, asking, seasonFlights]) {
+          for (const [key, flight] of flights)
+            if (flight.source.id === id) {
+              flights.delete(key);
+              late.delete(key);
+              fibers.push(flight.fiber);
+            }
+        }
+        yield* Fiber.interruptAll(fibers);
+      });
+    const useSource = (source: Source) =>
+      Effect.gen(function* () {
+        if (forgotten.has(sourceKey(source)) || !(yield* subscriptions.stands(source)))
+          return yield* switched;
+        const previous = currentSources.get(source.id);
+        if (previous && !sameSource(source, previous)) {
+          currentSources.set(source.id, source);
+          for (const [key, entry] of details)
+            if (entry.version.subscriptionId === source.id) details.delete(key);
+          yield* cancelSource(source.id);
+        } else currentSources.set(source.id, source);
+        if (!(yield* stands(source))) return yield* switched;
+      });
+    /** Fork only the operation in the service scope. Interrupting join detaches its caller. */
+    const shared = <A, E>(
+      flights: Map<string, Flight<A, E>>,
+      key: string,
+      source: Source,
+      work: Effect.Effect<A, E>,
+    ) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (!(yield* stands(source))) return yield* switched;
+          const kept = flights.get(key);
+          if (kept) return kept.fiber;
+          const token = {};
+          const fiber = yield* Effect.forkIn(
+            restore(work).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (flights.get(key)?.token === token) {
+                    flights.delete(key);
+                    late.delete(key);
+                  }
+                }),
+              ),
+            ),
+            scope,
+          );
+          flights.set(key, { source, token, fiber });
+          return fiber;
+        }),
+      );
+    /** Only a key change permits metadata fallback. A caller's cancellation detaches its wait. */
+    const joinFlight = <A, E>(
+      fiber: Fiber.Fiber<A, E>,
+      source: Source,
+      fallback?: Effect.Effect<A>,
+    ): Effect.Effect<A, E | Failed> =>
+      Fiber.await(fiber).pipe(
+        Effect.flatMap((exit) =>
+          Effect.gen(function* () {
+            if (Exit.isSuccess(exit)) return exit.value;
+            const cause = exit.cause;
+            if (!Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+            const saved = yield* subscriptions.saved;
+            if (forgotten.has(sourceKey(source)) || !saved.some((each) => each.id === source.id))
+              return yield* noSubscription;
+            if (fallback && reconfigured.has(fiber) && (yield* stands(source)))
+              return yield* fallback;
+            return yield* switched;
+          }),
+        ),
+      );
+    const read = (key: DetailKey) =>
+      cache ? cache.read(key).pipe(Effect.orElseSucceed(() => null)) : Effect.succeed(null);
+    const providerKey = (
+      source: SavedSubscription,
+      kind: TitleKind,
+      id: string,
+    ): ProviderDetailKey => ({
+      kind: "provider",
+      account: source.key,
+      subscriptionId: source.id,
+      sourceStamp: source.fileRevision,
+      ...(source.importRevision ? { importRevision: source.importRevision } : {}),
+      titleKind: kind,
+      id,
+    });
+    const detailKey = (source: SavedSubscription, kind: TitleKind, id: string) =>
+      JSON.stringify(providerKey(source, kind, id));
     const fetchOne = (yield* Semaphore.make(FETCHES_AT_ONCE)).withPermits(1);
     const noSubscription = new Failed({ error: { kind: "no-subscription" } });
 
@@ -378,7 +492,9 @@ function make(deps: OnDemandDeps) {
     });
 
     /** The saved subscriptions with movies and series, in their order: Xtream and explicitly mapped playlists. */
-    const listed = Effect.map(subscriptions.saved, (saved) => saved.filter(hasTitles));
+    const listed = Effect.map(subscriptions.saved, (saved) =>
+      saved.filter((source) => hasTitles(source) && !forgotten.has(sourceKey(source))),
+    );
 
     /**
      * Each of those with what the worker holds of its lists, telling the worker whether the
@@ -394,9 +510,16 @@ function make(deps: OnDemandDeps) {
 
     const statusOf = (subscriptionId: string, worked: WorkerStatus): TitleListsStatus => ({
       subscriptionId,
-      ...worked,
+      movies: worked.movies,
+      series: worked.series,
+      fetchedAt: worked.fetchedAt,
+      ...(worked.importRevision ? { importRevision: worked.importRevision } : {}),
       failure: failures.get(subscriptionId)?.error ?? null,
     });
+    const stampOf = (source: SavedSubscription) =>
+      Effect.map(call("status", { owners: [ownerOf(source)], adults: false }), ([status]) =>
+        status?.importRevision === source.importRevision ? status?.catalogueStamp : undefined,
+      );
 
     const status = Effect.gen(function* () {
       const found = yield* held.pipe(
@@ -429,7 +552,7 @@ function make(deps: OnDemandDeps) {
          * Whether the login the lists were asked under is still the saved one. What the provider
          * answered under one that isn't, lists or a refusal, is neither kept nor told.
          */
-        const stands = subscriptions.stands(source);
+        const stillSaved = stands(source);
         // The worker fetches the lists and sets them aside; it keeps them only once told to.
         const fetched = Effect.gen(function* () {
           const catalogue = playlist
@@ -441,7 +564,7 @@ function make(deps: OnDemandDeps) {
                 })
               : undefined;
           yield* call("refresh", { ...owner, account, ...(catalogue ? { catalogue } : {}) });
-          const keep = yield* stands;
+          const keep = yield* stillSaved;
           yield* call("finishRefresh", { ...owner, keep });
           if (!keep) return yield* switched;
         });
@@ -451,13 +574,12 @@ function make(deps: OnDemandDeps) {
           Effect.tap(() =>
             Effect.gen(function* () {
               failures.delete(source.id);
-              listsVersions.set(source.id, listsOf(source.id) + 1);
               yield* publishStatus;
             }),
           ),
           Effect.tapError((failed) =>
             Effect.gen(function* () {
-              if (started !== generation || !(yield* stands)) return;
+              if (started !== generation || !(yield* stillSaved)) return;
               failures.set(source.id, { error: failed.error, at: Date.now() });
               yield* publishStatus;
             }),
@@ -468,10 +590,11 @@ function make(deps: OnDemandDeps) {
     /** Queries join the active refresh; a distinct supplied snapshot waits for its own acceptance. */
     const refreshOf = (source: Source, playlist?: PlaylistRefresh): Effect.Effect<void, Failed> =>
       Effect.gen(function* () {
+        yield* useSource(source);
         const under = refreshing.get(source.id);
         if (playlist && under && sameSource(source, under.source)) {
           yield* Fiber.await(under.fiber);
-          if (!(yield* subscriptions.stands(source))) return yield* switched;
+          if (!(yield* stands(source))) return yield* switched;
           return yield* refreshOf(source, playlist);
         }
         let running = under && sameSource(source, under.source) ? under : null;
@@ -490,7 +613,7 @@ function make(deps: OnDemandDeps) {
           running = { source, token, fiber };
           refreshing.set(source.id, running);
         }
-        return yield* Fiber.join(running.fiber);
+        return yield* joinFlight(running.fiber, source);
       });
 
     /**
@@ -547,43 +670,205 @@ function make(deps: OnDemandDeps) {
         return yield* run(made, yield* language);
       });
 
-    /** Details and lazy TMDB facts share the exact source revision and viewer language. */
-    const aboutKey = (
-      source: Pick<SavedSubscription, "id" | "revision">,
-      viewer: string,
+    const aboutKey = (kind: TitleKind, id: string, viewer: string) =>
+      JSON.stringify([kind, id, viewer]);
+    const validAbout = (key: string, now: number) => {
+      const kept = abouts.get(key);
+      return kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE)
+        ? kept.value
+        : null;
+    };
+
+    /** Disk hydration is lazy. A key change cancels work but leaves valid metadata readable. */
+    const askAbout = (source: Source, ref: TitleKey, title: Title, viewer: string) =>
+      Effect.gen(function* () {
+        if (!title.tmdbId) return { value: null, flight: undefined };
+        const key = aboutKey(ref.kind, title.tmdbId, viewer);
+        let kept = abouts.get(key);
+        if (!kept) {
+          const disk = yield* read({
+            kind: "about",
+            titleKind: ref.kind,
+            id: title.tmdbId,
+            language: viewer,
+          });
+          if (disk?.kind === "about") {
+            kept = disk;
+            keep(abouts, key, disk, DETAILS_KEPT);
+          }
+        }
+        const now = yield* Clock.currentTimeMillis;
+        const value = validAbout(key, now);
+        if ((kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH)) || !tmdbKey)
+          return { value, flight: undefined };
+        const flightKey = JSON.stringify([sourceKey(source), key]);
+        const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
+        const flight = yield* shared(
+          asking,
+          flightKey,
+          source,
+          Effect.gen(function* () {
+            const answer = yield* Effect.tryPromise((signal) =>
+              client
+                .about(
+                  ref.kind === "movie" ? "movie" : "tv",
+                  title.tmdbId!,
+                  viewer,
+                  AbortSignal.any([signal, AbortSignal.timeout(ABOUT_TIMEOUT_MS)]),
+                )
+                .catch((cause: unknown) => {
+                  if (cause instanceof TmdbError && cause.failure.kind === "missing") return null;
+                  throw cause;
+                }),
+            ).pipe(Effect.orElseSucceed(() => undefined));
+            if (answer === undefined || !(yield* stands(source))) return undefined;
+            const record = {
+              kind: "about",
+              at: yield* Clock.currentTimeMillis,
+              value: answer,
+            } as const;
+            keep(abouts, key, record, DETAILS_KEPT);
+            if (cache)
+              yield* cache
+                .remember(
+                  { kind: "about", titleKind: ref.kind, id: title.tmdbId!, language: viewer },
+                  record,
+                )
+                .pipe(Effect.ignore);
+            if (late.has(flightKey) && answer) yield* PubSub.publish(detailed, ref);
+            return answer;
+          }),
+        );
+        return { value, flight, key, flightKey };
+      });
+
+    const listedTitle = (source: SavedSubscription, kind: TitleKind, id: string) =>
+      loaded((owners, language) =>
+        call("byIds", { owners, language, kind, versions: [{ subscriptionId: source.id, id }] }),
+      ).pipe(Effect.map(([title]) => title));
+
+    const currentDetails = (
+      source: SavedSubscription,
+      kept: Downloaded,
+      stamp: string | undefined,
+      now: number,
+    ) =>
+      kept.sourceRevision === source.revision &&
+      younger(kept.at, now, DAY) &&
+      kept.catalogueStamp === stamp &&
+      (stamp !== undefined || kept.renewed);
+
+    /** Current evidence is separate from display fallback; a legacy disk record is never evidence. */
+    const providerRead = (
+      source: Source,
       kind: TitleKind,
       id: string,
-    ) => `${source.id}|${source.revision}|${viewer}|${kind}|${id}`;
+      title: Title,
+      fallback: boolean,
+    ) =>
+      Effect.gen(function* () {
+        const key = detailKey(source, kind, id);
+        const stamp = yield* stampOf(source);
+        let kept = details.get(key);
+        if (!kept || kept.sourceRevision !== source.revision) {
+          const disk = yield* read(providerKey(source, kind, id));
+          if (disk?.kind === "provider")
+            kept = {
+              raw: disk.value,
+              at: disk.at,
+              catalogueStamp: disk.catalogueStamp || undefined,
+              renewed: false,
+              sourceRevision: source.revision,
+              title,
+              version: { subscriptionId: source.id, id },
+            };
+          else kept = undefined;
+        }
+        const now = yield* Clock.currentTimeMillis;
+        // An upgraded unstamped catalogue can cache display data too. Only currentDetails can
+        // authorize files; after restart this display-only record still requires provider renewal.
+        const legacyDisplay =
+          fallback &&
+          kept !== undefined &&
+          stamp === undefined &&
+          kept.catalogueStamp === undefined &&
+          younger(kept.at, now, DAY);
+        if (kept && (currentDetails(source, kept, stamp, now) || legacyDisplay)) {
+          if (!(yield* stands(source))) return yield* switched;
+          keep(details, key, { ...kept, title }, DETAILS_KEPT);
+          return { ...kept, title };
+        }
+        const flightKey = JSON.stringify([key, source.revision, stamp ?? null]);
+        const flight = yield* shared(
+          providerFlights,
+          flightKey,
+          source,
+          Effect.gen(function* () {
+            const raw = yield* Effect.tryPromise({
+              try: (signal) =>
+                kind === "movie"
+                  ? source.provider.movieDetails(id, signal)
+                  : source.provider.seriesDetails(id, signal),
+              catch: failedWith,
+            }).pipe(diagnosed("details"));
+            if (!(yield* stands(source))) return yield* switched;
+            // A refresh during this request cannot bless an answer asked of the previous catalogue.
+            if ((yield* stampOf(source)) !== stamp || !(yield* listedTitle(source, kind, id)))
+              return yield* switched;
+            const downloaded: Downloaded = {
+              raw,
+              at: yield* Clock.currentTimeMillis,
+              catalogueStamp: stamp,
+              renewed: true,
+              title,
+              version: { subscriptionId: source.id, id },
+              sourceRevision: source.revision,
+            };
+            if (!(yield* stands(source))) return yield* switched;
+            if (cache)
+              yield* cache
+                .remember(providerKey(source, kind, id), {
+                  kind: "provider",
+                  at: downloaded.at,
+                  catalogueStamp: stamp ?? "",
+                  value: raw,
+                })
+                .pipe(Effect.ignore);
+            if (!(yield* stands(source))) return yield* switched;
+            keep(details, key, downloaded, DETAILS_KEPT);
+            return downloaded;
+          }),
+        );
+        return yield* joinFlight(flight, source).pipe(
+          Effect.catch((cause) =>
+            Effect.gen(function* () {
+              if (!fallback || !kept) return yield* cause;
+              if (!(yield* listedTitle(source, kind, id)) || !(yield* stands(source)))
+                return yield* switched;
+              // A newer catalogue's request may already have renewed this record while the old one failed.
+              const shown = { ...(details.get(key) ?? kept), title };
+              keep(details, key, shown, DETAILS_KEPT);
+              return shown;
+            }),
+          ),
+        );
+      });
 
-    /**
-     * A version's details: downloaded when it first opens, then kept, and put together each time
-     * with the title as the lists show it now, so its name and original language follow TMDB's
-     * metadata as it arrives without downloading anything again. TMDB is asked at the same time,
-     * and what it said by the time the provider answered is in them.
-     */
-    const detailsOf = (kind: TitleKind, { subscriptionId, id }: OwnedId) =>
+    const detailsOf = (kind: TitleKind, { subscriptionId, id }: OwnedId, fallback = true) =>
       Effect.gen(function* () {
         const source = yield* subscriptions.sourceOf(subscriptionId);
+        yield* useSource(source);
         const viewer = yield* language;
-        const cacheKey = aboutKey(source, viewer, kind, id);
-        const [listed] = yield* loaded((owners, language) =>
-          call("byIds", { owners, language, kind, versions: [{ subscriptionId, id }] }),
-        );
-        const kept = details.get(cacheKey);
-        const title = listed ?? (source.kind === "m3u" ? undefined : kept?.title);
+        const title = yield* listedTitle(source, kind, id);
         if (!title) return yield* new Failed({ error: { kind: "title-not-found", titleId: id } });
-        yield* askAbout(source, cacheKey, { subscriptionId, kind, id }, title);
-        const downloaded = kept
-          ? yield* renewed(source, kind, id, { ...kept, title })
-          : yield* download(source, kind, id, title);
-        details.delete(cacheKey);
-        // Kept again only for the subscription it was asked for, with the login it had.
-        if (!(yield* subscriptions.stands(source))) return yield* switched;
-        keep(details, cacheKey, downloaded, DETAILS_KEPT);
-        if (asking.has(cacheKey)) late.add(cacheKey);
-        const about = abouts.get(cacheKey) ?? null;
+        const metadata = yield* askAbout(source, { subscriptionId, kind, id }, title, viewer);
+        const downloaded = yield* providerRead(source, kind, id, title, fallback);
+        if (!(yield* stands(source))) return yield* switched;
+        if (metadata.flightKey && asking.has(metadata.flightKey)) late.add(metadata.flightKey);
+        const about = metadata.key
+          ? validAbout(metadata.key, yield* Clock.currentTimeMillis)
+          : metadata.value;
         const { raw } = downloaded;
-        // The title as this version: its episodes and its file belong to `id`, in its subscription.
         const version = {
           ...title,
           subscriptionId,
@@ -594,11 +879,14 @@ function make(deps: OnDemandDeps) {
         };
         return {
           raw,
-          /** What TMDB said about the title, once the question on its way is answered. */
+          source,
+          evidence: downloaded,
           about: Effect.gen(function* () {
-            const asked = asking.get(cacheKey);
-            if (asked) yield* Fiber.join(asked);
-            return abouts.get(cacheKey) ?? null;
+            if (metadata.flight)
+              yield* joinFlight(metadata.flight, source, Effect.succeed(undefined));
+            return metadata.key
+              ? validAbout(metadata.key, yield* Clock.currentTimeMillis)
+              : metadata.value;
           }),
           shown:
             kind === "movie"
@@ -607,77 +895,13 @@ function make(deps: OnDemandDeps) {
         };
       });
 
-    /** The provider's details of a movie or series. */
-    const providerDetails = (source: Source, kind: TitleKind, id: string) =>
-      Effect.tryPromise({
-        try: (signal) =>
-          kind === "movie"
-            ? source.provider.movieDetails(id, signal)
-            : source.provider.seriesDetails(id, signal),
-        catch: failedWith,
-      }).pipe(diagnosed("details"));
-
-    /**
-     * Asks TMDB about a title in the background, for its overview, artwork and credits, unless it
-     * answered already or is being asked. Its answer is kept for the subscription it was asked
-     * for, and announced when the title's details were given without it.
-     */
-    const askAbout = (source: Source, cacheKey: string, ref: TitleKey, title: Title) =>
-      Effect.gen(function* () {
-        if (abouts.has(cacheKey) || asking.has(cacheKey)) return;
-        if (!title.tmdbId) return keep(abouts, cacheKey, null, DETAILS_KEPT);
-        if (!tmdbKey) return;
-        const { tmdbId } = title;
-        const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
-        const viewer = yield* language;
-        const answered = (about: TitleAbout | null | undefined) =>
-          Effect.gen(function* () {
-            asking.delete(cacheKey);
-            const given = late.delete(cacheKey);
-            if (about === undefined || !(yield* subscriptions.stands(source))) return;
-            keep(abouts, cacheKey, about, DETAILS_KEPT);
-            if (given && about) yield* PubSub.publish(detailed, ref);
-          });
-        // Listed once forked: its answer takes a round trip to TMDB, so it never comes first.
-        const asked = yield* Effect.forkIn(
-          Effect.tryPromise((signal) =>
-            client
-              .about(
-                ref.kind === "movie" ? "movie" : "tv",
-                tmdbId,
-                viewer,
-                AbortSignal.any([signal, AbortSignal.timeout(ABOUT_TIMEOUT_MS)]),
-              )
-              .catch((cause: unknown) => {
-                if (cause instanceof TmdbError && cause.failure.kind === "missing") return null;
-                throw cause;
-              }),
-          ).pipe(
-            Effect.orElseSucceed(() => undefined),
-            Effect.flatMap(answered),
-          ),
-          scope,
-        );
-        asking.set(cacheKey, asked);
-      });
-
-    /** Asks the provider about a title the lists show. */
-    const download = (source: Source, kind: TitleKind, id: string, title: Title) => {
-      const lists = listsOf(source.id);
-      return Effect.map(providerDetails(source, kind, id), (raw) => ({
-        raw,
-        lists,
-        title,
-        version: { subscriptionId: source.id, id },
-        sourceRevision: source.revision,
-      }));
-    };
-
     /** No provider reads: cached episode listings must still belong to the saved source and lists. */
     const knownFiles = (kind: TitleKind, onlyRead = false) =>
       Effect.gen(function* () {
         if (!verifiedFiles) return [];
         const files: KnownFile[] = [];
+        const now = yield* Clock.currentTimeMillis;
+        const found = kind === "series" && details.size > 0 ? yield* held : [];
         for (const source of yield* listed) {
           const known = yield* verifiedFiles
             .read(source.key, source.fileRevision)
@@ -704,7 +928,12 @@ function make(deps: OnDemandDeps) {
               held.title.kind !== "series" ||
               held.version.subscriptionId !== source.id ||
               held.sourceRevision !== source.revision ||
-              held.lists !== listsOf(source.id)
+              !currentDetails(
+                source,
+                held,
+                found.find((each) => each.subscription.id === source.id)?.worked.catalogueStamp,
+                now,
+              )
             )
               continue;
             const tags = onlyRead
@@ -770,49 +999,58 @@ function make(deps: OnDemandDeps) {
         ? Effect.map(episodeObserver, (observe) => episodes.map(observe))
         : Effect.succeed(episodes);
 
-    /**
-     * Details kept from an earlier open, asked again after the lists were refreshed, as the
-     * provider may list new episodes; if that fails, the old ones stand.
-     */
-    const renewed = (source: Source, kind: TitleKind, id: string, kept: Downloaded) => {
-      const lists = listsOf(source.id);
-      return kept.lists === lists
-        ? Effect.succeed(kept)
-        : providerDetails(source, kind, id).pipe(
-            Effect.map((raw) => ({ ...kept, raw, lists })),
-            Effect.orElseSucceed(() => kept),
-          );
-    };
-
-    /**
-     * TMDB's season in one language: kept once TMDB answered, so opening it again asks no one.
-     * Null when TMDB doesn't have it, or didn't answer in time; that isn't kept, so opening the
-     * season again asks again.
-     */
-    const seasonIn = (client: Tmdb, tmdbId: string, season: number, asked: string) =>
+    /** Season metadata shares a service-owned request and can be read without a TMDB key. */
+    const seasonIn = (source: Source, tmdbId: string, number: number, asked: string) =>
       Effect.gen(function* () {
-        const cacheKey = `${tmdbId}|${season}|${asked}`;
-        // A season TMDB doesn't have is kept as null.
-        const kept = seasons.get(cacheKey);
-        const answer =
-          kept !== undefined
-            ? kept
-            : yield* Effect.tryPromise((signal) =>
-                client
-                  .season(
-                    tmdbId,
-                    season,
-                    asked,
-                    AbortSignal.any([signal, AbortSignal.timeout(ABOUT_TIMEOUT_MS)]),
-                  )
-                  .catch((cause: unknown) => {
-                    if (cause instanceof TmdbError && cause.failure.kind === "missing") return null;
-                    throw cause;
-                  }),
-              ).pipe(Effect.orElseSucceed(() => undefined));
-        if (answer === undefined) return null;
-        keep(seasons, cacheKey, answer, SEASONS_KEPT);
-        return answer;
+        const key = JSON.stringify([tmdbId, number, asked]);
+        const storage = { kind: "season", id: tmdbId, number, language: asked } as const;
+        let kept = seasons.get(key);
+        if (!kept) {
+          const disk = yield* read(storage);
+          if (disk?.kind === "season") {
+            kept = disk;
+            keep(seasons, key, disk, SEASONS_KEPT);
+          }
+        }
+        const now = yield* Clock.currentTimeMillis;
+        const usable =
+          kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE)
+            ? kept.value
+            : null;
+        if ((kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH)) || !tmdbKey)
+          return usable;
+        const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
+        const fiber = yield* shared(
+          seasonFlights,
+          JSON.stringify([sourceKey(source), key]),
+          source,
+          Effect.gen(function* () {
+            const answer = yield* Effect.tryPromise((signal) =>
+              client
+                .season(
+                  tmdbId,
+                  number,
+                  asked,
+                  AbortSignal.any([signal, AbortSignal.timeout(ABOUT_TIMEOUT_MS)]),
+                )
+                .catch((cause: unknown) => {
+                  if (cause instanceof TmdbError && cause.failure.kind === "missing") return null;
+                  throw cause;
+                }),
+            ).pipe(Effect.orElseSucceed(() => undefined));
+            if (answer === undefined || !(yield* stands(source))) return undefined;
+            const record = {
+              kind: "season",
+              at: yield* Clock.currentTimeMillis,
+              value: answer,
+            } as const;
+            keep(seasons, key, record, SEASONS_KEPT);
+            if (cache) yield* cache.remember(storage, record).pipe(Effect.ignore);
+            return answer;
+          }),
+        );
+        const answer = yield* joinFlight(fiber, source, Effect.succeed(undefined));
+        return answer === undefined ? usable : answer;
       });
 
     return {
@@ -859,7 +1097,15 @@ function make(deps: OnDemandDeps) {
           const source = saved.find((each) => each.id === version.subscriptionId);
           if (!source) return { basis: null, titles: [] };
           const viewer = yield* language;
-          const about = abouts.get(aboutKey(source, viewer, kind, version.id));
+          const [title] = yield* call("byIds", {
+            owners: saved.map(ownerOf),
+            language: viewer,
+            kind,
+            versions: [version],
+          });
+          const about = title?.tmdbId
+            ? validAbout(aboutKey(kind, title.tmdbId, viewer), yield* Clock.currentTimeMillis)
+            : null;
           return yield* call("related", {
             owners: saved.map(ownerOf),
             language: viewer,
@@ -943,7 +1189,7 @@ function make(deps: OnDemandDeps) {
 
       season: (series: OwnedId, number: number) =>
         Effect.gen(function* () {
-          const { shown, about } = yield* detailsOf("series", series);
+          const { shown, about, source } = yield* detailsOf("series", series);
           const season =
             shown.kind === "series"
               ? shown.seasons.find((each) => each.number === number)
@@ -953,8 +1199,7 @@ function make(deps: OnDemandDeps) {
           }
           const { tmdbId, originalLanguage } = shown.title;
           const answers: (readonly EpisodeAbout[])[] = [];
-          if (tmdbKey && tmdbId) {
-            const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
+          if (tmdbId) {
             // Names fall back as titles' do: the viewer's language, English, the series' own,
             // which TMDB says as the details open if the lists don't know it yet. Each is asked
             // for only while an episode TMDB lists still has no name.
@@ -966,12 +1211,13 @@ function make(deps: OnDemandDeps) {
               const wanted = yield* next;
               if (!wanted || asked.has(wanted)) continue;
               asked.add(wanted);
-              const answer = yield* seasonIn(client, tmdbId, number, wanted);
+              const answer = yield* seasonIn(source, tmdbId, number, wanted);
               if (!answer) break;
               answers.push(answer);
               if (named(season, answers)) break;
             }
           }
+          if (!(yield* stands(source))) return yield* switched;
           return yield* observedEpisodes(seasonEpisodes(season, answers));
         }),
 
@@ -1033,29 +1279,11 @@ function make(deps: OnDemandDeps) {
               ? { tmdbId: title.tmdbId, title: title.title, year: title.year }
               : null;
           }
-          const cached = [...details].filter(
-            ([, entry]) =>
-              entry.title.kind === "series" &&
-              entry.version.subscriptionId === source.id &&
-              entry.version.id === ref.seriesId &&
-              entry.sourceRevision === source.revision,
+          yield* useSource(source);
+          const held = yield* providerRead(source, "series", ref.seriesId, title, false).pipe(
+            Effect.orElseSucceed(() => null),
           );
-          const found = cached.find(([, entry]) => entry.lists === listsOf(source.id)) ?? cached[0];
-          const cacheKey = found?.[0] ?? aboutKey(source, yield* language, "series", ref.seriesId);
-          const kept = found?.[1];
-          // The lists were refreshed since these details were read, or other titles' details took
-          // their place: the provider says whether it still lists this file. Without its answer no
-          // listing is taken for current.
-          const held = kept
-            ? yield* renewed(source, "series", ref.seriesId, kept)
-            : yield* download(source, "series", ref.seriesId, title).pipe(
-                Effect.orElseSucceed(() => null),
-              );
-          if (!held || held.lists !== listsOf(source.id)) return null;
-          if (held !== kept) {
-            if (!(yield* subscriptions.stands(source))) return null;
-            keep(details, cacheKey, held, DETAILS_KEPT);
-          }
+          if (!held) return null;
           const episode = held.raw.episodes.find((entry) => entry.id === ref.id);
           if (!episode || listedFileKey("episode", episode) !== listingKey) return null;
           return {
@@ -1070,6 +1298,7 @@ function make(deps: OnDemandDeps) {
       file: (title: TitleRef) =>
         Effect.gen(function* () {
           const source = yield* subscriptions.sourceOf(title.subscriptionId);
+          yield* useSource(source);
           const missing = new Failed({ error: { kind: "title-not-found", titleId: title.id } });
           if (title.kind === "movie") {
             const listed = yield* call("container", { ...ownerOf(source), id: title.id });
@@ -1079,13 +1308,17 @@ function make(deps: OnDemandDeps) {
                 source.provider.titleFile("movie", title.id, listed.container, signal),
               catch: failedWith,
             });
-            if (!(yield* subscriptions.stands(source))) return yield* switched;
+            if (!(yield* stands(source))) return yield* switched;
             return { ...file, revision: source.revision, listingKey: listed.listingKey };
           }
-          const series = yield* detailsOf("series", {
-            subscriptionId: title.subscriptionId,
-            id: title.seriesId,
-          });
+          const series = yield* detailsOf(
+            "series",
+            {
+              subscriptionId: title.subscriptionId,
+              id: title.seriesId,
+            },
+            false,
+          );
           const episode = series.raw.episodes.find((each) => each.id === title.id);
           if (!episode) return yield* missing;
           const file = yield* Effect.tryPromise({
@@ -1093,7 +1326,12 @@ function make(deps: OnDemandDeps) {
               source.provider.titleFile("episode", title.id, episode.container, signal),
             catch: failedWith,
           });
-          if (!(yield* subscriptions.stands(source))) return yield* switched;
+          if (
+            !(yield* stands(source)) ||
+            (yield* stampOf(source)) !== series.evidence.catalogueStamp ||
+            !(yield* listedTitle(source, "series", title.seriesId))
+          )
+            return yield* switched;
           return {
             ...file,
             revision: source.revision,
@@ -1104,15 +1342,18 @@ function make(deps: OnDemandDeps) {
       forget: (subscription: SavedSubscription) =>
         Effect.gen(function* () {
           const { id } = subscription;
+          forgotten.add(sourceKey(subscription));
+          currentSources.delete(id);
           failures.delete(id);
-          listsVersions.delete(id);
-          // What was kept of its titles goes; what TMDB said of a season is no subscription's.
-          for (const kept of [details, abouts, asking]) {
-            for (const key of kept.keys()) if (key.startsWith(`${id}|`)) kept.delete(key);
+          yield* cancelSource(id);
+          const refresh = refreshing.get(id);
+          if (refresh) {
+            refreshing.delete(id);
+            yield* Fiber.interrupt(refresh.fiber);
           }
-          for (const key of late) if (key.startsWith(`${id}|`)) late.delete(key);
-          // Mapped playlists keep title lists too.
-
+          for (const [key, entry] of details)
+            if (entry.version.subscriptionId === id) details.delete(key);
+          if (cache) yield* cache.forget(id).pipe(Effect.ignore);
           yield* call("forget", ownerOf(subscription)).pipe(Effect.ignore);
           yield* publishStatus;
         }),
@@ -1122,6 +1363,14 @@ function make(deps: OnDemandDeps) {
         if (next === tmdbKey) return;
         tmdbKey = next;
         generation++;
+        const fibers = [...asking.values(), ...seasonFlights.values()].map(
+          (flight) => flight.fiber,
+        );
+        asking.clear();
+        seasonFlights.clear();
+        late.clear();
+        for (const fiber of fibers) reconfigured.add(fiber);
+        yield* Fiber.interruptAll(fibers);
         failures.clear();
         metadataProgress = { known: 0, wanted: 0, refused: false, fetching: false };
         // The next call starts the worker again, with the new key.

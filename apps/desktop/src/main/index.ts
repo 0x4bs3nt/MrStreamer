@@ -680,7 +680,9 @@ async function start(): Promise<void> {
       "guide.programme": ({ channel, guide: guideId, start }) =>
         guide.programme(channel, guideId, start),
       "guide.search": ({ query }) => guide.search(query),
-      "guide.searchList": ({ query, until, ...list }) =>
+      // The transport owns cancellation and validates sender/frame ownership.
+      "guide.cancelSearch": () => Effect.succeed(null),
+      "guide.searchList": ({ query, until, request: _request, ...list }) =>
         Effect.flatMap(library.channels(list), (channels) =>
           guide.searchChannels(query, channels, until),
         ),
@@ -822,7 +824,7 @@ async function start(): Promise<void> {
       "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
       "playback.closeAll": () =>
         Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
-      "playback.failure": ({ sessionId }) => playback.failure(sessionId),
+      "playback.failure": ({ sessionId, selector }) => playback.failure(sessionId, selector),
       "playback.tracks": ({ sessionId }) => playback.tracks(sessionId),
       "playback.playing": ({ sessionId }) => playback.playing(sessionId),
       "output.status": () => output.status,

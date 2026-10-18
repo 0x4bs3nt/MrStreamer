@@ -48,6 +48,8 @@ export interface CollectionSource {
   readonly services: readonly ServiceTitles[];
   /** Epoch milliseconds, for "this week". */
   readonly now: number;
+  /** Raw metadata expiry for an id, or the service snapshot without one; Infinity when absent. */
+  readonly expiresAt?: (tmdbId?: string) => number;
 }
 
 /** A title with what collections sort and filter it by. */
@@ -72,6 +74,8 @@ const TOP_RATING = 7.5;
 const DAY_MS = 24 * 60 * 60_000;
 
 export interface Collections {
+  /** Whether this snapshot still describes `now`, including rolling dates and clock reversal. */
+  validAt(now: number): boolean;
   /** A collection's titles, in `sort` or the collection's own order. */
   list(id: CollectionId, sort?: CollectionSort): readonly Title[];
   /** A collection's name to show: "Comedy", "Netflix", "New this week". */
@@ -92,9 +96,16 @@ export interface Collections {
 }
 
 export function collections(source: CollectionSource): Collections {
+  let until = Date.UTC(new Date(source.now).getUTCFullYear() + 1, 0, 1);
+  const expires = (id?: string) => {
+    const at = source.expiresAt?.(id) ?? Infinity;
+    if (at > source.now) until = Math.min(until, at);
+  };
+  expires();
   const ranked = source.titles
     .filter((title) => !title.adult)
     .map((title): Ranked => {
+      if (title.tmdbId) expires(title.tmdbId);
       const meta = title.tmdbId ? source.metadata(title.tmdbId) : null;
       const names = title.tmdbId ? source.names(title.tmdbId) : null;
       const shown: Title = meta
@@ -129,6 +140,14 @@ export function collections(source: CollectionSource): Collections {
       };
     });
   const suiting = ranked.filter((entry) => entry.suits);
+  // Membership changes at each title's rolling cutoff, not at calendar week/month boundaries.
+  // Compute once with the snapshot; reads inside this interval need no catalogue scan.
+  for (const entry of suiting) {
+    for (const days of [7, 30]) {
+      const cutoff = added(entry) + days * DAY_MS;
+      if (cutoff > source.now) until = Math.min(until, cutoff);
+    }
+  }
   /** Titles for adults: in their own collection only, as the provider lists them. */
   const adult = source.titles.flatMap((title): Ranked[] =>
     title.adult
@@ -222,6 +241,8 @@ export function collections(source: CollectionSource): Collections {
   }
 
   return {
+    validAt: (now) => now >= source.now && now < until,
+
     list(id, sort) {
       const key = `${id}|${sort ?? ""}`;
       let list = lists.get(key);

@@ -9,13 +9,15 @@
 // is still one version of one subscription. Nothing joins by name: a row without a TMDB id stays
 // on its own, whichever subscription lists another of its name, and so does a row for adults.
 import type { Title, TitleKind, TitleVersion } from "@mrstreamer/contracts/ondemand";
+import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { adultIn } from "../adult.ts";
 import type { OnDemandCatalogue, ProviderTitle } from "../provider.ts";
 import { finish, pacer, type Steps } from "../steps.ts";
-import { normalize } from "../text.ts";
+import { indexNames, nameQuery, scoreNames, yearQuery, type SearchNames } from "../search/names.ts";
 import { suitability } from "./languages.ts";
 import { titleName, type TitleName } from "./names.ts";
+import { filterTitles, type FilterFiles } from "./filters.ts";
 
 /** How many titles of each kind a search returns. */
 export const SEARCH_LIMIT = 60;
@@ -37,7 +39,7 @@ interface IndexedKind {
    */
   readonly byTmdbId: () => ReadonlyMap<string, Title>;
   /** Folded names, index-aligned with `titles`, worked out on the first search. */
-  readonly searchNames: () => readonly string[];
+  readonly searchNames: () => readonly SearchNames[];
 }
 
 export interface IndexedCatalogue {
@@ -153,7 +155,7 @@ function* indexKind(
   }
   const titles: Title[] = [];
   /** Every version's name, title by title, for search. */
-  const names: string[] = [];
+  const names: string[][] = [];
   const byId = new Map<string, Title>();
   // A title can gather thousands of versions, so the work pauses between slices of versions.
   for (const group of groups) {
@@ -227,16 +229,12 @@ function* indexKind(
       versions: listedVersions,
     };
     titles.push(title);
-    if (versions.length === 1) {
-      names.push(first.item.name);
-    } else {
-      const spelled: string[] = [];
-      for (const { item } of group) {
-        if (due()) yield;
-        spelled.push(item.name);
-      }
-      names.push(spelled.join(" "));
+    const spelled: string[] = [];
+    for (const { item, name } of group) {
+      if (due()) yield;
+      spelled.push(name.title, item.name);
     }
+    names.push(spelled);
   }
   const shown = sources.length > 1 ? yield* marked(titles) : titles;
   for (const title of shown) {
@@ -257,7 +255,7 @@ function* indexKind(
         ),
     ),
     searchNames: once(() =>
-      shown.map((title, index) => normalize(`${title.title} ${names[index] ?? ""}`)),
+      shown.map((title, index) => indexNames(title.title, names[index] ?? [])),
     ),
   };
 }
@@ -313,33 +311,82 @@ export function byIds(
   return versions.flatMap((version) => byId.get(ownedKey(version)) ?? []);
 }
 
+/** Raw metadata names, kept separate so translation arrival cannot change an existing score. */
+export interface TitleSearchAliases {
+  readonly title?: string;
+  readonly original?: string | null;
+  readonly names: readonly string[];
+}
+
+interface PreparedAliases {
+  readonly title: string;
+  readonly original: string | null;
+  readonly names: readonly string[];
+  readonly indexed: SearchNames;
+}
+
+const preparedAliases = new WeakMap<Title, PreparedAliases>();
+
 /**
- * Titles whose name holds every word of the query: the shown name, the provider's names of every
- * version, and `aliases`, other names already folded, such as TMDB's translations. Names that
- * start with it rank first, then names with a word starting with it; ties go to the newest, and
- * equals to the order of the catalogue. Titles for adults are left out.
+ * The caller reads current metadata on every search, including expiry and missing answers.
+ * Reuse only the spelling work when those raw values still agree; retain a copy of the names
+ * so a caller changing its array in place cannot keep obsolete spellings alive.
+ */
+function aliasNames(title: Title, alias: string | TitleSearchAliases): SearchNames | undefined {
+  const displayed = typeof alias === "string" ? "" : (alias.title ?? "");
+  const original = typeof alias === "string" ? null : (alias.original ?? null);
+  const names = typeof alias === "string" ? (alias ? [alias] : []) : alias.names;
+  if (!displayed && !original && names.length === 0) {
+    preparedAliases.delete(title);
+    return undefined;
+  }
+  const kept = preparedAliases.get(title);
+  if (
+    kept &&
+    kept.title === displayed &&
+    kept.original === original &&
+    kept.names.length === names.length &&
+    kept.names.every((name, index) => name === names[index])
+  )
+    return kept.indexed;
+  const indexed = indexNames(displayed, original ? [original] : [], names);
+  preparedAliases.set(title, { title: displayed, original, names: [...names], indexed });
+  return indexed;
+}
+
+/**
+ * Titles holding every query word across displayed, original, provider and translated names.
+ * Exact names precede prefixes, word starts and substrings; each name scores independently so
+ * extra aliases cannot demote a match. Displayed names win equal tiers, then originals/provider
+ * names, then translations. Recency and catalogue order break ties. Structured years supplement
+ * literal-name recall; unknown years match only literally. Titles for adults are left out.
  */
 export function search(
   catalogue: IndexedCatalogue,
   kind: TitleKind,
   query: string,
-  aliases: (title: Title) => string = () => "",
+  aliases: (title: Title) => string | TitleSearchAliases = () => "",
   limit = SEARCH_LIMIT,
 ): Title[] {
   return searchPage(catalogue, kind, query, aliases, limit).titles;
 }
 
-/** What `search` finds, with how many titles match in all, though only the best `limit` come back. */
+/**
+ * What `search` finds, counting every match while keeping only the best `limit`. Optional file
+ * filters select a real version before the cut, and also report the original matching total.
+ */
 export function searchPage(
   catalogue: IndexedCatalogue,
   kind: TitleKind,
   query: string,
-  aliases: (title: Title) => string = () => "",
+  aliases: (title: Title) => string | TitleSearchAliases = () => "",
   limit = SEARCH_LIMIT,
-): { readonly titles: Title[]; readonly total: number } {
-  const folded = normalize(query);
-  if (!folded) return { titles: [], total: 0 };
-  const words = folded.split(" ");
+  selection?: { readonly filters: TitleFilters; readonly files: FilterFiles },
+): { readonly titles: Title[]; readonly total: number; readonly unfiltered?: number } {
+  const asked = nameQuery(query);
+  if (asked.words.length === 0)
+    return { titles: [], total: 0, ...(selection ? { unfiltered: 0 } : {}) };
+  const qualified = yearQuery(query);
   const indexed = kindOf(catalogue, kind);
   const { titles } = indexed;
   const searchNames = indexed.searchNames();
@@ -349,14 +396,30 @@ export function searchPage(
   const ranked: Ranked[] = [];
   let worst: Ranked | undefined;
   let total = 0;
+  let unfiltered = 0;
   for (const [index, title] of titles.entries()) {
     if (title.adult) continue;
-    const alias = aliases(title);
-    const name = alias ? `${alias} ${searchNames[index] ?? ""}` : (searchNames[index] ?? "");
-    if (!words.every((word) => name.includes(word))) continue;
+    const extra = aliasNames(title, aliases(title));
+    const names = searchNames[index];
+    if (!names) continue;
+    let rank = scoreNames(asked, names, extra);
+    if (qualified && title.year === qualified.year) {
+      const withYear = scoreNames(qualified.query, names, extra);
+      if (withYear !== undefined) rank = Math.min(rank ?? Infinity, withYear);
+    }
+    if (rank === undefined) continue;
+    unfiltered++;
+    const selected = selection
+      ? filterTitles([title], selection.filters, selection.files)[0]
+      : title;
+    if (!selected) continue;
     total++;
-    const rank = name.startsWith(folded) ? 0 : ` ${name}`.includes(` ${folded}`) ? 1 : 2;
-    const entry = { title, rank };
+    // Ambiguous numeric names retain literal recall, after matches with the requested year.
+    const entry = {
+      title: selected,
+      rank,
+      yearRank: qualified && title.year !== qualified.year ? 1 : 0,
+    };
     if (worst && compareRanked(entry, worst) >= 0) continue;
     ranked.push(entry);
     if (ranked.length >= 2 * limit) {
@@ -366,16 +429,23 @@ export function searchPage(
     }
   }
   ranked.sort(compareRanked);
-  return { titles: ranked.slice(0, limit).map((entry) => entry.title), total };
+  return {
+    titles: ranked.slice(0, limit).map((entry) => entry.title),
+    total,
+    ...(selection ? { unfiltered } : {}),
+  };
 }
 
 interface Ranked {
   readonly title: Title;
   readonly rank: number;
+  readonly yearRank: number;
 }
 
 function compareRanked(a: Ranked, b: Ranked): number {
-  return a.rank - b.rank || (b.title.addedAt ?? 0) - (a.title.addedAt ?? 0);
+  return (
+    a.yearRank - b.yearRank || a.rank - b.rank || (b.title.addedAt ?? 0) - (a.title.addedAt ?? 0)
+  );
 }
 
 /** A row with the subscription that lists it. */

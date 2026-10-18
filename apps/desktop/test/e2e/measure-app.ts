@@ -42,6 +42,12 @@ const { values: options, positionals } = parseArgs({
     json: { type: "string" },
     runs: { type: "string", default: "3" },
     subscriptions: { type: "string", default: "1" },
+    titles: { type: "string", default: "120" },
+    series: { type: "string" },
+    "search-runs": { type: "string" },
+    "uncached-search": { type: "boolean", default: false },
+    "cold-search": { type: "boolean", default: false },
+    "covered-idle": { type: "boolean", default: false },
     revision: { type: "string" },
   },
   allowPositionals: true,
@@ -57,6 +63,11 @@ if (!executable) {
 const ffmpeg = process.env["MR_STREAMER_FFMPEG"] ?? "ffmpeg";
 const RUNS = positiveCount(options.runs, "runs", 20);
 const SUBSCRIPTIONS = positiveCount(options.subscriptions, "subscriptions", 4);
+const TITLES = positiveCount(options.titles, "titles", 100_000);
+const SERIES = options.series ? positiveCount(options.series, "series", 100_000) : undefined;
+const SEARCH_RUNS = options["search-runs"]
+  ? positiveCount(options["search-runs"], "search-runs", 100)
+  : 0;
 const TEST_CHANNELS = ["H.264 + AAC", "H.264 + MP2", "H.264 + MP3", "H.264 + AC-3"];
 
 const output = options.json ?? join(process.cwd(), ".local/measurements", `app-${Date.now()}.json`);
@@ -67,6 +78,8 @@ for (let index = 0; index < SUBSCRIPTIONS; index++)
     await startFakeProvider({
       second: index > 0,
       channels: 13_000,
+      titles: TITLES,
+      ...(SERIES ? { series: SERIES } : {}),
       maxConnections: 1,
       longSeries: true,
       // Every channel plays the same endless 720p programme, encoded as it goes.
@@ -103,10 +116,13 @@ const results = new Map<keyof typeof APP_METRICS, number[]>();
 const record = (name: keyof typeof APP_METRICS, value: number) =>
   results.set(name, [...(results.get(name) ?? []), value]);
 const observations: { [key: string]: number | string | boolean }[] = [];
+const searchSamples: Record<string, number[]> = {};
+const coldSearchSamples: number[] = [];
 
 const profile = mkdtempSync(join(tmpdir(), "mr-streamer-measure-"));
 let app: ChildProcess | null = null;
 let activePage: Page | undefined;
+let mainInspector: Page | undefined;
 let electron = "unavailable";
 let calibration: Awaited<ReturnType<typeof calibrate>> = [];
 
@@ -131,8 +147,29 @@ function freshPicture(page: Page): Promise<boolean> {
 try {
   // First run: log in, let the catalogue and guide arrive, then tune, switch and browse.
   let port = randomPort();
-  app = launch(executable, rest, { port, profile });
+  const inspectPort = randomPort();
+  app = launch(executable, options["covered-idle"] ? [`--inspect=${inspectPort}`, ...rest] : rest, {
+    port,
+    profile,
+  });
   let page = await connect(port, "page", { pollMs: 5, app });
+  if (options["covered-idle"]) {
+    mainInspector = await connect(inspectPort, "node", { app });
+    // Diagnostic-only instrumentation of Electron's registered boundary, without query text or
+    // identities. This private Electron registry is deliberately checked at runtime and never
+    // used by the product. Failure invalidates the capture rather than fabricating zero calls.
+    await mainInspector.evaluate(`(async () => {
+      const { ipcMain } = process.getBuiltinModule("module").createRequire(process.execPath)("electron");
+      const handlers = ipcMain._invokeHandlers;
+      if (!(handlers instanceof Map)) throw new Error("Electron IPC diagnostic registry unavailable");
+      globalThis.__maintenanceCalls = [];
+      for (const [method, handler] of handlers) handlers.set(method, (event, input) => {
+        globalThis.__maintenanceCalls.push({ method, at: Date.now(), channels: Array.isArray(input?.channels) ? input.channels.length : 0 });
+        return handler(event, input);
+      });
+      return true;
+    })()`);
+  }
   activePage = page;
   electron = electronVersion(executable);
   await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -208,12 +245,60 @@ try {
     await delay(500);
   }
 
+  // Each query is typed into an empty, freshly mounted palette. Repeated queries intentionally
+  // measure the warm local cache, including its unchanged typing debounce. Cold process samples
+  // above and below have a different cache condition and are never pooled into these percentiles.
+  for (const query of SEARCH_RUNS ? ["H.264 + AAC", "TEST | Index at the end", "news"] : []) {
+    const samples: number[] = [];
+    searchSamples[query] = samples;
+    for (let run = -1; run < SEARCH_RUNS; run++) {
+      await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
+      await delay(150);
+      const expected =
+        query === "news"
+          ? `document.querySelector('[role="dialog"]')?.innerText.includes("On now")`
+          : `[...document.querySelectorAll('[role="dialog"] [data-index]')].some(row => row.innerText.toLowerCase().includes(${JSON.stringify(query.toLowerCase())}))`;
+      const shown = observe(page, expected);
+      // Unique raw whitespace preserves normalized words while bypassing query-result caching.
+      const typed = options["uncached-search"] ? query + " ".repeat(run + 2) : query;
+      await page.send("Input.insertText", { text: typed });
+      const elapsed = await shown;
+      if (run >= 0) samples.push(elapsed);
+      observations.push({
+        name: "warm palette",
+        query,
+        run,
+        elapsedMs: elapsed,
+        firstResult: await page.evaluate<string>(
+          `document.querySelector('[role="dialog"] [data-index]')?.innerText ?? ""`,
+        ),
+      });
+      await key(page, "Escape", 27);
+      await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
+    }
+  }
+
   // Home's muted preview plays by now. Watch takes over its stream.
   await delay(3000);
   const requests = streamRequests();
   await clickText(page, "Watch");
   await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[data-view="watch"]')`));
   await delay(1000);
+  if (options["covered-idle"]) {
+    const started = Date.now();
+    observations.push({ name: "covered idle begins", at: started });
+    // Cross the existing one-minute listing poll while the underlying Home stays mounted.
+    await delay(42_000);
+    await delay(42_000);
+    await delay(42_000);
+    observations.push({ name: "covered idle ends", at: Date.now() });
+    const calls = await mainInspector!.evaluate<{ method: string; at: number; channels: number }[]>(
+      `globalThis.__maintenanceCalls.filter(call => call.at >= ${started})`,
+    );
+    for (const call of calls) observations.push({ name: "covered IPC", ...call });
+    mainInspector!.close();
+    mainInspector = undefined;
+  }
   record("streams opened, Home to Watch (count)", streamRequests() - requests);
   page.close();
   await quit(app);
@@ -234,7 +319,30 @@ try {
     );
     observations.push({ name: "cold start", initialNavigationObserved: loaded.navigationObserved });
     record("cold start to Home", loaded.elapsedMs);
+    if (options["cold-search"]) {
+      await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
+      await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[role="combobox"]')`));
+      const shown = observe(
+        page,
+        `document.querySelector('[role="dialog"]')?.innerText.includes("TEST | Index at the end")`,
+      );
+      await page.send("Input.insertText", { text: "TEST | Index at the end" });
+      coldSearchSamples.push(await shown);
+      await key(page, "Escape", 27);
+      await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
+    }
+    const detailRequests = providers.reduce(
+      (total, provider) => total + provider.detailRequests(),
+      0,
+    );
     await openLongSeries(page);
+    observations.push({
+      name: "cold series provider details",
+      run,
+      requests:
+        providers.reduce((total, provider) => total + provider.detailRequests(), 0) -
+        detailRequests,
+    });
     page.close();
     await quit(app);
   }
@@ -265,9 +373,14 @@ try {
     workload: {
       channelsPerSubscription: 13000,
       subscriptions: SUBSCRIPTIONS,
+      moviesPerSubscription: provider.titles.movies.length,
+      seriesPerSubscription: provider.titles.series.length,
       seriesSeasons: 20,
       stream: "720p25-h264-aac",
       runs: RUNS,
+      warmSearchRunsPerQuery: SEARCH_RUNS,
+      searchResultCache: options["uncached-search"] ? "uncached" : "warm",
+      coldSearch: options["cold-search"],
     },
     conditions: {
       warmup: "login, guide download, one unmeasured tune and switch at measured workload",
@@ -280,7 +393,18 @@ try {
     },
     calibration,
     observations,
-    metrics,
+    metrics: {
+      ...metrics,
+      ...Object.fromEntries(
+        Object.entries(searchSamples).map(([query, samples]) => [
+          `${options["uncached-search"] ? "uncached" : "warm"} palette: ${query}`,
+          metric("ms", samples),
+        ]),
+      ),
+      ...(options["cold-search"]
+        ? { "cold process exact title search": metric("ms", coldSearchSamples) }
+        : {}),
+    },
     checks: {
       completeMetrics: true,
       movingPicture: ["time to picture", "channel switch"].every((name) => {
@@ -312,6 +436,8 @@ try {
         workload: {
           runs: RUNS,
           subscriptions: SUBSCRIPTIONS,
+          moviesPerSubscription: provider.titles.movies.length,
+          seriesPerSubscription: provider.titles.series.length,
           channelsPerSubscription: 13000,
           stream: "720p25-h264-aac",
           seriesSeasons: 20,
@@ -328,6 +454,8 @@ try {
         calibration,
         observations,
         partialSamples: Object.fromEntries(results),
+        warmSearchSamples: searchSamples,
+        coldSearchSamples,
         error: String(error),
       },
       null,
@@ -357,6 +485,7 @@ try {
   }
   throw error;
 } finally {
+  mainInspector?.close();
   activePage?.close();
   if (app) await quit(app);
   await Promise.all(providers.map((provider) => provider.close()));

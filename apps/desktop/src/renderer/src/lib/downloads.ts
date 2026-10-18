@@ -3,7 +3,8 @@
 // while the window is open. A download names the exact version it was made of: details find
 // theirs by the subscription that lists it now and the provider's ids.
 import { queryOptions, useQuery, type QueryClient } from "@tanstack/react-query";
-import type { Download, DownloadFailure } from "@mrstreamer/contracts/downloads";
+import { useCallback } from "react";
+import type { Download, DownloadFailure, DownloadList } from "@mrstreamer/contracts/downloads";
 import type { RawTitleRef } from "@mrstreamer/contracts/ondemand";
 import { formatBytes, formatPercent, t } from "@mrstreamer/core/i18n";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
@@ -33,6 +34,32 @@ export function useDownloads() {
   return useQuery(downloadsQuery());
 }
 
+type FileIndex = Map<string, Map<RawTitleRef["kind"], Map<string, Download>>>;
+const filesBySnapshot = new WeakMap<DownloadList, FileIndex>();
+
+/** Exact files in this immutable full snapshot. Detached copies have no current subscription. */
+export function downloadOf(
+  list: DownloadList | undefined,
+  title: Pick<RawTitleRef, "kind" | "id"> & { readonly subscriptionId: string },
+): Download | null {
+  if (!list) return null;
+  let index = filesBySnapshot.get(list);
+  if (!index) {
+    index = new Map();
+    for (const file of list.items) {
+      if (!file.subscription) continue;
+      let subscription = index.get(file.subscription.id);
+      if (!subscription) index.set(file.subscription.id, (subscription = new Map()));
+      let kind = subscription.get(file.title.kind);
+      if (!kind) subscription.set(file.title.kind, (kind = new Map()));
+      // Keep the same first match as the list's previous find, even for duplicate records.
+      if (!kind.has(file.title.id)) kind.set(file.title.id, file);
+    }
+    filesBySnapshot.set(list, index);
+  }
+  return index.get(title.subscriptionId)?.get(title.kind)?.get(title.id) ?? null;
+}
+
 /**
  * The download of an exact movie or episode version of `subscriptionId`, or null: one made of it
  * while another subscription of that account was saved counts too, as the list names it by the
@@ -42,15 +69,12 @@ export function useDownloadOf(
   subscriptionId: string,
   title: Pick<RawTitleRef, "kind" | "id">,
 ): Download | null {
-  const list = useDownloads().data;
-  return (
-    list?.items.find(
-      (each) =>
-        each.subscription?.id === subscriptionId &&
-        each.title.kind === title.kind &&
-        each.title.id === title.id,
-    ) ?? null
+  const { kind, id } = title;
+  const select = useCallback(
+    (list: DownloadList) => downloadOf(list, { subscriptionId, kind, id }),
+    [subscriptionId, kind, id],
   );
+  return useQuery({ ...downloadsQuery(), select }).data ?? null;
 }
 
 /** "S2 E3 · Its name", or null for a movie. */
