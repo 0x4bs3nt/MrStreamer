@@ -12,7 +12,23 @@ type Hit = {
   after: AnalyticsRecord;
   phase: Boundary["phase"];
 };
-type Measurement = { from: string; at: number; ms: number; code: string | null };
+type Measurement = {
+  from: string;
+  at: number;
+  ms: number;
+  code: string | null;
+  index: number;
+  pid: number;
+  to: string;
+  startedAt: string;
+  endedAt: string;
+  errno?: number;
+  syscall?: string;
+  path?: string;
+  dest?: string;
+  errorName?: string;
+  errorMessage?: string;
+};
 type Reader = {
   mode: "default" | "exclusive";
   key: UsageKey;
@@ -77,6 +93,7 @@ async function install(profile: string, directory: string) {
   let release: (() => void) | null = null;
   let reader: Pick<Reader, "mode" | "key"> | null = null;
   let recovering: Reader | null = null;
+  let operationIndex = 0;
   const probe = {
     hit: null as Hit | null,
     measurements: [] as Measurement[],
@@ -162,6 +179,8 @@ async function install(profile: string, directory: string) {
     )
       return original(from, to);
     const started = performance.now();
+    const startedAt = new Date().toISOString();
+    const index = ++operationIndex;
     const before = spec ? await read(destination) : null;
     const after = spec ? await read(from) : null;
     const selected = before && after && matches(before, after) ? spec : null;
@@ -210,10 +229,21 @@ async function install(profile: string, directory: string) {
     }
     const observed = recovering?.from === path.basename(from) ? recovering : null;
     let code: string | null = null;
+    const failure: Partial<Measurement> = {};
     try {
       await original(from, to);
     } catch (error) {
       code = error instanceof Error && "code" in error ? String(error.code) : "unknown";
+      if (error instanceof Error) {
+        failure.errorName = error.name;
+        failure.errorMessage = error.message;
+        if ("errno" in error && typeof error.errno === "number") failure.errno = error.errno;
+        if ("syscall" in error && typeof error.syscall === "string")
+          failure.syscall = error.syscall;
+        if ("path" in error && (error.path === from || error.path === destination))
+          failure.path = error.path;
+        if ("dest" in error && error.dest === destination) failure.dest = error.dest;
+      }
       throw error;
     } finally {
       // No CDP/PowerShell roundtrip: release before the product sees rejection and schedules retry.
@@ -230,6 +260,12 @@ async function install(profile: string, directory: string) {
         at: Date.now(),
         ms: performance.now() - started,
         code,
+        index,
+        pid: process.pid,
+        to: path.basename(to),
+        startedAt,
+        endedAt: new Date().toISOString(),
+        ...failure,
       });
       if (observed) {
         observed.attempts++;

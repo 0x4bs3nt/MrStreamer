@@ -27,6 +27,11 @@ export async function installedTelemetryPair(
     "Frozen compatibility requires actual published .15",
   );
   const [stable, next] = receipt.packages;
+  assert.equal(
+    stable.source,
+    "cc6980d88673c838a5da4ee80af9495e430a4210",
+    "Frozen compatibility requires the published .15 source",
+  );
   assert.equal(next.version, candidate.version);
   assert.equal(next.source, candidate.source);
   assert.equal(candidate.executable?.toLowerCase(), runner.executable.toLowerCase());

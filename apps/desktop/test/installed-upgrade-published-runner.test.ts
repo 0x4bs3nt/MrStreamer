@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installPublished, runCommand, telemetryCommand } from "./e2e/installed-upgrade.ts";
 import { installedTelemetryPair } from "./e2e/analytics-installed-pair.ts";
@@ -12,6 +13,11 @@ import {
   processes,
   uninstall,
 } from "./e2e/installed-upgrade-windows.ts";
+
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
 
 vi.mock("./e2e/installed-upgrade-windows.ts", async (original) => ({
   ...(await original<typeof import("./e2e/installed-upgrade-windows.ts")>()),
@@ -101,6 +107,8 @@ describe("the installed upgrade run before and around native installation", () =
     receipt.resolved.candidateTag = "v0.0.16-nightly.20261018.379";
     receipt.packages[0].version = "0.0.15";
     receipt.packages[0].provenance.tag = receipt.resolved.stableTag;
+    receipt.resolved.stableSha = "cc6980d88673c838a5da4ee80af9495e430a4210";
+    receipt.packages[0].source = receipt.resolved.stableSha;
     receipt.packages[1].version = receipt.resolved.candidateTag.slice(1);
     receipt.packages[1].provenance.tag = receipt.resolved.candidateTag;
     for (const pkg of receipt.packages) {
@@ -164,6 +172,80 @@ describe("the installed upgrade run before and around native installation", () =
       status: "failed",
       error: expect.stringContaining("owned uninstall refused"),
     });
+  });
+
+  it("keeps full telemetry as default and forwards focused coverage with the resolved product pins", async () => {
+    receipt.resolved.stableTag = "v0.0.15";
+    receipt.resolved.stableSha = "cc6980d88673c838a5da4ee80af9495e430a4210";
+    receipt.resolved.candidateTag = "v0.0.16-nightly.20261018.387";
+    receipt.packages[0].version = "0.0.15";
+    receipt.packages[0].source = receipt.resolved.stableSha;
+    receipt.packages[0].provenance.tag = receipt.resolved.stableTag;
+    receipt.packages[1].version = receipt.resolved.candidateTag.slice(1);
+    receipt.packages[1].provenance.tag = receipt.resolved.candidateTag;
+    for (const pkg of receipt.packages)
+      pkg.file = `${pkg.stage}-Mr-Streamer-${pkg.version}-win-x64-setup.exe`;
+    await save();
+    const { spawn: realSpawn } =
+      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const child = vi.mocked(spawn);
+    try {
+      for (const focused of [false, true]) {
+        // Replace only the child execution boundary. This Linux test cannot own a Windows install.
+        child.mockImplementationOnce(() => realSpawn(process.execPath, ["-e", "process.exit(0)"]));
+        await telemetryCommand([
+          "--packages",
+          packages,
+          "--root",
+          root + (focused ? "-focused" : "-all"),
+          ...(focused
+            ? ["--native-case", "compatibility", "--sha", receipt.resolved.candidateSha]
+            : []),
+        ]);
+        const argv = child.mock.calls.at(-1)![1];
+        expect(argv).toContain(`--expected-version=${receipt.packages[1].version}`);
+        expect(argv).toContain(`--expected-source=${receipt.packages[1].source}`);
+        expect(argv).not.toContain(`--expected-source=${process.env["GITHUB_SHA"]}`);
+        expect(argv?.includes("--native-case=compatibility")).toBe(focused);
+      }
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      child.mockReset();
+      child.mockImplementation(realSpawn);
+    }
+  });
+
+  it("rejects an unpinned focused run, unsupported selection, wrong product pin or wrong .15 source before creating a root", async () => {
+    const args = ["--packages", packages, "--root", root];
+    await expect(telemetryCommand([...args, "--native-case", "compatibility"])).rejects.toThrow(
+      "explicit full",
+    );
+    await expect(telemetryCommand([...args, "--native-case", "reenable"])).rejects.toThrow(
+      "all or compatibility",
+    );
+    await expect(telemetryCommand([...args, "--sha", "main"])).rejects.toThrow(
+      "full candidate SHA",
+    );
+    receipt.resolved.stableTag = "v0.0.15";
+    receipt.resolved.candidateTag = "v0.0.16-nightly.20261018.387";
+    receipt.packages[1].version = receipt.resolved.candidateTag.slice(1);
+    receipt.packages[1].provenance.tag = receipt.resolved.candidateTag;
+    receipt.packages[0].version = "0.0.15";
+    receipt.packages[0].provenance.tag = receipt.resolved.stableTag;
+    for (const pkg of receipt.packages)
+      pkg.file = `${pkg.stage}-Mr-Streamer-${pkg.version}-win-x64-setup.exe`;
+    await save();
+    await expect(telemetryCommand(args)).rejects.toThrow("published .15 source");
+    receipt.resolved.stableSha = "cc6980d88673c838a5da4ee80af9495e430a4210";
+    receipt.packages[0].source = receipt.resolved.stableSha;
+    await save();
+    await expect(
+      telemetryCommand([...args, "--native-case", "compatibility", "--sha", "d".repeat(40)]),
+    ).rejects.toThrow("differs from the resolved receipt");
+    await expect(readFile(join(root, "evidence", "proof.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(install).not.toHaveBeenCalled();
   });
 
   afterEach(async () => {

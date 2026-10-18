@@ -865,22 +865,41 @@ export async function runNativeTelemetry(c: Context) {
         : null;
     if (prior)
       await run("compatibility", async () => {
-        const select = async (which: "stable" | "candidate", local = true) => {
-          await c.quit();
-          if (pair) await pair.select(which);
-          await c.launch(which === "stable" ? prior : c.candidate, local);
-          await awake();
-          await c.waitFor(() =>
-            c
-              .page()
-              .evaluate<boolean>(
-                "!!document.querySelector('header') || document.querySelectorAll('form input').length >= 3",
-              ),
+        assert.equal(prior.source, "cc6980d88673c838a5da4ee80af9495e430a4210");
+        const proofs: {
+          variant: string;
+          status: "running" | "passed" | "failed";
+          startedAt: string;
+          endedAt?: string;
+          error?: string;
+          proof?: unknown;
+          old: {
+            attachedAt?: string;
+            profile?: string;
+            userData?: string;
+            measurements?: Awaited<
+              ReturnType<Awaited<ReturnType<typeof boundary>>["measurements"]>
+            >;
+            snapshotStartedAt?: string;
+            snapshotCompletedAt?: string;
+            exitedAt?: string;
+            actions: {
+              name: string;
+              startedAt: string;
+              clickedAt?: string;
+              completedAt?: string;
+              state?: unknown;
+            }[];
+            diagnosticErrors: string[];
+            limits: string[];
+          };
+        }[] = [];
+        c.observations.nativeCompatibility = proofs;
+        const progress = () =>
+          writeFile(
+            join(c.evidence, "compatibility-variants.json"),
+            JSON.stringify(proofs, null, 2),
           );
-          if (await c.page().evaluate<boolean>("!!document.querySelector('header')"))
-            await c.verifyAbout();
-        };
-        const proofs: unknown[] = [];
         // Profiles are created by actual binaries. There is no seeded crash snapshot.
         for (const variant of [
           "legacy-queue",
@@ -890,123 +909,366 @@ export async function runNativeTelemetry(c: Context) {
           "reenable",
           "no-write",
         ] as const) {
-          await c.capture("accept");
-          await c.fresh();
-          if (variant === "legacy-queue" || variant === "off") {
-            await select("stable");
-            await c.connect();
-            await c.escape();
-            await c.verifyAbout();
-            const identity = (await c.read()).installationId;
-            if (variant === "off") {
-              await c.settings();
-              await c.click(checkbox);
-              await c.waitFor(async () => !(await c.read()).enabled);
-            } else {
-              await c.capture("offline");
-              await c.settings();
-              await c.waitFor(async () =>
-                (await c.read()).pending.some((item) => item.event.event === "feature_opened"),
-              );
-            }
-            if (variant === "legacy-queue") c.prepareExit("legacy-queue");
-            const old = await saved(`compat-${variant}-015`);
-            // .15 deliberately skips backoff at quit and spends all remaining refused-connect
-            // attempts. Kill its actual main with the admitted queue still durable instead.
-            if (variant === "legacy-queue") {
-              await c.kill();
-              assert.deepEqual((await c.read()).pending, old.pending);
-            } else await c.quit();
-            await c.capture("accept");
-            const from = c.bodies.length;
-            await select("candidate");
-            assert.equal((await c.read()).installationId, identity);
-            assert.equal((await c.read()).enabled, old.enabled);
-            if (variant === "legacy-queue") {
-              const event = old.pending.find(
-                (item) => item.event.event === "feature_opened",
-              )!.event;
-              await c.waitFor(async () => wires(event.uuid).length > 0);
-              assert.deepEqual(
-                c.events().find((item) => item.uuid === event.uuid),
-                event,
-              );
-            } else {
-              await delay(1200);
-              assert.equal(c.bodies.length, from);
-            }
-            proofs.push({ variant, old, after: await saved(`compat-${variant}-return`) });
-          } else {
-            await select("candidate");
-            await c.connect();
-            await c.escape();
-            await c.verifyAbout();
-            await play();
-            await c.capture("offline");
-            await stop();
-            await c.waitFor(async () =>
-              pending(await c.read()).some(
-                (item) =>
-                  item.event.event === "stream_summary" && item.attempts === 0 && item.failures > 0,
-              ),
+          const receipt: (typeof proofs)[number] = {
+            variant,
+            status: "running",
+            startedAt: new Date().toISOString(),
+            old: {
+              actions: [],
+              diagnosticErrors: [],
+              limits: [
+                "Passive completed renames only, from attachment through the inspector snapshot cutoff. Startup before attachment, in-flight operations and calls after the snapshot are not observed.",
+                "The unarmed hook remains installed until process exit; process destruction is not a probe restore.",
+              ],
+            },
+          };
+          proofs.push(receipt);
+          await progress();
+          let probe: Awaited<ReturnType<typeof boundary>> | undefined;
+          let oldAlive = false;
+          const measurements = async () => {
+            if (!probe || receipt.old.snapshotCompletedAt) return;
+            receipt.old.snapshotStartedAt = new Date().toISOString();
+            receipt.old.measurements = await probe.measurements();
+            receipt.old.snapshotCompletedAt = new Date().toISOString();
+          };
+          const assertRenames = () => {
+            assert(
+              receipt.old.measurements?.every((item) => item.code === null),
+              "Actual old analytics rename failed: " + JSON.stringify(receipt.old.measurements),
             );
-            const before = await saved(`compat-${variant}-before`);
+          };
+          const quitOld = async () => {
+            await measurements();
             await c.quit();
-            const bytes = await readFile(join(c.profile(), "analytics.json"), "utf8");
-            await select("stable", variant !== "no-write");
-            assert.equal((await c.preference()).analyticsEnabled, true);
-            assert.equal((await c.read()).installationId, before.installationId);
-            await c.verifyAbout();
-            if (variant === "no-write") {
-              await c.quit();
-              assert.equal(await readFile(join(c.profile(), "analytics.json"), "utf8"), bytes);
-            } else {
-              await c.capture("accept");
-              await c.settings();
-              if (variant === "opt-out" || variant === "reenable") {
-                await c.click(checkbox);
-                await c.waitFor(async () => !(await c.read()).enabled);
-                if (variant === "reenable") {
-                  await c.click(checkbox);
-                  await c.waitFor(async () => (await c.read()).enabled);
-                }
-              } else
-                await c.waitFor(async () =>
-                  c
-                    .events()
-                    .some(
-                      (event) =>
-                        event.event === "feature_opened" &&
-                        event.properties.app_version === "0.0.15" &&
-                        event.distinct_id === before.installationId,
-                    ),
+            oldAlive = false;
+            receipt.old.exitedAt = new Date().toISOString();
+            assertRenames();
+          };
+          const select = async (which: "stable" | "candidate", local = true) => {
+            if (oldAlive) await quitOld();
+            else await c.quit();
+            if (pair) await pair.select(which);
+            await c.launch(which === "stable" ? prior : c.candidate, local);
+            if (which === "stable") {
+              oldAlive = true;
+              const userData = await c
+                .main()
+                .evaluate<string>(
+                  `process.getBuiltinModule('module').createRequire(process.execPath)('electron').app.getPath('userData')`,
                 );
-              await c.waitFor(async () => !(await c.read()).summaries);
+              probe = await boundary(c.main(), c.profile(), userData);
+              receipt.old.attachedAt = new Date().toISOString();
+              receipt.old.profile = c.profile();
+              receipt.old.userData = userData;
             }
-            await select("candidate");
+            await awake();
+            await c.waitFor(() =>
+              c
+                .page()
+                .evaluate<boolean>(
+                  "!!document.querySelector('header') || document.querySelectorAll('form input').length >= 3",
+                ),
+            );
+            if (await c.page().evaluate<boolean>("!!document.querySelector('header')"))
+              await c.verifyAbout();
+          };
+          const privacy = () =>
+            c.page().evaluate<{
+              checked: string | null;
+              disabled: boolean;
+              error: string | null;
+            }>(`(() => {
+            const box = document.querySelector(${JSON.stringify(checkbox)});
+            if (!box) throw new Error('No Privacy checkbox');
+            return {checked:box.getAttribute('aria-checked'),
+              disabled:box.matches(':disabled,[aria-disabled=true],[data-disabled]'),
+              error:box.closest('section')?.querySelector('.text-destructive')?.textContent ?? null};
+          })()`);
+          const consent = async (enabled: boolean) => {
+            const before = await privacy();
+            assert.equal(before.error, null, "Existing old Privacy save error");
+            assert.equal(before.disabled, false, "Old Privacy checkbox is not ready");
+            assert.equal(before.checked, String(!enabled), "Old Privacy checkbox is not opposite");
+            const action: (typeof receipt.old.actions)[number] = {
+              name: enabled ? "public re-enable" : "public opt-out",
+              startedAt: new Date().toISOString(),
+              state: { before },
+            };
+            receipt.old.actions.push(action);
+            await c.click(checkbox);
+            action.clickedAt = new Date().toISOString();
+            await c.waitFor(async () => {
+              const state = await privacy();
+              action.state = { before, latest: state };
+              if (state.error) throw new Error("Old Privacy save failed: " + state.error);
+              return state.checked === String(enabled) && !state.disabled;
+            });
+            // This public getter reads memory. It is not a disk or queue barrier.
+            assert.equal((await c.preference()).analyticsEnabled, enabled);
+            action.completedAt = new Date().toISOString();
+          };
+          const oldRecord = async (name = `compat-${variant}-015`) => {
+            const action: (typeof receipt.old.actions)[number] = {
+              name: oldAlive ? "quiescent opt-out disk read" : "post-exit disk read",
+              startedAt: new Date().toISOString(),
+            };
+            receipt.old.actions.push(action);
+            const record = await saved(name);
+            action.completedAt = new Date().toISOString();
+            return record;
+          };
+          const disabled = (record: AnalyticsRecord, identity: string) => {
+            assert.equal(record.installationId, identity);
+            assert.equal(record.enabled, false);
+            assert.deepEqual(record.pending, []);
+            assert.equal(record.summaries, undefined);
+          };
+          let variantError: unknown;
+          try {
             await c.capture("accept");
-            assert.equal((await c.read()).installationId, before.installationId);
-            assert.equal((await c.read()).enabled, variant !== "opt-out");
-            if (variant === "no-write") {
-              for (const item of pending(before)) {
-                await c.waitFor(async () => wires(item.event.uuid).length > 0);
-                assert.deepEqual(
-                  c.events().find((event) => event.uuid === item.event.uuid),
-                  item.event,
-                );
+            await c.fresh();
+            if (variant === "legacy-queue" || variant === "off") {
+              const oldFrom = c.bodies.length;
+              await select("stable");
+              await c.connect();
+              await c.escape();
+              await c.verifyAbout();
+              const oldFeature = () =>
+                c.bodies.slice(oldFrom).find(({ body }) => {
+                  const event = JSON.parse(body) as CaptureEvent;
+                  return (
+                    event.event === "feature_opened" && event.properties.app_version === "0.0.15"
+                  );
+                });
+              await c.waitFor(async () => !!oldFeature());
+              const identity = (JSON.parse(oldFeature()!.body) as CaptureEvent).distinct_id;
+              let legacy: (typeof c.bodies)[number] | undefined;
+              let rejectedFrom: number | undefined;
+              let killedAt: number | undefined;
+              if (variant === "off") {
+                await c.settings();
+                await consent(false);
+              } else {
+                // Sample the owned process tree before the switch, outside the body-to-kill window.
+                c.prepareExit("legacy-queue");
+                rejectedFrom = c.bodies.length;
+                await c.capture("reject");
+                await c.settings();
+                await c.waitFor(async () => {
+                  legacy = c.bodies.slice(rejectedFrom).find(({ body }) => {
+                    const event = JSON.parse(body) as CaptureEvent;
+                    return (
+                      event.event === "feature_opened" &&
+                      event.properties.app_version === "0.0.15" &&
+                      event.distinct_id === identity
+                    );
+                  });
+                  return !!legacy;
+                });
+                assert(legacy);
+                // Completed inspector receipts only. Do no file I/O before killing actual main.
+                await measurements();
+                killedAt = await c.kill();
+                oldAlive = false;
+                receipt.old.exitedAt = new Date().toISOString();
+                assert(killedAt - legacy.at < 1500, "Missed the unchanged main-kill deadline");
+                assertRenames();
               }
-            } else {
-              await delay(2200);
-              for (const item of pending(before))
-                assert.equal(
-                  wires(item.event.uuid).length,
-                  0,
-                  "Unsupported work revived after an old-build write",
+              const old = await oldRecord();
+              assert.equal(old.installationId, identity);
+              if (variant === "off") {
+                disabled(old, identity);
+                await quitOld();
+              } else {
+                const event = JSON.parse(legacy!.body) as CaptureEvent;
+                const reserved = old.pending.find((item) => item.event.uuid === event.uuid);
+                assert(reserved, "Observed old retryable event is no longer durable");
+                assert.deepEqual(
+                  reserved.event,
+                  c.events().find((item) => item.uuid === event.uuid),
                 );
+                assert(reserved.attempts > 0 && reserved.attempts < 3, "Old reservation exhausted");
+                assert.equal(old.enabled, true);
+              }
+              await c.capture("accept");
+              const from = c.bodies.length;
+              await select("candidate");
+              assert.equal((await c.read()).installationId, identity);
+              assert.equal((await c.read()).enabled, old.enabled);
+              if (legacy) {
+                const uuid = (JSON.parse(legacy.body) as CaptureEvent).uuid;
+                await c.waitFor(async () =>
+                  c.bodies
+                    .slice(from)
+                    .some(({ body }) => (JSON.parse(body) as CaptureEvent).uuid === uuid),
+                );
+                assert.equal(
+                  c.bodies
+                    .slice(from)
+                    .find(({ body }) => (JSON.parse(body) as CaptureEvent).uuid === uuid)!.body,
+                  legacy.body,
+                );
+              } else {
+                await delay(1200);
+                assert.equal(c.bodies.length, from);
+              }
+              receipt.proof = {
+                old,
+                after: await saved(`compat-${variant}-return`),
+                ...(legacy
+                  ? {
+                      transport:
+                        "Actual old durable reservation sent to retryable HTTP 503, not refused connect. Other queued events may consume three attempts first.",
+                      rejectedFrom,
+                      oldDelivery: legacy,
+                      killedAt,
+                      candidateDeliveryFrom: from,
+                    }
+                  : {}),
+              };
+            } else {
+              await select("candidate");
+              await c.connect();
+              await c.escape();
+              await c.verifyAbout();
+              await play();
+              await c.capture("offline");
+              await stop();
+              await c.waitFor(async () =>
+                pending(await c.read()).some(
+                  (item) =>
+                    item.event.event === "stream_summary" &&
+                    item.attempts === 0 &&
+                    item.failures > 0,
+                ),
+              );
+              const before = await saved(`compat-${variant}-before`);
+              await c.quit();
+              const bytes = await readFile(join(c.profile(), "analytics.json"), "utf8");
+              await select("stable", variant !== "no-write");
+              assert.equal((await c.preference()).analyticsEnabled, true);
+              await c.verifyAbout();
+              let written: CaptureEvent | undefined;
+              if (variant === "no-write") {
+                await quitOld();
+                const read = {
+                  name: "post-exit no-write byte comparison",
+                  startedAt: new Date().toISOString(),
+                  completedAt: "",
+                };
+                receipt.old.actions.push(read);
+                assert.equal(await readFile(join(c.profile(), "analytics.json"), "utf8"), bytes);
+                read.completedAt = new Date().toISOString();
+              } else {
+                await c.capture("accept");
+                await c.settings();
+                if (variant === "opt-out" || variant === "reenable") {
+                  await consent(false);
+                  // Public success proves old writes are quiescent. Finish this one read before re-enable.
+                  const off = await oldRecord(`compat-${variant}-015-disabled`);
+                  assert(before.installationId);
+                  disabled(off, before.installationId);
+                  if (variant === "reenable") await consent(true);
+                } else
+                  await c.waitFor(async () => {
+                    written = c
+                      .events()
+                      .find(
+                        (event) =>
+                          event.event === "feature_opened" &&
+                          event.properties.app_version === "0.0.15" &&
+                          event.distinct_id === before.installationId,
+                      );
+                    return !!written;
+                  });
+                await quitOld();
+                if (variant !== "opt-out") {
+                  const old = await oldRecord();
+                  assert.equal(old.installationId, before.installationId);
+                  assert.equal(old.enabled, true);
+                  assert.equal(old.summaries, undefined);
+                  if (written) {
+                    const uuid = written.uuid;
+                    assert(
+                      !old.pending.some((item) => item.event.uuid === uuid),
+                      "Observed old feature remained pending after graceful quit",
+                    );
+                  }
+                }
+              }
+              await select("candidate");
+              await c.capture("accept");
+              assert.equal((await c.read()).installationId, before.installationId);
+              assert.equal((await c.read()).enabled, variant !== "opt-out");
+              if (variant === "no-write") {
+                for (const item of pending(before)) {
+                  await c.waitFor(async () => wires(item.event.uuid).length > 0);
+                  assert.deepEqual(
+                    c.events().find((event) => event.uuid === item.event.uuid),
+                    item.event,
+                  );
+                }
+              } else {
+                await delay(2200);
+                for (const item of pending(before))
+                  assert.equal(
+                    wires(item.event.uuid).length,
+                    0,
+                    "Unsupported work revived after an old-build write",
+                  );
+              }
+              receipt.proof = { before, written, after: await saved(`compat-${variant}-after`) };
             }
-            proofs.push({ variant, before, after: await saved(`compat-${variant}-after`) });
+            await c.quit();
+            receipt.status = "passed";
+          } catch (error) {
+            receipt.status = "failed";
+            receipt.error = String(error);
+            variantError = error;
+            if (oldAlive) {
+              // A public timeout does not cancel native I/O. Keep the hook and files untouched.
+              for (const diagnose of [
+                measurements,
+                async () => {
+                  receipt.old.actions.push({
+                    name: "failure public UI",
+                    startedAt: new Date().toISOString(),
+                    state: await privacy(),
+                  });
+                  await c.snapshot(`compat-${variant}-failure`);
+                },
+              ])
+                try {
+                  await diagnose();
+                } catch (diagnostic) {
+                  receipt.old.diagnosticErrors.push(String(diagnostic));
+                }
+            }
+          } finally {
+            try {
+              await c.quit();
+              if (oldAlive) receipt.old.exitedAt = new Date().toISOString();
+            } catch (error) {
+              if (receipt.status !== "failed") {
+                variantError = error;
+                receipt.status = "failed";
+                receipt.error = String(error);
+              } else receipt.old.diagnosticErrors.push(`cleanup: ${String(error)}`);
+            } finally {
+              receipt.endedAt = new Date().toISOString();
+              try {
+                await progress();
+              } catch (error) {
+                if (receipt.status !== "failed") {
+                  variantError = error;
+                  receipt.status = "failed";
+                  receipt.error = String(error);
+                } else receipt.old.diagnosticErrors.push(`progress: ${String(error)}`);
+              }
+            }
           }
-          await c.quit();
+          if (receipt.status === "failed") throw variantError;
         }
         return proofs;
       });

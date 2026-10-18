@@ -1626,8 +1626,22 @@ const probe = `fetch(${JSON.stringify(OUTSIDE)}, { mode: "no-cors", cache: "no-s
 export async function telemetryCommand(args: string[]) {
   const { values } = parseArgs({
     args,
-    options: { packages: { type: "string" }, root: { type: "string" } },
+    options: {
+      packages: { type: "string" },
+      root: { type: "string" },
+      "native-case": { type: "string", default: "all" },
+      sha: { type: "string" },
+    },
   });
+  check(
+    values["native-case"] === "all" || values["native-case"] === "compatibility",
+    "Installed telemetry accepts --native-case all or compatibility",
+  );
+  check(!values.sha || /^[0-9a-f]{40}$/.test(values.sha), "Expected a full candidate SHA");
+  check(
+    values["native-case"] !== "compatibility" || !!values.sha,
+    "Focused compatibility requires an explicit full candidate --sha",
+  );
   const runner = disposableRunner();
   const root = values.root ?? "";
   const under = relative(runner.temp, root);
@@ -1648,6 +1662,14 @@ export async function telemetryCommand(args: string[]) {
     "Frozen telemetry acceptance requires published v0.0.15",
   );
   check(
+    receipt.packages[0].source === "cc6980d88673c838a5da4ee80af9495e430a4210",
+    "Frozen telemetry acceptance requires the published .15 source",
+  );
+  check(
+    !values.sha || values.sha === receipt.packages[1].source,
+    "Candidate pin differs from the resolved receipt",
+  );
+  check(
     receipt.repository === process.env["GITHUB_REPOSITORY"],
     "Receipt belongs to another repository",
   );
@@ -1660,6 +1682,7 @@ export async function telemetryCommand(args: string[]) {
     [
       fileURLToPath(new URL("./analytics-app.ts", import.meta.url)),
       "--native-telemetry",
+      ...(values["native-case"] === "compatibility" ? ["--native-case=compatibility"] : []),
       `--installed-pair=${values.packages}`,
       `--expected-version=${pkg.version}`,
       `--expected-source=${pkg.source}`,

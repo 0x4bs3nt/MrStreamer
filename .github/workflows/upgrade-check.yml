@@ -29,6 +29,17 @@ on:
         description: The published nightly to upgrade to, by tag, such as v0.0.13-nightly.20261013.300
         type: string
         required: true
+      sha:
+        description: Full candidate product commit, required for focused compatibility
+        type: string
+        required: false
+      native_case:
+        description: Native telemetry coverage, all for ordinary release acceptance
+        type: choice
+        options:
+          - all
+          - compatibility
+        default: all
 
 permissions:
   contents: read
@@ -66,7 +77,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ inputs.candidate }}
           SHA: ${{ inputs.sha }}
+          NATIVE_CASE: ${{ inputs.native_case || 'all' }}
         run: |
+          case "$NATIVE_CASE" in
+            all) ;;
+            compatibility)
+              [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Focused compatibility requires a full candidate SHA'; exit 1; }
+              [[ "$CANDIDATE" == v0.0.16-nightly.* ]] || { echo 'Focused compatibility requires a .16 nightly'; exit 1; }
+              ;;
+            *) echo 'Unknown native telemetry selection'; exit 1 ;;
+          esac
           args=(--candidate "$CANDIDATE" --out "$RUNNER_TEMP/installed-upgrade-packages")
           [ -n "$SHA" ] && args+=(--sha "$SHA")
           node apps/desktop/test/e2e/installed-upgrade.ts resolve "${args[@]}"
@@ -77,9 +97,14 @@ jobs:
       # Explicit long native acceptance stays outside the bounded release-UI aggregate.
       - name: Native telemetry and installed .15 compatibility
         if: startsWith(inputs.candidate, 'v0.0.16-nightly.')
+        env:
+          NATIVE_CASE: ${{ inputs.native_case || 'all' }}
+          SHA: ${{ inputs.sha }}
         run: |
+          args=(--native-case "$NATIVE_CASE")
+          [ -n "$SHA" ] && args+=(--sha "$SHA")
           node apps/desktop/test/e2e/installed-upgrade.ts telemetry \
-            --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/native-telemetry"
+            --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/native-telemetry" "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
