@@ -1189,7 +1189,7 @@ it.skipIf(!hasTools)(
       events.flatMap((event) =>
         event.event === "stream_started"
           ? [`started ${event.properties.stream_type}`]
-          : event.event === "stream_stopped"
+          : event.event === "stream_summary"
             ? [`stopped ${event.properties.stream_type}`]
             : event.event === "stream_error"
               ? [`error ${event.properties.error_type}`]
@@ -1218,14 +1218,16 @@ it.skipIf(!hasTools)(
       // Played to its end on the receiver: the run stops at once.
       await playRun(140);
       tv.status({ playerState: "PLAYING", currentTime: 141 });
-      await eventually(() => expect(facts()).toEqual(["started vod"]));
+      await eventually(() => expect(store.record?.summaries?.unfinished).toBeTruthy());
+      expect(facts()).toEqual([]);
       tv.idle("FINISHED");
-      await eventually(() => expect(facts()).toEqual(["started vod", "stopped vod"]));
+      await eventually(() => expect(facts()).toEqual(["stopped vod"]));
 
       // Another track is another load of the same run; the viewer's Stop then ends it once.
       const second = await playRun(10);
       tv.status({ playerState: "PLAYING", currentTime: 11 });
-      await eventually(() => expect(facts()).toHaveLength(3));
+      await eventually(() => expect(store.record?.summaries?.unfinished).toBeTruthy());
+      await eventually(() => expect(facts()).toHaveLength(1));
       const reload = await output.playTitle(second.opened.sessionId, {
         position: 20,
         audio: second.opened.audio[0]!.id,
@@ -1234,29 +1236,31 @@ it.skipIf(!hasTools)(
       });
       tv.status({ playerState: "PLAYING", currentTime: 21 });
       await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(facts()).toHaveLength(3);
+      expect(facts()).toHaveLength(1);
       await output.command(second.media.generation, { command: "stop" });
-      expect(facts()).toHaveLength(3);
+      expect(facts()).toHaveLength(1);
       await output.command(reload.generation, { command: "stop" });
-      await eventually(() => expect(facts()).toHaveLength(4));
-      expect(facts().slice(2)).toEqual(["started vod", "stopped vod"]);
+      await eventually(() => expect(facts()).toHaveLength(2));
+      expect(facts().slice(1)).toEqual(["stopped vod"]);
 
       // Stopped on the receiver itself.
       await playRun(30);
       tv.status({ playerState: "PLAYING", currentTime: 31 });
-      await eventually(() => expect(facts()).toHaveLength(5));
+      await eventually(() => expect(store.record?.summaries?.unfinished).toBeTruthy());
+      await eventually(() => expect(facts()).toHaveLength(2));
       tv.idle("CANCELLED");
-      await eventually(() => expect(facts().slice(4)).toEqual(["started vod", "stopped vod"]));
+      await eventually(() => expect(facts().slice(2)).toEqual(["stopped vod"]));
 
       // Letting go of the receiver hands the play back, still running.
       const handed = await playRun(50);
       tv.status({ playerState: "PLAYING", currentTime: 51 });
-      await eventually(() => expect(facts()).toHaveLength(7));
+      await eventually(() => expect(store.record?.summaries?.unfinished).toBeTruthy());
+      await eventually(() => expect(facts()).toHaveLength(3));
       await output.disconnect();
       await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(facts()).toHaveLength(7);
+      expect(facts()).toHaveLength(3);
       analytics.endPlayback(handed.control);
-      await eventually(() => expect(facts().slice(6)).toEqual(["started vod", "stopped vod"]));
+      await eventually(() => expect(facts().slice(3)).toEqual(["stopped vod"]));
 
       // A channel whose stream breaks is an incident to retry, not the end of its run.
       await connect();
@@ -1270,15 +1274,16 @@ it.skipIf(!hasTools)(
         measurement: live,
       });
       tv.status({ playerState: "PLAYING", currentTime: 2 });
-      await eventually(() => expect(facts()).toHaveLength(9));
+      await eventually(() => expect(store.record?.summaries?.unfinished).toBeTruthy());
+      await eventually(() => expect(facts()).toHaveLength(4));
       // The fixture's three seconds are over and the TV plays out what it has.
       await eventually(async () =>
         expect(await (await fetch(loaded().media.contentId)).text()).toContain("#EXT-X-ENDLIST"),
       );
       tv.idle("FINISHED");
-      await eventually(() => expect(facts().slice(8)).toEqual(["started live", "error network"]));
+      await eventually(() => expect(facts().slice(4)).toEqual(["error network"]));
       await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(facts()).toHaveLength(10);
+      expect(facts()).toHaveLength(5);
     } finally {
       await analytics.close();
       await dispose();

@@ -17,7 +17,14 @@ import {
   CaptureEvent,
   OUTBOX_LIMIT,
   WATCH_SECONDS_LIMIT,
-  type CaptureName,
+  WINDOW_MS,
+  SUMMARY_TTL_MS,
+  OUTBOX_BYTES,
+  type SummaryBlock,
+  type SummaryEvent,
+  type StreamSummary,
+  type UsageKey,
+  type DirectName,
   type EventProperties,
   type ProfileOrigin,
 } from "./model.ts";
@@ -44,7 +51,7 @@ interface PlaybackIntent {
 interface Unsent {
   readonly uuid: string;
   readonly timestamp: string;
-  readonly event: CaptureName;
+  readonly event: DirectName;
   readonly properties: object;
 }
 
@@ -69,11 +76,13 @@ export class Analytics {
     kind: AnalyticsPlaybackKind;
     /** Playing was confirmed, here or before this run was minted for a continuation. */
     started: boolean;
-    /** This run's stream_started was queued, so its end owes a stream_stopped. */
+    /** Only an admitted first confirmed play owns a future summary. */
     reported: boolean;
     incident: boolean;
     eligible: boolean;
     watchMs: number;
+    checkpointMs: number;
+    summary: StreamSummary | null;
     remoteControl?: string | null;
     intent?: PlaybackIntent;
   } | null = null;
@@ -81,6 +90,7 @@ export class Analytics {
     token: string;
     output: "local" | "remote";
     sequence: number;
+    state: AnalyticsPlaybackState | null;
   } | null = null;
   // One just-closed generation may report its terminal failure after synchronous teardown.
   private lastClosedBinding: string | null = null;
@@ -102,6 +112,15 @@ export class Analytics {
   private incoming: Unsent[] = [];
   private flushing = false;
   private rate = { start: -Infinity, count: 0 };
+  private usageRate = { start: -Infinity, count: 0 };
+  private playRate = { start: -Infinity, count: 0 };
+  private usageIncoming: { key: UsageKey; timestamp: string; properties: BuildProperties }[] = [];
+  private summariesIncoming: SummaryEvent[] = [];
+  private journal: SummaryBlock["unfinished"] = null;
+  private journalDirty = false;
+  private sealRequested = false;
+  private windowTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly directRetry = new Map<string, number>();
   private dayTimer: ReturnType<typeof setInterval> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private request: AbortController | undefined;
@@ -131,6 +150,26 @@ export class Analytics {
       IO_MS,
     ).catch(() => this.unavailable());
     this.initialized = this.serial;
+    // Base consent is readable before recovery performs any new disk write.
+    void this.exclusive(async () => {
+      if (!this.canCapture() || !this.record?.summaries) return;
+      const block = this.record.summaries;
+      const recovered = block.unfinished?.event;
+      await this.save({
+        ...this.record,
+        summaries: {
+          ...block,
+          usage: null,
+          unfinished: null,
+          pending: [
+            ...block.pending,
+            ...[block.usage, recovered].flatMap((event) => (event ? [queuedSummary(event)] : [])),
+          ],
+        },
+      });
+    })
+      .catch(() => {})
+      .finally(() => this.pump());
   }
 
   /** The only renderer-readable state. Identity and pending payloads stay in the main process. */
@@ -149,19 +188,30 @@ export class Analytics {
    * Opting out drops the current run without a stop; one continuing across opt-in has no start.
    */
   configure(enabled: boolean): Promise<AnalyticsSettings> {
-    if (!enabled) this.invalidatePlayback();
+    if (!enabled) {
+      this.invalidatePlayback();
+      this.directRetry.clear();
+    }
     this.paused = true;
     const revision = ++this.revision;
     this.incoming = [];
+    this.usageIncoming = [];
+    this.summariesIncoming = [];
+    this.journal = null;
+    this.journalDirty = false;
+    this.sealRequested = false;
+    this.clearWindow();
     this.request?.abort();
     this.clearRetry();
     return this.exclusive(async () => {
       if (!this.available || !this.record || this.closing)
         throw new Error("Analytics preference could not be saved.");
+      const { summaries, ...base } = this.record;
       await this.save({
-        ...this.record,
+        ...base,
         enabled,
-        pending: enabled ? this.record.pending : [],
+        pending: enabled ? base.pending : [],
+        ...(enabled && summaries ? { summaries } : {}),
       });
       if (this.revision === revision) this.paused = !enabled;
     }).then(async () => {
@@ -187,7 +237,12 @@ export class Analytics {
 
   /** Each capture carries the dimensions current when it is queued. */
   setUpdateChannel(channel: BuildProperties["update_channel"]): void {
+    if (channel === this.properties.update_channel) return;
+    // Old usage seals before the committed setting is counted in the new envelope.
+    this.sealRequested = true;
+    this.flush();
     this.properties = { ...this.properties, update_channel: channel };
+    this.checkpointPlayback();
   }
 
   /** A transaction's note counts only in the consent generation that began it. */
@@ -208,15 +263,15 @@ export class Analytics {
   }
 
   noteAction(action: AnalyticsAction): void {
-    this.capture(action, {});
+    this.noteUsage(`action_${action}`);
   }
 
   noteSetting(setting: AnalyticsSetting): void {
-    this.capture("settings_changed", { setting_key: setting });
+    this.noteUsage(`setting_${setting}`);
   }
 
   noteFeature(feature: AnalyticsFeature): void {
-    this.capture("feature_opened", { feature });
+    this.noteUsage(`feature_${feature}`);
   }
 
   /** Main observes the reason; clean exits and requested closes are the caller's to exclude. */
@@ -304,6 +359,8 @@ export class Analytics {
       incident: false,
       eligible: true,
       watchMs: 0,
+      checkpointMs: 0,
+      summary: null,
       ...(remoteControl !== undefined ? { remoteControl } : {}),
       ...(intent ? { intent } : {}),
     };
@@ -324,11 +381,12 @@ export class Analytics {
     )
       return null;
     this.settlePlayback();
+    this.checkpointPlayback();
     this.clearBindingListener();
     if (closed?.aborted) return null;
     const binding = randomUUID();
     this.lastClosedBinding = null;
-    this.binding = { token: binding, output, sequence: -1 };
+    this.binding = { token: binding, output, sequence: -1, state: null };
     this.interval = null;
     if (closed) {
       const listener = () => this.stopPlaybackBinding(binding);
@@ -354,21 +412,49 @@ export class Analytics {
     )
       return;
     this.settlePlayback();
+    const changed = this.binding.state !== state;
     this.binding.sequence = sequence;
+    this.binding.state = state;
     if (state === "playing" && this.run.eligible) {
       if (!this.run.started) {
         this.run.started = true;
-        this.run.reported = this.capture("stream_started", { stream_type: this.run.kind });
+        if (this.record?.installationId && this.admit(this.playRate)) {
+          this.run.reported = true;
+          this.run.summary = {
+            uuid: randomUUID(),
+            distinct_id: this.record.installationId,
+            timestamp: new Date().toISOString(),
+            event: "stream_summary",
+            properties: {
+              ...this.common(),
+              stream_type: this.run.kind,
+              started_at: new Date().toISOString(),
+              started_update_channel: this.properties.update_channel,
+              watch_duration_seconds: 0,
+              end_reason: "interrupted",
+            },
+          };
+          this.checkpointPlayback();
+        }
       }
       this.run.incident = false;
       const mono = this.monotonic();
       this.interval = { mono, until: mono + (this.binding.output === "local" ? 5000 : 15000) };
-    } else this.interval = null;
+    } else {
+      this.interval = null;
+      if (
+        changed &&
+        (state === "paused" || state === "stopped") &&
+        this.run.watchMs !== this.run.checkpointMs
+      )
+        this.checkpointPlayback();
+    }
   }
 
   setPlaybackEligible(token: string, eligible: boolean): void {
     if (this.run?.token !== token) return;
     this.settlePlayback();
+    if (this.run.eligible !== eligible) this.checkpointPlayback();
     this.run.eligible = eligible;
     this.interval = null;
     // The producer must confirm playing again after promotion; eligibility alone proves no media.
@@ -396,6 +482,7 @@ export class Analytics {
       return;
     this.settlePlayback();
     this.interval = null;
+    this.checkpointPlayback();
     this.run.incident = true;
     this.capture("stream_error", { stream_type: this.run.kind, error_type: failure, ...context });
   }
@@ -409,6 +496,7 @@ export class Analytics {
   stopPlaybackBinding(binding: string): void {
     if (this.binding?.token !== binding) return;
     this.settlePlayback();
+    this.checkpointPlayback();
     this.clearBindingListener();
     this.lastClosedBinding = binding;
     this.binding = null;
@@ -423,6 +511,7 @@ export class Analytics {
 
   suspendPlayback(): void {
     this.settlePlayback();
+    this.checkpointPlayback();
     this.interval = null;
   }
 
@@ -528,16 +617,46 @@ export class Analytics {
     this.interval = null;
   }
 
-  /** Ends the current run, reporting its active time once if its start was reported. */
+  /** Atomically retires an admitted journal into its one terminal outbox event. */
   private finishRun(): void {
-    const run = this.run;
     this.settlePlayback();
-    this.invalidatePlayback();
-    if (run?.reported)
-      this.capture("stream_stopped", {
-        stream_type: run.kind,
-        watch_duration_seconds: Math.min(WATCH_SECONDS_LIMIT, Math.round(run.watchMs / 1000)),
+    const run = this.run;
+    if (run?.reported && run.summary && this.canCapture()) {
+      this.summariesIncoming.push({
+        ...run.summary,
+        timestamp: new Date().toISOString(),
+        properties: {
+          ...run.summary.properties,
+          ...this.properties,
+          watch_duration_seconds: Math.min(WATCH_SECONDS_LIMIT, Math.round(run.watchMs / 1000)),
+          end_reason: "ended",
+        },
       });
+      this.journal = null;
+      this.journalDirty = true;
+      this.flush();
+    }
+    this.invalidatePlayback();
+  }
+
+  private checkpointPlayback(): void {
+    const run = this.run;
+    if (!run?.summary || !this.canCapture()) return;
+    run.checkpointMs = run.watchMs;
+    this.journal = {
+      event: {
+        ...run.summary,
+        timestamp: new Date().toISOString(),
+        properties: {
+          ...run.summary.properties,
+          update_channel: this.properties.update_channel,
+          watch_duration_seconds: Math.min(WATCH_SECONDS_LIMIT, Math.floor(run.watchMs / 1000)),
+        },
+      },
+      watchMs: Math.min(WATCH_SECONDS_LIMIT * 1000, run.watchMs),
+    };
+    this.journalDirty = true;
+    this.flush();
   }
 
   /**
@@ -550,58 +669,169 @@ export class Analytics {
     const mono = this.monotonic();
     this.run.watchMs += Math.max(0, Math.min(mono, interval.until) - interval.mono);
     this.interval = mono >= interval.until ? null : { mono, until: interval.until };
+    if (this.run.watchMs - this.run.checkpointMs >= WINDOW_MS) this.checkpointPlayback();
   }
 
   /**
    * Queues one event in memory and coalesces a burst into one outbox write. Returns whether it
    * was queued; consent, quit and the rate limit refuse it.
    */
-  private capture<Name extends CaptureName>(
+  private capture<Name extends DirectName>(
     event: Name,
     properties: EventProperties<Name>,
   ): boolean {
     if (!this.transport || !this.canCapture() || this.closing || !this.record) return false;
-    const now = this.monotonic();
-    if (now - this.rate.start >= 60_000) this.rate = { start: now, count: 0 };
-    if (this.rate.count >= RATE_LIMIT) return false;
-    this.rate.count++;
+    if (!this.admit(this.rate)) return false;
     this.incoming.push({
       uuid: randomUUID(),
       timestamp: new Date().toISOString(),
       event,
       properties: {
-        ...this.properties,
-        profile_origin: this.record.profileOrigin,
-        $process_person_profile: false,
-        $geoip_disable: true,
+        ...this.common(),
         ...properties,
       },
     });
-    if (!this.flushing) {
-      this.flushing = true;
-      void this.exclusive(async () => {
-        this.flushing = false;
-        const unsent = this.incoming.splice(0);
-        const record = this.record;
-        const id = record?.installationId;
-        // An event before the first foreground observation has no identity to send under.
-        if (!record || !id || unsent.length === 0 || !this.canCapture()) return;
-        const queued = unsent.flatMap((item) => {
-          const allowed = CaptureEvent()({ ...item, distinct_id: id });
-          return allowed instanceof type.errors ? [] : [{ event: allowed, attempts: 0 }];
-        });
-        await this.save({ ...record, pending: bounded([...record.pending, ...queued]) });
-      })
-        .catch(() => {})
-        .finally(() => this.pump());
-    }
+    this.flush();
     return true;
+  }
+
+  private common() {
+    return {
+      ...this.properties,
+      profile_origin: this.record?.profileOrigin ?? "unknown",
+      $process_person_profile: false as const,
+      $geoip_disable: true as const,
+    };
+  }
+
+  private admit(budget: { start: number; count: number }): boolean {
+    const now = this.monotonic();
+    if (now - budget.start >= 60_000) {
+      budget.start = now;
+      budget.count = 0;
+    }
+    if (budget.count >= RATE_LIMIT) return false;
+    budget.count++;
+    return true;
+  }
+
+  private noteUsage(key: UsageKey): void {
+    if (
+      !this.transport ||
+      !this.canCapture() ||
+      this.closing ||
+      !this.record?.installationId ||
+      !this.admit(this.usageRate)
+    )
+      return;
+    this.usageIncoming.push({
+      key,
+      timestamp: new Date().toISOString(),
+      properties: this.common(),
+    });
+    this.flush();
+    this.armWindow();
+  }
+
+  /** One coalesced atomic write owns admitted facts, seals and journal transitions. */
+  private flush(): void {
+    if (this.flushing) return;
+    this.flushing = true;
+    void this.exclusive(async () => {
+      this.flushing = false;
+      const unsent = this.incoming.splice(0);
+      const usage = this.usageIncoming.splice(0);
+      const summaries = this.summariesIncoming.splice(0);
+      const journalDirty = this.journalDirty;
+      const journal = this.journal;
+      const seal = this.sealRequested;
+      this.journalDirty = false;
+      this.sealRequested = false;
+      const record = this.record;
+      const id = record?.installationId;
+      if (!record || !id || !this.canCapture()) return;
+      const queued = unsent.flatMap((item) => {
+        const allowed = CaptureEvent()({ ...item, distinct_id: id });
+        return allowed instanceof type.errors ||
+          allowed.event === "usage_window" ||
+          allowed.event === "stream_summary"
+          ? []
+          : [{ event: allowed, attempts: 0 }];
+      });
+      let block = record.summaries ?? emptySummaries(id);
+      let fragment = block.usage;
+      const pending = [...block.pending];
+      const sealUsage = () => {
+        if (fragment) pending.push(queuedSummary(fragment));
+        fragment = null;
+      };
+      // Facts carry the envelope captured by their caller, including several changes in one burst.
+      for (const fact of usage) {
+        const start = Math.floor(Date.parse(fact.timestamp) / WINDOW_MS) * WINDOW_MS;
+        const timestamp = new Date(start).toISOString();
+        if (
+          fragment &&
+          (fragment.timestamp !== timestamp ||
+            fragment.properties.update_channel !== fact.properties.update_channel)
+        )
+          sealUsage();
+        if (!fragment)
+          fragment = {
+            uuid: randomUUID(),
+            distinct_id: id,
+            timestamp,
+            event: "usage_window",
+            properties: {
+              ...this.common(),
+              ...fact.properties,
+              window_start: timestamp,
+              window_end: new Date(start + WINDOW_MS).toISOString(),
+              counts: {},
+            },
+          };
+        const counts = fragment.properties.counts;
+        counts[fact.key] = Math.min(Number.MAX_SAFE_INTEGER, (counts[fact.key] ?? 0) + 1);
+      }
+      if (seal || (fragment && Date.now() >= Date.parse(fragment.properties.window_end)))
+        sealUsage();
+      block = {
+        ...block,
+        usage: fragment,
+        pending: [...pending, ...summaries.map(queuedSummary)],
+        unfinished: journalDirty ? journal : block.unfinished,
+      };
+      if (queued.length || usage.length || summaries.length || journalDirty || seal)
+        await this.save({ ...record, pending: [...record.pending, ...queued], summaries: block });
+    })
+      .catch(() => {})
+      .finally(() => this.pump());
+  }
+
+  private armWindow(): void {
+    if (this.windowTimer || this.closing) return;
+    this.windowTimer = setTimeout(
+      () => {
+        this.windowTimer = undefined;
+        this.sealRequested = true;
+        this.flush();
+      },
+      WINDOW_MS - (Date.now() % WINDOW_MS),
+    );
+    this.windowTimer.unref();
+  }
+
+  private clearWindow(): void {
+    if (this.windowTimer) clearTimeout(this.windowTimer);
+    this.windowTimer = undefined;
   }
 
   /** Bounds the total wait, including a hung disk/transport. No new observations during quit. */
   async close(): Promise<void> {
     if (this.closing) return;
     this.finishRun();
+    this.sealRequested = true;
+    this.flush();
+    this.clearWindow();
     this.closing = true;
     this.foreground = false;
     if (this.dayTimer) clearInterval(this.dayTimer);
@@ -609,9 +839,9 @@ export class Analytics {
     try {
       await deadline(
         (async () => {
-          // The final stop and any burst reach the outbox first.
+          // The final summary and any usage burst reach the outbox first.
           await this.exclusive(async () => {});
-          // A retry backoff is skipped once at quit, within the same per-event attempt budget.
+          // Drain due work within the quit allowance; persisted retry backoffs still apply.
           this.pump();
           while (this.sending) await this.sending;
         })(),
@@ -674,7 +904,7 @@ export class Analytics {
         installationId,
         firstSeen: true,
         lastDay: day,
-        pending: bounded(pending),
+        pending,
       });
     })
       .catch(() => {})
@@ -684,34 +914,112 @@ export class Analytics {
       });
   }
 
-  /** The request is outside the disk serializer, so disabling needn't wait for its response. */
+  /** Network work stays outside the serializer; ready reliability events have priority. */
   private pump(): void {
+    if (this.sending || !this.transport || !this.canCapture() || !this.record) return;
+    this.clearRetry();
     if (
-      this.sending ||
-      this.retryTimer ||
-      !this.transport ||
-      !this.canCapture() ||
-      !this.record?.pending.some((item) => item.attempts < ATTEMPTS)
-    )
+      this.record.pending.some((item) => item.attempts >= ATTEMPTS) ||
+      this.record.summaries?.pending.some(
+        (item) =>
+          item.attempts >= ATTEMPTS ||
+          Date.now() - Date.parse(item.event.timestamp) > SUMMARY_TTL_MS,
+      )
+    ) {
+      this.sending = this.exclusive(async () => {
+        if (!this.record || !this.canCapture()) return;
+        // No request is in flight here. A reserved third delivery survives while it is active;
+        // after interruption its exhausted reservation retires without a fourth delivery.
+        const record = this.record;
+        const block = record.summaries;
+        await this.save({
+          ...record,
+          pending: record.pending.filter((item) => item.attempts < ATTEMPTS),
+          ...(block
+            ? {
+                summaries: {
+                  ...block,
+                  pending: block.pending.filter(
+                    (item) =>
+                      item.attempts < ATTEMPTS &&
+                      Date.now() - Date.parse(item.event.timestamp) <= SUMMARY_TTL_MS,
+                  ),
+                },
+              }
+            : {}),
+        });
+      })
+        .catch(() => {})
+        .finally(() => {
+          this.sending = undefined;
+          this.pump();
+        });
       return;
+    }
+    const now = Date.now();
+    const direct = this.record.pending.find(
+      (item) => item.attempts < ATTEMPTS && (this.directRetry.get(item.event.uuid) ?? 0) <= now,
+    );
+    const summary = this.record.summaries?.pending.find(
+      (item) =>
+        item.attempts < ATTEMPTS &&
+        Date.parse(item.nextAttemptAt) <= now &&
+        now - Date.parse(item.event.timestamp) <= SUMMARY_TTL_MS,
+    );
+    const chosen = direct ?? summary;
+    if (!chosen) {
+      const times = [
+        ...this.record.pending.flatMap((item) =>
+          item.attempts < ATTEMPTS ? [this.directRetry.get(item.event.uuid) ?? now] : [],
+        ),
+        ...(this.record.summaries?.pending.flatMap((item) =>
+          item.attempts < ATTEMPTS ? [Date.parse(item.nextAttemptAt)] : [],
+        ) ?? []),
+      ];
+      if (times.length && !this.closing) {
+        this.retryTimer = setTimeout(
+          () => {
+            this.retryTimer = undefined;
+            this.pump();
+          },
+          Math.max(1, Math.min(WINDOW_MS, Math.min(...times) - now)),
+        );
+        this.retryTimer.unref();
+      }
+      return;
+    }
     const revision = this.revision;
-    let retry = false;
+    const sent = chosen.event;
+    const isSummary = !direct;
     this.sending = (async () => {
-      let event: CaptureEvent | undefined;
+      let reserved = false;
       await this.exclusive(async () => {
         if (!this.canCapture() || this.revision !== revision || !this.record) return;
-        const next = this.record.pending.find((item) => item.attempts < ATTEMPTS);
-        if (!next) return;
-        const pending = this.record.pending
-          .filter((item) => item.attempts < ATTEMPTS)
-          .map((item) =>
-            item === next ? { event: item.event, attempts: item.attempts + 1 } : item,
-          );
-        await this.save({ ...this.record, pending });
-        event = next.event;
+        const record = this.record;
+        if (isSummary) {
+          const block = record.summaries;
+          if (!block || !block.pending.some((item) => item.event.uuid === sent.uuid)) return;
+          await this.save({
+            ...record,
+            summaries: {
+              ...block,
+              pending: block.pending.map((item) =>
+                item.event.uuid === sent.uuid ? { ...item, attempts: item.attempts + 1 } : item,
+              ),
+            },
+          });
+        } else {
+          if (!record.pending.some((item) => item.event.uuid === sent.uuid)) return;
+          await this.save({
+            ...record,
+            pending: record.pending.map((item) =>
+              item.event.uuid === sent.uuid ? { ...item, attempts: item.attempts + 1 } : item,
+            ),
+          });
+        }
+        reserved = true;
       });
-      if (!event || !this.canCapture() || this.revision !== revision || !this.transport) return;
-      const sent = event;
+      if (!reserved || !this.canCapture() || this.revision !== revision || !this.transport) return;
       const controller = new AbortController();
       this.request = controller;
       let result;
@@ -723,13 +1031,46 @@ export class Analytics {
       }
       await this.exclusive(async () => {
         if (!this.canCapture() || this.revision !== revision || !this.record) return;
-        const attempted = this.record.pending.find((item) => item.event.uuid === sent.uuid);
-        retry = result === "retry" && !!attempted && attempted.attempts < ATTEMPTS;
-        if (!retry) {
+        const record = this.record;
+        if (isSummary && record.summaries) {
+          const block = record.summaries;
           await this.save({
-            ...this.record,
-            pending: this.record.pending.filter((item) => item.event.uuid !== sent.uuid),
+            ...record,
+            summaries: {
+              ...block,
+              pending: block.pending.flatMap((item) => {
+                if (item.event.uuid !== sent.uuid) return [item];
+                const attempts = item.attempts - (result === "not_sent" ? 1 : 0);
+                if ((result !== "retry" && result !== "not_sent") || attempts >= ATTEMPTS)
+                  return [];
+                const failures = Math.min(2147483647, item.failures + 1);
+                return [
+                  {
+                    ...item,
+                    attempts,
+                    failures,
+                    nextAttemptAt: new Date(
+                      Date.now() + Math.min(WINDOW_MS, 2000 * 2 ** Math.min(18, failures - 1)),
+                    ).toISOString(),
+                  },
+                ];
+              }),
+            },
           });
+        } else {
+          const attempted = record.pending.find((item) => item.event.uuid === sent.uuid);
+          const retry =
+            (result === "retry" || result === "not_sent") &&
+            attempted &&
+            attempted.attempts < ATTEMPTS;
+          if (retry) this.directRetry.set(sent.uuid, Date.now() + 2000);
+          else {
+            this.directRetry.delete(sent.uuid);
+            await this.save({
+              ...record,
+              pending: record.pending.filter((item) => item.event.uuid !== sent.uuid),
+            });
+          }
         }
       });
     })()
@@ -737,14 +1078,7 @@ export class Analytics {
       .finally(() => {
         this.request = undefined;
         this.sending = undefined;
-        if (!this.canCapture()) return;
-        if (retry && !this.closing) {
-          this.retryTimer = setTimeout(() => {
-            this.retryTimer = undefined;
-            this.pump();
-          }, 2000);
-          this.retryTimer.unref();
-        } else this.pump();
+        this.pump();
       });
   }
 
@@ -759,8 +1093,14 @@ export class Analytics {
 
   private async save(record: AnalyticsRecord): Promise<void> {
     try {
+      record = bounded(record);
       await deadline(this.store.save(record), IO_MS);
       this.record = record;
+      // Retry deadlines belong only to direct work that survived the durable save.
+      const pending = new Set(record.pending.map((item) => item.event.uuid));
+      for (const uuid of this.directRetry.keys()) {
+        if (!pending.has(uuid)) this.directRetry.delete(uuid);
+      }
     } catch {
       this.unavailable();
       throw new Error("Analytics preference could not be saved.");
@@ -771,8 +1111,15 @@ export class Analytics {
     this.available = false;
     this.paused = true;
     this.incoming = [];
+    this.usageIncoming = [];
+    this.summariesIncoming = [];
+    this.journal = null;
+    this.journalDirty = false;
+    this.sealRequested = false;
+    this.clearWindow();
     this.request?.abort();
     this.clearRetry();
+    this.directRetry.clear();
   }
 
   private clearRetry(): void {
@@ -781,15 +1128,52 @@ export class Analytics {
   }
 }
 
-/** Keeps the newest events and the first observation when the outbox overflows. */
-function bounded(pending: AnalyticsRecord["pending"]): AnalyticsRecord["pending"] {
-  const kept = [...pending];
-  while (kept.length > OUTBOX_LIMIT)
-    kept.splice(
-      kept.findIndex((item) => item.event.event !== "installation_observed"),
-      1,
-    );
-  return kept;
+function emptySummaries(installationId: string): SummaryBlock {
+  return { version: 1, installationId, pending: [], usage: null, unfinished: null };
+}
+
+function queuedSummary(event: SummaryEvent): SummaryBlock["pending"][number] {
+  return { event, attempts: 0, failures: 0, nextAttemptAt: event.timestamp };
+}
+
+/** Joint count and byte budget. Oldest summary work loses before direct reliability work. */
+function bounded(record: AnalyticsRecord): AnalyticsRecord {
+  const pending = record.pending.filter((item) => item.attempts <= ATTEMPTS);
+  const block = record.summaries;
+  const summaries =
+    block?.pending.filter(
+      (item) =>
+        item.attempts <= ATTEMPTS &&
+        Date.now() - Date.parse(item.event.timestamp) <= SUMMARY_TTL_MS,
+    ) ?? [];
+  const result = {
+    ...record,
+    pending,
+    ...(block ? { summaries: { ...block, pending: summaries } } : {}),
+  };
+  const openSlots = Number(!!block?.usage) + Number(!!block?.unfinished);
+  // Open owners reserve slots: evicting their snapshots would let a later checkpoint revive
+  // discarded work. Sealed summaries lose first, then unprotected direct work.
+  while (
+    pending.length + summaries.length + openSlots > OUTBOX_LIMIT ||
+    Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES
+  ) {
+    if (summaries.length) {
+      summaries.shift();
+      continue;
+    }
+    const index = pending.findIndex((item) => item.event.event !== "installation_observed");
+    if (index < 0) break;
+    pending.splice(index, 1);
+  }
+  // Even a malformed oversized build envelope cannot escape the byte bound. If preserving the
+  // first observation leaves no valid eviction, fail closed through the existing save owner.
+  if (
+    pending.length + summaries.length + openSlots > OUTBOX_LIMIT ||
+    Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES
+  )
+    throw new Error("Analytics state exceeds its work budget.");
+  return result;
 }
 
 /** All owner waits have a deadline even when an injected or operating-system port never settles. */

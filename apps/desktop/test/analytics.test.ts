@@ -543,7 +543,7 @@ describe("analytics delivery and deadlines", () => {
   });
 
   it("retries a failing local HTTP endpoint with identical event identity, then delivers the activity", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date"] });
     let requests = 0;
     const capture = await captureServer(() => (++requests === 1 ? 503 : 200));
     const local = localCapture(capture.endpoint)!;
@@ -558,18 +558,21 @@ describe("analytics delivery and deadlines", () => {
       },
     });
     owner.setForeground(true);
-    await until(() => capture.payloads.length === 1 && answered === 1);
-    // The retry waits out its backoff on the fake clock, once the refusal is in.
-    await vi.advanceTimersByTimeAsync(2000);
+    await until(() => capture.payloads.length === 2 && answered === 2);
+    // Move only scheduling time. Socket IO/deadlines stay real, then foreground wakes the owner.
+    vi.setSystemTime(Date.now() + 2000);
+    owner.setForeground(true);
     await until(
       async () => capture.payloads.length === 3 && (await saved(dataDir)).pending.length === 0,
     );
-    expect(capture.payloads[1]).toEqual(capture.payloads[0]);
-    expect(capture.payloads[2]).toMatchObject({ event: "app_active_day" });
+    expect(capture.payloads[2]).toEqual(capture.payloads[0]);
+    expect(capture.payloads[1]).toMatchObject({ event: "app_active_day" });
   });
 
   it("retries offline events with the exact UUID/timestamp and bounds attempts across restart", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
     const events: CaptureEvent[] = [];
     const store = memoryStore();
     const offline: Omit<CaptureTransport, "kind"> = {
@@ -611,6 +614,59 @@ describe("analytics delivery and deadlines", () => {
     for (const event of days) expect(event).toEqual(days[0]);
   });
 
+  it("keeps pending direct backoff through a saved preference and rejects a stale retry after consent ABA", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const store = memoryStore();
+    const incidents: CaptureEvent[] = [];
+    let answer: ((result: "retry" | "accepted") => void) | undefined;
+    let active: AbortSignal | undefined;
+    const { owner } = await start({
+      store,
+      transport: {
+        async send(event, signal) {
+          if (event.event !== "renderer_exited") return "accepted";
+          incidents.push(structuredClone(event));
+          active = signal;
+          return new Promise<"retry" | "accepted">((resolve) => {
+            answer = resolve;
+          });
+        },
+      },
+    });
+    owner.setForeground(true);
+    await vi.advanceTimersByTimeAsync(0);
+    owner.noteRendererExit("crashed");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(incidents).toHaveLength(1);
+    answer!("retry");
+    await vi.advanceTimersByTimeAsync(0);
+    const pending = (await store.load())?.pending;
+    expect(pending).toMatchObject([{ attempts: 1, event: { uuid: incidents[0]!.uuid } }]);
+    await owner.configure(true);
+    expect((await store.load())?.pending).toEqual(pending);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(incidents).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(incidents).toEqual([incidents[0], incidents[0]]);
+    const stale = answer!;
+    await owner.configure(false);
+    expect(active?.aborted).toBe(true);
+    expect((await store.load())?.pending).toEqual([]);
+    await owner.configure(true);
+    stale("retry");
+    await vi.advanceTimersByTimeAsync(0);
+    owner.noteRendererExit("other");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(incidents).toHaveLength(3);
+    expect(incidents[2]!.uuid).not.toBe(incidents[0]!.uuid);
+    answer!("accepted");
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(incidents).toHaveLength(3);
+    expect((await store.load())?.pending).toEqual([]);
+  });
+
   it("rate-limits captures and bounds the persisted outbox behind a hung transport, keeping first-seen", async () => {
     vi.useFakeTimers({
       toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -634,29 +690,36 @@ describe("analytics delivery and deadlines", () => {
     await vi.advanceTimersByTimeAsync(0);
     const first = await store.load();
     expect(signal).toBeDefined();
-    // A runaway producer: the first minute keeps 60 captures, the rest are dropped.
+    // Usage bursts share a separate admission budget and persist as counters, not captures.
     for (let i = 0; i < 100; i++) owner.noteFeature("home");
     await vi.advanceTimersByTimeAsync(0);
-    expect((await store.load())?.pending).toHaveLength(62);
+    expect((await store.load())?.pending).toHaveLength(2);
+    expect((await store.load())?.summaries?.usage).toMatchObject({
+      properties: { counts: { feature_home: 60 } },
+    });
     now += 60_000;
     for (let i = 0; i < 10; i++) owner.noteAction("epg_opened");
+    for (let i = 0; i < 70; i++) owner.noteRendererExit("crashed");
     await vi.advanceTimersByTimeAsync(0);
     const kept = await store.load();
-    expect(kept?.pending).toHaveLength(64);
+    expect(kept?.pending).toHaveLength(62);
     expect(kept?.pending[0]?.event).toEqual(first?.pending[0]?.event);
-    expect(kept?.pending[0]?.event.event).toBe("installation_observed");
-    expect(kept?.pending.filter(({ event }) => event.event === "epg_opened")).toHaveLength(10);
-    expect(kept?.pending.filter(({ event }) => event.event === "app_active_day")).toHaveLength(0);
+    expect(kept?.summaries?.usage).toMatchObject({
+      properties: { counts: { feature_home: 60, action_epg_opened: 10 } },
+    });
     expect(await owner.settings()).toEqual({ enabled: true, transport: "local" });
     const closing = owner.close();
     await vi.advanceTimersByTimeAsync(500);
     await closing;
     expect(signal?.aborted).toBe(true);
-    expect(await store.load()).toEqual(kept);
+    expect((await store.load())?.summaries?.usage).toBeNull();
+    expect((await store.load())?.summaries?.pending).toHaveLength(1);
   });
 
   it("bounds startup state reads and preference writes when storage never settles", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
     const dataDir = await tempDir();
     const owner = new Analytics({
       dataDir,
@@ -687,6 +750,7 @@ function streams(events: readonly CaptureEvent[]) {
     switch (event.event) {
       case "stream_started":
         return [`started ${event.properties.stream_type}`];
+      case "stream_summary":
       case "stream_stopped":
         return [
           `stopped ${event.properties.stream_type} ${event.properties.watch_duration_seconds}`,
@@ -737,7 +801,7 @@ describe("direct product and reliability events", () => {
       diagnostic_stage: "deliver",
       diagnostic_reason: "network",
     });
-    await until(() => capture.payloads.length === 5);
+    await until(() => capture.payloads.length === 4);
     expect(capture.payloads.filter((body) => CaptureEvent()(body) instanceof type.errors)).toEqual(
       [],
     );
@@ -747,10 +811,9 @@ describe("direct product and reliability events", () => {
     await owner.configure(false);
     owner.notePlaybackFailure(token, remote, "unsupported", diagnostic);
     await owner.settings();
-    expect(capture.payloads).toHaveLength(5);
+    expect(capture.payloads).toHaveLength(4);
     expect(streams(capture.payloads.map((body) => CaptureEvent().assert(body)))).toEqual([
       "error live unsupported",
-      "started live",
       "error live network",
     ]);
   });
@@ -905,7 +968,8 @@ describe("direct product and reliability events", () => {
     owner.observeOperation("update_check_ended")("failed", checkFailure({ kind: "offline" }));
     owner.observeOperation("update_check_ended")("success", "network");
     owner.noteRendererExit("crashed");
-    await until(() => capture.payloads.length === 12);
+    await owner.close();
+    await until(() => capture.payloads.length === 8);
     const sent = capture.payloads.map((payload) => {
       const event = CaptureEvent()(payload);
       if (event instanceof type.errors) throw new Error("Invalid local payload.");
@@ -915,23 +979,32 @@ describe("direct product and reliability events", () => {
     const common = sent[0]?.properties;
     expect(sent.slice(2).map(({ event, properties }) => [event, properties])).toEqual(
       [
-        ["epg_opened", {}],
-        ["search_used", {}],
-        ["favourite_added", {}],
-        ["settings_changed", { setting_key: "autoplay_next" }],
-        ["feature_opened", { feature: "details" }],
         ["download_ended", { outcome: "failed", error_type: "disk" }],
         ["download_ended", { outcome: "interrupted" }],
         ["update_check_ended", { outcome: "failed", error_type: "network" }],
         ["update_check_ended", { outcome: "success" }],
         ["renderer_exited", { reason: "crashed" }],
+        [
+          "usage_window",
+          {
+            window_start: new Date(Math.floor(Date.now() / 300000) * 300000).toISOString(),
+            window_end: new Date(Math.floor(Date.now() / 300000) * 300000 + 300000).toISOString(),
+            counts: {
+              action_epg_opened: 1,
+              action_search_used: 1,
+              action_favourite_added: 1,
+              setting_autoplay_next: 1,
+              feature_details: 1,
+            },
+          },
+        ],
       ].map(([event, own]) => [event, { ...common, ...(own as object) }]),
     );
-    expect(new Set(sent.map((event) => event.uuid)).size).toBe(12);
+    expect(new Set(sent.map((event) => event.uuid)).size).toBe(8);
     expect(new Set(sent.map((event) => event.distinct_id))).toEqual(
       new Set([sent[0]?.distinct_id]),
     );
-    expect(JSON.stringify(capture.payloads)).not.toMatch(/PRIVATE|summary|counts/);
+    expect(JSON.stringify(capture.payloads)).not.toMatch(/PRIVATE/);
   });
 
   it("reports an observed transaction or operation only in the consent generation that began it", async () => {
@@ -970,9 +1043,9 @@ describe("direct product and reliability events", () => {
     owner.notePlaybackState(token, binding, 2, "playing");
     await vi.advanceTimersByTimeAsync(1000);
     owner.endPlayback(token);
-    await until(() => streams(events).length === 2);
-    expect(streams(events)).toEqual(["started live", "stopped live 2"]);
-    expect(events.at(-2)?.properties.update_channel).toBe("stable");
+    await until(() => streams(events).length === 1);
+    expect(streams(events)).toEqual(["stopped live 2"]);
+    expect(events.at(-1)).toMatchObject({ properties: { started_update_channel: "stable" } });
     expect(events.at(-1)?.properties.update_channel).toBe("nightly");
   });
 
@@ -992,7 +1065,7 @@ describe("direct product and reliability events", () => {
       await vi.advanceTimersByTimeAsync(1000);
     }
     await owner.close();
-    expect(streams(events)).toEqual(["started vod", "stopped vod 3"]);
+    expect(streams(events)).toEqual(["stopped vod 3"]);
     expect((await store.load())?.pending).toEqual([]);
   });
 });
@@ -1051,9 +1124,10 @@ describe("persisted state migration", () => {
     expect(raw.format).toBe(2);
     expect((await saved(dataDir)).installationId).toBe(install.event.distinct_id);
     owner.noteAction("search_used");
+    await owner.close();
     await until(() => events.length === 4);
     expect(events[3]).toMatchObject({
-      event: "search_used",
+      event: "usage_window",
       distinct_id: install.event.distinct_id,
     });
     expect(events.some((event) => (event.event as string) === "app_summary_day")).toBe(false);
@@ -1100,7 +1174,7 @@ describe("persisted state migration", () => {
     before.owner.setForeground(true);
     await until(async () => (await store.load())?.pending.length === 2);
     before.owner.noteFeature("home");
-    await until(async () => (await store.load())?.pending.length === 3);
+    await until(async () => (await store.load())?.summaries?.usage !== null);
     let loaded: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       loaded = resolve;
@@ -1132,10 +1206,9 @@ describe("persisted state migration", () => {
     expect((await store.load())?.pending).toEqual([]);
     await owner.configure(true);
     owner.noteFeature("settings");
-    await until(() => events.length === 1);
-    await owner.settings();
-    expect(events.map((event) => event.event)).toEqual(["feature_opened"]);
-    expect(events[0]).toMatchObject({ properties: { feature: "settings" } });
+    await owner.close();
+    expect(events.map((event) => event.event)).toEqual(["usage_window"]);
+    expect(events[0]).toMatchObject({ properties: { counts: { feature_settings: 1 } } });
   });
 });
 
@@ -1254,13 +1327,7 @@ describe("observed playback runs", () => {
     fresh.failure("network");
     fresh.stop();
     owner.endPlayback(replay);
-    await expectStreams(owner, events, [
-      "started vod",
-      "stopped vod 20",
-      "started vod",
-      "error vod network",
-      "stopped vod 20",
-    ]);
+    await expectStreams(owner, events, ["stopped vod 20", "error vod network", "stopped vod 20"]);
   });
 
   it("resolves fresh receiver open failures after a consent reset but rejects callbacks created before it", async () => {
@@ -1270,7 +1337,7 @@ describe("observed playback runs", () => {
     const remote = owner.remotePlayback("vod", control);
     remote.state("playing");
     const stale = owner.playbackFailureObserver(control);
-    await expectStreams(owner, events, ["started vod"]);
+    await expectStreams(owner, events, []);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -1281,7 +1348,7 @@ describe("observed playback runs", () => {
     owner.playbackFailureObserver(control)("network");
     await owner.close();
     // Opt-out dropped the first run without a stop; the continuation has no historical start.
-    expect(streams(events)).toEqual(["started vod", "error vod network"]);
+    expect(streams(events)).toEqual(["error vod network"]);
   });
 
   it.each(["consent", "end"] as const)(
@@ -1294,7 +1361,7 @@ describe("observed playback runs", () => {
       const binding = owner.bindPlayback(token, "local", "live", closed.signal)!;
       owner.notePlaybackState(token, binding, 1, "playing");
       closed.abort();
-      await expectStreams(owner, events, ["started live"]);
+      await expectStreams(owner, events, []);
       if (reset === "consent") {
         await owner.configure(false);
         await owner.configure(true);
@@ -1302,11 +1369,7 @@ describe("observed playback runs", () => {
       } else owner.endPlayback(token);
       owner.beginPlayback("live", true);
       owner.notePlaybackFailure(token, binding, "credentials");
-      await expectStreams(
-        owner,
-        events,
-        reset === "consent" ? ["started live"] : ["started live", "stopped live 0"],
-      );
+      await expectStreams(owner, events, reset === "consent" ? [] : ["stopped live 0"]);
     },
   );
 
@@ -1331,7 +1394,6 @@ describe("observed playback runs", () => {
     owner.notePlaybackFailure(token, replacement, "credentials");
     owner.endPlayback(fresh);
     await expectStreams(owner, events, [
-      "started live",
       "error live network",
       "error live unsupported",
       "stopped live 0",
@@ -1370,9 +1432,7 @@ describe("observed playback runs", () => {
     expect(owner.admitPlayback("live", replay, frame)).toBeNull();
     expect(owner.admitPlayback("live", first, frame)).toBeNull();
     await expectStreams(owner, events, [
-      "started live",
       "stopped live 40",
-      "started live",
       "error live network",
       "stopped live 10",
     ]);
@@ -1392,7 +1452,7 @@ describe("observed playback runs", () => {
     const adopted = { control: randomUUID(), order: 1, ongoing: true };
     expect(owner.admitPlayback("vod", adopted, "new-frame")).toBe(token);
     expect(owner.admitPlayback("vod", first, "old-frame")).toBeNull();
-    await expectStreams(owner, events, ["started vod"]);
+    await expectStreams(owner, events, []);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -1409,7 +1469,7 @@ describe("observed playback runs", () => {
     owner.notePlaybackFailure(renewed, null, "credentials");
     owner.notePlaybackFailure(renewed, binding, "network");
     owner.endPlayback(renewed);
-    await expectStreams(owner, events, ["started vod", "error vod network"]);
+    await expectStreams(owner, events, ["error vod network"]);
   });
 
   it("starts a promoted preview only once it plays in Watch, and replays a local session as a new run", async () => {
@@ -1430,12 +1490,7 @@ describe("observed playback runs", () => {
     const next = owner.bindPlayback(renewed, "local", "live")!;
     await playing(owner, renewed, next, 20);
     owner.endPlayback(renewed);
-    await expectStreams(owner, events, [
-      "started live",
-      "stopped live 20",
-      "started live",
-      "stopped live 20",
-    ]);
+    await expectStreams(owner, events, ["stopped live 20", "stopped live 20"]);
   });
 
   it("does not revive an obsolete remote intent after a newer selection ended or consent changed", async () => {
@@ -1448,14 +1503,14 @@ describe("observed playback runs", () => {
     const current = { control: randomUUID(), order: 2, ongoing: false };
     const next = owner.admitPlayback("vod", current, "frame")!;
     owner.endPlayback(next);
-    await expectStreams(owner, events, ["started live", "stopped live 0"]);
+    await expectStreams(owner, events, ["stopped live 0"]);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
     stale.state("playing");
     stale.failure("credentials");
     expect(owner.admitPlayback("live", old, "frame")).toBeNull();
-    await expectStreams(owner, events, ["started live", "stopped live 0"]);
+    await expectStreams(owner, events, ["stopped live 0"]);
   });
 
   it("observes a receiver admitted while consent was off without a historical start", async () => {
@@ -1511,7 +1566,7 @@ describe("observed playback runs", () => {
     owner.endControlledPlayback(hint.control, "frame");
     expect(owner.controlledPlayback(current.control, "frame")).toBe(token);
     owner.endControlledPlayback(current.control, "frame");
-    await expectStreams(owner, events, ["started live", "stopped live 35"]);
+    await expectStreams(owner, events, ["stopped live 35"]);
   });
 
   it("counts only confirmed playing time across pause, seek and output moves, with one start and stop", async () => {
@@ -1528,7 +1583,7 @@ describe("observed playback runs", () => {
       await vi.advanceTimersByTimeAsync(10_000);
     }
     owner.endPlayback(token);
-    await expectStreams(owner, events, ["started vod", "stopped vod 36"]);
+    await expectStreams(owner, events, ["stopped vod 36"]);
     expect(JSON.stringify(events)).not.toMatch(/watch_ms|sessionId|binding|position/);
   });
 
@@ -1552,7 +1607,6 @@ describe("observed playback runs", () => {
     await playing(owner, token, binding, 60, sequence);
     owner.endPlayback(token);
     await expectStreams(owner, events, [
-      "started live",
       "error live network",
       "error live credentials",
       "stopped live 60",
@@ -1578,12 +1632,7 @@ describe("observed playback runs", () => {
     sequence = await playing(owner, token, binding, 20, sequence);
     owner.notePlaybackState(token, binding, ++sequence, "paused");
     owner.endPlayback(token);
-    await expectStreams(owner, events, [
-      "started live",
-      "stopped live 5",
-      "started vod",
-      "stopped vod 60",
-    ]);
+    await expectStreams(owner, events, ["stopped live 5", "stopped vod 60"]);
   });
 
   it("drops a run at opt-out without a stop, and never backfills disabled time or a historical start", async () => {
@@ -1592,7 +1641,7 @@ describe("observed playback runs", () => {
     const old = owner.beginPlayback("live")!;
     const binding = owner.bindPlayback(old, "local")!;
     await playing(owner, old, binding, 40);
-    await expectStreams(owner, events, ["started live"]);
+    await expectStreams(owner, events, []);
     await owner.configure(false);
     await vi.advanceTimersByTimeAsync(3600_000);
     await owner.configure(true);
@@ -1606,7 +1655,7 @@ describe("observed playback runs", () => {
     const fresh = owner.bindPlayback(next, "local")!;
     await playing(owner, next, fresh, 10);
     owner.endPlayback(next);
-    await expectStreams(owner, events, ["started live", "started live", "stopped live 10"]);
+    await expectStreams(owner, events, ["stopped live 10"]);
   });
 
   it("drops old binding sequences without creating playback events", async () => {
@@ -1638,7 +1687,7 @@ describe("observed playback runs", () => {
     remote.end();
     remote.state("playing");
     remote.failure("network");
-    await expectStreams(owner, events, ["started vod", "stopped vod 20"]);
+    await expectStreams(owner, events, ["stopped vod 20"]);
   });
 
   it("ends the renderer's run at a receiver's terminal observation, so its control is spent and a fresh one starts anew", async () => {
@@ -1662,12 +1711,7 @@ describe("observed playback runs", () => {
     await vi.advanceTimersByTimeAsync(1000);
     next.end();
     expect(token).not.toBeNull();
-    await expectStreams(owner, events, [
-      "started vod",
-      "stopped vod 10",
-      "started vod",
-      "stopped vod 1",
-    ]);
+    await expectStreams(owner, events, ["stopped vod 10", "stopped vod 1"]);
   });
 
   it("ignores a terminal observation from a replaced load, a moved output or an older run", async () => {
@@ -1697,12 +1741,7 @@ describe("observed playback runs", () => {
     fresh.state("playing");
     await vi.advanceTimersByTimeAsync(1000);
     fresh.end();
-    await expectStreams(owner, events, [
-      "started vod",
-      "stopped vod 3",
-      "started vod",
-      "stopped vod 2",
-    ]);
+    await expectStreams(owner, events, ["stopped vod 3", "stopped vod 2"]);
   });
 
   it("reports nothing for a terminal observation after opt-out, and no stop after opting back in", async () => {
@@ -1711,7 +1750,7 @@ describe("observed playback runs", () => {
     const token = owner.beginPlayback("live")!;
     const remote = owner.remotePlayback("live", token);
     remote.state("playing");
-    await expectStreams(owner, events, ["started live"]);
+    await expectStreams(owner, events, []);
     await owner.configure(false);
     remote.end();
     await owner.configure(true);
@@ -1720,7 +1759,7 @@ describe("observed playback runs", () => {
     continued.state("playing");
     await vi.advanceTimersByTimeAsync(1000);
     continued.end();
-    await expectStreams(owner, events, ["started live"]);
+    await expectStreams(owner, events, []);
   });
 
   it("rejects stale logical request tokens and stopped receiver observations across consent changes", async () => {
@@ -1736,7 +1775,7 @@ describe("observed playback runs", () => {
     staleRemote.stop();
     const remote = owner.remotePlayback("live", current);
     remote.state("playing");
-    await expectStreams(owner, events, ["started live"]);
+    await expectStreams(owner, events, []);
     await owner.configure(false);
     await owner.configure(true);
     await vi.advanceTimersByTimeAsync(0);
@@ -1749,6 +1788,6 @@ describe("observed playback runs", () => {
     replacement.failure("network");
     replacement.stop();
     await owner.close();
-    expect(streams(events)).toEqual(["started live", "error live network"]);
+    expect(streams(events)).toEqual(["error live network"]);
   });
 });

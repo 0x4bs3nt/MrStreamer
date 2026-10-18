@@ -52,7 +52,7 @@ function event<const Name extends string, Properties extends object>(
   }).onUndeclaredKey("delete");
 }
 
-export const CaptureEvent = lazy(() =>
+const QueuedLegacyEvent = lazy(() =>
   event(type.unit("installation_observed"), Common())
     .or(
       event(
@@ -116,6 +116,84 @@ export const CaptureEvent = lazy(() =>
       ),
     ),
 );
+type QueuedLegacyEvent = Infer<typeof QueuedLegacyEvent>;
+
+/** Sparse, fixed keys. The renderer never provides a counter map. */
+export const usageKeys = [
+  ...analyticsActions.map((key) => `action_${key}` as const),
+  ...analyticsFeatures.map((key) => `feature_${key}` as const),
+  ...analyticsSettings.map((key) => `setting_${key}` as const),
+];
+export type UsageKey = (typeof usageKeys)[number];
+export const WINDOW_MS = 5 * 60_000;
+export const SUMMARY_TTL_MS = 7 * 86_400_000;
+export const OUTBOX_BYTES = 128 * 1024;
+const Counters = lazy(() =>
+  type({
+    "[string]": "number.integer >= 1",
+  }).narrow((counts) =>
+    Object.entries(counts).every(
+      ([key, count]) => usageKeys.some((allowed) => key === allowed) && Number.isSafeInteger(count),
+    ),
+  ),
+);
+
+const UsageEvent = lazy(() =>
+  event(
+    type.unit("usage_window"),
+    Common()
+      .merge({
+        window_start: "string.date.iso",
+        window_end: "string.date.iso",
+        counts: Counters(),
+      })
+      .onUndeclaredKey("delete"),
+  ),
+);
+const StreamSummary = lazy(() =>
+  event(
+    type.unit("stream_summary"),
+    Common()
+      .merge({
+        stream_type: StreamType(),
+        started_at: "string.date.iso",
+        started_update_channel: "'stable' | 'nightly' | 'none'",
+        watch_duration_seconds: type.number.atLeast(0).atMost(WATCH_SECONDS_LIMIT).divisibleBy(1),
+        end_reason: "'ended' | 'interrupted'",
+      })
+      .onUndeclaredKey("delete"),
+  ),
+);
+export type StreamSummary = Infer<typeof StreamSummary>;
+export const SummaryEvent = lazy(() => UsageEvent().or(StreamSummary()));
+export type SummaryEvent = Infer<typeof SummaryEvent>;
+
+export const SummaryBlock = lazy(() =>
+  type({
+    version: "1",
+    installationId: "string.uuid",
+    pending: type({
+      event: SummaryEvent(),
+      attempts: "0 <= number.integer <= 3",
+      failures: "0 <= number.integer <= 2147483647",
+      nextAttemptAt: "string.date.iso",
+    })
+      .onUndeclaredKey("delete")
+      .array()
+      .atMostLength(OUTBOX_LIMIT),
+    usage: UsageEvent().or("null"),
+    unfinished: type({
+      event: StreamSummary().narrow((event) => event.properties.end_reason === "interrupted"),
+      watchMs: type.number.atLeast(0).atMost(WATCH_SECONDS_LIMIT * 1000),
+    })
+      .onUndeclaredKey("delete")
+      .or("null"),
+  }).onUndeclaredKey("delete"),
+);
+export type SummaryBlock = Infer<typeof SummaryBlock>;
+
+/** Complete load/send union, including retired .15 producers. */
+export const CaptureEvent = lazy(() => QueuedLegacyEvent().or(SummaryEvent()));
 export type CaptureEvent = Infer<typeof CaptureEvent>;
 export type CaptureName = CaptureEvent["event"];
 
@@ -133,7 +211,7 @@ export type EventProperties<Name extends CaptureName> =
 /** Bounded so a long offline period or a runaway producer can't grow the file. */
 export const OUTBOX_LIMIT = 64;
 
-export const AnalyticsRecord = lazy(() =>
+export const LegacyRecord = lazy(() =>
   type({
     format: "2",
     enabled: "boolean",
@@ -141,10 +219,19 @@ export const AnalyticsRecord = lazy(() =>
     profileOrigin: ProfileOrigin(),
     firstSeen: "boolean",
     lastDay: type(/^\d{4}-\d{2}-\d{2}$/).or("null"),
-    pending: type({ event: CaptureEvent(), attempts: "0 <= number.integer <= 3" })
+    pending: type({ event: QueuedLegacyEvent(), attempts: "0 <= number.integer <= 3" })
       .onUndeclaredKey("delete")
       .array()
       .atMostLength(OUTBOX_LIMIT),
   }).onUndeclaredKey("delete"),
 );
+export const AnalyticsRecord = lazy(() => LegacyRecord().merge({ "summaries?": SummaryBlock() }));
 export type AnalyticsRecord = Infer<typeof AnalyticsRecord>;
+export type DirectName = Exclude<
+  QueuedLegacyEvent["event"],
+  | (typeof analyticsActions)[number]
+  | "stream_started"
+  | "stream_stopped"
+  | "feature_opened"
+  | "settings_changed"
+>;
