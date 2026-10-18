@@ -26,8 +26,12 @@ export function titleDiagnostic(
   audio: number | null,
 ): PlaybackDiagnostic {
   const sound = probe?.audio.find((track) => track.id === audio) ?? probe?.audio[0];
+  const video = probe?.video?.name;
+  // These source codecs always convert. They are not browser capability literals.
+  const software = video === "vp8" || video === "vp9" || video === "av1" ? video : null;
   return {
     ...diagnosticCodecs(probe?.video?.codec ?? null, sound?.codec ?? null),
+    ...(software ? { diagnostic_video_codec: software } : {}),
     diagnostic_container: probe?.container ?? "unknown",
     diagnostic_delivery: !plan
       ? "unknown"

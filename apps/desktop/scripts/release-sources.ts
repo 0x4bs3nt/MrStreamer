@@ -1,4 +1,4 @@
-// Prepares the source archives a release attaches for what the installers carry: FFmpeg and x264,
+// Prepares the source archives a release attaches for what the installers carry: FFmpeg, x264 and dav1d,
 // Chromium's FFmpeg and Electron, and the NSIS plug-ins of the Windows setup. "sources" in
 // licences.config.json lists them.
 //

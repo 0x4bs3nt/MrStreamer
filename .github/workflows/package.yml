@@ -183,19 +183,34 @@ jobs:
           docker run --rm -v "$PWD":/repo -w /repo ubuntu:22.04 bash -c '
             apt-get update -qq &&
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              build-essential nasm pkg-config git curl ca-certificates xz-utils >/dev/null &&
+              build-essential nasm pkg-config meson ninja-build git curl ca-certificates xz-utils >/dev/null &&
             scripts/build-ffmpeg.sh linux-x64 &&
             chown -R '"$(id -u):$(id -g)"' vendor'
       - name: Build ffmpeg on macOS
         if: steps.ffmpeg.outputs.cache-hit != 'true' && runner.os == 'macOS'
         run: |
-          brew install --quiet nasm pkg-config
+          brew install --quiet nasm pkg-config meson ninja
           scripts/build-ffmpeg.sh mac-arm64
-      - name: Check ffmpeg cuts segments for receivers
-        # A cached build from before the segment muxer would play on no TV.
+      - name: Check bundled media features and decode fixtures
+        # Check cached binaries too; a flag in the build script is not proof of decoding.
         run: |
-          muxers=$(vendor/ffmpeg/${{ matrix.target }}/ffmpeg -hide_banner -muxers)
-          grep -qw segment <<<"$muxers"
+          if [[ -f scripts/verify-ffmpeg.ts ]]; then
+            node scripts/verify-ffmpeg.ts ${{ matrix.target }} > "$RUNNER_TEMP/ffmpeg-codecs.json"
+          else
+            # An older nightly keeps its original segment check. Modern sources must have the
+            # full decoder proof; promoting an older source as 0.0.16 cannot bypass it.
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing bundled decoder verification")'
+            muxers=$(vendor/ffmpeg/${{ matrix.target }}/ffmpeg -hide_banner -muxers)
+            grep -qw segment <<<"$muxers"
+            echo '{"target":"${{ matrix.target }}","legacySegmentOnly":true}' > "$RUNNER_TEMP/ffmpeg-codecs.json"
+          fi
+          cat "$RUNNER_TEMP/ffmpeg-codecs.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ffmpeg-codecs-${{ matrix.target }}-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ffmpeg-codecs.json
+          retention-days: ${{ env.KEEP_DAYS }}
+          if-no-files-found: error
 
       # The AirPlay helper as it comes from the compiler, rebuilt only when what the script hashes
       # changes: its sources, Info.plist and flags, and the Swift compiler and SDK of this runner
@@ -371,11 +386,25 @@ jobs:
           grep -q 'C runtime UCRT; MSYS2 UCRT64; packages ' vendor/ffmpeg/win-x64/README.txt
           grep -q 'mingw-w64-ucrt-x86_64-gcc ' vendor/ffmpeg/win-x64/README.txt
           cat vendor/ffmpeg/win-x64/README.txt
-      - name: Check ffmpeg cuts segments for receivers
-        # A cached build from before the segment muxer would play on no TV.
+      - name: Check bundled media features and decode fixtures
         run: |
-          muxers=$(vendor/ffmpeg/win-x64/ffmpeg -hide_banner -muxers)
-          grep -qw segment <<<"$muxers"
+          if [[ -f scripts/verify-ffmpeg.ts ]]; then
+            node scripts/verify-ffmpeg.ts win-x64 > "$RUNNER_TEMP/ffmpeg-codecs.json"
+          else
+            # An older nightly keeps its original segment check. Modern sources must have the
+            # full decoder proof; promoting an older source as 0.0.16 cannot bypass it.
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing bundled decoder verification")'
+            muxers=$(vendor/ffmpeg/win-x64/ffmpeg -hide_banner -muxers)
+            grep -qw segment <<<"$muxers"
+            echo '{"target":"win-x64","legacySegmentOnly":true}' > "$RUNNER_TEMP/ffmpeg-codecs.json"
+          fi
+          cat "$RUNNER_TEMP/ffmpeg-codecs.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ffmpeg-codecs-win-x64-${{ inputs.version }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ffmpeg-codecs.json
+          retention-days: ${{ env.KEEP_DAYS }}
+          if-no-files-found: error
 
       # Windows installers are unsigned for now. Signing belongs here, as its own step with its
       # own secrets, without touching the Mac certificate; docs/maintainers/signing.md.

@@ -1,11 +1,12 @@
 FFmpeg {FFMPEG_VERSION}
 Copyright (c) the FFmpeg developers
 
-Mr. Streamer includes an ffmpeg program built from FFmpeg {FFMPEG_VERSION} with --enable-gpl and x264, so the program is licensed under the GNU General Public License, version 2 or later. The licence follows.
+Mr. Streamer includes an ffmpeg program built from FFmpeg {FFMPEG_VERSION} with --enable-gpl, x264 and dav1d, so the program is licensed under the GNU General Public License, version 2 or later. The licence follows.
 
 Its exact sources are attached to this release:
 https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v{app}/ffmpeg-{FFMPEG_VERSION}.tar.xz
 https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v{app}/x264-{X264_COMMIT}.tar.gz
+https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v{app}/dav1d-{DAV1D_VERSION}.tar.xz
 
 The script that configures and builds it:
 https://github.com/Mr-Streamer-OSS/MrStreamer/blob/v{app}/apps/desktop/scripts/build-ffmpeg.sh

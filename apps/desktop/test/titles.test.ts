@@ -2005,6 +2005,34 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
     await dispose();
   });
 
+  it.each([
+    { file: "vp8.webm", codec: "vp8" },
+    { file: "vp9-10bit.mp4", codec: "vp9" },
+    { file: "av1-10bit.mkv", codec: "av1" },
+  ])("plays $file through the title proxy as decoded H.264", async ({ file, codec }) => {
+    const { provider, playback, open, dispose } = await titles();
+    try {
+      const movie = provider.titles.movies.find((title) =>
+        title.name.startsWith("TEST | Two sound tracks"),
+      );
+      if (!movie) throw new Error("Missing test movie");
+      provider.replaceMovieFile(movie.id, fixture(`codecs/${file}`));
+      const session = await open("TEST | Two sound tracks");
+      const run = await play(`${session.url}?start=0`);
+
+      expect(run.response.status).toBe(200);
+      expect(run.streams.map((stream) => stream.codec_name)).toEqual(["h264"]);
+      expect(picturesOf(run.body)).toEqual({ decoded: 12, errors: "" });
+      expect(await playback.diagnostic(session.sessionId)).toMatchObject({
+        diagnostic_video_codec: codec,
+        diagnostic_delivery: "converted",
+      });
+      expect(provider.mostFilesAtOnce()).toBe(1);
+    } finally {
+      await dispose();
+    }
+  });
+
   it("explains a title whose file the provider doesn't have", async () => {
     const { open, dispose } = await titles();
 

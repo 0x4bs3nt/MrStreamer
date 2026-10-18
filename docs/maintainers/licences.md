@@ -19,11 +19,14 @@ Settings > About shows:
 
 ## Sources on every release
 
+From 0.0.16 the bundled FFmpeg also links dav1d, an AV1 decoder under BSD-2-Clause. About and the bundled tools retain its licence and source link.
+
 Every release, nightlies included, attaches these archives. `sources` in `apps/desktop/licences.config.json` lists them, and a notice in About links each on the release its build belongs to. Together they are about 54 MB.
 
 | File                              | Holds                                                                   | Pinned by                     |
 | --------------------------------- | ----------------------------------------------------------------------- | ----------------------------- |
 | `ffmpeg-<version>.tar.xz`         | FFmpeg, as `apps/desktop/scripts/build-ffmpeg.sh` builds it             | SHA-256, in `build-ffmpeg.sh` |
+| `dav1d-<version>.tar.xz`          | dav1d, linked into FFmpeg from 0.0.16                                   | SHA-256, in `build-ffmpeg.sh` |
 | `x264-<commit>.tar.gz`            | x264, linked into that ffmpeg                                           | commit, in `build-ffmpeg.sh`  |
 | `chromium-ffmpeg-<commit>.tar.gz` | [Chromium's FFmpeg](#chromiums-ffmpeg) at the revision Chromium pins    | commit, under `reviewed`      |
 | `electron-<version>.tar.gz`       | Electron at its release tag: its DEPS file, patches and build arguments | commit, under `reviewed`      |
@@ -36,7 +39,7 @@ Every release, nightlies included, attaches these archives. `sources` in `apps/d
 - The job then reads the notices built into the app. Every file they link on the release, in a source link or in a text, must be one it prepared, and it must have prepared nothing else. `pnpm build` holds the same names against `sources` on every pull request.
 - [Dry runs](releasing.md#dry-runs) run the job too, so a source that moved or changed shows before a release needs it. Publishing checks that every archive the job named is among the release's files.
 - To prepare them on your own machine, with git and curl: `pnpm build`, then `node apps/desktop/scripts/release-sources.ts <folder>`.
-- Each installer's `resources/ffmpeg/README.txt` names FFmpeg's and x264's versions, both configure lines and the toolchain that built them. Windows release builds use MSYS2 UCRT64 and record the compiler, C runtime and installed build-tool and UCRT64 package versions. MinGW-w64 support libraries and winpthreads link statically; Windows provides UCRT.
+- Each installer's `resources/ffmpeg/README.txt` names FFmpeg's, x264's and dav1d's versions, their build configurations and the toolchain that built them, including Meson and Ninja. Windows release builds use MSYS2 UCRT64 and record the compiler, C runtime and installed build-tool and UCRT64 package versions. MinGW-w64 support libraries and winpthreads link statically; Windows provides UCRT.
 - The release workflow caches the ffmpeg build by the hash of `build-ffmpeg.sh`. The Windows key also names UCRT64 and hashes the toolchain action, `apps/desktop/scripts/windows-ffmpeg-toolchain/action.yml`, which holds the MSYS2 setup, environment and package list. It has no fallback to MINGW64 caches. The README stays with the cached binaries, and the Windows job checks and prints its UCRT64 provenance on both cold and warm runs.
 - **Never delete a release.** It holds the only copy of the sources owed to everyone who installed it: GPL-2.0 asks for three years, GPL-3.0 section 6(d) "for as long as needed". To stop offering a bad release, take its update files away instead, as [releasing](releasing.md#recovery) describes.
 

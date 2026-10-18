@@ -127,6 +127,14 @@
       "files": ["licences/ffmpeg/x264.txt", "licences/ffmpeg/x264-COPYING"]
     },
     {
+      "name": "dav1d",
+      "version": "{DAV1D_VERSION}",
+      "licence": "BSD-2-Clause",
+      "source": "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v{app}/dav1d-{DAV1D_VERSION}.tar.xz",
+      "homepage": "https://code.videolan.org/videolan/dav1d",
+      "files": ["licences/ffmpeg/dav1d.txt", "licences/ffmpeg/dav1d-COPYING"]
+    },
+    {
       "name": "MinGW-w64 runtime",
       "version": "MSYS2",
       "licence": "ZPL-2.1 AND dtoa AND SunPro AND MIT AND BSD-3-Clause",
@@ -210,6 +218,11 @@
       "file": "x264-{X264_COMMIT}.tar.gz",
       "git": "https://code.videolan.org/videolan/x264.git",
       "commit": "{X264_COMMIT}"
+    },
+    {
+      "file": "dav1d-{DAV1D_VERSION}.tar.xz",
+      "url": "https://downloads.videolan.org/pub/videolan/dav1d/{DAV1D_VERSION}/dav1d-{DAV1D_VERSION}.tar.xz",
+      "sha256": "{DAV1D_SHA256}"
     },
     {
       "file": "chromium-ffmpeg-{CHROMIUM_FFMPEG_COMMIT}.tar.gz",

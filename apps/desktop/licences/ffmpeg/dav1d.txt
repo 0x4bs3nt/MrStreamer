@@ -1,0 +1,9 @@
+dav1d {DAV1D_VERSION}
+Copyright (c) VideoLAN and dav1d authors
+
+The bundled FFmpeg links dav1d statically to decode AV1 video. dav1d is licensed under BSD-2-Clause; its licence follows.
+
+Its exact source archive is attached to this release:
+https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v{app}/dav1d-{DAV1D_VERSION}.tar.xz
+
+Build configuration and toolchain provenance are recorded by apps/desktop/scripts/build-ffmpeg.sh and the bundled ffmpeg/README.txt.
