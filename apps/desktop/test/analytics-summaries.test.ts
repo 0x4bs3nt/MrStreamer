@@ -14,7 +14,8 @@ import { analyticsStore } from "../src/main/analytics/storage.ts";
 import { localCapture, type CaptureTransport } from "../src/main/analytics/transport.ts";
 import {
   type AnalyticsRecord,
-  type CaptureEvent,
+  CaptureEvent,
+  type StreamSummary,
   type BuildProperties,
   WINDOW_MS,
 } from "../src/main/analytics/model.ts";
@@ -99,6 +100,255 @@ function run(owner: Analytics, ongoing = false) {
 }
 
 describe("durable usage and logical-play summaries", () => {
+  it.each(["pending", "usage", "unfinished"] as const)(
+    "expires only the old %s work and sends fresh peers with the persisted identity",
+    async (expiredSlot) => {
+      const receiver = await sink(false);
+      const directory = await tempDir();
+      const store = analyticsStore(directory);
+      const id = randomUUID();
+      const common = {
+        ...properties,
+        profile_origin: "fresh" as const,
+        $process_person_profile: false as const,
+        $geoip_disable: true as const,
+      };
+      const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+      const fresh = new Date(Date.now() - 3_600_000).toISOString();
+      const summary = (timestamp: string): StreamSummary => ({
+        uuid: randomUUID(),
+        distinct_id: id,
+        timestamp,
+        event: "stream_summary",
+        properties: {
+          ...common,
+          stream_type: "live",
+          started_at: timestamp,
+          started_update_channel: "stable",
+          watch_duration_seconds: 12,
+          end_reason: "ended",
+        },
+      });
+      const expired = summary(old);
+      const ended = summary(fresh);
+      const windowStart = new Date(
+        Math.floor(Date.parse(expiredSlot === "usage" ? old : fresh) / WINDOW_MS) * WINDOW_MS,
+      ).toISOString();
+      const usage = {
+        uuid: randomUUID(),
+        distinct_id: id,
+        timestamp: windowStart,
+        event: "usage_window" as const,
+        properties: {
+          ...common,
+          window_start: windowStart,
+          window_end: new Date(Date.parse(windowStart) + WINDOW_MS).toISOString(),
+          counts: { action_search_used: 3 },
+        },
+      };
+      const interrupted = summary(expiredSlot === "unfinished" ? old : fresh);
+      interrupted.properties.end_reason = "interrupted";
+      const direct = {
+        event: {
+          uuid: randomUUID(),
+          distinct_id: id,
+          timestamp: fresh,
+          event: "installation_observed" as const,
+          properties: common,
+        },
+        attempts: 0,
+      };
+      await store.save({
+        format: 2,
+        enabled: true,
+        installationId: id,
+        profileOrigin: "fresh",
+        firstSeen: true,
+        lastDay: new Date().toISOString().slice(0, 10),
+        pending: [direct],
+        summaries: {
+          version: 1,
+          installationId: id,
+          pending: [...(expiredSlot === "pending" ? [expired] : []), ended].map((event) => ({
+            event,
+            attempts: 1,
+            failures: 2,
+            nextAttemptAt: fresh,
+          })),
+          usage,
+          unfinished: { event: interrupted, watchMs: 12_000 },
+        },
+      });
+      const loaded = await store.load();
+      expect(loaded).toMatchObject({ enabled: true, installationId: id, pending: [direct] });
+      expect(loaded?.summaries?.pending).toMatchObject([
+        { event: ended, attempts: 1, failures: 2 },
+      ]);
+      expect(loaded?.summaries?.usage).toEqual(expiredSlot === "usage" ? null : usage);
+      expect(loaded?.summaries?.unfinished).toEqual(
+        expiredSlot === "unfinished" ? null : { event: interrupted, watchMs: 12_000 },
+      );
+      const { owner } = await start({
+        directory,
+        store,
+        transport: localCapture(receiver.endpoint)!,
+      });
+      const expected = [
+        direct.event,
+        ended,
+        ...(expiredSlot === "usage" ? [] : [usage]),
+        ...(expiredSlot === "unfinished" ? [] : [interrupted]),
+      ];
+      await until(() => receiver.bodies.length === expected.length);
+      await until(async () => (await store.load())?.summaries?.pending.length === 0);
+      expect(receiver.bodies.map((body) => JSON.parse(body).uuid).sort()).toEqual(
+        expected.map((event) => event.uuid).sort(),
+      );
+      for (const body of receiver.bodies) {
+        const raw: unknown = JSON.parse(body);
+        const event = CaptureEvent().assert(structuredClone(raw));
+        expect(raw).toEqual({ api_key: "mrstreamer-local-verification", ...event });
+        expect(event.distinct_id).toBe(id);
+      }
+      expect(await owner.settings()).toEqual({ enabled: true, transport: "local" });
+    },
+  );
+
+  it("purges exhausted direct reservations at restart while retaining an active third delivery", async () => {
+    clock();
+    const directory = await tempDir();
+    const store = analyticsStore(directory);
+    const id = randomUUID();
+    const common = {
+      ...properties,
+      profile_origin: "fresh" as const,
+      $process_person_profile: false as const,
+      $geoip_disable: true as const,
+    };
+    const timestamp = new Date().toISOString();
+    const exhausted = {
+      event: {
+        uuid: randomUUID(),
+        distinct_id: id,
+        timestamp,
+        event: "installation_observed" as const,
+        properties: common,
+      },
+      attempts: 3,
+    };
+    const third = {
+      event: {
+        uuid: randomUUID(),
+        distinct_id: id,
+        timestamp,
+        event: "renderer_exited" as const,
+        properties: { ...common, reason: "crashed" as const },
+      },
+      attempts: 2,
+    };
+    await store.save({
+      format: 2,
+      enabled: true,
+      installationId: id,
+      profileOrigin: "fresh",
+      firstSeen: true,
+      lastDay: timestamp.slice(0, 10),
+      pending: [exhausted, third],
+    });
+    const sent: CaptureEvent[] = [];
+    const { owner } = await start({
+      directory,
+      store,
+      transport: {
+        kind: "local",
+        send: async (event) => {
+          sent.push(event);
+          return new Promise(() => {});
+        },
+      },
+    });
+    await until(() => sent.length === 1);
+    expect(sent[0]).toEqual(third.event);
+    expect((await store.load())?.pending).toEqual([{ ...third, attempts: 3 }]);
+    owner.noteRendererExit("other");
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await store.load())?.pending[0]).toEqual({ ...third, attempts: 3 });
+    const closing = owner.close();
+    await vi.advanceTimersByTimeAsync(500);
+    await closing;
+    expect((await store.load())?.pending[0]).toEqual({ ...third, attempts: 3 });
+    const restarted = await start({ directory, store });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restarted.events.map((event) => event.uuid)).not.toContain(third.event.uuid);
+    expect(restarted.events.map((event) => event.uuid)).not.toContain(exhausted.event.uuid);
+    await until(async () => (await store.load())?.pending.length === 0);
+    expect((await store.load())?.installationId).toBe(id);
+  });
+
+  it.each(["steady", "waiting-and-seeking"] as const)(
+    "checkpoints %s playback only at explicit pause or counted thresholds, preserving recovery duration",
+    async (cadence) => {
+      clock("2026-10-25T00:00:00Z");
+      const first = await start();
+      const { token, binding } = run(first.owner);
+      await vi.advanceTimersByTimeAsync(0);
+      const admitted = (await first.store.load())?.summaries?.unfinished;
+      const writes = first.writes.length;
+      for (let tick = 1; tick <= 120; tick++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        first.owner.notePlaybackState(
+          token,
+          binding,
+          tick + 1,
+          cadence === "steady" || tick % 2 === 0
+            ? "playing"
+            : tick % 4 === 1
+              ? "waiting"
+              : "seeking",
+        );
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.writes.length).toBe(writes);
+      first.owner.notePlaybackState(token, binding, 122, "paused");
+      await vi.advanceTimersByTimeAsync(0);
+      const counted = cadence === "steady" ? 120 : 60;
+      expect(first.writes.length).toBe(writes + 1);
+      const paused = await first.store.load();
+      expect(paused?.summaries?.unfinished).toMatchObject({ watchMs: counted * 1000 });
+      const recover = async (snapshot: AnalyticsRecord | null, seconds: number) => {
+        const recovered = await start({
+          store: { load: async () => structuredClone(snapshot), save: async () => {} },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(recovered.events.filter((event) => event.event === "stream_summary")).toMatchObject([
+          {
+            uuid: admitted?.event.uuid,
+            properties: { end_reason: "interrupted", watch_duration_seconds: seconds },
+          },
+        ]);
+      };
+      await recover(paused, counted);
+      first.owner.notePlaybackState(token, binding, 123, "playing");
+      for (let tick = 1; tick <= 300; tick++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        first.owner.notePlaybackState(token, binding, tick + 123, "playing");
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.writes.length).toBe(writes + 2);
+      const threshold = await first.store.load();
+      expect(threshold?.summaries?.unfinished).toMatchObject({ watchMs: (counted + 300) * 1000 });
+      await recover(threshold, counted + 300);
+      first.owner.endPlayback(token);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.events.filter((event) => event.event === "stream_summary")).toMatchObject([
+        {
+          uuid: admitted?.event.uuid,
+          properties: { end_reason: "ended", watch_duration_seconds: counted + 300 },
+        },
+      ]);
+    },
+  );
+
   it("persists an admitted burst once, sends only at UTC boundaries and preserves sparse delta totals through channel changes and rollback", async () => {
     clock();
     const { owner, events, writes, store } = await start();
@@ -314,21 +564,49 @@ describe("durable usage and logical-play summaries", () => {
     const run = owner.beginPlayback("live")!;
     const binding = owner.bindPlayback(run, "local")!;
     owner.notePlaybackState(run, binding, 1, "playing");
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 10; i++) {
       owner.noteAction("search_used");
       owner.setUpdateChannel(i % 2 ? "stable" : "nightly");
       await vi.advanceTimersByTimeAsync(0);
     }
+    owner.noteAction("epg_opened");
     for (let i = 0; i < 60; i++) owner.noteRendererExit("crashed");
     await vi.advanceTimersByTimeAsync(0);
     const record = await store.load();
-    expect(record!.pending.length + record!.summaries!.pending.length).toBe(64);
+    const durableCount = (record: AnalyticsRecord) =>
+      record.pending.length +
+      (record.summaries?.pending.length ?? 0) +
+      Number(!!record.summaries?.usage) +
+      Number(!!record.summaries?.unfinished);
+    expect(record?.summaries?.usage).toMatchObject({
+      properties: { counts: { action_epg_opened: 1 } },
+    });
+    expect(record?.summaries?.unfinished).toBeTruthy();
+    expect(durableCount(record!)).toBe(64);
     expect(record?.pending.filter((item) => item.event.event === "renderer_exited")).toHaveLength(
       60,
     );
     expect(record?.pending[0]?.event.event).toBe("installation_observed");
-    expect(record?.summaries?.pending).toHaveLength(2);
+    expect(record?.summaries?.pending).toHaveLength(0);
     expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThanOrEqual(128 * 1024);
+    owner.noteAction("epg_opened");
+    owner.endPlayback(run);
+    await vi.advanceTimersByTimeAsync(0);
+    const ended = await store.load();
+    expect(durableCount(ended!)).toBe(64);
+    expect(ended?.summaries?.unfinished).toBeNull();
+    expect(ended?.summaries?.pending).toMatchObject([
+      {
+        event: {
+          uuid: record?.summaries?.unfinished?.event.uuid,
+          properties: { end_reason: "ended" },
+        },
+      },
+    ]);
+    expect(ended?.summaries?.usage).toMatchObject({
+      uuid: record?.summaries?.usage?.uuid,
+      properties: { counts: { action_epg_opened: 2 } },
+    });
     const stale = owner.actionObserver("search_used");
     const disabled = owner.configure(false);
     owner.endPlayback(run);

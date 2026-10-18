@@ -95,7 +95,6 @@ export function analyticsStore(dataDir: string) {
               (event) =>
                 !event ||
                 (event.distinct_id === checked.installationId &&
-                  Date.now() - Date.parse(event.timestamp) <= SUMMARY_TTL_MS &&
                   (event.event !== "usage_window" ||
                     (event.timestamp === event.properties.window_start &&
                       Date.parse(event.properties.window_end) -
@@ -105,8 +104,23 @@ export function analyticsStore(dataDir: string) {
                       Object.keys(event.properties.counts).length > 0))),
             ) &&
             Buffer.byteLength(JSON.stringify(block)) <= OUTBOX_BYTES
-          )
-            record = { ...checked, summaries: block };
+          ) {
+            const cutoff = Date.now() - SUMMARY_TTL_MS;
+            // Age is per item. An expired peer cannot discard fresh, valid offline work.
+            record = {
+              ...checked,
+              summaries: {
+                ...block,
+                pending: block.pending.filter((item) => Date.parse(item.event.timestamp) >= cutoff),
+                usage:
+                  block.usage && Date.parse(block.usage.timestamp) >= cutoff ? block.usage : null,
+                unfinished:
+                  block.unfinished && Date.parse(block.unfinished.event.timestamp) >= cutoff
+                    ? block.unfinished
+                    : null,
+              },
+            };
+          }
         }
       } catch {
         throw new Error("Analytics state unavailable.");

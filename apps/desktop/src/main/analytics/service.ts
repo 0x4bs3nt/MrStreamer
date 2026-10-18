@@ -439,7 +439,7 @@ export class Analytics {
       this.interval = { mono, until: mono + (this.binding.output === "local" ? 5000 : 15000) };
     } else {
       this.interval = null;
-      if (changed) this.checkpointPlayback();
+      if (changed && (state === "paused" || state === "stopped")) this.checkpointPlayback();
     }
   }
 
@@ -831,9 +831,9 @@ export class Analytics {
     try {
       await deadline(
         (async () => {
-          // The final stop and any burst reach the outbox first.
+          // The final summary and any usage burst reach the outbox first.
           await this.exclusive(async () => {});
-          // A retry backoff is skipped once at quit, within the same per-event attempt budget.
+          // Drain due work within the quit allowance; persisted retry backoffs still apply.
           this.pump();
           while (this.sending) await this.sending;
         })(),
@@ -911,6 +911,7 @@ export class Analytics {
     if (this.sending || !this.transport || !this.canCapture() || !this.record) return;
     this.clearRetry();
     if (
+      this.record.pending.some((item) => item.attempts >= ATTEMPTS) ||
       this.record.summaries?.pending.some(
         (item) =>
           item.attempts >= ATTEMPTS ||
@@ -918,17 +919,26 @@ export class Analytics {
       )
     ) {
       this.sending = this.exclusive(async () => {
-        if (!this.record?.summaries || !this.canCapture()) return;
+        if (!this.record || !this.canCapture()) return;
+        // No request is in flight here. A reserved third delivery survives while it is active;
+        // after interruption its exhausted reservation retires without a fourth delivery.
+        const record = this.record;
+        const block = record.summaries;
         await this.save({
-          ...this.record,
-          summaries: {
-            ...this.record.summaries,
-            pending: this.record.summaries.pending.filter(
-              (item) =>
-                item.attempts < ATTEMPTS &&
-                Date.now() - Date.parse(item.event.timestamp) <= SUMMARY_TTL_MS,
-            ),
-          },
+          ...record,
+          pending: record.pending.filter((item) => item.attempts < ATTEMPTS),
+          ...(block
+            ? {
+                summaries: {
+                  ...block,
+                  pending: block.pending.filter(
+                    (item) =>
+                      item.attempts < ATTEMPTS &&
+                      Date.now() - Date.parse(item.event.timestamp) <= SUMMARY_TTL_MS,
+                  ),
+                },
+              }
+            : {}),
         });
       })
         .catch(() => {})
@@ -1127,8 +1137,11 @@ function bounded(record: AnalyticsRecord): AnalyticsRecord {
     pending,
     ...(block ? { summaries: { ...block, pending: summaries } } : {}),
   };
+  const openSlots = Number(!!block?.usage) + Number(!!block?.unfinished);
+  // Open owners reserve slots: evicting their snapshots would let a later checkpoint revive
+  // discarded work. Sealed summaries lose first, then unprotected direct work.
   while (
-    pending.length + summaries.length > OUTBOX_LIMIT ||
+    pending.length + summaries.length + openSlots > OUTBOX_LIMIT ||
     Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES
   ) {
     if (summaries.length) {
@@ -1141,8 +1154,11 @@ function bounded(record: AnalyticsRecord): AnalyticsRecord {
   }
   // Even a malformed oversized build envelope cannot escape the byte bound. If preserving the
   // first observation leaves no valid eviction, fail closed through the existing save owner.
-  if (Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES)
-    throw new Error("Analytics state exceeds its byte budget.");
+  if (
+    pending.length + summaries.length + openSlots > OUTBOX_LIMIT ||
+    Buffer.byteLength(JSON.stringify(result)) > OUTBOX_BYTES
+  )
+    throw new Error("Analytics state exceeds its work budget.");
   return result;
 }
 
