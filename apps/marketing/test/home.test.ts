@@ -79,11 +79,10 @@ describe("the home page", () => {
     },
   );
 
-  it("is whole without scripts: the stack's three windows rest fanned out, with no Replay", () => {
+  it("is whole without scripts: the stack's three windows rest fanned out", () => {
     open(home);
 
     expect(shown(".stack .layer")).toHaveLength(3);
-    expect(document.querySelector<HTMLButtonElement>("[data-replay]")?.hidden).toBe(true);
     expect(document.querySelector(".revealed")).toBeNull();
   });
 });

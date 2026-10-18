@@ -299,30 +299,6 @@ h1 {
   width: 34%;
 }
 
-/* Replay sits under the stack's foot, and only shows where the script can run the fan. */
-.replay {
-  position: absolute;
-  right: 0;
-  top: 100%;
-  margin-top: 0.5em;
-}
-
-.replay button {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--soft);
-  font: inherit;
-  font-size: 0.86em;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-  cursor: pointer;
-}
-
-.replay button:hover {
-  color: #fff;
-}
-
 /* The four features: a cut of the window, its name and one sentence. */
 .gallery {
   display: grid;
@@ -633,7 +609,7 @@ footer p {
  *   lines rise, the button pops and the hero's window stands up, or rises while stacked.
  * - As a part scrolls into view, main.ts adds `revealed` to it and takes it off once every
  *   animation under it has finished: a feature, the subscription and Download rise, and the
- *   stack's three windows fan out from one spot, one after another. Replay runs the fan again.
+ *   stack's three windows fan out from one spot, one after another, 1.4 seconds in all.
  * - As the page scrolls, main.ts sets --tilt on the hero's window and marks it `tipped`: 0 tips
  *   it back 20 degrees, and at 1 it loses both and stands upright with no transform, which is
  *   also how it stands without the script. The stand-up ends on that tilt, so the two never jump.
@@ -683,13 +659,13 @@ footer p {
 .stack .layer:nth-child(2) {
   --fx: -30%;
   --fy: -40%;
-  --wait: 0.18s;
+  --wait: 0.24s;
 }
 
 .stack .layer:nth-child(3) {
   --fx: -60%;
   --fy: -60%;
-  --wait: 0.36s;
+  --wait: 0.48s;
 }
 
 /* The features come in one after another. */
@@ -762,7 +738,7 @@ footer p {
   }
 
   .stack.revealed .layer {
-    animation: fan 0.7s var(--ease) var(--wait) backwards;
+    animation: fan 0.95s var(--ease) var(--wait) backwards;
     will-change: transform, opacity;
   }
 }

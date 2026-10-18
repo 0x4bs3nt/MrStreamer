@@ -1,8 +1,8 @@
 // Every page runs website analytics (analytics.ts). Home moves; download and about keep release
 // links current:
-// - Each part comes in once as it scrolls into view, the stack of windows fans out and can be
-//   replayed, and the hero's window tips upright as the page scrolls. The reader starts all of
-//   it, nothing runs while the page sits still, and nothing is hidden waiting for this script:
+// - Each part comes in once as it scrolls into view, the stack of windows fans out once, and the
+//   hero's window tips upright as the page scrolls. The reader starts all of it, nothing runs
+//   while the page sits still, and nothing is hidden waiting for this script:
 //   without it the page is whole, the window upright and the stack fanned out. styles.css holds
 //   the keyframes and switches them off for reduced motion.
 // - One request for the update feed points the download and about pages' links at a stable
@@ -68,13 +68,10 @@ const settle = (part: Element): void => {
 /**
  * Runs a part's animations once, from where their keyframes start to where the part rests, and
  * settles it once every one of them, the stack's windows included, has finished or was dropped.
- * A replay cuts a run short and starts over; the older run then leaves the newer one alone.
+ * A run that was settled meanwhile, by leaving the screen or hiding the page, leaves it be.
  */
 async function play(part: Element): Promise<void> {
   if (calm.matches) return;
-  settle(part);
-  // Flushes the style with the class off, so a part still running starts afresh.
-  part.getAnimations({ subtree: true });
   const run = Symbol("run");
   playing.set(part, run);
   part.classList.add("revealed");
@@ -104,21 +101,12 @@ const reveal = new IntersectionObserver(
 );
 for (const part of document.querySelectorAll("[data-reveal]")) reveal.observe(part);
 
-// Replay fans the stack out again. It shows only where the script can run the fan.
-const stack = document.querySelector(".stack");
-const replay = document.querySelector<HTMLButtonElement>("[data-replay]");
-if (stack && replay) {
-  replay.hidden = calm.matches;
-  replay.addEventListener("click", () => void play(stack));
-}
-
 // Hiding the page, or asking for less motion halfway, leaves nothing mid-animation.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) for (const part of [...playing.keys()]) settle(part);
 });
 calm.addEventListener("change", () => {
   for (const part of [...playing.keys()]) settle(part);
-  if (replay) replay.hidden = calm.matches;
 });
 
 /** Shows the stable release the update feed names now. Without an answer the built links stand. */
