@@ -443,7 +443,7 @@ async function volumePaths() {
       await send("Input.insertText", { text: name });
       await waitFor(() =>
         live().evaluate<boolean>(
-          `document.querySelector('[aria-label="Search results"] [aria-selected=true]')?.textContent.includes(${JSON.stringify(name)}) ?? false`,
+          `document.querySelector('[aria-label="Search results"] [aria-selected=true]')?.textContent.includes(${JSON.stringify(name.replace(/^TEST \| /, ""))}) ?? false`,
         ),
       );
       const priorStarts = count("stream_started");
