@@ -22,7 +22,18 @@
 // the simulator can't reach. The TEST titles stream their clips from apps/desktop/test/fixtures
 // as they are (MKV, AVI, MPEG-TS, MOV and MP4), so what AVPlayer can't open fails as it would;
 // every other title streams a ten-minute H.264 + AAC feature made here, long enough to resume.
-// A fake TMDB (apps/desktop/test/fake-tmdb.ts) answers under /tmdb/3.
+// A fake TMDB (apps/desktop/test/fake-tmdb.ts) answers under /tmdb/3. It answers TMDB's API only:
+// the app builds its pictures' addresses on image.tmdb.org whatever API it is given, and the
+// panel's posters are on image.example, so neither comes from here.
+//
+// FIXTURE_PROFILE=measure serves the movies and series for measuring the Movies and Series tabs
+// (`measurementTitles` in the fake panel): known titles in 4K and UHD, and known ones added two
+// and fifteen days before FIXTURE_ANCHOR, epoch seconds, the fake panel's TITLES_ADDED unless
+// given, so New holds them while the app's clock reads up to three days after it. The lists keep
+// their ids and sizes. What it declares, with a hash of the titles, is in server.json and at the
+// control port's /profile. FIXTURE_LOGOS=png lists channel logos as PNG marks (`pngLogo`) at this
+// server's address, which passes them on from the panel and logs them, in place of the SVG
+// addresses the panel lists at its own port without serving them.
 //
 // The control port listens on the workbench only and is never tunnelled to the Mac:
 //   POST /fail-catalogue?status=503    channel and category lists answer that; status=none restores
@@ -31,8 +42,13 @@
 //   GET  /live                         channels asked for in the last six seconds
 //   GET  /titles                       movie and episode files asked for in the last six seconds
 //   POST /fail-titles?status=503       the next title file requests answer that; status=none restores
+//   POST /fail-title-lists?status=503  movie and series lists, their categories and details answer
+//                                      that; status=login refuses the login for the two lists, as
+//                                      panels do; status=none restores
+//   GET  /profile                      what FIXTURE_PROFILE=measure declares, when it is on
 //   POST /delay-details?ms=8000        movie and series details answer that much later; ms=0 restores
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   createServer,
@@ -41,7 +57,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import { join } from "node:path";
-import { startFakeProvider, type FakeChannel } from "../../desktop/test/fake-provider.ts";
+import {
+  measurementTitles,
+  pngLogo,
+  startFakeProvider,
+  TITLES_ADDED,
+  type FakeChannel,
+} from "../../desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../desktop/test/fake-tmdb.ts";
 
 const USERNAME = process.env.FIXTURE_USERNAME ?? "fixture";
@@ -59,6 +81,7 @@ const out = join(root, ".local/ios-fixture");
 const fixtures = join(root, "apps/desktop/test/fixtures");
 mkdirSync(out, { recursive: true });
 const second = process.env.FIXTURE_SECOND === "1";
+const pngLogos = process.env.FIXTURE_LOGOS === "png";
 const log = join(out, second ? `requests-${port}.jsonl` : "requests.jsonl");
 
 /** A looped recording, cut into segments of the durations its playlist gives. */
@@ -130,7 +153,23 @@ const provider = await startFakeProvider({
   username: USERNAME,
   password: PASSWORD,
   second,
+  ...(pngLogos ? { logoPng: pngLogo } : {}),
 });
+/** What the measurement profile declares about the titles it serves, when it is on. */
+const profile =
+  process.env.FIXTURE_PROFILE === "measure"
+    ? (() => {
+        const anchor = Number(process.env.FIXTURE_ANCHOR ?? TITLES_ADDED);
+        // Epoch seconds: an anchor in milliseconds would date every title far in the future.
+        if (!Number.isInteger(anchor) || anchor <= 0 || anchor >= 1e11) {
+          throw new Error("FIXTURE_ANCHOR is a moment in epoch seconds");
+        }
+        const { titles, ...declared } = measurementTitles(provider.titles, anchor);
+        provider.serveTitles(() => titles);
+        const sha256 = createHash("sha256").update(JSON.stringify(titles)).digest("hex");
+        return { name: "measure", ...declared, sha256 };
+      })()
+    : null;
 const tmdb = await startFakeTmdb();
 // One service streams the first movies and series it is told about.
 tmdb.stream(
@@ -270,6 +309,21 @@ function answer(response: ServerResponse, status: number, type: string, body: st
 }
 
 const panel = new URL(provider.url);
+/**
+ * Sends the panel's answer with its addresses moved here, so the logos it lists are asked for
+ * through this server, where they are logged, at the port the simulator reaches.
+ */
+function sendHere(reply: IncomingMessage, response: ServerResponse) {
+  const chunks: Buffer[] = [];
+  reply.on("data", (chunk: Buffer) => chunks.push(chunk));
+  reply.on("end", () => {
+    const body = Buffer.concat(chunks)
+      .toString("utf8")
+      .replaceAll(panel.origin, `http://127.0.0.1:${port}`);
+    const { "content-length": _length, "transfer-encoding": _encoding, ...headers } = reply.headers;
+    response.writeHead(reply.statusCode ?? 502, headers).end(body);
+  });
+}
 createServer((request, response) => {
   const path = request.url ?? "/";
   const url = new URL(path, "http://fixture.test");
@@ -354,6 +408,7 @@ createServer((request, response) => {
           status: reply.statusCode ?? 0,
           path: `${url.pathname}${url.searchParams.get("action") ? `?action=${url.searchParams.get("action")}` : ""}`,
         });
+        if (pngLogos && action === "get_live_streams") return sendHere(reply, response);
         response.writeHead(reply.statusCode ?? 502, reply.headers);
         reply.pipe(response);
       },
@@ -384,6 +439,19 @@ createServer((request, response) => {
     titleFailure = status && status !== "none" ? Number(status) : null;
     return json({ titles: titleFailure });
   }
+  if (request.method === "POST" && url.pathname === "/fail-title-lists") {
+    const status = url.searchParams.get("status");
+    const failure =
+      status === "login" ? "login" : status && status !== "none" ? Number(status) : null;
+    if (
+      typeof failure === "number" &&
+      !(Number.isInteger(failure) && failure >= 400 && failure < 600)
+    )
+      return answer(response, 400, "text/plain", "");
+    provider.failTitles(failure);
+    return json({ titleLists: failure });
+  }
+  if (url.pathname === "/profile" && profile) return json(profile);
   if (request.method === "POST" && url.pathname === "/delay-details") {
     detailsDelay = Number(url.searchParams.get("ms") ?? 0);
     return json({ detailsDelay });
@@ -406,9 +474,10 @@ createServer((request, response) => {
 
 writeFileSync(
   join(out, second ? `server-${port}.json` : "server.json"),
-  JSON.stringify({ port, controlPort, started }),
+  JSON.stringify({ port, controlPort, started, ...(profile ? { profile } : {}) }),
 );
 console.log(`fake TMDB at http://127.0.0.1:${port}/tmdb/3`);
+if (profile) console.log(`measurement profile ${JSON.stringify(profile)}`);
 console.log(
   `fixture panel http://127.0.0.1:${port} as ${USERNAME}, ${provider.catalogue.channels.length} channels; control http://127.0.0.1:${controlPort}`,
 );

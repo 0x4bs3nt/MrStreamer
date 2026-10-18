@@ -218,8 +218,10 @@ On the workbench, with the Mac mini's simulator (see the `mac-mini` skill). The 
 the desktop tests' fake Xtream provider with live HLS in front, its movie and series files and a
 fake TMDB under `/tmdb/3`; log in to `http://127.0.0.1:8791` as `fixture` / `fixture-pass`.
 `FIXTURE_TITLES` sizes the movie and series lists. Its control port (8792) stays on the workbench
-and makes the catalogue, a channel or title files fail, or holds movie and series details back to
-try what a slow panel does; see `scripts/fixture-server.ts`. A second panel, for several
+and makes the channel lists, the movie and series lists, a channel or title files fail, or holds
+movie and series details back to try what a slow panel does; see `scripts/fixture-server.ts`.
+For measurements, `FIXTURE_PROFILE=measure` serves lists with known 4K titles and additions dated
+from `FIXTURE_ANCHOR`, and `FIXTURE_LOGOS=png` lists raster channel logos. A second panel, for several
 providers, runs beside it on other ports with `FIXTURE_SECOND=1` and its own login, such as
 `FIXTURE_SECOND=1 FIXTURE_USERNAME=second FIXTURE_PASSWORD=second-pass node scripts/fixture-server.ts 8793 8794`;
 add it in Settings > Add provider at `http://127.0.0.1:8793`. Its channels have the first's ids.

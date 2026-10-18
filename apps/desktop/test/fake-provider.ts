@@ -25,6 +25,7 @@
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable, type Writable } from "node:stream";
+import { crc32 as zlibCrc32, deflateSync } from "node:zlib";
 
 export interface FakeChannel {
   readonly streamId: number;
@@ -66,6 +67,11 @@ export interface FakeProviderOptions {
   readonly channelOf?: (channel: FakeChannel) => FakeChannel;
   /** Serves synthetic channel marks of different natural dimensions instead of missing logos. */
   readonly logoSvg?: (channel: FakeChannel) => string;
+  /**
+   * Lists channel logos as PNG files, `/logos/<id>.png`, and serves these bytes for them, such as
+   * `pngLogo`'s: raster marks, as most panels send, in place of `logoSvg`'s SVG ones.
+   */
+  readonly logoPng?: (channel: FakeChannel) => Buffer;
   readonly username?: string;
   readonly password?: string;
   readonly maxConnections?: number;
@@ -171,7 +177,7 @@ interface FakeSeries {
   readonly tmdb?: string;
 }
 
-interface FakeTitles {
+export interface FakeTitles {
   readonly movieCategories: readonly { readonly id: string; readonly name: string }[];
   readonly movies: readonly FakeTitle[];
   readonly seriesCategories: readonly { readonly id: string; readonly name: string }[];
@@ -377,14 +383,19 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
       const what = HELD_ACTIONS[url.searchParams.get("action") ?? ""];
       return what ? answering(what, () => api(url, response)) : api(url, response);
     }
-    const logo = /^\/logos\/(\d+)\.svg$/.exec(url.pathname);
+    const logo = /^\/logos\/(\d+)\.(svg|png)$/.exec(url.pathname);
     const logoChannel = logo
       ? catalogue.channels.find((channel) => String(channel.streamId) === logo[1])
       : undefined;
-    if (logoChannel && options.logoSvg) {
+    if (logoChannel && logo?.[2] === "svg" && options.logoSvg) {
       return void response
         .writeHead(200, { "Content-Type": "image/svg+xml" })
         .end(options.logoSvg(logoChannel));
+    }
+    if (logoChannel && logo?.[2] === "png" && options.logoPng) {
+      return void response
+        .writeHead(200, { "Content-Type": "image/png" })
+        .end(options.logoPng(logoChannel));
     }
     if (url.pathname === "/xmltv.php") return answering("guide", () => guide(url, response));
     const live = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.ts$/.exec(url.pathname);
@@ -585,7 +596,9 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
           name: channel.name,
           stream_type: "live",
           stream_id: channel.streamId,
-          stream_icon: channel.hasLogo ? `${origin}/logos/${channel.streamId}.svg` : "",
+          stream_icon: channel.hasLogo
+            ? `${origin}/logos/${channel.streamId}.${options.logoPng ? "png" : "svg"}`
+            : "",
           category_id: channel.categoryId,
           category_ids: [Number(channel.categoryId)],
           is_adult: channel.adult ? 1 : 0,
@@ -1157,11 +1170,16 @@ const TEST_MOVIES: readonly {
   { name: "TEST | Caption track (EN)", container: "mov", fixture: "title-caption-track.mov" },
 ];
 
+/**
+ * The moment, in epoch seconds, the test movies and series were added and the others before:
+ * fixed, so "recently added" orders are the same in every run.
+ */
+export const TITLES_ADDED = 1_790_000_000;
+
 /** Builds roughly `size` movies and series. The same size always gives the same titles. */
 function buildTitles(size: number, second: boolean): FakeTitles {
   const random = mulberry32(size + 7);
-  // A fixed moment, so "recently added" orders are the same in every run.
-  const base = 1_790_000_000;
+  const base = TITLES_ADDED;
   const movieCategories = [
     { id: "501", name: "TEST | FORMATS" },
     { id: "502", name: "NL | FILMS" },
@@ -1321,6 +1339,145 @@ function buildTitles(size: number, second: boolean): FakeTitles {
     });
   }
   return { movieCategories, movies, seriesCategories, series };
+}
+
+/** A day, in seconds. */
+const DAY_SECONDS = 24 * 60 * 60;
+
+/** What `measurementTitles` made of one kind's titles: how many it put in 4K and among the new. */
+interface MeasuredKind {
+  /** Renamed 4K or UHD. */
+  readonly fourK: number;
+  /** Dated two days before the anchor. */
+  readonly week: number;
+  /** Dated fifteen days before the anchor. */
+  readonly month: number;
+}
+
+/** The titles `measurementTitles` makes, and what it declares about them. */
+export interface Measurement {
+  readonly titles: FakeTitles;
+  /** Epoch seconds the additions are dated from. */
+  readonly anchor: number;
+  /**
+   * Epoch seconds between which a clock finds exactly the declared titles new this week and this
+   * month: from the anchor to three days after it.
+   */
+  readonly now: { readonly from: number; readonly to: number };
+  readonly movies: MeasuredKind;
+  readonly series: MeasuredKind;
+}
+
+/**
+ * Movies and series to measure the Movies and Series tabs with, made from `all` for `serveTitles`:
+ * known titles in 4K and in New at `anchor`, epoch seconds, whatever the viewer's language. The
+ * default lists have neither: no version is 4K, and every title was added in the days before
+ * `TITLES_ADDED`, so New empties as time passes.
+ *
+ * Of each kind's titles besides the test ones and those for adults, in list order, every 20th from
+ * the first is renamed 4K or UHD in turn, every 20th from the second is dated two days before the
+ * anchor, every 20th from the third and the fourth fifteen days before, and the rest 45 days or
+ * more before, with the test titles and those for adults. The renamed and the new are marked
+ * (MULTI), which suits every viewer's language whatever TMDB says they were made in. Each group
+ * keeps its list order, a second apart. Ids, categories, episodes and files stay as they were.
+ */
+export function measurementTitles(all: FakeTitles, anchor: number): Measurement {
+  function measure<
+    Row extends { readonly name: string; readonly adult: boolean; readonly added: number },
+  >(rows: readonly Row[]) {
+    const counts = { fourK: 0, week: 0, month: 0 };
+    let place = 0;
+    let older = 0;
+    const measured = rows.map((row): Row => {
+      const step = row.adult || row.name.startsWith("TEST") ? -1 : place++ % 20;
+      const named = row.name.replace(/ \([^()]*\)$/, "");
+      if (step === 0) {
+        const tag = counts.fourK++ % 2 === 0 ? "4K" : "UHD";
+        return {
+          ...row,
+          name: `${named} ${tag} (MULTI)`,
+          added: anchor - 45 * DAY_SECONDS - older++,
+        };
+      }
+      if (step === 1) {
+        return {
+          ...row,
+          name: `${named} (MULTI)`,
+          added: anchor - 2 * DAY_SECONDS - counts.week++,
+        };
+      }
+      if (step === 2 || step === 3) {
+        return {
+          ...row,
+          name: `${named} (MULTI)`,
+          added: anchor - 15 * DAY_SECONDS - counts.month++,
+        };
+      }
+      return { ...row, added: anchor - 45 * DAY_SECONDS - older++ };
+    });
+    return { rows: measured, counts };
+  }
+  const movies = measure(all.movies);
+  const series = measure(all.series);
+  return {
+    titles: { ...all, movies: movies.rows, series: series.rows },
+    anchor,
+    now: { from: anchor, to: anchor + 3 * DAY_SECONDS },
+    movies: movies.counts,
+    series: series.counts,
+  };
+}
+
+/** The natural widths and heights of `pngLogo`'s marks: tall, tiny, square, wide. */
+const LOGO_SIZES = [
+  [16, 240],
+  [3, 2],
+  [80, 80],
+  [240, 24],
+  [24, 120],
+  [120, 60],
+] as const;
+
+/**
+ * A channel's raster mark, for `logoPng`: a cross in a colour of its own on white, in one of six
+ * natural sizes, as a PNG.
+ */
+export function pngLogo(channel: FakeChannel): Buffer {
+  const [width, height] = LOGO_SIZES[channel.streamId % LOGO_SIZES.length] ?? [80, 80];
+  const colour = [(channel.streamId * 53) % 256, (channel.streamId * 97) % 256, 189];
+  const half = Math.max(0.5, Math.min(width, height) / 10);
+  const diagonal = Math.hypot(width, height);
+  const stride = width * 3 + 1;
+  // Each row is led by its filter type, 0 for none.
+  const rows = Buffer.alloc(stride * height, 255);
+  for (let y = 0; y < height; y++) {
+    rows[y * stride] = 0;
+    for (let x = 0; x < width; x++) {
+      const [cx, cy] = [x + 0.5, y + 0.5];
+      const down = Math.abs(cx * height - cy * width) / diagonal;
+      const up = Math.abs((width - cx) * height - cy * width) / diagonal;
+      if (Math.min(down, up) <= half) rows.set(colour, y * stride + 1 + x * 3);
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const framed = Buffer.alloc(typed.length + 8);
+    framed.writeUInt32BE(data.length, 0);
+    typed.copy(framed, 4);
+    framed.writeUInt32BE(zlibCrc32(typed), typed.length + 4);
+    return framed;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  // 8 bits per channel, RGB, deflate, no interlacing.
+  header.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(rows)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 const REGIONS = ["UK", "NL", "BE", "DE", "FR", "US", "ES", "IT", "PL", "PT"];
