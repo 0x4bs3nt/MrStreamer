@@ -121,14 +121,15 @@ async function click(page: Page, expression: string): Promise<void> {
 /** What the Guide row of Settings > Subscriptions says, and the line under it when one shows. */
 async function guideRow(page: Page): Promise<{ ok: boolean; detail: string }> {
   await openSubscriptions(page);
-  const refresh = `document.querySelector('[aria-label="Refresh guide"]')`;
+  const refresh = `document.querySelector('[aria-label^="Refresh guide of "]')`;
   const read = () =>
     page.evaluate<{ row: string; under: string | null; busy: boolean }>(`(() => {
       const button = ${refresh};
       const row = button?.parentElement?.parentElement;
       return {
         // Its name and what it covers, without the time and the buttons beside them.
-        row: row?.firstElementChild?.textContent ?? "",
+        row: [...(row?.firstElementChild?.childNodes ?? [])]
+          .map(node => node.textContent.trim()).filter(Boolean).join(" · "),
         under: row?.nextElementSibling?.querySelector("p")?.textContent ?? null,
         busy: !!button?.disabled,
       };
@@ -148,15 +149,15 @@ async function guideRow(page: Page): Promise<{ ok: boolean; detail: string }> {
   const first = await read();
   const again = await refreshed(/none in this playlist/);
   host.nameGuide(true);
-  const found = await refreshed(/1 of 3 channels/);
+  const found = await refreshed(/1 own · 2 without/);
   host.nameGuide(false);
   const dropped = await refreshed(/none in this playlist/);
   await key(page, "Escape", 27);
-  const none = "Guide · none in this playlist";
+  const none = "Guide · none in this playlist · 3 without";
   const ok =
     first.row === none &&
     again.row === none &&
-    found.row === "Guide · 1 of 3 channels" &&
+    found.row === "Guide · 1 own · 2 without" &&
     dropped.row === none &&
     [first, again, found, dropped].every((each) => each.under === null);
   return {

@@ -300,6 +300,12 @@ export async function configureSubtitleUi(d: Driver) {
     10_000,
     "SubDL-only search",
   );
+  // Main can answer before the window finishes the preceding settings mutation.
+  await d.wait(
+    () => d.page.evaluate<boolean>(`!!(${checkbox}) && !(${checkbox}).disabled`),
+    10_000,
+    "subtitle search control ready",
+  );
   if (!(await d.page.evaluate<boolean>(`(${checkbox})?.checked`)))
     await d.click("Enable subtitle search", checkbox);
   await d.wait(
