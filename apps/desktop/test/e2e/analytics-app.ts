@@ -1,4 +1,5 @@
 // Built-app proof through the actual Settings control, with an isolated profile and loopback only.
+import { watch } from "node:fs";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -30,19 +31,35 @@ import {
 } from "../../../../.cursor/skills/verify-mrstreamer/scripts/session.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
-const desktop = join(root, "apps/desktop");
+const builtDesktop = process.argv
+  .find((arg) => arg.startsWith("--built-desktop="))
+  ?.slice("--built-desktop=".length);
+const desktop = builtDesktop ?? join(root, "apps/desktop");
+const volumeWorkload = process.argv.includes("--volume-workload");
 const evidenceRoot = join(root, ".local/verification");
 const evidence = await evidenceDirectory(evidenceRoot, "analytics-");
 const observeRollover = process.argv.includes("--observe-rollover");
 const [packagedExecutable, ...packagedArgs] = process.argv
   .slice(2)
-  .filter((arg) => arg !== "--observe-rollover");
+  .filter(
+    (arg) =>
+      arg !== "--observe-rollover" &&
+      arg !== "--volume-workload" &&
+      !arg.startsWith("--built-desktop="),
+  );
 const appVersion = (
   JSON.parse(await readFile(join(desktop, "package.json"), "utf8")) as { version: string }
 ).version;
 const build = {
-  revision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+  revision: builtDesktop
+    ? (await readFile(join(desktop, "source-revision.txt"), "utf8")).trim()
+    : execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
   appVersion,
+  sourceKind: builtDesktop ? "archived-source-build" : "checkout-source-build",
+  sourceDirty: builtDesktop
+    ? false
+    : execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim()
+        .length > 0,
   mainSha256: createHash("sha256")
     .update(await readFile(join(desktop, "out/main/index.js")))
     .digest("hex"),
@@ -397,6 +414,83 @@ async function usageCount(key: UsageKey): Promise<number> {
 async function unfinished() {
   const event = AnalyticsRecord().assert(await analyticsFile()).summaries?.unfinished?.event;
   return event?.event === "stream_summary" ? event : undefined;
+}
+
+/** A fixed browsing/channel-surf workload, shared by an archived old build and this candidate. */
+async function volumePaths() {
+  const before = await mainPage!.evaluate<NodeJS.ResourceUsage>("process.resourceUsage()");
+  const temporaryWrites = new Set<string>();
+  const watcher = watch(profile, (_event, name) => {
+    if (name && /^analytics\.json\.[0-9a-f-]{36}\.tmp$/.test(name.toString()))
+      temporaryWrites.add(name.toString());
+  });
+  const wallFrom = Date.now();
+  try {
+    const channels = provider!.catalogue.channels.slice(0, 2);
+    for (let round = 0; round < 6; round++) {
+      await keyEscape();
+      await namedButton("header button", round % 2 ? "Home" : "Live TV");
+      await click('button[aria-label="Search"]');
+      const name = channels[round % 2]!.name;
+      for (const type of ["rawKeyDown", "keyUp"])
+        await send("Input.dispatchKeyEvent", {
+          type,
+          key: "a",
+          code: "KeyA",
+          modifiers: 2,
+          windowsVirtualKeyCode: 65,
+        });
+      await send("Input.insertText", { text: name });
+      await waitFor(() =>
+        live().evaluate<boolean>(
+          `document.querySelector('[aria-label="Search results"] [aria-selected=true]')?.textContent.includes(${JSON.stringify(name)}) ?? false`,
+        ),
+      );
+      const priorStarts = count("stream_started");
+      const priorJournal = (await unfinished())?.uuid;
+      for (const type of ["rawKeyDown", "keyUp"])
+        await send("Input.dispatchKeyEvent", {
+          type,
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+        });
+      await waitFor(
+        async () =>
+          count("stream_started") > priorStarts ||
+          (!!(await unfinished()) && (await unfinished())?.uuid !== priorJournal),
+      );
+      await waitFor(() =>
+        live().evaluate<boolean>(
+          "!!document.querySelector('[data-view=watch]') && document.querySelector('video').videoWidth > 0 && document.querySelector('video').currentTime >= 1",
+        ),
+      );
+      // End-only reporting must leave the currently confirmed play untransmitted.
+      if (count("stream_summary") > round) throw new Error("Active surf play was sent before end.");
+      await delay(1000);
+    }
+    await snapshot("surf-playing");
+    const after = await mainPage!.evaluate<NodeJS.ResourceUsage>("process.resourceUsage()");
+    await quit();
+    await delay(50);
+    observations.volumeWorkload = {
+      rounds: 6,
+      wallMs: Date.now() - wallFrom,
+      mainUserCpuMs: (after.userCPUTime - before.userCPUTime) / 1000,
+      mainSystemCpuMs: (after.systemCPUTime - before.systemCPUTime) / 1000,
+      mainFsWriteBlocks: after.fsWrite - before.fsWrite,
+      observedAtomicAnalyticsWrites: temporaryWrites.size,
+      requests: payloads.length,
+      bytes: Buffer.byteLength(JSON.stringify(payloads)),
+      events: sent(),
+      limits:
+        "One Linux run. Main CPU excludes renderer/GPU/FFmpeg. fs.watch counts distinct analytics temp files; native rename latency remains separate.",
+    };
+  } finally {
+    watcher.close();
+  }
+  await launch();
+  await settings();
 }
 
 async function productPaths() {
@@ -781,7 +875,8 @@ try {
   observations["firstSeenOrigin"] = first.properties.profile_origin;
   observations["payloadAllowlist"] = Object.keys(first.properties).sort();
   observations["activityAllowlist"] = Object.keys(day.properties).sort();
-  await productPaths();
+  if (volumeWorkload) await volumePaths();
+  else await productPaths();
   const enabledCaptures = payloads.length;
   if (new Set(sent().map((event) => event.uuid)).size !== enabledCaptures)
     throw new Error("A capture was delivered twice.");
