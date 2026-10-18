@@ -68,7 +68,7 @@ export const PlaybackDiagnostic = lazy(() =>
     "diagnostic_stage?":
       "'open' | 'probe' | 'inspect' | 'convert' | 'decode' | 'deliver' | 'unknown'",
     "diagnostic_reason?":
-      "'tool_missing' | 'tool_failed' | 'probe_failed' | 'malformed_input' | 'unsupported_input' | 'decode_rejected' | 'copy_rejected' | 'conversion_failed' | 'inspection_undetermined' | 'network' | 'provider_refused' | 'provider_unavailable' | 'unknown'",
+      "'tool_missing' | 'tool_failed' | 'probe_failed' | 'malformed_input' | 'unsupported_input' | 'hls_subset_unsupported' | 'decode_rejected' | 'copy_rejected' | 'conversion_failed' | 'inspection_undetermined' | 'network' | 'provider_refused' | 'provider_unavailable' | 'unknown'",
     "diagnostic_container?": "'mpegts' | 'hls' | 'mp4' | 'matroska' | 'other' | 'unknown'",
     "diagnostic_delivery?": "'direct' | 'converted' | 'unknown'",
     "diagnostic_video_codec?": "'h264' | 'hevc' | 'mpeg2' | 'vp8' | 'vp9' | 'av1' | 'unknown'",

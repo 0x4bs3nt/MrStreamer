@@ -10,7 +10,9 @@
 // line that the app's own styles know, and skips past them. Then it asks what the build sends
 // playback to: AirPlay on macOS, which takes the helper the app comes with, Google Cast on
 // Windows, nothing on Linux. Last, it opens Chromium's and Node.js's notices, which come from
-// the credits page the installer must keep.
+// the credits page the installer must keep. It also opens another movie after the provider
+// replaces it with a bounded VP9/AAC clip, and plays converted HLS across a changed epoch with
+// CEA-608 captions through the same maintained scenario as source-build verification.
 //
 //   node test/e2e/packaged-app.ts <app executable> [-- extra app arguments]
 //
@@ -23,25 +25,66 @@
 // longer after a skip past it, the build offers its system's receivers, and both notices have
 // text. The app runs with a throwaway profile and remote debugging on a random port; on macOS
 // pass --use-mock-keychain so the test never touches a real keychain.
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { hlsCompatibilityScenario } from "../../../../.cursor/skills/verify-mrstreamer/scripts/hls-compatibility.ts";
 import { fixture, startFakeProvider } from "../fake-provider.ts";
-import { connect, delay, key, launch, login, waitFor, type Page } from "./app.ts";
+import { startFakeHls } from "../fake-hls.ts";
+import { fixtureTools } from "./fixture-tools.ts";
+import {
+  connect,
+  delay,
+  fill,
+  key,
+  launch,
+  login,
+  openSubscriptions,
+  press,
+  subscriptionRow,
+  waitFor,
+  type Page,
+} from "./app.ts";
 
 const [executable, ...rest] = process.argv.slice(2).filter((arg) => arg !== "--");
 if (!executable) throw new Error("Usage: node test/e2e/packaged-app.ts <app executable> [-- args]");
 const updater = /[\\/]WindowsApps[\\/]/i.test(executable) ? "store" : "direct";
+const target =
+  process.platform === "darwin"
+    ? "mac-arm64"
+    : process.platform === "win32"
+      ? "win-x64"
+      : "linux-x64";
+// AppImages unpack resources into a runtime mount. Package jobs retain their exact vendor input.
+const toolDirectory = executable.endsWith(".AppImage")
+  ? join(import.meta.dirname, "../../vendor/ffmpeg", target)
+  : join(
+      dirname(executable),
+      process.platform === "darwin" ? "../Resources" : "resources",
+      "ffmpeg",
+    );
+const ffmpeg =
+  process.env["MR_STREAMER_FFMPEG"] ??
+  join(toolDirectory, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
 
 const CHANNELS = ["TEST | H.264 + AAC", "TEST | H.264 + MP2"];
 const port = 20000 + Math.floor(Math.random() * 20000);
 const profile = mkdtempSync(join(tmpdir(), "mr-streamer-e2e-"));
+const evidenceRoot = join(import.meta.dirname, "../../../../.local/verification");
+mkdirSync(evidenceRoot, { recursive: true });
+const evidence = mkdtempSync(join(evidenceRoot, "packaged-app-"));
+const observed: Record<string, unknown> = {};
 const provider = await startFakeProvider({ channels: 60, live: true });
+const hls = await startFakeHls({ realtime: true });
 const app = launch(executable, rest, { port, profile });
 
 let failed = false;
+let openPage: Page | null = null;
 try {
   const page = await connect(port);
+  openPage = page;
   await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await login(page, provider);
   const status = await page.evaluate<{ value?: { distribution: string } }>(
@@ -66,6 +109,13 @@ try {
   const subtitles = await pictureSubtitles(page);
   console.log(`${subtitles.ok ? "PASS" : "FAIL"} Subtitles draw: ${subtitles.detail}`);
   failed ||= !subtitles.ok;
+  const vp9 = await playVp9Movie(page);
+  console.log(`${vp9.ok ? "PASS" : "FAIL"} Replaced VP9 movie plays and skips: ${vp9.detail}`);
+  failed ||= !vp9.ok;
+  await convertedHls(page);
+  console.log(
+    "PASS Converted HLS: decoded picture/audio and visible CEA-608 across changed epochs",
+  );
   const outputs = await receivers(page);
   console.log(`${outputs.ok ? "PASS" : "FAIL"} Receivers this build plays on: ${outputs.detail}`);
   failed ||= !outputs.ok;
@@ -75,12 +125,29 @@ try {
   page.close();
 } catch (error) {
   console.error(`FAIL ${String(error)}`);
+  observed["error"] = String(error);
+  if (openPage) {
+    try {
+      observed["failedView"] = await openPage.evaluate<string>("document.body.innerText");
+      await capture(openPage, "failure");
+    } catch (captureError) {
+      observed["captureError"] = String(captureError);
+    }
+  }
   failed = true;
 } finally {
+  observed["hlsRequests"] = [...hls.requests()];
+  observed["hlsResources"] = hls.stats();
   app.kill("SIGKILL");
+  await hls.close();
   await provider.close();
   await delay(1000);
   rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  writeFileSync(
+    join(evidence, "proof.json"),
+    JSON.stringify({ status: failed ? "failed" : "passed", executable, observed }, null, 2),
+  );
+  console.log(`Packaged smoke evidence: ${evidence}`);
 }
 process.exit(failed ? 1 : 0);
 
@@ -147,7 +214,12 @@ async function homeAndBack(page: Page): Promise<{ ok: boolean; detail: string }>
 }
 
 /** Plays the test movie with two sound tracks from Movies, skips ahead, then leaves it. */
-async function playMovie(page: Page): Promise<{ ok: boolean; detail: string }> {
+async function playMovie(
+  page: Page,
+  title = "Two sound tracks",
+  captureName?: string,
+  expectedWidth?: number,
+): Promise<{ ok: boolean; detail: string }> {
   await key(page, "Escape", 27);
   await page.evaluate(
     `[...document.querySelectorAll("header button")].find((b) => b.textContent.trim() === "Movies").click()`,
@@ -156,28 +228,29 @@ async function playMovie(page: Page): Promise<{ ok: boolean; detail: string }> {
   const allTab = `[...document.querySelectorAll("nav button")].find((b) => b.textContent.trim() === "All movies")`;
   await waitFor(() => page.evaluate<boolean>(`!!${allTab}`), 60_000);
   await page.evaluate(`${allTab}.click()`);
-  const poster = `[...document.querySelectorAll("button[title]")].find((b) => b.title.includes("Two sound tracks"))`;
+  const poster = `[...document.querySelectorAll("button[title]")].find((b) => b.title.includes(${JSON.stringify(title)}))`;
   await waitFor(() => page.evaluate<boolean>(`!!${poster}`), 60_000);
   await page.evaluate(`${poster}.click()`);
-  const play = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent.trim() === "Play")`;
+  const play = `[...document.querySelectorAll('[role="dialog"] button')].find((b) => /^(Play|Resume)$/.test(b.textContent.trim()))`;
   await waitFor(() => page.evaluate<boolean>(`!!${play}`), 20_000);
   await page.evaluate(`${play}.click()`);
   const state = () =>
-    page.evaluate<{ time: number; width: number; audio: number }>(`(() => {
+    page.evaluate<{ time: number; width: number; audio: number; frames: number }>(`(() => {
       const video = document.querySelector("video");
       return {
         time: video?.currentTime ?? 0,
         width: video?.videoWidth ?? 0,
         audio: video?.webkitAudioDecodedByteCount ?? 0,
+        frames: video?.webkitDecodedFrameCount ?? 0,
       };
     })()`);
-  let started = { time: 0, width: 0, audio: 0 };
+  let started = { time: 0, width: 0, audio: 0, frames: 0 };
   const until = Date.now() + 30_000;
   while (Date.now() < until && !(started.time >= 1 && started.width > 0 && started.audio > 0)) {
     await delay(250);
     started = await state();
   }
-  if (started.time < 1 || started.audio === 0) {
+  if (started.time < 1 || started.audio === 0 || started.frames === 0) {
     return {
       ok: false,
       detail: `clock ${started.time.toFixed(2)} s, sound ${started.audio} bytes`,
@@ -192,14 +265,150 @@ async function playMovie(page: Page): Promise<{ ok: boolean; detail: string }> {
     await delay(250);
     skipped = await state();
   }
+  if (captureName) {
+    observed[captureName] = { started, skipped };
+    await capture(page, captureName);
+  }
   await key(page, "Escape", 27);
   await delay(1500);
   const open = provider.activeStreams();
-  const ok = skipped.time >= started.time + 9 && open === 0;
+  const ok =
+    skipped.time >= started.time + 9 &&
+    skipped.frames > 0 &&
+    skipped.audio > 0 &&
+    open === 0 &&
+    (expectedWidth === undefined || started.width === expectedWidth);
   return {
     ok,
     detail: `played to ${started.time.toFixed(1)} s with ${started.audio} bytes of sound, skipped to ${skipped.time.toFixed(1)} s, ${open} connections open after leaving`,
   };
+}
+
+/** A previously unopened address makes main probe the actual replacement VP9/AAC bytes. */
+async function playVp9Movie(page: Page): Promise<{ ok: boolean; detail: string }> {
+  const output = join(profile, "vp9-aac.mp4");
+  const args = [
+    "-v",
+    "error",
+    "-nostdin",
+    "-stream_loop",
+    "-1",
+    "-i",
+    join(import.meta.dirname, "../fixtures/codecs/vp9-10bit.mp4"),
+    "-stream_loop",
+    "-1",
+    "-i",
+    join(import.meta.dirname, "../fixtures/title-h264-eac3-subs.mkv"),
+    "-t",
+    "24",
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
+    "-c:v",
+    "copy",
+    "-c:a",
+    "aac",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    "-y",
+    output,
+  ];
+  const tools = fixtureTools(ffmpeg, profile);
+  const made = spawnSync(tools.ffmpeg, args, { encoding: "utf8" });
+  if (made.error) throw made.error;
+  if (made.status !== 0) throw new Error(`VP9 fixture creation failed: ${made.stderr}`);
+  const probe = spawnSync(
+    tools.ffprobe,
+    [
+      "-v",
+      "error",
+      "-count_frames",
+      "-show_entries",
+      "stream=codec_type,codec_name,nb_read_frames:format=duration",
+      "-of",
+      "json",
+      output,
+    ],
+    { encoding: "utf8" },
+  );
+  if (probe.error) throw probe.error;
+  if (probe.status !== 0) throw new Error(`VP9 fixture probe failed: ${probe.stderr}`);
+  const source = JSON.parse(probe.stdout) as {
+    streams: { codec_type: string; codec_name: string; nb_read_frames: string }[];
+    format: { duration: string };
+  };
+  if (
+    !source.streams.some(
+      (stream) => stream.codec_name === "vp9" && Number(stream.nb_read_frames) > 0,
+    ) ||
+    !source.streams.some(
+      (stream) => stream.codec_name === "aac" && Number(stream.nb_read_frames) > 0,
+    ) ||
+    Math.abs(Number(source.format.duration) - 24) > 0.2
+  )
+    throw new Error("Expected a finite 24-second VP9/AAC fixture");
+  const bytes = readFileSync(output);
+  const movie = provider.titles.movies.find((each) => each.name.includes("Index at the end"));
+  if (!movie) throw new Error("No unopened MP4 movie to replace");
+  provider.replaceMovieFile(movie.id, bytes);
+  observed["vp9Source"] = {
+    source,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytes: bytes.length,
+    ffmpeg: tools.ffmpeg,
+    tools,
+    args,
+  };
+  return playMovie(page, "Index at the end", "vp9-movie", 96);
+}
+
+/** Real Settings/M3U connection, then the existing epoch/sound/caption scenario. */
+async function convertedHls(page: Page): Promise<void> {
+  await openSubscriptions(page);
+  await press(page, "Add subscription");
+  await press(page, "Use an M3U link");
+  await waitFor(
+    () => page.evaluate<boolean>("document.querySelectorAll('form input').length === 2"),
+    20_000,
+  );
+  await fill(page, ["HLS compatibility", hls.link]);
+  await waitFor(() => page.evaluate<boolean>(`!!${subscriptionRow("HLS compatibility")}`), 30_000);
+  await press(page, "Settings");
+  await hlsCompatibilityScenario(
+    {
+      observed,
+      evaluate: page.evaluate,
+      send: page.send,
+      wait: (check, timeout = 30_000) => waitFor(check, timeout),
+      exists: (expression) => page.evaluate<boolean>(`!!(${expression})`),
+      click: async (label, element) => {
+        console.log(label);
+        await waitFor(() => page.evaluate<boolean>(`!!(${element})`), 30_000);
+        await page.evaluate(`(${element}).click()`);
+      },
+      key: (name, code) => key(page, name, code),
+      capture: (name) => capture(page, name),
+    },
+    false,
+  );
+  observed["hlsRequests"] = hls.requests();
+  observed["hlsResources"] = hls.stats();
+}
+
+async function capture(page: Page, name: string): Promise<void> {
+  const shot = await page.send("Page.captureScreenshot", { format: "png" });
+  const result = shot.result;
+  if (
+    !result ||
+    typeof result !== "object" ||
+    !("data" in result) ||
+    typeof result.data !== "string"
+  )
+    throw new Error("No packaged smoke screenshot");
+  writeFileSync(join(evidence, `${name}.png`), Buffer.from(result.data, "base64"));
 }
 
 /**

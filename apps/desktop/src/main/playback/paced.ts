@@ -1,3 +1,5 @@
+import type { HlsTsEpoch } from "./hls-ts-input.ts";
+
 // Passes a recording on no faster than it plays. A catch-up archive is a file to the provider,
 // which may send it as fast as the network allows; the player keeps a live stream's every byte
 // until it plays, and a programme's worth would fill its buffer. The recording's own clock, the
@@ -30,6 +32,26 @@ export async function* paced(
   signal: AbortSignal,
   { endS = Infinity, now = () => performance.now() }: { endS?: number; now?: () => number } = {},
 ): AsyncGenerator<Uint8Array> {
+  yield* pacing(leadS, signal, endS, now).read(chunks);
+}
+
+/** One archive clock across HLS epochs; only PCR identity resets at a boundary. */
+export async function* pacedEpochs(
+  epochs: AsyncIterable<HlsTsEpoch>,
+  leadS: number,
+  signal: AbortSignal,
+  endS: number,
+): AsyncGenerator<HlsTsEpoch> {
+  const clock = pacing(leadS, signal, endS, () => performance.now());
+  for await (const epoch of epochs) {
+    clock.epoch(epoch.layout.pcrPid);
+    yield { ...epoch, chunks: clock.read(epoch.chunks) };
+    if (clock.ended || signal.aborted) return;
+  }
+}
+
+function pacing(leadS: number, signal: AbortSignal, endS: number, now: () => number) {
+  let ended = false;
   /** Bytes of a packet that continues in the next chunk. */
   let carry = new Uint8Array(0);
   let pid: number | null = null;
@@ -39,40 +61,56 @@ export async function* paced(
   /** Seconds of the recording sent so far, by its clock. */
   let media = 0;
   let started: number | null = null;
-  for await (const chunk of chunks) {
-    const data = carry.length ? join(carry, chunk) : chunk;
-    let offset = 0;
-    while (offset + PACKET <= data.length) {
-      // Out of step with the packets: on to the next sync byte.
-      if (data[offset] !== SYNC) {
-        offset++;
-        continue;
+  async function* read(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+    for await (const chunk of chunks) {
+      const data = carry.length ? join(carry, chunk) : chunk;
+      let offset = 0;
+      while (offset + PACKET <= data.length) {
+        // Out of step with the packets: on to the next sync byte.
+        if (data[offset] !== SYNC) {
+          offset++;
+          continue;
+        }
+        const clock = pcrOf(data, offset);
+        const marked = discontinuity(data, offset);
+        const packetPid = ((data[offset + 1]! & 0x1f) << 8) | data[offset + 2]!;
+        offset += PACKET;
+        if (clock !== null) pid ??= packetPid;
+        if (packetPid !== pid) continue;
+        cut ||= marked;
+        if (clock === null) continue;
+        if (previous !== null && !cut) {
+          const step = ((clock - previous + PCR_WRAP) % PCR_WRAP) / PCR_HZ;
+          if (step <= MAX_STEP_S) media += step;
+        }
+        previous = clock;
+        cut = false;
       }
-      const clock = pcrOf(data, offset);
-      const marked = discontinuity(data, offset);
-      const packetPid = ((data[offset + 1]! & 0x1f) << 8) | data[offset + 2]!;
-      offset += PACKET;
-      if (clock !== null) pid ??= packetPid;
-      if (packetPid !== pid) continue;
-      cut ||= marked;
-      if (clock === null) continue;
-      if (previous !== null && !cut) {
-        const step = ((clock - previous + PCR_WRAP) % PCR_WRAP) / PCR_HZ;
-        if (step <= MAX_STEP_S) media += step;
+      carry = data.slice(offset);
+      started ??= now();
+      const ahead = media - (now() - started) / 1000;
+      if (ahead > leadS) await wait((ahead - leadS) * 1000, signal);
+      if (signal.aborted) return;
+      yield chunk;
+      if (media >= endS) {
+        ended = true;
+        return;
       }
-      previous = clock;
-      cut = false;
     }
-    carry = data.slice(offset);
-    started ??= now();
-    const ahead = media - (now() - started) / 1000;
-    if (ahead > leadS) await wait((ahead - leadS) * 1000, signal);
-    if (signal.aborted) return;
-    yield chunk;
-    if (media >= endS) return;
   }
+  return {
+    read,
+    get ended() {
+      return ended;
+    },
+    epoch(next: number | undefined) {
+      pid = next ?? null;
+      previous = null;
+      cut = true;
+      carry = new Uint8Array(0);
+    },
+  };
 }
-
 /** Whether the packet at `offset` has an adaptation field that marks a discontinuity. */
 function discontinuity(data: Uint8Array, offset: number): boolean {
   const adaptation = (data[offset + 3]! >> 4) & 0x02;

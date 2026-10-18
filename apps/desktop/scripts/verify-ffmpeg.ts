@@ -8,6 +8,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type } from "arktype";
+import { h264ImageArguments } from "../src/main/playback/conversion-settings.ts";
 
 const target = process.argv[2];
 if (target !== "mac-arm64" && target !== "linux-x64" && target !== "win-x64") {
@@ -31,6 +32,7 @@ const required = {
   demuxers: ["mpegts", "matroska", "mov"],
   muxers: ["mpegts", "mp4", "segment"],
   bsfs: ["h264_mp4toannexb", "hevc_mp4toannexb", "aac_adtstoasc", "vp9_superframe_split"],
+  filters: ["yadif", "scale", "pad", "setsar", "format"],
 };
 // FFmpeg has no parser-list command. Check its embedded configuration and exercise the new
 // parsers below by decoding and converting their complete source fixtures.
@@ -63,9 +65,10 @@ const Probe = type({
     height: "number",
     pix_fmt: "string",
     nb_read_frames: "string",
+    sample_aspect_ratio: "string",
   }).array(),
 });
-function decoded(path: string) {
+function decoded(path: string, width: number, height: number) {
   const result = Probe.assert(
     JSON.parse(
       execute(ffprobe, [
@@ -75,7 +78,7 @@ function decoded(path: string) {
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=codec_name,width,height,pix_fmt,nb_read_frames",
+        "stream=codec_name,width,height,pix_fmt,nb_read_frames,sample_aspect_ratio",
         "-of",
         "json",
         path,
@@ -85,8 +88,8 @@ function decoded(path: string) {
   assert.equal(result.streams.length, 1, "One decoded picture stream is required");
   const stream = result.streams[0];
   assert.ok(stream);
-  assert.equal(stream.width, 96);
-  assert.equal(stream.height, 64);
+  assert.equal(stream.width, width);
+  assert.equal(stream.height, height);
   assert.equal(stream.nb_read_frames, "12", "All twelve fixture frames must decode");
   return stream;
 }
@@ -99,10 +102,13 @@ const fixtures = [
   { file: "av1-10bit.mp4", codec: "av1", format: "yuv420p10le" },
 ];
 const scratch = mkdtempSync(join(tmpdir(), "mrstreamer-codecs-"));
+// A different aspect ratio exercises padding as well as the same HLS scale and square-pixel graph.
+const picture = { width: 128, height: 96 };
+const image = h264ImageArguments(picture);
 try {
   const results = fixtures.map(({ file, codec, format }) => {
     const input = join(root, "test", "fixtures", "codecs", file);
-    const source = decoded(input);
+    const source = decoded(input, 96, 64);
     assert.equal(source.codec_name, codec);
     assert.equal(source.pix_fmt, format);
     const output = join(scratch, `${codec}.mp4`);
@@ -120,16 +126,16 @@ try {
       "libx264",
       "-preset",
       "ultrafast",
-      "-pix_fmt",
-      "yuv420p",
+      ...image,
       "-movflags",
       "frag_keyframe+empty_moov",
       "-y",
       output,
     ]);
-    const converted = decoded(output);
+    const converted = decoded(output, picture.width, picture.height);
     assert.equal(converted.codec_name, "h264");
     assert.equal(converted.pix_fmt, "yuv420p");
+    assert.equal(converted.sample_aspect_ratio, "1:1");
     return {
       file,
       source,
@@ -145,6 +151,7 @@ try {
         ffprobeSha256: createHash("sha256").update(readFileSync(ffprobe)).digest("hex"),
         build,
         required,
+        image,
         results,
       },
       null,

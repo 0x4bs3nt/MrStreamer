@@ -262,6 +262,7 @@ export interface LiveSegments {
   readonly video: "copy" | "h264" | "none";
   readonly audio: "copy" | "aac" | "none";
   /** The tracks kept, by PID. */
+  readonly subtitles?: readonly number[];
   readonly pids: { readonly video: number | null; readonly audio: number | null };
 }
 
@@ -291,6 +292,10 @@ export function liveSegmentArguments(
     args.push("-map", pids.video === null ? "0:v:0" : `0:i:${pids.video}`);
   if (segments.audio !== "none")
     args.push("-map", pids.audio === null ? "0:a:0" : `0:i:${pids.audio}`);
+  if (segments.subtitles?.length) {
+    for (const pid of segments.subtitles) args.push("-map", `0:i:${pid}?`);
+    args.push("-c:s", "copy");
+  }
   if (segments.video === "copy") args.push("-c:v", "copy");
   if (segments.video === "h264") {
     args.push(

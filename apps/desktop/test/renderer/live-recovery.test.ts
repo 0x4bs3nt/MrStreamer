@@ -12,7 +12,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
-import type { LivePlaying, StreamFailure } from "@mrstreamer/contracts/playback";
+import type { LivePlaying, StreamFailure, StreamFormat } from "@mrstreamer/contracts/playback";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
 import { miniPlayer } from "../../src/renderer/src/app/mini-player.ts";
 import { closeWatch, openWatch, useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -113,7 +113,7 @@ async function key(name: string, target: EventTarget = window): Promise<boolean>
  * Stands ready for the next stream the player asks for. The function it returns gives that
  * request a session, whose picture has yet to move.
  */
-function nextStream(): () => Promise<void> {
+function nextStream(format: StreamFormat = "hls"): () => Promise<void> {
   const held = ipc.hold("playback.open");
   return () =>
     act(async () => {
@@ -122,7 +122,7 @@ function nextStream(): () => Promise<void> {
         sessionId,
         channel: { subscriptionId: SUBSCRIPTION, id: "vrt" },
         url: `http://127.0.0.1/stream/${sessionId}`,
-        format: "hls",
+        format,
       });
     });
 }
@@ -210,6 +210,43 @@ afterEach(async () => {
 });
 
 describe("a channel that breaks off", () => {
+  it("keeps the four reconnect delays when converted HLS opens keep failing with network errors", async () => {
+    const direct = nextStream();
+    await watching();
+    await direct();
+    const converted = nextStream("mpegts");
+    await stops(null);
+    expect(asked().at(-1)).toMatchObject({ repair: true });
+    ipc.always("playback.failure", DROPPED);
+    ipc.always("playback.playing", null);
+    await converted();
+    ipc.refuse("playback.open", { kind: "stream", failure: DROPPED });
+    for (const [index, delay] of WAITS.entries()) {
+      expect(player.state().phase).toMatchObject({ kind: "reconnecting", attempt: index + 1 });
+      const count = asked().length;
+      await wait(delay - 1);
+      expect(asked()).toHaveLength(count);
+      await wait(1);
+      expect(asked()).toHaveLength(count + 1);
+      expect(asked().at(-1)).toMatchObject({ repair: true });
+    }
+    expect(player.state().phase).toMatchObject({ kind: "failed", problem: { kind: "network" } });
+    await wait(60_000);
+    expect(asked()).toHaveLength(6);
+  });
+
+  it("keeps an initial repair's typed network failure terminal", async () => {
+    const direct = nextStream();
+    await watching();
+    await direct();
+    const repaired = ipc.hold("playback.open");
+    await stops(null);
+    await act(async () => repaired.reject({ kind: "stream", failure: DROPPED }));
+    expect(player.state().phase).toMatchObject({ kind: "failed", problem: { kind: "network" } });
+    await wait(60_000);
+    expect(asked()).toHaveLength(2);
+  });
+
   it("is tried again four times at most while it only comes back for a moment", async () => {
     await playing(5);
 
@@ -472,6 +509,46 @@ describe("what a failure shows", () => {
           diagnostic_delivery: "unknown",
           diagnostic_fallback: "repair",
         },
+      }),
+    ]);
+    await wait(60_000);
+    expect(asked()).toHaveLength(2);
+  });
+
+  it("shows an excluded HLS repair as unsupported after the observed rejection, with one incident", async () => {
+    const starts = nextStream();
+    await watching();
+    await starts();
+    const repaired = ipc.hold("playback.open");
+    await stops(null);
+    expect(asked().at(-1)).toMatchObject({ repair: true });
+    expect(ipc.argsOf("analytics.playbackFailure")).toEqual([]);
+    await act(async () =>
+      repaired.reject({
+        kind: "stream",
+        failure: {
+          kind: "unsupported",
+          detail: "private upstream text",
+          diagnostic: {
+            diagnostic_stage: "inspect",
+            diagnostic_reason: "hls_subset_unsupported",
+            diagnostic_container: "hls",
+            diagnostic_delivery: "direct",
+            diagnostic_fallback: "repair",
+          },
+        },
+      }),
+    );
+    expect(text()).toContain("Can't play this stream");
+    expect(text()).not.toContain("Can't open this channel");
+    expect(text()).not.toContain("private upstream text");
+    expect(ipc.argsOf("analytics.playbackFailure")).toEqual([
+      expect.objectContaining({
+        failure: "unsupported",
+        diagnostic: expect.objectContaining({
+          diagnostic_stage: "inspect",
+          diagnostic_reason: "hls_subset_unsupported",
+        }),
       }),
     ]);
     await wait(60_000);

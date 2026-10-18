@@ -486,7 +486,17 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     if (mine === selection) {
       const error = appError(cause);
       observation.failure(playbackFailure(error), appDiagnostic(error));
-      store.setState({ phase: failed({ kind: "app", error: appError(cause) }) });
+      const problem: PlaybackProblem =
+        error.kind === "stream" ? classify(error.failure, null) : { kind: "app", error };
+      // Converted HLS prepares during open. Reconnect failures consume the same bounded waits
+      // as failures after open; the initial observed-decode repair still gets only one try.
+      const delay = !first && !quiet && retries(problem) ? nextReconnect() : null;
+      if (delay !== null) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (mine !== selection) return;
+        if (!quiet) return start(channel, repair);
+      }
+      store.setState({ phase: failed(problem) });
     }
     return;
   }
@@ -811,7 +821,7 @@ function retries(problem: PlaybackProblem): boolean {
  * The kind of thing that went wrong, from what the provider answered or else from how the engine
  * failed. What either said of it in words stays behind: those can name an address.
  */
-function classify(upstream: StreamFailure | null, error: EngineError): PlaybackProblem {
+function classify(upstream: StreamFailure | null, error: EngineError | null): PlaybackProblem {
   switch (upstream?.kind) {
     case "unavailable":
     case "refused":
@@ -822,7 +832,7 @@ function classify(upstream: StreamFailure | null, error: EngineError): PlaybackP
     case "unsupported":
       return { kind: "unsupported" };
     case undefined:
-      return error.kind === "network"
+      return error?.kind === "network"
         ? { kind: "network", unanswered: false }
         : { kind: "unsupported" };
   }

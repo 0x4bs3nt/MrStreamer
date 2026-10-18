@@ -11,13 +11,14 @@
 // before is over, and never after a refusal, which is the account's. Streams that failed in the
 // last two minutes go last, so reconnecting doesn't wait for one again. An HLS stream, as
 // playlists list them, passes through playlist by playlist and segment by segment, its addresses
-// replaced by the proxy's (see ../playback/hls.ts).
+// replaced by the proxy's (see ../playback/hls.ts). After an observed decode rejection, clear
+// muxed TS HLS can instead use one inspected stdin converter per epoch (hls-ts-input.ts).
 //
 // Catch-up plays a channel's past the same way, from the provider's archive in place of its live
 // stream: a stream that ends. An MPEG-TS recording goes on no faster than it plays, as a provider
 // may send it as fast as it can, and ends once its own clock passes the window's end, closing the
 // provider's connection, as an address without an end plays on (see ../playback/paced.ts). An HLS
-// recording's player stops it there.
+// recording's direct player stops it there; converted HLS uses the same epoch-aware pacer.
 //
 // Movies and episodes (see ../playback/title.ts): the proxy serves the provider's file to ffprobe
 // and ffmpeg over loopback, answering byte ranges, one upstream request at a time. Each request
@@ -95,7 +96,14 @@ import { fileRequest } from "../playback/file-source.ts";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { createCleanStart } from "../playback/clean-start.ts";
-import { paced } from "../playback/paced.ts";
+import {
+  HlsInputFailure,
+  hlsSubsetFailure,
+  openHlsTsInput,
+  type HlsTsInput,
+  type HlsTsEpoch,
+} from "../playback/hls-ts-input.ts";
+import { paced, pacedEpochs } from "../playback/paced.ts";
 import { ffmpegArguments, planConversion, type Conversion } from "../playback/convert.ts";
 import { createInspector, type Inspection, type StreamLayout } from "../playback/inspect.ts";
 import { CAPTION_PID, createCaptionCopy } from "../playback/caption-stream.ts";
@@ -372,6 +380,8 @@ interface LiveReceiver {
   over: boolean;
   /** Heard when the playlist grew or the stream ended. */
   readonly changed: Set<() => void>;
+  readonly epochs: number[];
+  duration: number;
 }
 
 /** What a receiver plays of a movie or episode. */
@@ -440,6 +450,12 @@ interface LiveSession extends SessionBase {
   /** Which stream plays, and those that failed before it: see `Playback.playing`. */
   delivered: LivePlaying;
   readonly format: StreamFormat;
+  /** Delivery may be TS while the provider source remains HLS. */
+  delivery: StreamFormat;
+  hlsInput: HlsTsInput | null;
+  hlsPicture: { readonly width: number; readonly height: number } | null;
+  readonly hlsChildren: Set<Promise<unknown>>;
+  readonly hlsRequests: Set<Promise<void>>;
   /** HLS: the upstream addresses its playlists named, by the id in their proxy address. */
   readonly hls: ReturnType<typeof hlsAddresses> | null;
   /** HLS: the proxy address that stands for an id, for whoever plays the session. */
@@ -846,6 +862,17 @@ export class Playback extends Context.Service<
   static readonly layer = (deps: PlaybackDeps) => Layer.effect(Playback, make(deps));
 }
 
+/** The requested input PID, else the remembered language, else the channel's first sound. */
+function liveAudio(layout: StreamLayout | null, pid: number | null, language: string | null) {
+  return (
+    layout?.audio.find((track) => track.pid === pid) ??
+    (language
+      ? layout?.audio.find((track) => languageCode(track.language) === language)
+      : undefined) ??
+    layout?.audio[0]
+  );
+}
+
 function make(deps: PlaybackDeps) {
   return Effect.gen(function* () {
     const subscriptions = yield* Subscriptions;
@@ -903,6 +930,8 @@ function make(deps: PlaybackDeps) {
      * the provider put another file there. Oldest first.
      */
     const probes = new Map<string, TitleProbe>();
+    // Last main-observed media rendition for bounded repair of the same provider stream.
+    const hlsSelections = new Map<string, string>();
     const limits: RecoveryLimits = { ...RECOVERY_LIMITS, ...deps.recovery };
 
     /** What a session keeps of a file it has read nothing of yet. */
@@ -956,7 +985,9 @@ function make(deps: PlaybackDeps) {
       }
       if (session.kind === "live") {
         if (route[1] !== "stream") response.writeHead(410).end();
-        else if (session.hls) {
+        else if (session.delivery === "mpegts" && session.hls) {
+          await serveHlsTs(session, response);
+        } else if (session.hls) {
           await serveHls(session, session.hls, route[3] ?? null, url, request, response);
         } else await serveLive(session, response);
         return;
@@ -1038,12 +1069,8 @@ function make(deps: PlaybackDeps) {
           ? cleanStart(read, createCleanStart(video.pid, video.codec))
           : read;
       // The track asked for, else the sound in the viewer's language, else the channel's first.
-      const chosen =
-        layout?.audio.find((track) => track.pid === session.audio) ??
-        (session.audioLanguage
-          ? layout?.audio.find((track) => languageCode(track.language) === session.audioLanguage)
-          : undefined);
-      session.playing = (chosen ?? layout?.audio[0])?.pid ?? null;
+      const chosen = liveAudio(layout, session.audio, session.audioLanguage);
+      session.playing = chosen?.pid ?? null;
       const conversion = layout
         ? planConversion(layout, session.decoders, {
             repair: session.repair,
@@ -1166,6 +1193,403 @@ function make(deps: PlaybackDeps) {
       return { ok: false, failure };
     }
 
+    function hlsFailure(cause: unknown): StreamFailure {
+      return cause instanceof HlsInputFailure
+        ? cause.failure
+        : { kind: "network", detail: String(cause) };
+    }
+
+    /** Prepare only on local observed-decode repair or before receiver load. */
+    async function prepareHls(session: LiveSession, receiver: boolean): Promise<void> {
+      let last: StreamFailure | null = null;
+      for (const variant of session.variants) {
+        try {
+          const input = await openHlsTsInput(
+            variant.url,
+            async (address, signal) => {
+              const answer = await connect(session, address, variant.headers, signal, []);
+              if (!answer.ok) throw new HlsInputFailure(answer.failure);
+              return answer.response;
+            },
+            session.closed.signal,
+            session.archive !== null,
+            hlsSelections.get(variant.url) ?? null,
+          );
+          session.delivered = { ...session.delivered, variantId: variant.id };
+          const layout = input.firstLayout;
+          const chosen = liveAudio(layout, session.audio, session.audioLanguage);
+          const plan = planConversion(
+            layout,
+            receiver ? new Set<Codec>(["h264", "aac"]) : session.decoders,
+            { repair: !receiver, audio: chosen?.pid ?? null },
+          );
+          if (receiver && !plan) {
+            await input.close();
+            return;
+          }
+          if (!deps.ffmpeg) {
+            await input.close();
+            throw new HlsInputFailure({
+              kind: "unsupported",
+              detail: t("This build has no ffmpeg to make a receiver's stream."),
+              diagnostic: {
+                diagnostic_stage: "convert",
+                diagnostic_reason: "tool_missing",
+                diagnostic_container: "hls",
+              },
+            });
+          }
+          if (layout.video) {
+            try {
+              session.hlsPicture = await hlsPicture(input, session.closed.signal);
+            } catch (cause) {
+              await input.close();
+              throw cause;
+            }
+          }
+          session.hlsInput = input;
+          session.delivery = "mpegts";
+          session.closed.signal.addEventListener(
+            "abort",
+            () => {
+              void input.close();
+            },
+            { once: true },
+          );
+          return;
+        } catch (cause) {
+          if (session.closed.signal.aborted) throw cause;
+          const failure = hlsFailure(cause);
+          if (receiver && failure.kind === "unsupported") return;
+          last = failure;
+          if (failure.kind === "refused" || failure.kind === "unsupported") throw cause;
+        }
+      }
+      throw new HlsInputFailure(
+        last ?? { kind: "network", detail: t("The provider sent no stream.") },
+      );
+    }
+
+    /** Probe only the already-inspected TS prefix, without another provider reader. */
+    async function hlsPicture(input: HlsTsInput, signal: AbortSignal) {
+      if (!deps.ffprobe)
+        throw new HlsInputFailure({
+          kind: "unsupported",
+          detail: t("The stream could not be converted."),
+          diagnostic: {
+            diagnostic_stage: "inspect",
+            diagnostic_reason: "tool_missing",
+            diagnostic_container: "hls",
+          },
+        });
+      const child = spawn(
+        deps.ffprobe,
+        [
+          "-v",
+          "error",
+          "-f",
+          "mpegts",
+          "-i",
+          "pipe:0",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=width,height,sample_aspect_ratio",
+          "-of",
+          "json",
+        ],
+        { stdio: ["pipe", "pipe", "ignore"] },
+      );
+      let result = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (result.length < 16 * 1024) result += chunk.toString();
+      });
+      child.stdin.on("error", () => {});
+      const stop = () => {
+        child.kill("SIGKILL");
+      };
+      const timer = setTimeout(stop, INSPECT_LIMIT.ms);
+      signal.addEventListener("abort", stop, { once: true });
+      const code = await new Promise<number | null>((resolve) => {
+        child.once("error", () => resolve(null));
+        child.once("close", resolve);
+        child.stdin.end(Buffer.concat(input.prefix));
+      });
+      clearTimeout(timer);
+      signal.removeEventListener("abort", stop);
+      signal.throwIfAborted();
+      let parsed: unknown;
+      try {
+        parsed = code === 0 ? JSON.parse(result) : null;
+      } catch {
+        parsed = null;
+      }
+      const streams: readonly unknown[] =
+        parsed && typeof parsed === "object" && "streams" in parsed && Array.isArray(parsed.streams)
+          ? parsed.streams
+          : [];
+      const picture: unknown = streams[0];
+      if (
+        !picture ||
+        typeof picture !== "object" ||
+        !("width" in picture) ||
+        !("height" in picture) ||
+        typeof picture.width !== "number" ||
+        typeof picture.height !== "number" ||
+        !Number.isSafeInteger(picture.width) ||
+        !Number.isSafeInteger(picture.height) ||
+        picture.width <= 0 ||
+        picture.height <= 0
+      )
+        throw new HlsInputFailure({
+          kind: "unsupported",
+          detail: t("The stream could not be converted."),
+          diagnostic: {
+            diagnostic_stage: "inspect",
+            diagnostic_reason: "inspection_undetermined",
+            diagnostic_container: "hls",
+          },
+        });
+      const aspect =
+        "sample_aspect_ratio" in picture && typeof picture.sample_aspect_ratio === "string"
+          ? /^(\d+):(\d+)$/.exec(picture.sample_aspect_ratio)
+          : null;
+      const numerator = Number(aspect?.[1]);
+      const denominator = Number(aspect?.[2]);
+      // Missing/unknown SAR is square. Only positive rational probe facts change the canvas.
+      const sar =
+        Number.isSafeInteger(numerator) &&
+        Number.isSafeInteger(denominator) &&
+        numerator > 0 &&
+        denominator > 0
+          ? numerator / denominator
+          : 1;
+      const width = picture.width * sar;
+      const scale = Math.min(1, 1920 / width, 1080 / picture.height);
+      return {
+        width: Math.max(2, Math.floor((width * scale) / 2) * 2),
+        height: Math.max(2, Math.floor((picture.height * scale) / 2) * 2),
+      };
+    }
+
+    function hlsOutputLayout(layout: StreamLayout): StreamLayout {
+      return {
+        ...layout,
+        video: layout.video ? { ...layout.video, codec: "h264" } : null,
+        audio: layout.audio.map((track) => ({ ...track, codec: "aac" })),
+      };
+    }
+
+    /** One converter per inspected epoch, drained before the next child starts. */
+    async function* convertedHls(
+      session: LiveSession,
+      input: HlsTsInput,
+      signal: AbortSignal,
+    ): AsyncGenerator<Uint8Array> {
+      const first = input.firstLayout;
+      const initial = liveAudio(first, session.audio, session.audioLanguage);
+      const position = initial ? first.audio.indexOf(initial) : 0;
+      const language = languageCode(initial?.language);
+      const sameLanguage = first.audio.filter(
+        (track) =>
+          languageCode(track.language) === language && track.description === initial?.description,
+      );
+      const ordinal = initial ? sameLanguage.indexOf(initial) : 0;
+      const epochs = session.archive
+        ? pacedEpochs(
+            input.epochs,
+            ARCHIVE_LEAD_S,
+            signal,
+            (session.archive.end - session.archive.start) / 1000,
+          )
+        : input.epochs;
+      const restarts: number[] = [];
+      try {
+        for await (const epoch of epochs) {
+          signal.throwIfAborted();
+          // The reader sums bounded positive EXTINF values. Use that presentation timeline,
+          // not the burst of wall time spent filling catch-up's PCR-paced read-ahead buffer.
+          while (restarts[0] !== undefined && restarts[0] < epoch.startS - 30) restarts.shift();
+          if (restarts.length >= 16) throw hlsSubsetFailure();
+          restarts.push(epoch.startS);
+          if (session.receiver && epoch.startS > 0) session.receiver.epochs.push(epoch.startS);
+          const layout = epoch.layout;
+          const matching = layout.audio.filter(
+            (track) =>
+              languageCode(track.language) === language &&
+              track.description === initial?.description,
+          );
+          const chosen =
+            matching[ordinal] ?? matching[0] ?? layout.audio[position] ?? layout.audio[0];
+          if (initial && !chosen) throw hlsSubsetFailure();
+          const plan = planConversion(
+            layout,
+            session.receiver ? new Set<Codec>(["h264", "aac"]) : session.decoders,
+            { repair: session.repair, audio: chosen?.pid ?? null },
+          );
+          // Every epoch stays in the converted session even if its codecs become compatible.
+          const conversion: Conversion = plan ?? {
+            video: layout.video ? "copy" : "none",
+            audio: chosen ? "copy" : "none",
+            pids: {
+              video: layout.video?.pid ?? null,
+              audio: chosen?.pid ?? null,
+              subtitles: [...new Set(layout.subtitles.map((track) => track.pid))],
+            },
+          };
+          const assignedSubtitles = new Set<number>();
+          const subtitles = conversion.pids.subtitles.flatMap((pid) => {
+            const track = layout.subtitles.find((track) => track.pid === pid)!;
+            const matches = (candidate: StreamLayout["subtitles"][number]) =>
+              candidate.format === track.format &&
+              languageCode(candidate.language) === languageCode(track.language) &&
+              candidate.page === track.page &&
+              candidate.hearingImpaired === track.hearingImpaired;
+            const ordinal = layout.subtitles
+              .filter(matches)
+              .findIndex((track) => track.pid === pid);
+            const stable = first.subtitles.filter(matches)[ordinal];
+            // Extra or multi-page source tracks must never collide on an output PID.
+            if (!stable || assignedSubtitles.has(stable.pid)) return [];
+            assignedSubtitles.add(stable.pid);
+            return [{ source: pid, output: stable.pid }];
+          });
+          const selected: Conversion = {
+            ...conversion,
+            // A converted HLS session keeps one AAC configuration across input codec/rate changes.
+            audio: chosen ? "aac" : "none",
+            pids: { ...conversion.pids, subtitles: subtitles.map((track) => track.source) },
+          };
+          const output = {
+            video: first.video?.pid ?? null,
+            audio: initial?.pid ?? null,
+            subtitles: subtitles.map((track) => track.output),
+          };
+          session.layout = hlsOutputLayout(first);
+          session.playing = initial?.pid ?? null;
+          session.diagnostic = {
+            ...liveDiagnostic(layout, selected, session.repair, chosen?.pid ?? null),
+            diagnostic_container: "hls",
+          };
+          PubSub.publishUnsafe(tracksChanged, session.id);
+          yield* convertHlsEpoch(session, epoch, selected, output, signal);
+        }
+      } catch (cause) {
+        if (
+          cause instanceof HlsInputFailure &&
+          cause.failure.kind === "unsupported" &&
+          cause.failure.diagnostic?.diagnostic_reason === "hls_subset_unsupported"
+        ) {
+          // Both local and receiver consumers need the running conversion's known facts.
+          throw new HlsInputFailure({
+            ...cause.failure,
+            diagnostic: {
+              ...cause.failure.diagnostic,
+              ...session.diagnostic,
+              diagnostic_stage: "inspect",
+              diagnostic_reason: "hls_subset_unsupported",
+            },
+          });
+        }
+        throw cause;
+      } finally {
+        await input.close();
+      }
+    }
+
+    async function* convertHlsEpoch(
+      session: LiveSession,
+      epoch: HlsTsEpoch,
+      conversion: Conversion,
+      pids: Conversion["pids"],
+      signal: AbortSignal,
+    ): AsyncGenerator<Uint8Array> {
+      const child = spawn(
+        deps.ffmpeg!,
+        ffmpegArguments(conversion, { pids, startS: epoch.startS, picture: session.hlsPicture }),
+        { stdio: ["pipe", "pipe", "pipe"] },
+      );
+      let errors = "";
+      let inputFailure: unknown;
+      let spawnFailure: unknown;
+      const done = new Promise<number | null>((resolve) => {
+        child.once("error", (cause) => {
+          spawnFailure = cause;
+        });
+        child.once("close", resolve);
+      });
+      session.hlsChildren.add(done);
+      void done.finally(() => session.hlsChildren.delete(done));
+      child.stderr.on("data", (chunk: Buffer) => {
+        errors = (errors + chunk.toString()).slice(-2000);
+      });
+      child.stdin.on("error", () => {});
+      const body = Readable.from(epoch.chunks, { highWaterMark: 1 });
+      body.on("error", (cause) => {
+        inputFailure = cause;
+        child.kill("SIGKILL");
+      });
+      const stop = () => {
+        body.destroy();
+        child.kill("SIGKILL");
+      };
+      signal.addEventListener("abort", stop, { once: true });
+      const captions = createCaptionCopy((channels) => {
+        if (signal.aborted) return;
+        session.captions = channels;
+        PubSub.publishUnsafe(tracksChanged, session.id);
+      });
+      body.pipe(child.stdin);
+      try {
+        for await (const chunk of child.stdout) {
+          signal.throwIfAborted();
+          const output = captions.push(chunk);
+          if (output.length) yield output;
+        }
+        const code = await done;
+        if (signal.aborted) return;
+        if (inputFailure) throw inputFailure;
+        if (code !== 0 || spawnFailure)
+          throw new HlsInputFailure({
+            kind: "unsupported",
+            detail:
+              t("The stream could not be converted.") +
+              " " +
+              lastLine(errors, code, child.signalCode),
+            diagnostic: {
+              ...session.diagnostic,
+              diagnostic_stage: "convert",
+              diagnostic_reason: "conversion_failed",
+            },
+          });
+      } finally {
+        stop();
+        await done;
+        await epoch.chunks.return(undefined);
+        signal.removeEventListener("abort", stop);
+      }
+    }
+
+    async function serveHlsTs(session: LiveSession, response: ServerResponse): Promise<void> {
+      session.active?.abort();
+      const active = new AbortController();
+      session.active = active;
+      response.on("close", () => active.abort());
+      const signal = AbortSignal.any([active.signal, session.closed.signal]);
+      try {
+        const input = session.hlsInput;
+        if (!input) throw hlsSubsetFailure();
+        response.writeHead(200, { "Content-Type": "video/mp2t" });
+        for await (const chunk of convertedHls(session, input, signal)) {
+          if (!response.write(chunk)) await drained(response);
+        }
+        response.end();
+      } catch (cause) {
+        if (!signal.aborted) session.failure = hlsFailure(cause);
+        response.destroy();
+      }
+    }
+
     /**
      * An HLS stream: the playlist the channel names (`id` null), or an address one of its
      * playlists named. Playlists go to the player with their addresses pointed here; the rest
@@ -1183,6 +1607,8 @@ function make(deps: PlaybackDeps) {
     ): Promise<void> {
       // Subtitle playlists and their children share the bounded address registry, but carry a
       // separate proxy route marker. Their HTTP status must never become the video's failure.
+      const completeRequest = Promise.withResolvers<void>();
+      session.hlsRequests.add(completeRequest.promise);
       const subtitle = id?.startsWith("subs-") ?? false;
       const started = performance.now();
       const report = (outcome: "ok" | StreamFailure["kind"]) =>
@@ -1304,6 +1730,9 @@ function make(deps: PlaybackDeps) {
           });
         }
         response.destroy();
+      } finally {
+        completeRequest.resolve();
+        session.hlsRequests.delete(completeRequest.promise);
       }
     }
 
@@ -1325,6 +1754,14 @@ function make(deps: PlaybackDeps) {
       const text = Buffer.concat(parts).toString("utf8");
       // A multivariant playlist's variants and renditions stay for the session.
       const pin = isMultivariant(text);
+      if (!pin && !subtitle) {
+        const variant = session.variants.find((each) => each.id === session.delivered.variantId);
+        if (variant) {
+          hlsSelections.delete(variant.url);
+          hlsSelections.set(variant.url, opened.url);
+          if (hlsSelections.size > 32) hlsSelections.delete(hlsSelections.keys().next().value!);
+        }
+      }
       const subtitleUrls = new Set(
         text.split(/\r?\n/).flatMap((line) => {
           if (!line.startsWith("#EXT-X-MEDIA:") || !/[,:]TYPE=SUBTITLES(?:,|$)/.test(line))
@@ -2654,9 +3091,14 @@ function make(deps: PlaybackDeps) {
         return;
       }
       const receiver = session.receiver;
-      if (receiver && session.hls && (playlist === "live" || address !== undefined)) {
+      if (
+        receiver &&
+        session.hls &&
+        session.delivery === "hls" &&
+        (playlist === "live" || address !== undefined)
+      ) {
         await serveHls(session, session.hls, address ?? null, url, request, response);
-      } else if (receiver && !session.hls && playlist === "live") {
+      } else if (receiver && session.delivery === "mpegts" && playlist === "live") {
         await sendLivePlaylist(session, receiver, response);
       } else {
         const segment = made === undefined ? undefined : receiver?.made.get(Number(made));
@@ -2726,9 +3168,21 @@ function make(deps: PlaybackDeps) {
         tell(receiver.changed);
       };
 
-      const opened = await openVariant(session, signal, (failure) => report("none", failure.kind));
+      const hls = session.hlsInput;
+      const opened = hls
+        ? {
+            ok: true as const,
+            reader: null,
+            start: {
+              layout: hlsOutputLayout(hls.firstLayout),
+              diagnostic: {},
+              head: [],
+              pending: null,
+            },
+          }
+        : await openVariant(session, signal, (failure) => report("none", failure.kind));
       if (signal.aborted) {
-        if (opened.ok) void opened.reader.cancel().catch(() => {});
+        if (opened.ok) void opened.reader?.cancel().catch(() => {});
         return;
       }
       if (!opened.ok) return over(opened.failure);
@@ -2736,7 +3190,7 @@ function make(deps: PlaybackDeps) {
       const { layout } = start;
       const ffmpeg = deps.ffmpeg;
       if (!layout || !ffmpeg) {
-        void reader.cancel().catch(() => {});
+        void reader?.cancel().catch(() => {});
         report("none", "unsupported");
         return over({
           kind: "unsupported",
@@ -2751,23 +3205,20 @@ function make(deps: PlaybackDeps) {
             : t("This build has no ffmpeg to make a receiver's stream."),
         });
       }
-      session.layout = layout;
+      if (!hls) session.layout = layout;
       const video = layout.video;
+      const input = hls ? convertedHls(session, hls, signal) : replay(start, reader!);
       const cleaned =
         video && video.codec !== "unknown" && CLEAN_START_CODECS.has(video.codec)
-          ? cleanStart(replay(start, reader), createCleanStart(video.pid, video.codec))
-          : replay(start, reader);
+          ? cleanStart(input, createCleanStart(video.pid, video.codec))
+          : input;
       // The track asked for, else the sound in the viewer's language, else the channel's first.
-      const chosen =
-        layout.audio.find((track) => track.pid === session.audio) ??
-        (session.audioLanguage
-          ? layout.audio.find((track) => languageCode(track.language) === session.audioLanguage)
-          : undefined) ??
-        layout.audio[0];
-      session.playing = chosen?.pid ?? null;
+      const chosen = liveAudio(layout, session.audio, session.audioLanguage);
+      if (!hls) session.playing = chosen?.pid ?? null;
       const decodes = (codec: Codec | "unknown") =>
         codec !== "unknown" && session.decoders.has(codec);
       const segments: LiveSegments = {
+        ...(hls ? { subtitles: [...new Set(layout.subtitles.map((track) => track.pid))] } : {}),
         video: !video ? "none" : decodes(video.codec) ? "copy" : "h264",
         audio: !chosen ? "none" : decodes(chosen.codec) ? "copy" : "aac",
         pids: { video: video?.pid ?? null, audio: chosen?.pid ?? null },
@@ -2789,6 +3240,11 @@ function make(deps: PlaybackDeps) {
         liveSegmentArguments(segments, receiver.first, `${made}/%d.ts`, `${made}/list`),
         { stdio: ["pipe", "ignore", "pipe"] },
       );
+      if (hls) {
+        const ended = new Promise<void>((resolve) => child.once("close", () => resolve()));
+        session.hlsChildren.add(ended);
+        void ended.finally(() => session.hlsChildren.delete(ended));
+      }
       let errors = "";
       child.stderr.on("data", (chunk: Buffer) => {
         errors = (errors + chunk.toString()).slice(-2000);
@@ -2797,7 +3253,8 @@ function make(deps: PlaybackDeps) {
       signal.addEventListener("abort", stop, { once: true });
       const body = Readable.from(cleaned);
       body.on("error", (cause) => {
-        if (!signal.aborted) session.failure ??= { kind: "network", detail: String(cause) };
+        if (!signal.aborted)
+          session.failure ??= hls ? hlsFailure(cause) : { kind: "network", detail: String(cause) };
         child.stdin.end();
       });
       // ffmpeg stops reading when it fails or is killed; that write error is not the stream's.
@@ -2884,7 +3341,15 @@ function make(deps: PlaybackDeps) {
           if (listed.index <= newest || !receiver.made.has(listed.index)) continue;
           // The first of an ffmpeg that isn't the session's first: the provider's stream started
           // again, and its clock did too.
-          const fresh = receiver.list.length > 0 && listed.index === receiver.first;
+          let fresh = receiver.list.length > 0 && listed.index === receiver.first;
+          while (
+            receiver.epochs[0] !== undefined &&
+            receiver.epochs[0] <= receiver.duration + 0.25
+          ) {
+            receiver.epochs.shift();
+            fresh = true;
+          }
+          receiver.duration += listed.length;
           receiver.list = [...receiver.list, { ...listed, fresh }].slice(-LIVE_LIST.kept);
           // One behind the playlist stays, for a receiver that asks for it a moment late.
           const oldest = receiver.list[0]!.index - 1;
@@ -3655,8 +4120,13 @@ function make(deps: PlaybackDeps) {
         const forked = yield* Scope.fork(scope);
         yield* Scope.addFinalizer(
           forked,
-          Effect.sync(() => {
+          Effect.promise(async () => {
+            const session = sessions.get(id);
             closed.abort();
+            if (session?.kind === "live") {
+              await session.hlsInput?.close();
+              await Promise.allSettled([...session.hlsChildren, ...session.hlsRequests]);
+            }
             sessions.delete(id);
             coordination.closed(id);
             receiver?.closed?.();
@@ -3749,6 +4219,8 @@ function make(deps: PlaybackDeps) {
               first: 0,
               over: false,
               changed: new Set(),
+              epochs: [],
+              duration: 0,
             }
           : null;
         const session: LiveSession = {
@@ -3761,6 +4233,11 @@ function make(deps: PlaybackDeps) {
           delivered: { variantId: null, failed: [] },
           request: source.provider.request,
           format,
+          delivery: format,
+          hlsInput: null,
+          hlsPicture: null,
+          hlsChildren: new Set(),
+          hlsRequests: new Set(),
           hls: format === "hls" ? hlsAddresses() : null,
           proxied:
             lan && live
@@ -3782,6 +4259,18 @@ function make(deps: PlaybackDeps) {
           diagnostic: null,
         };
         register(session);
+        if (format === "hls" && (receiver || options.repair)) {
+          const prepared = prepareHls(session, receiver !== null);
+          session.hlsRequests.add(prepared);
+          void prepared.finally(() => session.hlsRequests.delete(prepared)).catch(() => {});
+          yield* Effect.tryPromise({
+            try: () => prepared,
+            catch: (cause) => new Failed({ error: { kind: "stream", failure: hlsFailure(cause) } }),
+          }).pipe(Effect.tapError(() => Scope.close(session.scope, Exit.void)));
+          yield* coordination
+            .whileAsked(options.turn)
+            .pipe(Effect.tapError(() => Scope.close(session.scope, Exit.void)));
+        }
         return session;
       });
 
@@ -4077,12 +4566,12 @@ function make(deps: PlaybackDeps) {
             }
             yield* coordination.reclaim(channel.subscriptionId);
             const session = yield* liveSession(channel, decoders, options, null);
-            const extension = session.format === "mpegts" ? "ts" : "m3u8";
+            const extension = session.delivery === "mpegts" ? "ts" : "m3u8";
             return {
               sessionId: session.id,
               channel,
               url: `${base}/stream/${session.token}.${extension}`,
-              format: session.format,
+              format: session.delivery,
               ...(session.archive ? { archive: session.archive } : {}),
             };
           }),
@@ -4132,7 +4621,8 @@ function make(deps: PlaybackDeps) {
             yield* coordination.reclaim(channel.subscriptionId);
             const session = yield* liveSession(channel, receiver.decoders, options, receiver);
             // The provider's stream starts now, so the receiver finds segments when it asks.
-            if (session.receiver && !session.hls) void runLive(session, session.receiver);
+            if (session.receiver && (!session.hls || session.delivery === "mpegts"))
+              void runLive(session, session.receiver);
             return {
               sessionId: session.id,
               channel,
@@ -4280,8 +4770,9 @@ function make(deps: PlaybackDeps) {
         Effect.sync(() => {
           const session = sessions.get(sessionId);
           if (!session || session.closed.signal.aborted) return null;
-          if (session.kind !== "live" || !session.hls) return selector ? null : session.failure;
-          // HLS never borrows a session-wide cause. Only a path issued by this session can select
+          if (session.kind !== "live" || session.delivery === "mpegts" || !session.hls)
+            return selector ? null : session.failure;
+          // Direct HLS never borrows a session-wide cause. Only a path issued by this session can select
           // a retained request; parser, native and watchdog errors select no request.
           if (session.receiver) return selector ? null : session.failure;
           const path = selector?.requestId;

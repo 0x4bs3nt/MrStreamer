@@ -3,7 +3,7 @@
 // picture byte for byte and gets its sound re-encoded as AAC.
 import type { Codec } from "@mrstreamer/contracts/playback";
 import type { StreamLayout } from "./inspect.ts";
-import { AAC_STEREO_ARGUMENTS, H264_IMAGE_ARGUMENTS } from "./conversion-settings.ts";
+import { AAC_STEREO_ARGUMENTS, h264ImageArguments } from "./conversion-settings.ts";
 
 export interface Conversion {
   readonly video: "copy" | "h264" | "none";
@@ -48,7 +48,14 @@ export function planConversion(
 }
 
 /** ffmpeg arguments that read MPEG-TS on stdin and write the converted MPEG-TS to stdout. */
-export function ffmpegArguments(conversion: Conversion): string[] {
+export function ffmpegArguments(
+  conversion: Conversion,
+  output: {
+    readonly pids: Conversion["pids"];
+    readonly startS: number;
+    readonly picture: { readonly width: number; readonly height: number } | null;
+  } | null = null,
+): string[] {
   const args = [
     ...["-hide_banner", "-loglevel", "error", "-nostdin"],
     // ffmpeg reads 5 s of a stream before its first output by default; 1.5 s is enough to learn
@@ -65,9 +72,16 @@ export function ffmpegArguments(conversion: Conversion): string[] {
     // Teletext and DVB subtitles pass as they are.
     ...pids.subtitles.map((pid) => ({ map: "", pid })),
   ];
+  const outputPids = output
+    ? [
+        ...(conversion.video !== "none" ? [output.pids.video] : []),
+        ...(conversion.audio !== "none" ? [output.pids.audio] : []),
+        ...output.pids.subtitles,
+      ]
+    : null;
   kept.forEach(({ map, pid }, index) => {
     args.push("-map", pid === null ? map : `0:i:${pid}${map ? "" : "?"}`);
-    if (pid !== null) args.push("-streamid", `${index}:${pid}`);
+    if (pid !== null) args.push("-streamid", `${index}:${outputPids?.[index] ?? pid}`);
   });
   if (pids.subtitles.length > 0) args.push("-c:s", "copy");
   if (conversion.video === "copy") args.push("-c:v", "copy");
@@ -83,11 +97,20 @@ export function ffmpegArguments(conversion: Conversion): string[] {
       "21",
       "-g",
       "50",
-      ...H264_IMAGE_ARGUMENTS,
+      ...h264ImageArguments(output?.picture ?? null),
     );
   }
   if (conversion.audio === "copy") args.push("-c:a", "copy");
   if (conversion.audio === "aac") args.push(...AAC_STEREO_ARGUMENTS);
+  // HLS epochs may change their input sample rate. Keep one MSE audio configuration.
+  if (output && conversion.audio === "aac") args.push("-ar", "48000");
+  if (output)
+    args.push(
+      "-output_ts_offset",
+      String(output.startS),
+      "-mpegts_flags",
+      "+initial_discontinuity",
+    );
   args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
   return args;
 }

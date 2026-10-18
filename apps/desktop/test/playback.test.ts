@@ -27,6 +27,7 @@ const MAC: readonly Codec[] = ["h264", "hevc", "hevc-10bit", "aac", "mp3", "opus
 
 // CI points this at the bundled build; locally the ffmpeg on PATH will do.
 const FFMPEG = process.env["MR_STREAMER_FFMPEG"] ?? "ffmpeg";
+const FFPROBE = FFMPEG === "ffmpeg" ? "ffprobe" : FFMPEG.replace(/ffmpeg(\.exe)?$/, "ffprobe$1");
 const hasFfmpeg = spawnSync(FFMPEG, ["-version"]).status === 0;
 
 /**
@@ -111,7 +112,7 @@ async function playerReceives(
 /** The streams ffprobe finds, in program table order, with their PIDs and languages. */
 function streamIds(body: Buffer): { type: string; id: number; language?: string }[] {
   const probe = spawnSync(
-    "ffprobe",
+    FFPROBE,
     [
       "-v",
       "error",
@@ -137,7 +138,7 @@ function streamIds(body: Buffer): { type: string; id: number; language?: string 
 
 function playerReceivesBytes(body: Buffer): { video: string | null; audio: string | null } {
   const probe = spawnSync(
-    "ffprobe",
+    FFPROBE,
     ["-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "json", "-i", "pipe:0"],
     { input: body, encoding: "utf8" },
   );
@@ -450,10 +451,25 @@ describe("playback", () => {
     it("re-encodes a damaged picture when asked to repair a stream", async () => {
       const { provider, playback } = await connectedPlayback({ ffmpeg: true });
       const decodeErrors = (stream: Buffer) =>
-        spawnSync("ffmpeg", ["-v", "error", "-i", "pipe:0", "-map", "0:v", "-f", "null", "-"], {
-          input: stream,
-          encoding: "utf8",
-        }).stderr.trim();
+        spawnSync(
+          FFPROBE,
+          [
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "json",
+            "pipe:0",
+          ],
+          {
+            input: stream,
+            encoding: "utf8",
+          },
+        ).stderr.trim();
       const channel = channelNamed(provider, "TEST | H.264 damaged");
 
       const direct = await playback.open(channel, LINUX);
@@ -475,7 +491,7 @@ describe("playback", () => {
       );
       const received = Buffer.from(await (await fetch(session.url)).arrayBuffer());
       const probe = spawnSync(
-        "ffprobe",
+        FFPROBE,
         [
           "-select_streams",
           "v",

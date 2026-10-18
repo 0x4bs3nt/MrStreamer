@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { startFakeHls } from "../../../../apps/desktop/test/fake-hls.ts";
+import { hlsCompatibilityScenario, hlsCompatibilityCatchupScenario } from "./hls-compatibility.ts";
 import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
 import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-labels.ts";
@@ -48,6 +50,9 @@ const scenarios = [
   "guide-labels",
   "catch-up",
   "catch-up-hls",
+  "hls-compatibility",
+  "hls-compatibility-baseline",
+  "hls-compatibility-catchup",
   "live-categories",
   "guide-grid",
   "guide-grid-scroll",
@@ -127,7 +132,10 @@ async function run(scenario: Scenario) {
   const observed: Record<string, unknown> = {};
   let profile: string | undefined;
   let provider: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
-  let playlist: Awaited<ReturnType<typeof startFakePlaylist>> | undefined;
+  let playlist:
+    | Awaited<ReturnType<typeof startFakePlaylist>>
+    | Awaited<ReturnType<typeof startFakeHls>>
+    | undefined;
   let other: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
   let guideHosts: { north: GuideHost; south: GuideHost } | undefined;
   let movedHost: GuideHost | undefined;
@@ -206,6 +214,7 @@ async function run(scenario: Scenario) {
           category.id === "1" ? { ...category, name: LONG_CATEGORY } : category,
         ),
       );
+    if (scenario.startsWith("hls-compatibility")) playlist = await startFakeHls({ realtime: true });
     if (scenario === "home-stage-live-only") playlist = await startFakePlaylist();
     if (scenario === "catch-up-hls") {
       playlist = await startFakePlaylist({ catchup: true });
@@ -274,6 +283,11 @@ async function run(scenario: Scenario) {
       for (const stream of [started.stdout, started.stderr])
         stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
       page = await connect(port);
+      if (scenario.startsWith("hls-compatibility")) {
+        page.on("Runtime.consoleAPICalled", (entry) => log.push(JSON.stringify(entry) + "\n"));
+        page.on("Runtime.exceptionThrown", (entry) => log.push(JSON.stringify(entry) + "\n"));
+        await page.send("Runtime.enable");
+      }
       if (spawnError) throw spawnError;
       // The CDP target can answer before the renderer's initial navigation finishes.
       await until(
@@ -449,7 +463,39 @@ async function run(scenario: Scenario) {
     );
     await capture("connected");
     injectedFailure(scenario);
-    if (stage) {
+    if (scenario.startsWith("hls-compatibility")) {
+      if (scenario === "hls-compatibility-catchup")
+        await hlsCompatibilityCatchupScenario({
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        });
+      else
+        await hlsCompatibilityScenario(
+          {
+            observed,
+            evaluate: livePage.evaluate,
+            send,
+            wait,
+            exists,
+            click,
+            key,
+            capture,
+          },
+          scenario.endsWith("baseline"),
+        );
+      observed["hlsRequests"] = playlist!.requests();
+      if (playlist && "stats" in playlist) observed["hlsResources"] = playlist.stats();
+    } else if (stage) {
       await homeStageScenario(
         {
           profile,

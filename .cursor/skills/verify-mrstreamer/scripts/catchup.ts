@@ -56,7 +56,7 @@ const expect = (ok: boolean, message: string) => {
  * Opens Live TV's `category` and the rest of the day of the channel whose name has `channel` in
  * it, and gives the first programme that aired, with the steps that play and watch it.
  */
-async function airedProgramme(d: Driver, category: string, channel: string) {
+export async function airedProgramme(d: Driver, category: string, channel: string) {
   const row = `[...document.querySelectorAll('[data-index]')].find(r => r.querySelector('[title]')?.firstElementChild?.textContent.includes(${JSON.stringify(channel)}))`;
   const lines = `[...(${row})?.querySelectorAll('.rounded-b-xl > button') ?? []]`;
   const playback = () =>

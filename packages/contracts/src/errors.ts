@@ -41,7 +41,7 @@ export type AppError =
   | { readonly kind: "catch-up"; readonly reason: "outside"; readonly days: number }
   /** A movie, series or episode the provider no longer lists. */
   | { readonly kind: "title-not-found"; readonly titleId: string }
-  /** A movie or episode couldn't be opened: the provider refused its file, or it can't play. */
+  /** A stream couldn't be opened: the provider refused it, or it can't play. */
   | { readonly kind: "stream"; readonly failure: StreamFailure }
   /**
    * The provider sent no channels, or far fewer than before; or no movies or no series, where it

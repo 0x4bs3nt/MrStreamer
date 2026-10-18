@@ -15,7 +15,7 @@
 # MPEG-PS files read over loopback HTTP and written as fragmented MP4, WebVTT cues, subtitle
 # packets beside them and a framecrc report of the first video packet; the decoders for the
 # codecs these carry; the AAC, x264, WebVTT and DVB subtitle encoders; and the deinterlace and
-# scale filters. For receivers on the network it also cuts MPEG-TS into the segments of an HLS
+# scale, padding and pixel-aspect filters. For receivers on the network it also cuts MPEG-TS into the segments of an HLS
 # stream, sent to the app over loopback HTTP like the reports.
 set -euo pipefail
 
@@ -149,7 +149,7 @@ features=(
   # metadata filters bring the H.264 and HEVC readers it needs.
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc,extract_extradata,filter_units
   --enable-bsf=h264_metadata,hevc_metadata,vp9_superframe_split
-  --enable-filter=yadif,scale,format,aresample,aformat,anull,null
+  --enable-filter=yadif,scale,pad,setsar,format,aresample,aformat,anull,null
 )
 configure=(
   --prefix="$prefix"
