@@ -1,7 +1,7 @@
-import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { CollectionId, CollectionRow, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { ownedId } from "@mrstreamer/contracts/subscription";
 import { seriesOf } from "@mrstreamer/contracts/ondemand";
-import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
+import { collectionRows, rowIds, type Collections } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -10,7 +10,7 @@ import { describeError } from "./errors.ts";
 import { detailsHref, openDetails, resume, useContinueWatching } from "./resume.ts";
 import { store, useStore } from "./store.ts";
 import { useFixedTabBar } from "./tab-bar.ts";
-import { collectionOf, rowsOf, tilesOf, useMetadataVersion, useTitleLists } from "./titles.ts";
+import { tilesOf, useCollections, useHolding, useTitleLists } from "./titles.ts";
 import { Artwork, CollectionTileView, PosterGrid, Shelf, TextTabs } from "./titles-ui.tsx";
 import { colors, Message } from "./ui.tsx";
 import { useViewing } from "./viewing.ts";
@@ -33,9 +33,7 @@ export const collectionHref = (kind: TitleKind, id: CollectionId) =>
 /** The Movies or Series tab. */
 export function TitlesHome({ kind }: { kind: TitleKind }) {
   const lists = useTitleLists();
-  if (lists.kind === "idle" || lists.kind === "loading") {
-    return <Message text={kind === "movie" ? "Loading movies" : "Loading series"} />;
-  }
+  const made = useCollections(kind);
   if (lists.kind === "failed") {
     return (
       <View style={styles.screen}>
@@ -46,11 +44,12 @@ export function TitlesHome({ kind }: { kind: TitleKind }) {
       </View>
     );
   }
-  return <Browse index={lists.index} kind={kind} />;
+  // Loading too while the lists' collections are first made.
+  if (!made) return <Message text={kind === "movie" ? "Loading movies" : "Loading series"} />;
+  return <Browse made={made} kind={kind} />;
 }
 
-function Browse({ index, kind }: { index: IndexedCatalogue; kind: TitleKind }) {
-  const metadata = useMetadataVersion();
+function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
   const viewing = useViewing();
   const chosen = useStore(places)[kind];
   const open = useCallback((title: Title) => openDetails(title), []);
@@ -64,30 +63,40 @@ function Browse({ index, kind }: { index: IndexedCatalogue; kind: TitleKind }) {
     return last.title.kind === "movie" ? ownedId(last.title) : seriesOf(last.title);
   }, [viewing, kind]);
 
-  const built = useMemo(
+  // Which tabs have anything, counted without sorting; only the open tab's lists are read.
+  const has = useMemo(
     () => ({
-      forYou: rowsOf(index, kind, "for-you", like),
-      fresh: rowsOf(index, kind, "new", null),
-      genres: tilesOf(index, kind, "genres"),
-      services: tilesOf(index, kind, "services"),
-      fourK: collectionOf(index, kind, "4k").titles,
-      all: collectionOf(index, kind, "all").titles,
+      new: rowIds(made, "new", null).some((id) => made.size(id) > 0),
+      genres: made.genres().length > 0,
+      services: made.services().length > 0,
+      fourK: made.size("4k") > 0,
     }),
-    // A new metadata version changes what collections hold.
-    [index, kind, like, metadata],
+    [made],
   );
-
   const tabs = [
     { value: "for-you" as const, label: "For you" },
-    ...(built.fresh.length > 0 ? [{ value: "new" as const, label: "New" }] : []),
-    ...(built.genres.length > 0 ? [{ value: "genres" as const, label: "Genres" }] : []),
-    ...(built.services.length > 0 ? [{ value: "services" as const, label: "Services" }] : []),
-    ...(built.fourK.length > 0 ? [{ value: "4k" as const, label: "4K" }] : []),
+    ...(has.new ? [{ value: "new" as const, label: "New" }] : []),
+    ...(has.genres ? [{ value: "genres" as const, label: "Genres" }] : []),
+    ...(has.services ? [{ value: "services" as const, label: "Services" }] : []),
+    ...(has.fourK ? [{ value: "4k" as const, label: "4K" }] : []),
     { value: "all" as const, label: "All" },
   ];
   // A tab that emptied, as before TMDB's metadata arrived, gives way to For you.
   const tab = tabs.some((each) => each.value === chosen) ? chosen : "for-you";
   const grid = tab === "4k" || tab === "all";
+  const rows = useMemo(
+    () =>
+      tab === "for-you" || tab === "new"
+        ? collectionRows(made, tab, tab === "for-you" ? like : null)
+        : [],
+    [made, tab, like],
+  );
+  const tiles = useMemo(
+    () => (tab === "genres" || tab === "services" ? tilesOf(made, tab) : []),
+    [made, tab],
+  );
+  // TitlesHome asks as Movies opens and as collections are made; the tab and lead are Browse's.
+  useHolding(kind, [tab, like]);
   useFixedTabBar(grid);
   const choose = (next: Tab) => places.set((current) => ({ ...current, [kind]: next }));
   const header = <TextTabs tabs={tabs} value={tab} onChange={choose} />;
@@ -96,7 +105,7 @@ function Browse({ index, kind }: { index: IndexedCatalogue; kind: TitleKind }) {
     return (
       <PosterGrid
         key={tab}
-        titles={tab === "4k" ? built.fourK : built.all}
+        titles={made.list(tab === "4k" ? "4k" : "all")}
         onPress={open}
         header={<View style={styles.gridHead}>{header}</View>}
         empty={<Message text={kind === "movie" ? "No movies." : "No series."} />}
@@ -113,9 +122,9 @@ function Browse({ index, kind }: { index: IndexedCatalogue; kind: TitleKind }) {
     >
       {header}
       {tab === "for-you" ? (
-        <ForYou kind={kind} rows={built.forYou} open={open} />
+        <ForYou kind={kind} rows={rows} open={open} />
       ) : tab === "new" ? (
-        built.fresh.map((row) => (
+        rows.map((row) => (
           <Shelf
             key={row.id}
             name={row.name}
@@ -127,7 +136,7 @@ function Browse({ index, kind }: { index: IndexedCatalogue; kind: TitleKind }) {
         ))
       ) : (
         <View style={styles.tiles}>
-          {(tab === "genres" ? built.genres : built.services).map((tile) => (
+          {tiles.map((tile) => (
             <CollectionTileView
               key={tile.id}
               name={tile.name}
@@ -148,7 +157,7 @@ function ForYou({
   open,
 }: {
   kind: TitleKind;
-  rows: ReturnType<typeof rowsOf>;
+  rows: readonly CollectionRow[];
   open: (title: Title) => void;
 }) {
   const continuing = useContinueWatching(kind);
@@ -218,12 +227,11 @@ function Featured({ title }: { title: Title }) {
 
 /** A collection pushed over its tab: a row's All, a genre or a service. */
 export function CollectionScreen({ kind, id }: { kind: TitleKind; id: CollectionId }) {
-  const lists = useTitleLists();
-  const metadata = useMetadataVersion();
+  const made = useCollections(kind, [id]);
   useFixedTabBar(true);
   const found = useMemo(
-    () => (lists.kind === "ready" ? collectionOf(lists.index, kind, id) : null),
-    [lists, kind, id, metadata],
+    () => (made ? { name: made.name(id) ?? "", titles: made.list(id) } : null),
+    [made, id],
   );
   const open = useCallback((title: Title) => openDetails(title), []);
   if (!found) return <Message text="Loading" />;

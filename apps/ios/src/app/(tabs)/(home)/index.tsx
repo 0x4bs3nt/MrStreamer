@@ -1,3 +1,4 @@
+import { collectionRows } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
 import { VideoView } from "expo-video";
 import { useCallback, useMemo } from "react";
@@ -17,7 +18,7 @@ import {
 } from "../../../playback.ts";
 import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
 import { useSavedState } from "../../../storage.ts";
-import { collectionOf, named, rowsOf, useMetadataVersion, useTitleLists } from "../../../titles.ts";
+import { named, useCollections, useMetadataVersion, useTitleLists } from "../../../titles.ts";
 import { Shelf } from "../../../titles-ui.tsx";
 import { ChannelLogo, colors, Message, Notice } from "../../../ui.tsx";
 import { removeFromContinue } from "../../../viewing.ts";
@@ -173,16 +174,14 @@ const shelfOf = (place: string) => place.split(" · ").at(-1) ?? place;
  * provider added lately, and failing that the provider's own list.
  */
 function MoviesForYou() {
-  const lists = useTitleLists();
-  const metadata = useMetadataVersion();
+  const made = useCollections("movie");
   const shelf = useMemo(() => {
-    if (lists.kind !== "ready") return null;
-    const [row] = rowsOf(lists.index, "movie", "for-you", null);
+    if (!made) return null;
+    const [row] = collectionRows(made, "for-you", null);
     if (row) return { name: "Movies for you", titles: row.titles };
-    const all = collectionOf(lists.index, "movie", "all").titles.slice(0, MOVIES);
+    const all = made.list("all").slice(0, MOVIES);
     return all.length > 0 ? { name: "Movies", titles: all } : null;
-    // A new metadata version changes what For you holds.
-  }, [lists, metadata]);
+  }, [made]);
   if (!shelf) return null;
   return <Shelf name={shelf.name} titles={shelf.titles} onPress={(title) => openDetails(title)} />;
 }

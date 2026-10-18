@@ -45,10 +45,10 @@ import { useRead } from "./read.ts";
 import { members, useRoster } from "./account.ts";
 import { openDetails, versionOf } from "./resume.ts";
 import {
-  collectionOf,
   detailsOf,
   episodesOf,
   titleOf,
+  useCollections,
   useMetadataVersion,
   useTitleLists,
 } from "./titles.ts";
@@ -558,14 +558,10 @@ function EpisodeRow({
 
 /** More like this: titles sharing the most genres, from TMDB's metadata. */
 function Related({ title }: { title: Title }) {
-  const lists = useTitleLists();
-  const metadata = useMetadataVersion();
+  const made = useCollections(title.kind, [ownedKey(title)]);
   const like = useMemo(
-    () =>
-      lists.kind === "ready"
-        ? collectionOf(lists.index, title.kind, `like:${ownedKey(title)}`).titles.slice(0, 24)
-        : [],
-    [lists, title, metadata],
+    () => made?.list(`like:${ownedKey(title)}`).slice(0, 24) ?? [],
+    [made, title],
   );
   if (like.length === 0) return null;
   return <Shelf name="More like this" titles={like} onPress={(each) => openDetails(each)} />;

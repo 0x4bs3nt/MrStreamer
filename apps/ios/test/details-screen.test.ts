@@ -99,7 +99,7 @@ vi.mock("../src/titles.ts", () => ({
     byIds(index, kind, [version])[0],
   // Details that never answer: the page shows its facts as loading.
   detailsOf: () => new Promise(() => undefined),
-  collectionOf: () => ({ name: "", titles: [] }),
+  useCollections: () => null,
   episodesOf: async () => [],
 }));
 vi.mock("../src/play-title.ts", () => ({

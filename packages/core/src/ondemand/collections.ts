@@ -12,6 +12,7 @@ import type {
 import { type PlainKey, t } from "../i18n.ts";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { GENRES, tmdbImage, type TitleMetadata } from "../metadata/tmdb.ts";
+import { finish, pacer, type Steps } from "../steps.ts";
 import { suitability, suits } from "./languages.ts";
 
 /** The order a collection uses before the viewer chooses another sort. */
@@ -78,6 +79,11 @@ export interface Collections {
   validAt(now: number): boolean;
   /** A collection's titles, in `sort` or the collection's own order. */
   list(id: CollectionId, sort?: CollectionSort): readonly Title[];
+  /**
+   * How many titles a collection holds: its list's length once made, else its members counted
+   * without sorting them. Titles like one (`like:`) are still sorted by how alike they are.
+   */
+  size(id: CollectionId): number;
   /** A collection's name to show: "Comedy", "Netflix", "New this week". */
   name(id: CollectionId): string | null;
   /** Genres with how many titles each, most first. */
@@ -95,54 +101,70 @@ export interface Collections {
   }[];
 }
 
+/** The collections of `source`, worked out at once: `collectionSteps` run to the end. */
 export function collections(source: CollectionSource): Collections {
+  return finish(collectionSteps(source));
+}
+
+/**
+ * The collections of `source`, pausing between slices of its titles while it ranks them, as a
+ * host whose one thread handles taps works them out in tasks. Lists are sorted when first asked.
+ */
+export function* collectionSteps(source: CollectionSource): Steps<Collections> {
   let until = Date.UTC(new Date(source.now).getUTCFullYear() + 1, 0, 1);
   const expires = (id?: string) => {
     const at = source.expiresAt?.(id) ?? Infinity;
     if (at > source.now) until = Math.min(until, at);
   };
   expires();
-  const ranked = source.titles
-    .filter((title) => !title.adult)
-    .map((title): Ranked => {
-      if (title.tmdbId) expires(title.tmdbId);
-      const meta = title.tmdbId ? source.metadata(title.tmdbId) : null;
-      const names = title.tmdbId ? source.names(title.tmdbId) : null;
-      const shown: Title = meta
-        ? {
-            ...title,
-            ...(names ? { title: names.name, originalTitle: names.original } : {}),
-            originalLanguage: meta.language ?? null,
-            backdropUrl:
-              title.backdropUrl ?? (meta.backdrop ? tmdbImage(meta.backdrop, 1280) : null),
-            genres: genresOf(meta),
-          }
-        : title;
-      const fitting = (tags: readonly string[]) =>
-        suits(suitability(tags, source.language), meta?.language, source.language);
-      const fourK = title.versions.find(
-        (version) =>
-          version.tags.some((tag) => tag === "4K" || tag === "UHD") && fitting(version.tags),
-      );
-      return {
-        title: shown,
-        genres: shown.genres,
-        popularity: meta?.popularity ?? 0,
-        // Providers rate new titles 10 of 10; TMDB's few early votes are no better.
-        rating: meta ? (meta.votes >= ENOUGH_VOTES ? meta.rating : 0) : (title.rating ?? 0),
-        rated: Boolean(meta && meta.votes >= ENOUGH_VOTES),
-        suits: fitting(title.tags),
-        fourK: !fourK
-          ? null
-          : fourK.id === title.id
-            ? shown
-            : { ...shown, subscriptionId: fourK.subscriptionId, id: fourK.id, tags: fourK.tags },
-      };
-    });
+  const due = pacer();
+  const ranked: Ranked[] = [];
+  for (const title of source.titles) {
+    if (due()) yield;
+    if (title.adult) continue;
+    if (title.tmdbId) expires(title.tmdbId);
+    ranked.push(rank(title));
+  }
+
+  /** A title with what collections sort and filter it by, TMDB's metadata worked in. */
+  function rank(title: Title): Ranked {
+    const meta = title.tmdbId ? source.metadata(title.tmdbId) : null;
+    const names = title.tmdbId ? source.names(title.tmdbId) : null;
+    const shown: Title = meta
+      ? {
+          ...title,
+          ...(names ? { title: names.name, originalTitle: names.original } : {}),
+          originalLanguage: meta.language ?? null,
+          backdropUrl: title.backdropUrl ?? (meta.backdrop ? tmdbImage(meta.backdrop, 1280) : null),
+          genres: genresOf(meta),
+        }
+      : title;
+    const fitting = (tags: readonly string[]) =>
+      suits(suitability(tags, source.language), meta?.language, source.language);
+    const fourK = title.versions.find(
+      (version) =>
+        version.tags.some((tag) => tag === "4K" || tag === "UHD") && fitting(version.tags),
+    );
+    return {
+      title: shown,
+      genres: shown.genres,
+      popularity: meta?.popularity ?? 0,
+      // Providers rate new titles 10 of 10; TMDB's few early votes are no better.
+      rating: meta ? (meta.votes >= ENOUGH_VOTES ? meta.rating : 0) : (title.rating ?? 0),
+      rated: Boolean(meta && meta.votes >= ENOUGH_VOTES),
+      suits: fitting(title.tags),
+      fourK: !fourK
+        ? null
+        : fourK.id === title.id
+          ? shown
+          : { ...shown, subscriptionId: fourK.subscriptionId, id: fourK.id, tags: fourK.tags },
+    };
+  }
   const suiting = ranked.filter((entry) => entry.suits);
   // Membership changes at each title's rolling cutoff, not at calendar week/month boundaries.
   // Compute once with the snapshot; reads inside this interval need no catalogue scan.
   for (const entry of suiting) {
+    if (due()) yield;
     for (const days of [7, 30]) {
       const cutoff = added(entry) + days * DAY_MS;
       if (cutoff > source.now) until = Math.min(until, cutoff);
@@ -254,6 +276,10 @@ export function collections(source: CollectionSource): Collections {
       return list;
     },
 
+    size(id) {
+      return lists.get(`${id}|`)?.length ?? members(id).entries.length;
+    },
+
     name(id) {
       if (id.startsWith("genre:")) return id.slice("genre:".length);
       if (id.startsWith("service:")) {
@@ -315,25 +341,27 @@ export function collectionRows(
   tab: RowTab,
   like: OwnedId | null,
 ): CollectionRow[] {
-  const ids: CollectionId[] =
-    tab === "new"
-      ? ["new-week", "new-month", "recent"]
-      : [
-          ...(like ? [`like:${ownedKey(like)}` as const] : []),
-          "popular",
-          "new-week",
-          "top-rated",
-          ...made
-            .services()
-            .slice(0, SERVICE_ROWS)
-            .map((service) => `service:${service.id}` as const),
-        ];
-  return ids.flatMap((id) => {
+  return rowIds(made, tab, like).flatMap((id) => {
     const titles = made.list(id);
     const name = made.name(id);
     if (titles.length === 0 || !name) return [];
     return [{ id, name, total: titles.length, titles: titles.slice(0, ROW_TITLES) }];
   });
+}
+
+/** The collections `collectionRows` makes the rows of For you or New from, in order. */
+export function rowIds(made: Collections, tab: RowTab, like: OwnedId | null): CollectionId[] {
+  if (tab === "new") return ["new-week", "new-month", "recent"];
+  return [
+    ...(like ? [`like:${ownedKey(like)}` as const] : []),
+    "popular",
+    "new-week",
+    "top-rated",
+    ...made
+      .services()
+      .slice(0, SERVICE_ROWS)
+      .map((service) => `service:${service.id}` as const),
+  ];
 }
 
 function once<A>(make: () => A): () => A {

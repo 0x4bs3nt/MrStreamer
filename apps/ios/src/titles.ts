@@ -1,7 +1,5 @@
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
 import type {
-  CollectionId,
-  CollectionRow,
   CollectionTile,
   EpisodeDetails,
   Season,
@@ -21,17 +19,20 @@ import {
   type IndexedCatalogue,
 } from "@mrstreamer/core/ondemand/catalogue";
 import {
-  collectionRows,
-  collections,
+  collectionSteps,
+  rowIds,
   type Collections,
+  type CollectionSource,
 } from "@mrstreamer/core/ondemand/collections";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
+import type { Steps } from "@mrstreamer/core/steps";
 import { File, Paths } from "expo-file-system";
+import { useEffect } from "react";
 import { members, onRoster, shownOf, type Member } from "./account.ts";
 import { inTasks } from "./library.ts";
 import { currentSource, sourceOf } from "./sources.ts";
-import { store, useStore } from "./store.ts";
+import { store, useStore, type Store } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
 import { alignWatchlist } from "./watchlist.ts";
 
@@ -43,6 +44,11 @@ import { alignWatchlist } from "./watchlist.ts";
 // store, with the key built into the app (EXPO_PUBLIC_TMDB_KEY); without one, collections that
 // need it are empty and details show the provider's facts. account.ts gives a subscription's
 // lists saved on the phone at launch as it gives its provider's (catalogue-cache.ts).
+//
+// Collections are made here, never while a screen draws: each kind's in short tasks once the
+// lists are indexed and again whenever TMDB's metadata changes what they show. Until the first
+// are made for the lists that show, a kind has none (`useCollections` is null); later ones
+// replace those before them only once made.
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -97,7 +103,11 @@ const metadata = metadataStore({
   client,
   region,
   onChange: ({ content }) => {
-    if (content) metadataVersion.set((version) => version + 1);
+    if (content) {
+      metadataVersion.set((version) => version + 1);
+      collect("movie");
+      collect("series");
+    }
     metadataStatus.set(metadata.status());
   },
 });
@@ -156,7 +166,7 @@ function relist() {
       indexed = [];
       indexing?.abort();
       indexing = null;
-      made.clear();
+      forget();
       metadata.want([]);
     }
     const next = standing(all);
@@ -189,8 +199,10 @@ async function index(listed: readonly Listed[], signal: AbortSignal) {
     ...members().map((member) => (member.titles.kind === "ready" ? (member.titles.took ?? 0) : 0)),
   );
   timings.set({ fetched, indexed: took });
-  made.clear();
+  forget();
   lists.set({ kind: "ready", index });
+  collect("movie");
+  collect("series");
   alignWatchlist(index);
   // TMDB's metadata for what is listed, the newest first, once the lists show.
   setTimeout(() => {
@@ -210,48 +222,136 @@ function wantedOf(index: IndexedCatalogue) {
   );
 }
 
-/** Each kind's collections, made once per lists and metadata. */
-const made = new Map<TitleKind, { index: IndexedCatalogue; version: number; made: Collections }>();
-
-/** The collections of `kind` as the lists and TMDB's metadata stand. */
-export function collectionsOf(index: IndexedCatalogue, kind: TitleKind): Collections {
-  const version = metadataVersion.get();
-  const kept = made.get(kind);
-  const now = Date.now();
-  if (kept && kept.index === index && kept.version === version && kept.made.validAt(now))
-    return kept.made;
-  const tk = tmdbKind(kind);
-  const result = collections({
-    kind,
-    titles: kindOf(index, kind).titles,
-    language,
-    metadata: (id) => metadata.get(tk, id),
-    names: (id) => metadata.name(tk, id, language),
-    services: metadata.services(tk),
-    expiresAt: (id) => metadata.expiresAt(tk, id),
-    now,
-  });
-  made.set(kind, { index, version, made: result });
-  return result;
+/** A kind's collections, and the lists and metadata version they were made of. */
+interface Made {
+  readonly index: IndexedCatalogue;
+  readonly version: number;
+  readonly collections: Collections;
 }
 
-/** For you or New: rows of collections, For you led by titles like `like`. */
-export function rowsOf(
-  index: IndexedCatalogue,
+/** Each kind's collections as last made for the lists that show; null until the first are. */
+const made: Record<TitleKind, Store<Made | null>> = {
+  movie: store<Made | null>(null),
+  series: store<Made | null>(null),
+};
+/** Each kind's collections being made, for which lists. */
+const making = new Map<TitleKind, IndexedCatalogue>();
+
+/**
+ * The collections of `kind` for the lists that show, as TMDB's metadata stood when they were made:
+ * null until the first are made, and again from when other lists show until theirs are. `reads`
+ * are what the screen reads them by besides (`useHolding`).
+ */
+export function useCollections(
   kind: TitleKind,
-  tab: "for-you" | "new",
-  like: OwnedId | null,
-): readonly CollectionRow[] {
-  return collectionRows(collectionsOf(index, kind), tab, like);
+  reads: readonly unknown[] = [],
+): Collections | null {
+  const kept = useStore(made[kind]);
+  useHolding(kind, [kept, ...reads]);
+  return kept?.collections ?? null;
+}
+
+/**
+ * Has `kind`'s collections made again if time has moved past what they hold (`collect`), as the
+ * screen opens and whenever one of `reads` changes: what it reads them by, such as the title For
+ * you is led by or the collection it shows. The last made show meanwhile. `reads` keeps its
+ * length at each call.
+ */
+export function useHolding(kind: TitleKind, reads: readonly unknown[]): void {
+  useEffect(() => collect(kind), [kind, ...reads]);
+}
+
+/** `useCollections` for owners outside React. */
+export function collectionsOf(kind: TitleKind): Collections | null {
+  collect(kind);
+  return made[kind].get()?.collections ?? null;
+}
+
+/** Drops both kinds' collections: other lists, or none, show from now on. */
+function forget() {
+  made.movie.set(null);
+  made.series.set(null);
+}
+
+/**
+ * Makes `kind`'s collections for the lists that show, unless those made are of these lists and
+ * the metadata as it stands, and still hold now: no title has passed New's 7 or 30 days, no
+ * metadata they were made with has expired, the year hasn't turned and the clock hasn't gone
+ * back (`validAt`). While some are being made for these lists nothing else starts, so however
+ * often TMDB's metadata changes the first are made; once they are, this runs again and makes
+ * the latest, or again if time passed what they hold while they were made.
+ */
+function collect(kind: TitleKind) {
+  const now = lists.get();
+  if (now.kind !== "ready") return;
+  const { index } = now;
+  const version = metadataVersion.get();
+  const kept = made[kind].get();
+  const current =
+    kept?.index === index && kept.version === version && kept.collections.validAt(Date.now());
+  if (current || making.get(kind) === index) return;
+  making.set(kind, index);
+  void make(kind, index, version);
+}
+
+async function make(kind: TitleKind, index: IndexedCatalogue, version: number) {
+  // Ranking 25,000 movies and their series with TMDB's metadata, then sorting their lists, held
+  // the JS thread for 60 to 95 ms at once in a Release build on the iOS simulator, each time the
+  // metadata changed while Movies drew. So collections are made a few slices per task, and work
+  // for lists that no longer show stops at the next task and shows nothing.
+  const current = () => {
+    const now = lists.get();
+    return now.kind === "ready" && now.index === index;
+  };
+  const tk = tmdbKind(kind);
+  let result: Collections | null;
+  try {
+    result = await inTasks(
+      madeSteps({
+        kind,
+        titles: kindOf(index, kind).titles,
+        language,
+        metadata: (id) => metadata.get(tk, id),
+        names: (id) => metadata.name(tk, id, language),
+        services: metadata.services(tk),
+        expiresAt: (id) => metadata.expiresAt(tk, id),
+        now: Date.now(),
+      }),
+      current,
+    );
+  } finally {
+    if (making.get(kind) === index) making.delete(kind);
+  }
+  if (!result || !current()) return;
+  made[kind].set({ index, version, collections: result });
+  collect(kind);
+}
+
+/**
+ * Collections with the lists Movies, Series and Home open on already sorted, a step each: All, 4K
+ * and the rows of For you and New. Those of a genre, a service or titles like one are sorted when
+ * first asked.
+ */
+function* madeSteps(source: CollectionSource): Steps<Collections> {
+  const collections = yield* collectionSteps(source);
+  yield;
+  const opened = [
+    "all" as const,
+    "4k" as const,
+    ...rowIds(collections, "for-you", null),
+    ...rowIds(collections, "new", null),
+  ];
+  for (const id of opened) {
+    yield;
+    collections.list(id);
+  }
+  yield;
+  collections.genres();
+  return collections;
 }
 
 /** Genres or streaming services as tiles, most stocked first. */
-export function tilesOf(
-  index: IndexedCatalogue,
-  kind: TitleKind,
-  of: "genres" | "services",
-): readonly CollectionTile[] {
-  const made = collectionsOf(index, kind);
+export function tilesOf(made: Collections, of: "genres" | "services"): readonly CollectionTile[] {
   return of === "genres"
     ? made.genres().map((genre) => ({
         id: `genre:${genre.name}` as const,
@@ -265,12 +365,6 @@ export function tilesOf(
         count: service.count,
         artworkUrl: service.artwork,
       }));
-}
-
-/** A collection's titles and name. */
-export function collectionOf(index: IndexedCatalogue, kind: TitleKind, id: CollectionId) {
-  const made = collectionsOf(index, kind);
-  return { name: made.name(id) ?? "", titles: made.list(id) };
 }
 
 /** Titles of `kind` whose names hold every word of `query`, by any name TMDB gave them too. */
