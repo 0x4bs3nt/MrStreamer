@@ -41,8 +41,8 @@ import { alignWatchlist } from "./watchlist.ts";
 // first), the collections Movies and Series show, search, and details with seasons and episodes,
 // each read from the subscription that lists the version. TMDB's metadata comes from core's
 // store, with the key built into the app (EXPO_PUBLIC_TMDB_KEY); without one, collections that
-// need it are empty and details show the provider's facts. Nothing of the lists is kept on disk
-// yet.
+// need it are empty and details show the provider's facts. account.ts gives a subscription's
+// lists saved on the phone at launch as it gives its provider's (catalogue-cache.ts).
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -56,7 +56,7 @@ const metadataVersion = store(0);
 const metadataStatus = store<MetadataStatus | null>(null);
 /**
  * How long the last read of the lists took: fetched and read, then indexed, from start to finish
- * of the tasks that did it. Milliseconds.
+ * of the tasks that did it. Milliseconds; lists saved on the phone count as none fetched.
  */
 const timings = store<{ readonly fetched: number; readonly indexed: number } | null>(null);
 
@@ -186,7 +186,7 @@ async function index(listed: readonly Listed[], signal: AbortSignal) {
   const took = Date.now() - started;
   const fetched = Math.max(
     0,
-    ...members().map((member) => (member.titles.kind === "ready" ? member.titles.took : 0)),
+    ...members().map((member) => (member.titles.kind === "ready" ? (member.titles.took ?? 0) : 0)),
   );
   timings.set({ fetched, indexed: took });
   made.clear();

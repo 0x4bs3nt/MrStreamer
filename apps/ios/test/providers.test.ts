@@ -47,13 +47,40 @@ vi.mock("expo-video", () => ({
   }),
 }));
 vi.mock("expo-file-system", () => {
-  class File {
+  const pathOf = (parent: string | { readonly path: string }, name: string) =>
+    `${typeof parent === "string" ? parent : parent.path}/${name}`;
+  class Directory {
     readonly path: string;
-    constructor(directory: string, name: string) {
-      this.path = `${directory}/${name}`;
+    constructor(parent: string | Directory, name: string) {
+      this.path = pathOf(parent, name);
+    }
+    get exists() {
+      return true;
+    }
+    create() {}
+    list() {
+      const within = `${this.path}/`;
+      return [...memory.files.keys()]
+        .filter((path) => path.startsWith(within) && !path.slice(within.length).includes("/"))
+        .map((path) => new File(this, path.slice(within.length)));
+    }
+  }
+  class File {
+    path: string;
+    constructor(parent: string | Directory, name: string) {
+      this.path = pathOf(parent, name);
+    }
+    get name() {
+      return this.path.slice(this.path.lastIndexOf("/") + 1);
     }
     get exists() {
       return memory.files.has(this.path);
+    }
+    get size() {
+      return memory.files.get(this.path)?.length ?? 0;
+    }
+    get modificationTime() {
+      return 0;
     }
     create() {
       if (!this.exists) memory.files.set(this.path, "");
@@ -79,11 +106,15 @@ vi.mock("expo-file-system", () => {
       memory.files.set(to.path, this.textSync());
       memory.files.delete(this.path);
     }
+    async move(to: File) {
+      this.moveSync(to);
+      this.path = to.path;
+    }
     delete() {
       memory.files.delete(this.path);
     }
   }
-  return { File, Paths: { document: "/documents", cache: "/cache" } };
+  return { File, Directory, Paths: { document: "/documents", cache: "/cache" } };
 });
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
@@ -201,6 +232,21 @@ const titlesOf = (app: App) => {
   return lists.kind === "ready" ? kindOf(lists.index, "movie").titles : [];
 };
 const registry = () => JSON.parse(memory.files.get(doc("subscriptions.json")) ?? "null");
+/** What Documents holds; Caches, where lists are saved, aside. */
+const documents = () =>
+  new Map([...memory.files].filter(([path]) => path.startsWith("/documents/")));
+const savedLists = () =>
+  [...memory.files.keys()].filter((path) => path.startsWith("/cache/catalogues/"));
+
+/** Deletes the lists saved on the phone once those of `ids` are, so a launch asks the providers. */
+async function forgetSavedLists(...ids: string[]) {
+  const names = ids.flatMap((id) => [`${id}.live.json`, `${id}.titles.json`]);
+  await until(
+    () => names.every((name) => memory.files.has(`/cache/catalogues/${name}`)),
+    "the saved lists",
+  );
+  for (const path of savedLists()) memory.files.delete(path);
+}
 const keychainIds = () => JSON.parse(memory.keychain.get("index") ?? "[]");
 const playingNow = (app: App) => {
   const { phase } = app.playbackState.get();
@@ -334,11 +380,11 @@ describe("the first launch since private beta 2", () => {
   it("migrates once: a relaunch finds the registry and changes nothing", async () => {
     await beta2(one, firstMovie(one, LEGACY));
     await launch();
-    const after = new Map(memory.files);
+    const after = documents();
     const keychain = new Map(memory.keychain);
     const again = await launch();
     expect(ids(again)).toEqual([LEGACY]);
-    expect(new Map(memory.files)).toEqual(after);
+    expect(documents()).toEqual(after);
     expect(new Map(memory.keychain)).toEqual(keychain);
   });
 
@@ -868,9 +914,9 @@ describe("removing a subscription", () => {
     expect(memory.files.get(doc("watchlists.json"))).not.toContain(b);
     expect(recentOf().filter((key) => key.startsWith(`${b}:`))).toEqual([]);
     // Done: a later launch has nothing left to delete, and changes nothing.
-    const after = new Map(memory.files);
+    const after = documents();
     await launch();
-    expect(new Map(memory.files)).toEqual(after);
+    expect(documents()).toEqual(after);
   });
 
   it("never deletes, for a history still to go, an account added since under the same id", async () => {
@@ -956,7 +1002,8 @@ describe("removing a subscription", () => {
 
 describe("a launch with saved subscriptions", () => {
   it("checks each login before its movie and series lists, and loads channels at once", async () => {
-    await twoProviders();
+    const { a, b } = await twoProviders();
+    await forgetSavedLists(a, b);
     memory.holdLogins = true;
     const before = [one.titleListRequests(), two.titleListRequests()];
     const app = await launch();
@@ -969,7 +1016,8 @@ describe("a launch with saved subscriptions", () => {
   });
 
   it("starts no lists for a subscription removed while its login was checked", async () => {
-    const { b } = await twoProviders();
+    const { a, b } = await twoProviders();
+    await forgetSavedLists(a, b);
     memory.holdLogins = true;
     const app = await launch();
     await until(() => memory.held.length === 2, "both login checks");

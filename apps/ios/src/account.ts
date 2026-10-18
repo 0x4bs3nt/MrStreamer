@@ -5,6 +5,7 @@ import { streamsToPlay } from "@mrstreamer/core/catalogue/variants";
 import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/core/provider";
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
+import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
 import { appError, hostOf } from "./errors.ts";
 import {
   combine,
@@ -57,6 +58,16 @@ import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 // channels load at once; its movie and series lists (titles.ts indexes them together) once its
 // login has been checked. Its viewing record (viewing.ts) and watchlist (watchlist.ts) are kept
 // under its id, which an account added again after a removal takes back.
+//
+// A list a provider gives is saved on the phone too (catalogue-cache.ts), and a launch shows it
+// while each subscription signs in again. One saved less than 12 hours ago shows as loaded, and
+// the provider isn't asked for it, though the login is still checked; an older one shows while
+// its list loads again, and stays when that fails. Reload, Try again and an add always ask the
+// provider. A new password, for an account added again or edited, or an account added again
+// under a removed one's id, is given to the Keychain only once its saved lists are gone; when
+// they can't be deleted, the change fails and the login stays as it was. A removal deletes them
+// as it can, leaving the rest to the next launch or the next add. No list of an earlier login is
+// saved after a deletion, and a write under way can't bring them back.
 
 /** A list one subscription loads; a failed or repeated load keeps the last one it had. */
 export type Loadable<A> =
@@ -65,7 +76,12 @@ export type Loadable<A> =
   | {
       readonly kind: "ready";
       readonly value: A;
-      /** Milliseconds it took. */ readonly took: number;
+      /** Asked of the provider, or the copy saved on the phone at launch. */
+      readonly from: "provider" | "cache";
+      /** When the provider gave it, epoch milliseconds. */
+      readonly fetchedAt: number;
+      /** Milliseconds the provider took; null for a saved copy. */
+      readonly took: number | null;
     }
   | {
       readonly kind: "failed";
@@ -143,6 +159,10 @@ let registry: Registry = EMPTY_REGISTRY;
 /** Loads under way, by `kind|id`. */
 const loads = new Map<string, AbortController>();
 let revisions = 0;
+/** By id: the revision when its saved lists were last deleted; no list of an older login is saved. */
+const dropped = new Map<string, number>();
+/** A saved list younger than this shows as loaded at launch, and isn't asked for again. */
+const FRESH_FOR = 12 * 60 * 60 * 1000;
 
 /** The last change to the registry or the Keychain, settled or not; a failed one counts as done. */
 let changing: Promise<unknown> = Promise.resolve();
@@ -211,18 +231,77 @@ const lastOf = <A>(loadable: Loadable<A>): A | null =>
 /** Shown lists: the last that loaded, while a new load runs or after it failed. */
 export const shownOf = lastOf;
 
-type Kind = "live" | "titles";
+type Kind = Saved["kind"];
+
+/** Whether lists of `source` may still be saved as `id`'s: its login, saved and not replaced. */
+const savable = (id: string, source: Source) =>
+  currentSource(id) === source &&
+  source.revision > (dropped.get(id) ?? 0) &&
+  registry.subscriptions.some((entry) => entry.id === id);
+
+/** Saves a list `source` gave, in a later task: a write that fails leaves the list as it shows. */
+function save(id: string, source: Source, saved: Saved) {
+  setTimeout(() => void writeList(id, saved, source.login, () => savable(id, source)), 0);
+}
+
+/**
+ * Deletes `id`'s saved lists once what reads or writes them has finished; from now on none of a
+ * login signed in before is saved again. Answers whether they are all gone.
+ */
+function dropSaved(id: string): Promise<boolean> {
+  dropped.set(id, revisions);
+  return dropLists(id);
+}
+
+/**
+ * Deletes `id`'s saved lists before a new password or account takes its id, or throws when some
+ * are left, which the next launch would show for the new login. The login then stays as it was,
+ * and its lists may be saved again.
+ */
+async function clearSaved(id: string): Promise<void> {
+  const before = dropped.get(id);
+  if (await dropSaved(id)) return;
+  if (before === undefined) dropped.delete(id);
+  else dropped.set(id, before);
+  throw new AppFailure({
+    kind: "unexpected",
+    detail: "The lists this iPhone saved couldn't be deleted. Try again.",
+  });
+}
+
+/**
+ * At launch: shows `kind`'s saved list while it is still idle for `source`, as loaded when it is
+ * fresh, else as the last one while it loads again. Answers whether to ask the provider for it.
+ */
+async function fromSaved(id: string, kind: Kind, source: Source): Promise<boolean> {
+  const saved = await readList(id, kind, () => savable(id, source));
+  const member = members().find((each) => each.entry.id === id);
+  if (currentSource(id) !== source || member?.[kind].kind !== "idle") return false;
+  if (!saved) return true;
+  const fresh = Date.now() - saved.fetchedAt < FRESH_FOR;
+  const shown = <A>(value: A): Loadable<A> =>
+    fresh
+      ? { kind: "ready", value, from: "cache", fetchedAt: saved.fetchedAt, took: null }
+      : { kind: "loading", last: value };
+  setMember(id, (now) =>
+    saved.kind === "live"
+      ? { ...now, live: shown(saved.catalogue) }
+      : { ...now, titles: shown(saved.catalogue) },
+  );
+  return !fresh;
+}
 
 /**
  * Loads one of a subscription's lists, dropping a load of it still under way. An answer for a
- * login replaced or removed since is dropped; a failure keeps what loaded before.
+ * login replaced or removed since is dropped; a failure keeps what loaded before. `landed` has
+ * the answer, the login that gave it and when.
  */
 function follow<A>(
   id: string,
   kind: Kind,
   read: (provider: Provider, signal: AbortSignal) => Promise<A>,
   set: (change: (now: Loadable<A>) => Loadable<A>) => void,
-  landed?: () => void,
+  landed: (value: A, source: Source, fetchedAt: number) => void,
 ) {
   const source = currentSource(id);
   if (!source) return;
@@ -236,8 +315,9 @@ function follow<A>(
   read(source.provider, controller.signal).then(
     (value) => {
       if (!stands()) return;
-      set(() => ({ kind: "ready", value, took: Date.now() - started }));
-      landed?.();
+      const fetchedAt = Date.now();
+      set(() => ({ kind: "ready", value, from: "provider", fetchedAt, took: fetchedAt - started }));
+      landed(value, source, fetchedAt);
     },
     (cause: unknown) => {
       if (!stands()) return;
@@ -254,7 +334,10 @@ export function reloadChannels(id: string) {
     "live",
     (provider, signal) => provider.liveCatalogue(signal),
     (change) => setMember(id, (member) => ({ ...member, live: change(member.live) })),
-    () => noteAction("playlist_refreshed"),
+    (catalogue, source, fetchedAt) => {
+      noteAction("playlist_refreshed");
+      save(id, source, { kind: "live", catalogue, fetchedAt });
+    },
   );
 }
 
@@ -265,6 +348,7 @@ export function reloadTitles(id: string) {
     "titles",
     (provider, signal) => provider.onDemandCatalogue(signal),
     (change) => setMember(id, (member) => ({ ...member, titles: change(member.titles) })),
+    (catalogue, source, fetchedAt) => save(id, source, { kind: "titles", catalogue, fetchedAt }),
   );
 }
 
@@ -288,38 +372,47 @@ export function retryTitles() {
 }
 
 /**
- * Checks the login again, then loads the movie and series lists. They wait until the check
- * answers, fails or runs out of time, so on a slow link they don't hold its answer back.
+ * Checks the login again, then loads the movie and series lists unless `load` answers no. They
+ * wait until the check answers, fails or runs out of time, so on a slow link they don't hold its
+ * answer back.
  */
-function check(id: string, source: Source) {
+function check(id: string, source: Source, load: Promise<boolean> = Promise.resolve(true)) {
   void source.provider
     .authenticate()
     .then(
       (account) => account,
       (cause: unknown) => appError(cause),
     )
-    .then((account) => {
+    .then(async (account) => {
       if (currentSource(id) !== source) return;
       setMember(id, (member) => ({ ...member, account }));
-      reloadTitles(id);
+      if ((await load) && currentSource(id) === source) reloadTitles(id);
     });
 }
 
 /**
  * Signs a saved subscription in with `password` and loads its lists: channels at once, movies
- * and series once the login is known to be good (`checked`) or has been checked again.
+ * and series once the login is known to be good (`checked`). At launch, with `checked` null, the
+ * login is checked again, and each list shows its saved copy, which may stand for the provider's.
  */
 function signIn(entry: SubscriptionEntry, password: string, checked: AccountStatus | null) {
+  const { id } = entry;
   const source: Source = {
     revision: ++revisions,
     provider: providerFor({ server: entry.server, username: entry.username, password }),
     login: [entry.username, password],
   };
-  setSource(entry.id, source);
-  setMember(entry.id, (member) => ({ ...member, needsSecret: false, account: checked }));
-  reloadChannels(entry.id);
-  if (checked) reloadTitles(entry.id);
-  else check(entry.id, source);
+  setSource(id, source);
+  setMember(id, (member) => ({ ...member, needsSecret: false, account: checked }));
+  if (checked) {
+    reloadChannels(id);
+    reloadTitles(id);
+    return;
+  }
+  void fromSaved(id, "live", source).then((load) => {
+    if (load && currentSource(id) === source) reloadChannels(id);
+  });
+  check(id, source, fromSaved(id, "titles", source));
 }
 
 /** Checks a subscription's login and reads all its lists again: its Retry. */
@@ -366,6 +459,7 @@ export function restore(): Promise<void> {
       registry.subscriptions.map((entry) => keychainSecrets.read(entry.id).catch(() => null)),
     );
     syncRoster();
+    pruneLists(registry.subscriptions.map((entry) => entry.id));
     registry.subscriptions.forEach((entry, at) => {
       const password = passwords[at];
       if (password) signIn(entry, password, null);
@@ -391,7 +485,8 @@ const authenticate = (account: XtreamAccount, signal?: AbortSignal) =>
  *
  * A new subscription is saved when the registry lists it: aborting `signal` before then, its
  * password's write included, leaves everything as it was. For an account already saved, the
- * change is made once its password starts to be written, as `update` makes one.
+ * change is made once its password starts to be written, as `update` makes one. Lists saved for
+ * the id that the phone won't delete leave everything as it was too, and the promise rejects.
  */
 export async function add(input: LoginInput, signal?: AbortSignal): Promise<string | null> {
   const { account } = parseLogin(input);
@@ -407,6 +502,7 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     const name = nameOf(input.name);
     const known = registry.subscriptions.find((entry) => sameAccount(entry, account));
     if (known) {
+      await clearSaved(known.id);
       await keychainSecrets.write(known.id, account.password);
       const entry = name === undefined || name === known.name ? known : { ...known, name };
       if (entry !== known) {
@@ -433,6 +529,8 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     };
     const first = registry.subscriptions.length === 0;
     try {
+      // A retired id's lists went with its removal, unless the disk refused it then.
+      await clearSaved(id);
       await keychainSecrets.write(id, account.password);
       // Left while the password was written: it goes again, and nothing is saved.
       if (signal?.aborted) {
@@ -478,7 +576,9 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
  * checks the new one first, and nothing changes when it refuses. Aborting `signal` while the
  * provider checks it, or while another change runs, leaves it as it was. The change is made from
  * the moment it starts being saved, as the Keychain may hold the new password from then: aborting
- * after that changes nothing, and the change completes.
+ * after that changes nothing, and the change completes. A new password waits for the lists saved
+ * for the old one to be deleted; when the phone won't delete them, nothing changes and the promise
+ * rejects.
  */
 export async function update(
   id: string,
@@ -495,7 +595,10 @@ export async function update(
     if (signal?.aborted) return;
     const now = registry.subscriptions.find((each) => each.id === id);
     if (!now) throw new AppFailure({ kind: "no-subscription" });
-    if (password) await keychainSecrets.write(id, password);
+    if (password) {
+      await clearSaved(id);
+      await keychainSecrets.write(id, password);
+    }
     const name = nameOf(change.name);
     const next = name === undefined || name === now.name ? now : { ...now, name };
     if (next !== now) {
@@ -528,6 +631,9 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
     commit(withoutSubscription(registry, entry, keepHistory));
     for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${id}`)?.abort();
     dropSource(id);
+    // After any write of them under way. What the disk refuses goes at the next launch, or before
+    // the account added again takes the id back.
+    void dropSaved(id);
     // A request waiting to play, such as a series' resume, lapses; with none left, so does Watch,
     // unless it shows a downloaded copy, which needs no subscription.
     const { phase } = playbackState.get();

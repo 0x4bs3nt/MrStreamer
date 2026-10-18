@@ -68,6 +68,16 @@ Each responsibility has one owner, a plain module with a store the screens read:
   failure a panel allowed it to keep. The first private betas didn't ask, so
   `modules/forget-cached-logins` empties that cache once, at the first launch of a build that has
   it, before the app's JavaScript runs.
+- `src/catalogue-cache.ts`: each subscription's last channel list and movie and series lists, in
+  Caches, which backups leave out. A launch shows lists saved less than 12 hours ago as loaded and
+  asks the provider for none, though the login is still checked; older ones show while they load
+  again, and stay when that fails. Reload, Try again and an add always ask. `account.ts` decides
+  all of that; this module only keeps the files, one operation at a time per list. A copy holds
+  the fields the app reads, with artwork addresses that could carry the login as none, and isn't
+  written when other text holds the password. Every row is checked on reading. A list may take
+  64 MiB and 250,000 rows, every list together 256 MiB, the oldest movie and series lists going
+  first. A new password or a removal deletes a subscription's copies first, and no write of the
+  earlier login is saved after that.
 - `src/subscriptions.ts`: the registry, `subscriptions.json`, and how private beta 2's one
   subscription in `state.json` becomes its first entry under the same id. Accounts removed with
   their history kept are remembered, so adding one again takes its id, and its history, back. Ids
