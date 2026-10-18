@@ -54,8 +54,10 @@ export interface TitleRun {
   readonly subtitle: number | null;
   /** The teletext page or caption channel to show, for a track that holds several. */
   readonly page: number | null;
-  /** Converts the sound even when the player decodes it: the second try after a failed start. */
+  /** Converts sound after a local rejection whose failing track was unknown. */
   readonly convertSound: boolean;
+  /** Copied video was rejected in this session; every later run converts it. */
+  readonly rejectedCopy?: boolean;
   /**
    * Shows the first picture and waits, as when the viewer changes tracks or skips while paused;
    * otherwise it plays.
@@ -81,12 +83,19 @@ export interface SubtitleState {
   readonly covered: boolean;
 }
 
+/** Local rejection carries only the delivery facts of this exact run. */
+export interface TitleError extends EngineError {
+  readonly video?: "copy" | "convert" | "none";
+  readonly audio?: "copy" | "convert" | "none";
+  readonly rejectedTrack?: "video";
+}
+
 export interface TitleEngine {
   onPlayback?(listener: (state: AnalyticsPlaybackState) => void): void;
   /** Resolves once the picture moves. Rejects with an `EngineError`. */
   readonly started: Promise<void>;
   /** Called at most once, when playback breaks after it started. */
-  onFailure(listener: (error: EngineError) => void): void;
+  onFailure(listener: (error: TitleError) => void): void;
   /** Called when the title plays to its end. */
   onEnded(listener: () => void): void;
   /**
@@ -126,8 +135,8 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   let codecs: string | null = null;
   let settled = false;
   let finished = false;
-  let failureListener: ((error: EngineError) => void) | null = null;
-  let pendingFailure: EngineError | null = null;
+  let failureListener: ((error: TitleError) => void) | null = null;
+  let pendingFailure: TitleError | null = null;
   let endedListener: (() => void) | null = null;
   let state: SubtitleState | null =
     run.subtitle === null ? null : { recovery: "loading", covered: false };
@@ -155,7 +164,9 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
   const { promise: started, resolve, reject } = Promise.withResolvers<void>();
   started.catch(() => {});
 
-  const fail = (error: EngineError) => {
+  let delivery: Pick<TitleError, "video" | "audio"> = {};
+  const fail = (cause: TitleError) => {
+    const error = { ...delivery, ...cause };
     observation.stop();
     if (finished) return;
     finished = true;
@@ -355,6 +366,7 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
     if (run.audio !== null) query.set("audio", String(run.audio));
     if (run.subtitle !== null) query.set("subtitle", String(run.subtitle));
     if (run.convertSound) query.set("sound", "convert");
+    if (run.rejectedCopy) query.set("picture", "convert");
     // Only fetch and body reads describe delivery failures. Parsing and MSE refusals below
     // belong to local media recovery, regardless of the exception's diagnostic text.
     const response = await fetch(`${run.url}?${query}`, { signal: abort.signal }).catch(
@@ -366,6 +378,16 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
         detail: t("The title answered HTTP {status}.", { status: String(response.status) }),
       } satisfies EngineError;
     }
+    const delivered = (name: string) => {
+      const value = response.headers.get(name);
+      return value === "copy" || value === "convert" || value === "none" ? value : undefined;
+    };
+    const videoDelivery = delivered("x-title-video");
+    const audioDelivery = delivered("x-title-audio");
+    delivery = {
+      ...(videoDelivery ? { video: videoDelivery } : {}),
+      ...(audioDelivery ? { audio: audioDelivery } : {}),
+    };
     const pictureStart = Number(response.headers.get("x-start")) || 0;
 
     const reader = response.body.getReader();
@@ -395,7 +417,16 @@ export function titleEngine(video: HTMLVideoElement, run: TitleRun): TitleEngine
       throw {
         kind: "unsupported",
         detail: t("This system can't play {codecs}.", { codecs: start.codecs }),
-      } satisfies EngineError;
+        ...(start.codecs
+          .split(",")
+          .some(
+            (codec) =>
+              /^(?:avc|hev|hvc)/.test(codec.trim()) &&
+              !MediaSource.isTypeSupported(`video/mp4; codecs="${codec.trim()}"`),
+          )
+          ? { rejectedTrack: "video" as const }
+          : {}),
+      } satisfies TitleError;
     }
     if (run.duration) mediaSource.duration = run.duration;
     buffer = mediaSource.addSourceBuffer(type);

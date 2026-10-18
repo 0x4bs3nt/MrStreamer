@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { EngineError } from "../../src/renderer/src/player/engine.ts";
+import type { TitleError } from "../../src/renderer/src/player/title-engine.ts";
 import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
@@ -13,7 +13,7 @@ const runs = vi.hoisted(
       played: number;
       destroyed: boolean;
       start(): void;
-      fail(error: EngineError): void;
+      fail(error: TitleError): void;
     }[],
 );
 
@@ -21,7 +21,7 @@ const runs = vi.hoisted(
 vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
   titleEngine(video: HTMLVideoElement, run: TitleRun) {
     const { promise: started, resolve, reject } = Promise.withResolvers<void>();
-    let failure: ((error: EngineError) => void) | null = null;
+    let failure: ((error: TitleError) => void) | null = null;
     let playing = false;
     const entry = {
       run,
@@ -34,7 +34,7 @@ vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
         else void video.play();
         resolve();
       },
-      fail(error: EngineError) {
+      fail(error: TitleError) {
         if (playing) failure?.(error);
         else reject(error);
       },
@@ -42,7 +42,7 @@ vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
     runs.push(entry);
     return {
       started,
-      onFailure(listener: (error: EngineError) => void) {
+      onFailure(listener: (error: TitleError) => void) {
         failure = listener;
       },
       onEnded() {},
@@ -140,7 +140,7 @@ it("tries converted sound once for local media and then fails without a network 
   );
 });
 
-it("reports rejection of a known copy after progress without identifying a missing codec", async () => {
+it("recovers a rejected video copy after progress, then reports exhausted recovery", async () => {
   ipc.always("playback.diagnostic", {
     diagnostic_container: "matroska",
     diagnostic_delivery: "direct",
@@ -151,9 +151,19 @@ it("reports rejection of a known copy after progress without identifying a missi
   await open();
   runs[0]!.start();
   await settle();
-  runs[0]!.fail({ kind: "media", detail: "PRIVATE missing decoder codec-name" });
+  runs[0]!.position = 28;
+  runs[0]!.fail({
+    kind: "media",
+    detail: "PRIVATE missing decoder codec-name",
+    video: "copy",
+    rejectedTrack: "video",
+  });
   await settle();
-  expect(runs).toHaveLength(1);
+  expect(runs).toHaveLength(2);
+  expect(runs[1]!.run).toMatchObject({ start: 28, rejectedCopy: true, convertSound: false });
+  runs[1]!.fail({ kind: "media", detail: "PRIVATE", video: "convert", audio: "none" });
+  await settle();
+  expect(runs).toHaveLength(2);
   expect(ipc.argsOf("analytics.playbackFailure")).toEqual([
     expect.objectContaining({
       failure: "unsupported",
@@ -164,7 +174,7 @@ it("reports rejection of a known copy after progress without identifying a missi
         diagnostic_delivery: "direct",
         diagnostic_video_codec: "h264",
         diagnostic_audio_codec: "aac",
-        diagnostic_fallback: "none",
+        diagnostic_fallback: "video",
       },
     }),
   ]);
@@ -320,3 +330,112 @@ it.each(["lookup", "delay"] as const)(
     }
   },
 );
+
+it.each([false, true])(
+  "bounds sound then video recovery, preserving paused=%s and tracks through later runs",
+  async (paused) => {
+    await open();
+    runs[0]!.start();
+    await settle();
+    if (paused) titlePlayer.togglePause();
+    titlePlayer.setAudio(2);
+    runs.at(-1)!.start();
+    await settle();
+    titlePlayer.setSubtitle(titlePlayer.state().subtitles[0]!);
+    runs.at(-1)!.start();
+    await settle();
+    const copied = runs.at(-1)!;
+    copied.position = 42;
+    copied.fail({ kind: "media", detail: "Rejected", video: "copy", audio: "copy" });
+    await settle();
+    expect(runs.at(-1)!.run).toMatchObject({
+      start: 42,
+      paused,
+      audio: 2,
+      subtitle: 3,
+      convertSound: true,
+      rejectedCopy: false,
+    });
+    runs.at(-1)!.fail({ kind: "media", detail: "Rejected", video: "copy", audio: "convert" });
+    await settle();
+    expect(runs.at(-1)!.run).toMatchObject({
+      start: 42,
+      paused,
+      audio: 2,
+      subtitle: 3,
+      convertSound: true,
+      rejectedCopy: true,
+    });
+    runs.at(-1)!.start();
+    await settle();
+    titlePlayer.seek(80);
+    expect(runs.at(-1)!.run).toMatchObject({
+      start: 80,
+      paused,
+      convertSound: true,
+      rejectedCopy: true,
+    });
+    const count = runs.length;
+    runs.at(-1)!.fail({ kind: "media", detail: "Rejected", video: "convert", audio: "convert" });
+    await settle();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runs).toHaveLength(count);
+    expect(titlePlayer.state().phase).toMatchObject({
+      kind: "failed",
+      problem: { kind: "unsupported" },
+    });
+    expect(ipc.argsOf("playback.openTitle")).toHaveLength(1);
+    expect(ipc.argsOf("analytics.playbackBegin")).toHaveLength(1);
+  },
+);
+
+it("does not retry video that was already converted before local rejection", async () => {
+  await open();
+  runs[0]!.fail({ kind: "media", detail: "Rejected", video: "convert", audio: "convert" });
+  await settle();
+  expect(runs).toHaveLength(1);
+  expect(titlePlayer.state().phase.kind).toBe("failed");
+});
+
+it("ignores a stale copied-video rejection lookup after a new title opened", async () => {
+  await open();
+  const lookup = ipc.hold("playback.failure");
+  runs[0]!.fail({ kind: "media", detail: "Rejected", video: "copy", rejectedTrack: "video" });
+  await settle();
+  void titlePlayer.open({ ...now, title: { ...now.title, id: "2" } }, 80);
+  await settle();
+  lookup.resolve(null);
+  await settle();
+  expect(runs).toHaveLength(2);
+  expect(runs[1]!.run).toMatchObject({ start: 80, convertSound: false, rejectedCopy: false });
+  expect(runs[1]!.destroyed).toBe(false);
+});
+
+it("preserves network diagnostics after a video fallback", async () => {
+  await open();
+  runs[0]!.fail({
+    kind: "unsupported",
+    detail: "Rejected video",
+    video: "copy",
+    rejectedTrack: "video",
+  });
+  await settle();
+  expect(runs).toHaveLength(2);
+  runs[1]!.fail({
+    kind: "network",
+    detail: "PRIVATE",
+    video: "convert",
+    audio: "none",
+  });
+  await settle();
+  expect(ipc.argsOf("analytics.playbackFailure")).toEqual([
+    expect.objectContaining({
+      diagnostic: expect.objectContaining({
+        diagnostic_stage: "deliver",
+        diagnostic_reason: "network",
+        diagnostic_fallback: "video",
+      }),
+    }),
+  ]);
+  expect(runs).toHaveLength(2);
+});

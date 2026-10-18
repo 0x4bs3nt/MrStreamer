@@ -271,3 +271,46 @@ it("cancels a pending body read on close without a playback failure", async () =
   expect(cancelled).toHaveBeenCalledOnce();
   expect(failed).not.toHaveBeenCalled();
 });
+
+it("identifies a copied video codec refusal and forwards conversion to subsequent runs", async () => {
+  let requested = "";
+  vi.stubGlobal("fetch", async (url: string) => {
+    requested = url;
+    return new Response(new Uint8Array([1]), {
+      headers: { "x-title-video": "copy", "x-title-audio": "copy" },
+    });
+  });
+  vi.spyOn(Source, "isTypeSupported").mockReturnValue(false);
+  engine = titleEngine(document.createElement("video"), { ...run, rejectedCopy: true });
+  await expect(engine.started).rejects.toMatchObject({
+    kind: "unsupported",
+    video: "copy",
+    audio: "copy",
+    rejectedTrack: "video",
+  });
+  expect(new URL(requested).searchParams.get("picture")).toBe("convert");
+});
+
+it("retains delivery facts on a rejection after playback started", async () => {
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(new Uint8Array([1]), {
+        headers: { "x-title-video": "copy", "x-title-audio": "convert" },
+      }),
+  );
+  const video = document.createElement("video");
+  const title = titleEngine(video, run);
+  engine = title;
+  await vi.advanceTimersByTimeAsync(0);
+  video.currentTime = 0.2;
+  video.dispatchEvent(new Event("timeupdate"));
+  await title.started;
+  const failed = vi.fn();
+  title.onFailure(failed);
+  Object.defineProperty(video, "error", { value: { code: 3, message: "Local refusal" } });
+  video.dispatchEvent(new Event("error"));
+  expect(failed).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ kind: "media", video: "copy", audio: "convert" }),
+  );
+});

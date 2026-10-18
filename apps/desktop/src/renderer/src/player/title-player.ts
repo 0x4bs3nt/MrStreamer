@@ -74,7 +74,12 @@ import {
   showDownloadedSubtitle,
 } from "./subtitles.ts";
 import { outputs, positionOf } from "./output.ts";
-import { titleEngine, type SubtitleState, type TitleEngine } from "./title-engine.ts";
+import {
+  titleEngine,
+  type SubtitleState,
+  type TitleEngine,
+  type TitleError,
+} from "./title-engine.ts";
 
 /** How often progress is saved while a title plays. */
 const CHECKPOINT_MS = 60_000;
@@ -294,8 +299,10 @@ let engine: TitleEngine | null = null;
 let generation = 0;
 let subtitleChoice = 0;
 let lastWasDownloaded = false;
-/** The sound was converted after a copy failed to start; later runs keep converting. */
+/** Sound conversion after local rejection stays selected for later runs. */
 let convertSound = false;
+/** Compatibility attempts belong to the session, never to an individual seek or track run. */
+let rejectedCopy = false;
 /** Reconnects used by this title. Brief returns and track/seek runs keep the remaining budget. */
 let reconnects = 0;
 let checkpoint: ReturnType<typeof setInterval> | null = null;
@@ -598,6 +605,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
     subtitle: store.getState().downloadedOn ? null : (subtitle?.id ?? null),
     page: store.getState().downloadedOn ? null : (subtitle?.page ?? null),
     convertSound,
+    rejectedCopy,
     duration,
     paused,
   });
@@ -616,7 +624,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
     await started.started;
   } catch (error) {
     if (mine !== generation) return;
-    await recover(mine, start, asEngineError(error), false, paused);
+    await recover(mine, start, asEngineError(error), paused);
     return;
   }
   if (mine !== generation) return;
@@ -638,20 +646,19 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
   started.onFailure((error) => {
     if (mine !== generation) return;
     const paused = store.getState().phase.kind === "paused";
-    void recover(mine, started.position(), error, true, paused);
+    void recover(mine, started.position(), error, paused);
   });
 }
 
 /**
- * What to do about a run that failed: convert the sound once when a copied one didn't start,
- * start again where it was after the connection broke, or give up and say why. A title that was
+ * A local rejection tries useful sound conversion, then copied video conversion once. Network
+ * failures reconnect within their own budget; other failures end here. A title that was
  * paused, or was changing tracks while paused, comes back paused.
  */
 async function recover(
   mine: number,
   position: number,
-  error: EngineError,
-  wasPlaying: boolean,
+  error: TitleError,
   paused: boolean,
 ): Promise<void> {
   const [upstream, context] = session
@@ -664,17 +671,35 @@ async function recover(
       ])
     : [null, null];
   if (mine !== generation) return;
-  const fallback = !upstream && !wasPlaying && !convertSound && error.kind !== "network";
+  const local = !upstream && error.kind !== "network";
+  const soundFallback =
+    local &&
+    !convertSound &&
+    error.audio !== "convert" &&
+    error.audio !== "none" &&
+    error.rejectedTrack !== "video";
+  const videoFallback = local && !soundFallback && !rejectedCopy && error.video === "copy";
+  const fallback = soundFallback || videoFallback;
   if (!fallback)
     observation.failure(
       upstream ? streamFailure(upstream) : error.kind === "network" ? "network" : "unsupported",
       upstream
         ? streamDiagnostic(upstream)
-        : engineDiagnostic(error, "mp4", convertSound ? "audio" : "none", context),
+        : {
+            ...engineDiagnostic(error, "mp4", convertSound ? "audio" : "none", context),
+            ...(local && !error.diagnosticReason && (rejectedCopy || error.video === "copy")
+              ? {
+                  diagnostic_stage: "decode" as const,
+                  diagnostic_reason: "copy_rejected" as const,
+                }
+              : {}),
+            diagnostic_fallback: rejectedCopy ? "video" : convertSound ? "audio" : "none",
+          },
     );
   stopEngine();
   if (fallback) {
-    convertSound = true;
+    if (soundFallback) convertSound = true;
+    else rejectedCopy = true;
     await run(position, reconnects, paused);
     return;
   }
@@ -1009,6 +1034,7 @@ async function moveHere(): Promise<void> {
   if (!shown && !asked) return titlePlayer.close();
   const mine = ++generation;
   convertSound = false;
+  rejectedCopy = false;
   store.setState({ phase: { kind: "opening" }, shows: null, confirmed: null });
   try {
     const measurement = observation.measurement();
@@ -1174,6 +1200,7 @@ export const titlePlayer = {
     openedAt = Date.now();
     play++;
     convertSound = false;
+    rejectedCopy = false;
     reconnects = 0;
     lastSubtitle = null;
     lastWasDownloaded = false;

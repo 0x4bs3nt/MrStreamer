@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { Codec } from "@mrstreamer/contracts/playback";
 import * as Layer from "effect/Layer";
+import { readProbe, titlePlan } from "../src/main/playback/title.ts";
 import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback, type PlaybackDeps } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
@@ -363,6 +364,103 @@ function framesOf(body: Buffer): number {
 
 // Each run starts ffmpeg, which takes a moment under a busy suite.
 describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
+  // These clips derive from title-h264-eac3-subs.mkv, copying subtitles and encoding stereo AAC.
+  // libx264 veryfast/crf28/yuv420p10le; libx265 ultrafast/crf32/yuv420p12le, one thread.
+  it.each([
+    ["title-h264-10bit.mkv", "h264", 10],
+    ["title-hevc-12bit.mkv", "hevc", 12],
+  ] as const)(
+    "keeps %s source facts and converts rejected copies for the rest of a session",
+    async (name, codec, depth) => {
+      const bytes = fixture(name);
+      const raw = spawnSync(
+        FFPROBE,
+        ["-v", "error", "-show_streams", "-show_format", "-of", "json", "-i", "pipe:0"],
+        { input: bytes, encoding: "utf8" },
+      );
+      expect(raw.status).toBe(0);
+      const probe = readProbe(JSON.parse(raw.stdout));
+      expect(probe?.video).toMatchObject({
+        codec,
+        depth,
+        chroma: "420",
+        profile: expect.any(String),
+      });
+      const decoders: readonly Codec[] = ["h264", "hevc", "aac"];
+      const urls = {
+        source: "http://127.0.0.1/source",
+        subtitles: "http://127.0.0.1/subtitles",
+        start: "http://127.0.0.1/start",
+      };
+      expect(
+        titlePlan(probe!, { start: 5, audio: 2, subtitle: 3 }, new Set(decoders), urls).video,
+      ).toBe("copy");
+      expect(
+        titlePlan(
+          probe!,
+          { start: 5, audio: 2, subtitle: 3, convertSound: true },
+          new Set(decoders),
+          urls,
+        ).video,
+      ).toBe("copy");
+      const plan = titlePlan(
+        probe!,
+        { start: 5, audio: 2, subtitle: 3, rejectedCopy: true },
+        new Set(decoders),
+        urls,
+      );
+      expect(plan).toMatchObject({ video: "convert", audio: "copy" });
+      expect(plan.args).toContain("yuv420p");
+
+      const { provider, playback, open, dispose } = await titles();
+      try {
+        const movie = provider.titles.movies.find((each) =>
+          each.name.includes("Two sound tracks"),
+        )!;
+        provider.replaceMovieFile(movie.id, Buffer.from(bytes));
+        const opened = await open("TEST | Two sound tracks", decoders);
+        const copy = await play(`${opened.url}?start=5&audio=2`);
+        expect(copy.response.headers.get("x-title-video")).toBe("copy");
+        const converted = await play(`${opened.url}?start=5&audio=2&picture=convert`);
+        expect(converted.response.headers.get("x-title-video")).toBe("convert");
+        expect(converted.response.headers.get("x-start")).toBe("5");
+        expect(converted.streams).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ codec_type: "video", codec_name: "h264" }),
+            expect.objectContaining({ codec_type: "audio", codec_name: "aac" }),
+          ]),
+        );
+        const decoded = picturesOf(converted.body);
+        expect(decoded.decoded).toBeGreaterThan(0);
+        expect(decoded.errors).toBe("");
+        const seek = await play(`${opened.url}?start=9&audio=1`);
+        expect(seek.response.headers.get("x-title-video")).toBe("convert");
+        expect(seek.response.headers.get("x-start")).toBe("9");
+        expect(provider.mostFilesAtOnce()).toBe(1);
+        await playback.close(opened.sessionId);
+        await vi.waitFor(() => expect(provider.activeStreams()).toBe(0));
+      } finally {
+        await dispose();
+      }
+    },
+  );
+
+  it("keeps unknown source depth and chroma unknown", () => {
+    expect(
+      readProbe({
+        streams: [
+          {
+            index: 0,
+            codec_type: "video",
+            codec_name: "hevc",
+            pix_fmt: "future",
+            bits_per_raw_sample: "0",
+          },
+        ],
+      })?.video,
+    ).toMatchObject({ profile: null, depth: null, chroma: null });
+  });
+
   it.each([
     ["missing tool", null, "tool_missing"],
     ["failed tool launch", "missing", "tool_failed"],
@@ -1767,7 +1865,26 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
       const run = await play(`${session.url}?start=30`);
       expect(run.response.status).toBe(200);
       expect(performance.now() - began).toBeGreaterThan(timeout);
-      expect(Number(run.response.headers.get("x-start"))).toBeCloseTo(21.746, 2);
+      // FFmpeg 6 includes 46 ms of audio preroll in this file's origin; newer versions don't.
+      // The copied picture must still begin at the fixture's 29.2-second keyframe.
+      const origin = spawnSync(
+        FFPROBE,
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=start_time",
+          "-of",
+          "csv=p=0",
+          fileURLToPath(new URL("./fixtures/title-receiver.mkv", import.meta.url)),
+        ],
+        { encoding: "utf8" },
+      );
+      expect(origin.status).toBe(0);
+      expect(Number(run.response.headers.get("x-start")) + Number(origin.stdout)).toBeCloseTo(
+        29.2,
+        2,
+      );
       expect(picturesOf(run.body).decoded).toBeGreaterThan(0);
       expect(provider.mostFilesAtOnce()).toBe(1);
     } finally {

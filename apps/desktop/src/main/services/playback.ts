@@ -508,6 +508,8 @@ interface TitleSessionState extends SessionBase {
   readonly probeKey: string;
   /** What the file holds, as ffprobe read it when the title opened. */
   probe: TitleProbe | null;
+  /** Local copy rejection lasts for this session, independently of seeks and track changes. */
+  rejectedCopy: boolean;
   /**
    * Which of the files behind the address ffprobe read; see `SourceIdentity.generation`. A
    * receiver's playlist is of that file, and its load ends once an answer is of another.
@@ -1816,11 +1818,13 @@ function make(deps: PlaybackDeps) {
       session.active = active;
       response.on("close", () => active.abort());
       const signal = AbortSignal.any([session.closed.signal, active.signal]);
+      if (url.searchParams.get("picture") === "convert") session.rejectedCopy = true;
       const run: TitleRun = {
         start: Math.max(0, Number(url.searchParams.get("start")) || 0),
         audio: optionalNumber(url.searchParams.get("audio")),
         subtitle: optionalNumber(url.searchParams.get("subtitle")),
         convertSound: url.searchParams.get("sound") === "convert",
+        rejectedCopy: session.rejectedCopy,
       };
       const probe = session.probe;
       if (!probe || !deps.ffmpeg) {
@@ -1831,7 +1835,7 @@ function make(deps: PlaybackDeps) {
             ...titleDiagnostic(probe, null, run.audio),
             diagnostic_stage: !deps.ffmpeg ? "convert" : "probe",
             diagnostic_reason: !deps.ffmpeg ? "tool_missing" : "probe_failed",
-            diagnostic_fallback: run.convertSound ? "audio" : "none",
+            diagnostic_fallback: run.rejectedCopy ? "video" : run.convertSound ? "audio" : "none",
           },
         };
         response.writeHead(415).end();
@@ -1870,7 +1874,7 @@ function make(deps: PlaybackDeps) {
 
       session.diagnostic = {
         ...titleDiagnostic(probe, plan, run.audio),
-        diagnostic_fallback: run.convertSound ? "audio" : "none",
+        diagnostic_fallback: run.rejectedCopy ? "video" : run.convertSound ? "audio" : "none",
       };
       const child = spawn(deps.ffmpeg, plan.args, { stdio: ["ignore", "pipe", "pipe"] });
       let errors = "";
@@ -2044,7 +2048,9 @@ function make(deps: PlaybackDeps) {
 
       response.writeHead(200, {
         "Content-Type": "video/mp4",
-        "Access-Control-Expose-Headers": "x-start",
+        "Access-Control-Expose-Headers": "x-start, x-title-video, x-title-audio",
+        "x-title-video": plan.video,
+        "x-title-audio": plan.audio,
         "x-start": String(Math.max(0, pictureStart - probe.origin)),
       });
       child.stdout.pause();
@@ -3816,6 +3822,7 @@ function make(deps: PlaybackDeps) {
           failure: null,
           diagnostic: null,
           probe: null,
+          rejectedCopy: false,
           probed: 0,
           source: null,
           readForwardAt: null,

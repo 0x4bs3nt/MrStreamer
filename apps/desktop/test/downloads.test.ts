@@ -745,6 +745,30 @@ describe.skipIf(!hasTools)("downloads", () => {
     expect(await readdir(join(dataDir, "downloads"))).toEqual([]);
   }, 60_000);
 
+  it("converts a rejected offline video copy without contacting its provider", async () => {
+    const { provider, subscriptionId, downloads, playback, find } = await connected();
+    const film = movie(provider, subscriptionId, "TEST | Two sound tracks and subtitles (MULTI)");
+    provider.replaceMovieFile(film.id, Buffer.from(fixture("title-h264-10bit.mkv")));
+    const done = await downloads.add(film.ref);
+    await vi.waitFor(async () => expect((await find(done.id))?.status.kind).toBe("complete"), {
+      timeout: LONG,
+    });
+    const requests = provider.fileRequests();
+    await provider.close();
+    const copy = await playback.openCopy(await downloads.copy(done.id), DECODERS);
+    for (const [query, expected] of [
+      ["start=3&audio=2", "copy"],
+      ["start=6&audio=2&picture=convert", "convert"],
+      ["start=9&audio=1", "convert"],
+    ]) {
+      const response = await fetch(`${copy.url}?${query}`);
+      expect(response.headers.get("x-title-video")).toBe(expected);
+      expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+    }
+    expect(provider.fileRequests()).toBe(requests);
+    await playback.close(copy.sessionId);
+  });
+
   it("answers adds of one title made at once with one download", async () => {
     const { provider, subscriptionId, downloads, find, quit } = await connected();
     const film = movie(provider, subscriptionId, "TEST | Index at the end");

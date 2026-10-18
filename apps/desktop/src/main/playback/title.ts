@@ -29,6 +29,10 @@ export interface TitleProbe {
     readonly id: number;
     readonly codec: Codec | null;
     readonly name: string;
+    /** Source facts, never an assurance that a browser supports this profile. */
+    readonly profile: string | null;
+    readonly depth: number | null;
+    readonly chroma: "420" | "422" | "444" | null;
     /** When the first picture shows, on the file's clock. */
     readonly start: number;
     /** The file stores its pictures out of the order they show in, as with B-frames. */
@@ -59,6 +63,8 @@ function defineProbe() {
     "codec_type?": "string",
     "codec_name?": "string",
     "pix_fmt?": "string",
+    "profile?": "string",
+    "bits_per_raw_sample?": "string",
     "channels?": "number",
     "start_time?": "string",
     "has_b_frames?": "number",
@@ -133,6 +139,9 @@ export function readProbe(json: unknown): TitleProbe | null {
           id: video.index,
           codec: videoCodec(video),
           name: video.codec_name ?? "unknown",
+          profile: video.profile ?? null,
+          depth: pixelDepth(video),
+          chroma: pixelChroma(video.pix_fmt),
           start: Number.isFinite(Number(video.start_time))
             ? Number(video.start_time)
             : Number.isFinite(origin)
@@ -249,12 +258,27 @@ function facts(stream: Stream) {
   };
 }
 
+/** Only known pixel formats or an explicit positive sample depth establish depth. */
+function pixelDepth(stream: Stream): number | null {
+  const format = stream.pix_fmt ?? "";
+  const planar = /^(?:yuva?(?:420|422|444)|gbra?)p(?:(\d+)(?:le|be))?$/.exec(format);
+  if (planar) return planar[1] ? Number(planar[1]) : 8;
+  const explicit = Number(stream.bits_per_raw_sample);
+  return Number.isInteger(explicit) && explicit > 0 ? explicit : null;
+}
+
+/** Chroma is known only for the planar YUV formats ffprobe reports here. */
+function pixelChroma(format: string | undefined): "420" | "422" | "444" | null {
+  const chroma = /^yuva?(420|422|444)p(?:\d+(?:le|be))?$/.exec(format ?? "")?.[1];
+  return chroma === "420" || chroma === "422" || chroma === "444" ? chroma : null;
+}
+
 function videoCodec(stream: Stream): Codec | null {
   switch (stream.codec_name) {
     case "h264":
       return "h264";
     case "hevc":
-      return stream.pix_fmt?.includes("10") ? "hevc-10bit" : "hevc";
+      return pixelDepth(stream) === 10 ? "hevc-10bit" : "hevc";
     case "mpeg2video":
       return "mpeg2";
     default:
@@ -285,8 +309,10 @@ export interface TitleRun {
   readonly audio: number | null;
   /** A subtitle track's id, or null for none. */
   readonly subtitle: number | null;
-  /** Convert the sound even when the player decodes it: the second try after a failed start. */
+  /** Convert sound after a local rejection whose failing track was unknown. */
   readonly convertSound?: boolean;
+  /** This session has rejected copied video; later seeks and track changes keep converting. */
+  readonly rejectedCopy?: boolean;
 }
 
 /**
@@ -344,7 +370,7 @@ export function titlePlan(
 ): TitlePlan {
   const video = probe.video;
   const sound = probe.audio.find((track) => track.id === run.audio) ?? probe.audio[0] ?? null;
-  const copyVideo = video?.codec != null && decoders.has(video.codec);
+  const copyVideo = video?.codec != null && decoders.has(video.codec) && !run.rejectedCopy;
   const copySound = sound?.codec != null && decoders.has(sound.codec) && run.convertSound !== true;
   const side = subtitleSide(probe, run.subtitle, urls.subtitles);
 

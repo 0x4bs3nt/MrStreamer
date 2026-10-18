@@ -27,6 +27,8 @@ Service contracts are in `apps/desktop/test/downloads.test.ts`: ranged resume af
 
 Source: `docs/user/downloads.md`, `DownloadsNotice.tsx` in `features/downloads/` beside `components/WindowBar.tsx`, `apps/desktop/src/main/services/downloads.ts`, `downloads/transfer.ts`, `platform/downloads-store.ts`, `playback/file-source.ts`, `PlaybackCoordination.lend` in `services/playback-coordination.ts` and `openCopy` in `services/playback.ts`, `src/renderer/src/features/downloads/`, including `SeriesDownload.tsx`, `lib/downloads.ts`, and `CopyNow` in `player/title-player.ts`.
 
+For copied-video recovery, follow the [Titles compatibility recipe](titles.md#driving-it-with-electron-cdp). Its offline run closes the provider, opens the downloaded copy, checks conversion and seek/track progress, and requires zero new provider file requests. This source-build check does not establish installed native acceptance.
+
 ## Gotchas
 
 For download-progress profiling, run `node apps/desktop/test/e2e/download-performance.ts --app-dir <frozen app directory> --executable <Electron> --revision <sha> --output <new evidence directory>` serially for each build. It seeds 2,000 completed records while the app is closed, then drives a 520-episode series while a real transfer advances. Retain all 30 content/scroll samples, main snapshots, CPU profiles, traces and matching-row positive control. Task/script time and a subsequent animation-frame callback do not prove physical paint latency or retained-heap savings. The functional Downloads driver waits for a pointer-reachable control after Search closes; a mounted control can still be behind its closing overlay.

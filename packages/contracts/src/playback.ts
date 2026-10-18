@@ -51,7 +51,10 @@ export interface StreamSession {
  * and replaces the one before, so seeking and changing tracks never hold two provider
  * connections. The answer is fragmented MP4; its `x-start` header says at which second of the
  * title its first frame sits. With `only=subtitles` the same address answers the subtitle
- * track's feed instead, which the player reads before it asks for the picture: see
+ * track's feed instead, which the player reads before it asks for the picture. `sound=convert`
+ * forces AAC sound; `picture=convert` records rejected copied video for this local session,
+ * making this and later runs convert to H.264. `x-title-video` and `x-title-audio` name each
+ * response's actual `copy`, `convert` or `none` delivery for bounded local recovery. See
  * `@mrstreamer/core/subtitles/feed`.
  */
 export interface TitleSession {
