@@ -1,3 +1,4 @@
+import { router, usePathname } from "expo-router";
 import { lockAsync, OrientationLock, unlockAsync } from "expo-screen-orientation";
 import { isPictureInPictureSupported, VideoAirPlayButton, VideoView } from "expo-video";
 import { useEffect, useRef, useState } from "react";
@@ -16,6 +17,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Glass, IconButton } from "./glass.tsx";
+import { openOnTabs, useTabs, type TabScreen } from "./header.tsx";
 import {
   closeWatch,
   onEndPictureInPicture,
@@ -28,10 +30,12 @@ import {
   retry,
   seekBy,
   seekTo,
+  setAside,
   showVersions,
   stop,
   togglePause,
   trackChoices,
+  unsetAside,
   usePlayback,
   usePlaybackClock,
   usePlaybackLength,
@@ -39,18 +43,75 @@ import {
 import { colors } from "./ui.tsx";
 
 /**
- * Watch: the player full screen, over the tabs, with A3's controls: a close button, AirPlay and
- * Picture in Picture at the top, and everything else in one large glass panel. A movie or an
- * episode adds a scrubber, its sound and subtitle tracks and the next episode. It is the app's
- * own layer rather than a route, because the view that starts Picture in Picture has to stay
- * while it plays: Watch then hides, and the tabs and accessory take over. Closing it shows the
- * screen under it, a title's details among them. A movie or an episode turns Watch to landscape
- * while it shows; the screens under it turn as the phone does again once it closes.
+ * Watch: the player full screen, over the tabs, with A3's controls: a close button, AirPlay,
+ * Picture in Picture, Downloads and Settings at the top, and everything else in one large glass
+ * panel, all showing and hiding together. A movie or an episode adds a scrubber, its sound and
+ * subtitle tracks and the next episode. It is the app's own layer rather than a route, because
+ * the view that starts Picture in Picture has to stay while it plays: Watch then hides, and the
+ * tabs and accessory take over. Closing it shows the screen under it, a title's details among
+ * them. A movie or an episode turns Watch to landscape while it shows; the screens under it turn
+ * as the phone does again once it closes.
+ *
+ * Downloads and Settings open on the tab under Watch without stopping what plays: where Picture in
+ * Picture can, it takes the picture over, as its own button does; otherwise Watch is set aside,
+ * paused, until the accessory brings it back (`setAside`). A screen over the tabs, as Search,
+ * closes first. With no provider saved there are no tabs and no accessory: Downloads is the
+ * offline list, offered only while Picture in Picture can take the picture, and Settings isn't
+ * offered. If the tabs go while Watch is set aside, as when the last provider is removed and a
+ * downloaded copy waits there, Watch shows that copy again as it stands.
  */
 export function WatchLayer() {
-  const { phase, watch, pip } = usePlayback();
+  const { phase, watch, pip, external } = usePlayback();
   const view = useRef<VideoView>(null);
   const [controls, setControls] = useState(true);
+  const tabs = useTabs();
+  const tab = tabs?.tab ?? null;
+  const pathname = usePathname();
+  // The press waiting for Picture in Picture to take over, with its fallback's timer. Picture in
+  // Picture starting, Watch closing or showing again, the stream failing (its view goes, and Try
+  // again plays the same item anew), another item, another tab or none, and Watch going each
+  // retire it, so a fallback acts only for the press, stream and tabs it was for.
+  const waiting = useRef<{ timer?: ReturnType<typeof setTimeout> } | null>(null);
+  const retire = () => {
+    clearTimeout(waiting.current?.timer);
+    waiting.current = null;
+  };
+  const item = phase.kind === "idle" ? null : phase.item;
+  const failed = phase.kind === "failed";
+  useEffect(() => retire, [watch, pip, item, failed, tab]);
+  useEffect(() => {
+    if (!tab) unsetAside();
+  }, [tab]);
+  const pictureCanTake = phase.kind === "playing" && !external && isPictureInPictureSupported();
+  const screens: readonly TabScreen[] = tab
+    ? ["downloads", "settings"]
+    : pictureCanTake
+      ? ["downloads"]
+      : [];
+  const openScreen = (screen: TabScreen) => {
+    retire();
+    if (tabs) openOnTabs(tabs, screen);
+    // Offline Downloads is usually the screen Watch opened over: then it only has to show.
+    else if (pathname !== "/offline") router.push("/offline");
+    const shown = view.current;
+    if (!pictureCanTake || !shown) {
+      if (tabs) setAside();
+      return;
+    }
+    // Picture in Picture reports starting, which closes Watch over the screen just opened. If it
+    // refuses, or doesn't start within a second, Watch is set aside instead of staying over it;
+    // with no tabs to come back from, Watch stays as it was.
+    const mine: { timer?: ReturnType<typeof setTimeout> } = {};
+    waiting.current = mine;
+    const unless = () => {
+      if (waiting.current !== mine) return;
+      waiting.current = null;
+      if (tabs) setAside();
+    };
+    void shown.startPictureInPicture().then(() => {
+      if (waiting.current === mine) mine.timer = setTimeout(unless, 1000);
+    }, unless);
+  };
 
   useEffect(() => {
     onEndPictureInPicture(() => void view.current?.stopPictureInPicture());
@@ -128,7 +189,11 @@ export function WatchLayer() {
         />
       ) : null}
       {watch && controls ? (
-        <Controls onPictureInPicture={() => void view.current?.startPictureInPicture()} />
+        <Controls
+          onPictureInPicture={() => void view.current?.startPictureInPicture()}
+          screens={screens}
+          onScreen={openScreen}
+        />
       ) : null}
     </View>
   );
@@ -140,7 +205,16 @@ function turn(change: () => Promise<void>) {
   turning = turning.then(change).catch(() => undefined);
 }
 
-function Controls({ onPictureInPicture }: { onPictureInPicture: () => void }) {
+function Controls({
+  onPictureInPicture,
+  screens,
+  onScreen,
+}: {
+  onPictureInPicture: () => void;
+  /** The screens Watch can open from here. */
+  screens: readonly TabScreen[];
+  onScreen: (screen: TabScreen) => void;
+}) {
   const { phase } = usePlayback();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -153,20 +227,40 @@ function Controls({ onPictureInPicture }: { onPictureInPicture: () => void }) {
       <Glass style={[styles.circle, { top: insets.top + 12, left: edge.left }]}>
         <IconButton symbol="xmark" label="Close" onPress={closeWatch} testID="watch-close" />
       </Glass>
-      {streaming ? (
+      {streaming || screens.length > 0 ? (
         <Glass style={[styles.capsule, { top: insets.top + 12, right: edge.right }]}>
-          <VideoAirPlayButton
-            style={styles.airplay}
-            tint={colors.text}
-            activeTint={colors.text}
-            accessibilityLabel="AirPlay"
-          />
-          {isPictureInPictureSupported() ? (
+          {streaming ? (
+            <>
+              <VideoAirPlayButton
+                style={styles.airplay}
+                tint={colors.text}
+                activeTint={colors.text}
+                accessibilityLabel="AirPlay"
+              />
+              {isPictureInPictureSupported() ? (
+                <IconButton
+                  symbol="pip.enter"
+                  label="Picture in Picture"
+                  onPress={onPictureInPicture}
+                  testID="watch-pip"
+                />
+              ) : null}
+            </>
+          ) : null}
+          {screens.includes("downloads") ? (
             <IconButton
-              symbol="pip.enter"
-              label="Picture in Picture"
-              onPress={onPictureInPicture}
-              testID="watch-pip"
+              symbol="arrow.down.circle"
+              label="Downloads"
+              onPress={() => onScreen("downloads")}
+              testID="watch-downloads"
+            />
+          ) : null}
+          {screens.includes("settings") ? (
+            <IconButton
+              symbol="gearshape"
+              label="Settings"
+              onPress={() => onScreen("settings")}
+              testID="watch-settings"
             />
           ) : null}
         </Glass>

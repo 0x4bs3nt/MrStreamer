@@ -29,6 +29,7 @@ import {
 } from "../../../account.ts";
 import { DownloadsLink } from "../../../downloads-screen.tsx";
 import { failureOf } from "../../../errors.ts";
+import { tabHref, useTabs, type Tab } from "../../../header.tsx";
 import { setStatistics, useStatistics } from "../../../telemetry/index.ts";
 import { hasTmdb, useMetadataStatus, useTitleTimings } from "../../../titles.ts";
 import { ChannelLogo, colors, TextButton } from "../../../ui.tsx";
@@ -37,21 +38,23 @@ import { ChannelLogo, colors, TextButton } from "../../../ui.tsx";
  * Settings as one list: the providers first, each a row with Add provider under them, then
  * Downloads, a row with what they take that opens them, Playback, Privacy and About. M3U playlists
  * and guide sources come here as they come to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and
- * notice, as the desktop's Settings show them.
+ * notice, as the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and
+ * what it opens goes on that tab too.
  */
 export default function Settings() {
   const roster = useRoster();
   const statistics = useStatistics();
+  const tab = useTabs()?.tab ?? "(home)";
   if (roster.kind !== "ready") return null;
   return (
     <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic">
       <Section name="Providers" />
       {roster.members.map((member) => (
-        <Provider key={member.entry.id} member={member} />
+        <Provider key={member.entry.id} member={member} tab={tab} />
       ))}
       <Pressable
         accessibilityRole="button"
-        onPress={() => router.push("/provider")}
+        onPress={() => router.push(tabHref(tab, "provider"))}
         style={({ pressed }) => [styles.provider, pressed && styles.pressed]}
         testID="settings-add-provider"
       >
@@ -60,7 +63,7 @@ export default function Settings() {
       </Pressable>
 
       <Section name="Downloads" />
-      <DownloadsLink onPress={() => router.push("/downloads")} />
+      <DownloadsLink onPress={() => router.push(tabHref(tab, "downloads"))} />
 
       <Section name="Playback" />
       <Line
@@ -125,13 +128,14 @@ export default function Settings() {
  * A provider as one row: its name and how it stands, in a line. Pressing it offers what can be
  * done with it, as a system sheet: Retry when it didn't answer, the reloads, Edit and Remove.
  */
-function Provider({ member }: { member: Member }) {
+function Provider({ member, tab }: { member: Member; tab: Tab }) {
   const { entry, label } = member;
   const line = standing(member);
+  const edit = () => router.push({ pathname: tabHref(tab, "provider"), params: { id: entry.id } });
   const open = () => {
     const actions = [
       ...(member.needsSecret
-        ? [{ label: "Enter password", run: () => edit(entry.id) }]
+        ? [{ label: "Enter password", run: edit }]
         : failed(member)
           ? [{ label: "Retry", run: () => retry(entry.id) }]
           : []),
@@ -141,7 +145,7 @@ function Provider({ member }: { member: Member }) {
             { label: "Reload channels", run: () => reloadChannels(entry.id) },
             { label: "Reload movies and series", run: () => reloadTitles(entry.id) },
           ]),
-      { label: "Edit", run: () => edit(entry.id) },
+      { label: "Edit", run: edit },
       { label: "Remove", run: () => confirmRemove(member) },
     ];
     ActionSheetIOS.showActionSheetWithOptions(
@@ -174,8 +178,6 @@ function Provider({ member }: { member: Member }) {
     </Pressable>
   );
 }
-
-const edit = (id: string) => router.push({ pathname: "/provider", params: { id } });
 
 /** Whether it needs the viewer: it didn't answer, or asks for its password again. */
 const failed = (member: Member) =>

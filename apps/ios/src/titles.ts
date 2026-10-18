@@ -367,6 +367,10 @@ export function tilesOf(made: Collections, of: "genres" | "services"): readonly 
       }));
 }
 
+/** How many titles of `kind` the lists hold: what search looks through. */
+export const titleCount = (index: IndexedCatalogue, kind: TitleKind) =>
+  kindOf(index, kind).titles.length;
+
 /** Titles of `kind` whose names hold every word of `query`, by any name TMDB gave them too. */
 export function searchTitles(index: IndexedCatalogue, kind: TitleKind, query: string) {
   const tk = tmdbKind(kind);

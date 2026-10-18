@@ -7,10 +7,10 @@ import { onScreen } from "../playback.ts";
 import { onTelemetryScreen, startTelemetry } from "../telemetry/index.ts";
 import { WatchLayer } from "../watch.tsx";
 
-// The app: Connect until a subscription is saved, then the five tabs. Without one, Connect also
-// opens Downloads (`offline`), as copies play with no provider. Watch lies over all of them,
-// outside navigation, so the one player view it shows lives on under Picture in Picture while
-// the tabs are used.
+// The app: Connect until a subscription is saved, then the four tabs, with Search over them.
+// Without one, Connect also opens Downloads (`offline`), as copies play with no provider. Watch
+// lies over all of them, outside navigation, so the one player view it shows lives on under
+// Picture in Picture while the tabs are used.
 
 const theme = {
   ...DarkTheme,
@@ -47,6 +47,8 @@ export default function RootLayout() {
           {/* Explicit, or Expo Router falls back to the first open route: Runtime proof. */}
           <Stack.Protected guard={signedIn} redirectTo="/connect">
             <Stack.Screen name="(tabs)" />
+            {/* Over the tab it opened from, which stays as it was under it. */}
+            <Stack.Screen name="search" options={{ animation: "fade", animationDuration: 180 }} />
           </Stack.Protected>
           <Stack.Protected guard={!signedIn} redirectTo="/">
             <Stack.Screen name="connect" />

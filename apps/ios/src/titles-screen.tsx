@@ -5,13 +5,31 @@ import { collectionRows, rowIds, type Collections } from "@mrstreamer/core/ondem
 import { router } from "expo-router";
 import { useCallback, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { retryTitles } from "./account.ts";
+import { reloadTitles, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
+import { tabHref } from "./header.tsx";
+import {
+  Docked,
+  libraryStatus,
+  loadingStatus,
+  Placeholders,
+  Shape,
+  useDockInset,
+  type Status,
+} from "./loading.tsx";
 import { detailsHref, openDetails, resume, useContinueWatching } from "./resume.ts";
 import { store, useStore } from "./store.ts";
 import { useFixedTabBar } from "./tab-bar.ts";
 import { tilesOf, useCollections, useHolding, useTitleLists } from "./titles.ts";
-import { Artwork, CollectionTileView, PosterGrid, Shelf, TextTabs } from "./titles-ui.tsx";
+import {
+  Artwork,
+  CollectionTileView,
+  PlaceholderGrid,
+  PlaceholderShelf,
+  PosterGrid,
+  Shelf,
+  TextTabs,
+} from "./titles-ui.tsx";
 import { colors, Message } from "./ui.tsx";
 import { useViewing } from "./viewing.ts";
 
@@ -20,7 +38,9 @@ import { useViewing } from "./viewing.ts";
 // viewer's language; New gathers what was added; Genres and Services are tiles; 4K and All are
 // virtualised grids. A row's All, a genre or a service opens its collection on the tab's stack.
 // Genres, services, popular and top rated come from TMDB, so without its metadata they are left
-// out rather than shown empty.
+// out rather than shown empty. Until a kind's first collections are made, still shapes hold For
+// you; what loads, updates or failed by provider is the status line at the bottom, over the
+// titles already there.
 
 type Tab = "for-you" | "new" | "genres" | "services" | "4k" | "all";
 
@@ -30,10 +50,24 @@ const places = store<Record<TitleKind, Tab>>({ movie: "for-you", series: "for-yo
 export const collectionHref = (kind: TitleKind, id: CollectionId) =>
   `/${kind === "movie" ? "films" : "series"}/collection/${encodeURIComponent(id)}` as const;
 
+/**
+ * The status line for a kind's screens: each provider's movie and series lists, Retry reading a
+ * failed one's again, Settings on the kind's own tab.
+ */
+function useTitlesStatus(kind: TitleKind): Status | null {
+  const roster = useRoster();
+  return libraryStatus(roster.kind === "ready" ? roster.members : [], {
+    titles: true,
+    retry: reloadTitles,
+    settings: () => router.push(tabHref(kind === "movie" ? "films" : "series", "settings")),
+  });
+}
+
 /** The Movies or Series tab. */
 export function TitlesHome({ kind }: { kind: TitleKind }) {
   const lists = useTitleLists();
   const made = useCollections(kind);
+  const status = useTitlesStatus(kind);
   if (lists.kind === "failed") {
     return (
       <View style={styles.screen}>
@@ -45,12 +79,35 @@ export function TitlesHome({ kind }: { kind: TitleKind }) {
     );
   }
   // Loading too while the lists' collections are first made.
-  if (!made) return <Message text={kind === "movie" ? "Loading movies" : "Loading series"} />;
-  return <Browse made={made} kind={kind} />;
+  if (!made) {
+    return (
+      <Docked status={status ?? loadingStatus(kind === "movie" ? "movies" : "series")}>
+        <ScrollView
+          style={styles.screen}
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={styles.content}
+          scrollEnabled={false}
+          testID={`${kind}-loading`}
+        >
+          <Placeholders style={styles.featured}>
+            <Shape style={styles.featuredArt} />
+          </Placeholders>
+          <PlaceholderShelf />
+          <PlaceholderShelf />
+        </ScrollView>
+      </Docked>
+    );
+  }
+  return (
+    <Docked status={status}>
+      <Browse made={made} kind={kind} />
+    </Docked>
+  );
 }
 
 function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
   const viewing = useViewing();
+  const inset = useDockInset();
   const chosen = useStore(places)[kind];
   const open = useCallback((title: Title) => openDetails(title), []);
 
@@ -117,7 +174,7 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
     <ScrollView
       style={styles.screen}
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingBottom: 32 + inset }]}
       testID={`${kind}-${tab}`}
     >
       {header}
@@ -228,21 +285,36 @@ function Featured({ title }: { title: Title }) {
 /** A collection pushed over its tab: a row's All, a genre or a service. */
 export function CollectionScreen({ kind, id }: { kind: TitleKind; id: CollectionId }) {
   const made = useCollections(kind, [id]);
+  const status = useTitlesStatus(kind);
   useFixedTabBar(true);
   const found = useMemo(
     () => (made ? { name: made.name(id) ?? "", titles: made.list(id) } : null),
     [made, id],
   );
   const open = useCallback((title: Title) => openDetails(title), []);
-  if (!found) return <Message text="Loading" />;
+  if (!found) {
+    return (
+      <Docked status={status ?? loadingStatus(kind === "movie" ? "movies" : "series")}>
+        <PlaceholderGrid
+          header={
+            <Placeholders style={styles.nameRow}>
+              <Shape style={styles.nameShape} />
+            </Placeholders>
+          }
+        />
+      </Docked>
+    );
+  }
   return (
-    <PosterGrid
-      titles={found.titles}
-      onPress={open}
-      header={<Text style={styles.collectionName}>{found.name}</Text>}
-      empty={<Message text="Nothing here now." />}
-      testID="collection-grid"
-    />
+    <Docked status={status}>
+      <PosterGrid
+        titles={found.titles}
+        onPress={open}
+        header={<Text style={styles.collectionName}>{found.name}</Text>}
+        empty={<Message text="Nothing here now." />}
+        testID="collection-grid"
+      />
+    </Docked>
   );
 }
 
@@ -263,4 +335,6 @@ const styles = StyleSheet.create({
   featuredName: { color: colors.text, fontSize: 22, fontWeight: "700", marginTop: 10 },
   featuredLine: { color: colors.dim, fontSize: 13, marginTop: 2 },
   collectionName: { color: colors.text, fontSize: 28, fontWeight: "700", marginBottom: 8 },
+  nameRow: { marginBottom: 8 },
+  nameShape: { width: "55%", height: 28 },
 });

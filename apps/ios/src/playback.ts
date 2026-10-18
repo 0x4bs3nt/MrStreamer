@@ -58,6 +58,11 @@ export interface Playback {
   readonly pip: boolean;
   /** It plays on an AirPlay receiver. */
   readonly external: boolean;
+  /**
+   * Watch gave way to Downloads or Settings with no Picture in Picture to take the picture over:
+   * it waits, paused, for the accessory to bring Watch back (`setAside`).
+   */
+  readonly aside: boolean;
   /** Home's preview plays without sound until Watch opens or the viewer unmutes it. */
   readonly muted: boolean;
   /**
@@ -108,6 +113,7 @@ const state = store<Playback>({
   watch: false,
   pip: false,
   external: false,
+  aside: false,
   muted: true,
   closing: [],
 });
@@ -173,6 +179,11 @@ export function onScreen(path: string) {
   screen = path;
   requests++;
 }
+
+/** Whether setting Watch aside paused what played, so bringing Watch back plays it again. */
+let resumeOnReturn = false;
+/** Watch was set aside while the stream loaded: it pauses as soon as it starts. */
+let pauseOnStart = false;
 
 /** How often a playing title says how far it got. */
 const CHECKPOINT_MS = 60_000;
@@ -273,6 +284,10 @@ export function player(): VideoPlayer {
   made.addListener("playingChange", ({ isPlaying }) => {
     const { phase } = state.get();
     if (phase.kind === "idle" || phase.kind === "failed") return;
+    if (isPlaying && pauseOnStart) {
+      pauseOnStart = false;
+      made.pause();
+    }
     if (isPlaying && current && !current.loaded) {
       current.loaded = true;
       current.options.outcome?.(true);
@@ -352,6 +367,8 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
   const controller = new AbortController();
   attempt = controller;
   current = { item, open, options, seek: options.from ?? null, loaded: false, stoppedAt: null };
+  resumeOnReturn = false;
+  pauseOnStart = false;
   state.set((s) => {
     const muted = options.watch || s.watch ? false : s.muted;
     player().muted = muted;
@@ -359,6 +376,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       ...s,
       phase: { kind: "loading", item },
       watch: options.watch || s.watch,
+      aside: false,
       muted,
     };
   });
@@ -432,10 +450,24 @@ export function stop() {
   current = null;
   endPictureInPicture?.();
   player().muted = true;
-  state.set((s) => ({ ...s, phase: { kind: "idle" }, watch: false, pip: false, muted: true }));
+  resumeOnReturn = false;
+  pauseOnStart = false;
+  state.set((s) => ({
+    ...s,
+    phase: { kind: "idle" },
+    watch: false,
+    pip: false,
+    aside: false,
+    muted: true,
+  }));
 }
 
+/**
+ * Play or Pause, the viewer's own: in Watch, or from the accessory while Watch is set aside, where
+ * it replaces setting aside's own pause, so bringing Watch back keeps whatever they chose last.
+ */
 export function togglePause() {
+  resumeOnReturn = false;
   const { phase } = state.get();
   if (phase.kind === "playing") player().pause();
   else if (phase.kind === "paused") player().play();
@@ -541,11 +573,23 @@ export function showVersions() {
   current?.options.versions?.();
 }
 
-/** Shows the player full screen, bringing it back from Picture in Picture. */
+/**
+ * Shows the player full screen, bringing it back from Picture in Picture or from being set aside.
+ * What setting it aside paused plays again: a movie or an episode from where it paused, a channel
+ * live again rather than from where it paused. What failed meanwhile shows its failure.
+ */
 export function openWatch() {
   player().muted = false;
-  if (state.get().pip) endPictureInPicture?.();
-  state.set((s) => ({ ...s, watch: true, muted: false }));
+  const { pip, aside, phase } = state.get();
+  if (pip) endPictureInPicture?.();
+  state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
+  // Still loading, it plays once it can; nothing pauses it now.
+  pauseOnStart = false;
+  const resume = aside && resumeOnReturn;
+  resumeOnReturn = false;
+  if (!resume || (phase.kind !== "playing" && phase.kind !== "paused")) return;
+  if (phase.item.live) retry();
+  else if (phase.kind === "paused") player().play();
 }
 
 /** Back to the tabs. With nothing else showing it, Home's preview plays on without sound. */
@@ -553,7 +597,37 @@ export function closeWatch() {
   const { pip, external } = state.get();
   const muted = !pip && !external;
   player().muted = muted;
-  state.set((s) => ({ ...s, watch: false, muted }));
+  state.set((s) => ({ ...s, watch: false, aside: false, muted }));
+}
+
+/**
+ * Watch gives way to Downloads or Settings where Picture in Picture can't take the picture over.
+ * On AirPlay it plays on, as when Watch closes. Otherwise nothing plays unseen: what plays pauses,
+ * what still loads pauses as it starts, and what was paused or failed stays so. The accessory over
+ * the tabs shows it as it is and brings Watch back (`openWatch`).
+ */
+export function setAside() {
+  const { phase, external } = state.get();
+  if (phase.kind === "idle" || external) return closeWatch();
+  resumeOnReturn = phase.kind === "playing" || phase.kind === "loading";
+  pauseOnStart = phase.kind === "loading";
+  if (phase.kind === "playing") player().pause();
+  // Paused, it makes no sound; played again from the accessory, it plays as Watch would.
+  player().muted = false;
+  state.set((s) => ({ ...s, watch: false, aside: true, muted: false }));
+}
+
+/**
+ * Watch shows again what was set aside, as it stands, when nothing else can bring it back: the
+ * tabs and their accessory went, as when the last provider is removed while a downloaded copy
+ * waits. A paused copy stays paused where it was; nothing opens again.
+ */
+export function unsetAside() {
+  if (!state.get().aside) return;
+  resumeOnReturn = false;
+  pauseOnStart = false;
+  player().muted = false;
+  state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
 }
 
 /**
@@ -562,7 +636,7 @@ export function closeWatch() {
  */
 export function pictureInPicture(active: boolean) {
   if (active) {
-    state.set((s) => ({ ...s, pip: true, watch: false }));
+    state.set((s) => ({ ...s, pip: true, watch: false, aside: false }));
     return;
   }
   const { watch } = state.get();

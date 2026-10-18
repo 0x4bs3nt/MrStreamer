@@ -12,6 +12,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { Placeholders, Shape, useDockInset } from "./loading.tsx";
 import { colors } from "./ui.tsx";
 
 // Movies and series as content: posters, shelves of them, text tabs and grids, on solid true
@@ -193,15 +194,38 @@ export function Shelf({
   );
 }
 
+/** A shelf's place while its titles first come: a still heading and a few still posters. */
+export function PlaceholderShelf() {
+  const width = Math.min(usePosterWidth(3), 120);
+  return (
+    <Placeholders style={styles.shelf} testID="placeholder-shelf">
+      <View style={styles.shelfHead}>
+        <Shape style={styles.headShape} />
+      </View>
+      <View style={[styles.shelfRow, styles.stillRow]}>
+        {Array.from({ length: 4 }, (_, index) => (
+          <View key={index} style={{ width }}>
+            <Shape style={{ width, height: Math.round(width * 1.5), borderRadius: 6 }} />
+            <Shape style={styles.captionShape} />
+          </View>
+        ))}
+      </View>
+    </Placeholders>
+  );
+}
+
 /** Text tabs under the title, as the desktop's Movies and Series have them. */
 export function TextTabs<T extends string>({
   tabs,
   value,
   onChange,
+  lead,
 }: {
   tabs: readonly { readonly value: T; readonly label: string }[];
   value: T;
   onChange: (value: T) => void;
+  /** A control before the tabs, in the same row, as Live's country. */
+  lead?: ReactNode;
 }) {
   return (
     <ScrollView
@@ -210,6 +234,7 @@ export function TextTabs<T extends string>({
       contentContainerStyle={styles.tabs}
       accessibilityRole="tablist"
     >
+      {lead}
       {tabs.map((tab) => {
         const selected = tab.value === value;
         return (
@@ -229,6 +254,26 @@ export function TextTabs<T extends string>({
   );
 }
 
+/** A grid's place while its titles first come: what goes above it, then three rows of posters. */
+export function PlaceholderGrid({ header }: { header?: ReactNode }) {
+  const width = usePosterWidth(3);
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={styles.grid}
+      contentInsetAdjustmentBehavior="automatic"
+      scrollEnabled={false}
+    >
+      {header}
+      <Placeholders style={styles.stillGrid} testID="placeholder-grid">
+        {Array.from({ length: 9 }, (_, index) => (
+          <Shape key={index} style={{ width, height: Math.round(width * 1.5), borderRadius: 6 }} />
+        ))}
+      </Placeholders>
+    </ScrollView>
+  );
+}
+
 /** A virtualised grid of posters, three to a row, with what goes above it. */
 export function PosterGrid({
   titles,
@@ -244,6 +289,7 @@ export function PosterGrid({
   testID?: string;
 }) {
   const width = usePosterWidth(3);
+  const inset = useDockInset();
   return (
     <FlatList
       style={styles.screen}
@@ -252,7 +298,7 @@ export function PosterGrid({
       keyExtractor={(title) => title.key}
       renderItem={({ item }) => <PosterTile title={item} width={width} onPress={onPress} />}
       columnWrapperStyle={styles.gridRow}
-      contentContainerStyle={styles.grid}
+      contentContainerStyle={[styles.grid, { paddingBottom: 24 + inset }]}
       contentInsetAdjustmentBehavior="automatic"
       ListHeaderComponent={header ? <>{header}</> : undefined}
       ListEmptyComponent={empty ? <>{empty}</> : undefined}
@@ -328,4 +374,8 @@ const styles = StyleSheet.create({
   tabSelected: { color: colors.text, fontWeight: "700" },
   grid: { paddingHorizontal: 16, paddingBottom: 24, gap: 14 },
   gridRow: { gap: 10 },
+  headShape: { width: 120, height: 18 },
+  stillRow: { flexDirection: "row", overflow: "hidden" },
+  captionShape: { width: "70%", height: 10, marginTop: 8 },
+  stillGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, rowGap: 14 },
 });

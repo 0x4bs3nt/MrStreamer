@@ -41,8 +41,10 @@ import {
 import { useDownloadOf } from "./downloads.ts";
 import { Glass } from "./glass.tsx";
 import { failureOf, playEpisode, playMovie, useFailure, type Failure } from "./play-title.ts";
-import { useRead } from "./read.ts";
-import { members, useRoster } from "./account.ts";
+import { useRead, type Loaded } from "./read.ts";
+import { members, retryTitles, useRoster } from "./account.ts";
+import { describeError } from "./errors.ts";
+import { Docked, loadingStatus, PlaceholderLines, Placeholders, Shape } from "./loading.tsx";
 import { openDetails, versionOf } from "./resume.ts";
 import {
   detailsOf,
@@ -85,7 +87,27 @@ export function DetailsScreen({ kind, version }: { kind: TitleKind; version: str
     () => (lists.kind === "ready" && opened ? titleOf(lists.index, kind, opened) : undefined),
     [lists, kind, opened, metadata],
   );
-  if (lists.kind !== "ready") return <Message text="Loading" />;
+  if (lists.kind === "failed") {
+    return (
+      <Message
+        text={describeError(lists.error)}
+        action={{ label: "Try again", onPress: retryTitles }}
+      />
+    );
+  }
+  if (lists.kind !== "ready") {
+    return (
+      <Docked status={loadingStatus("movies and series")}>
+        <Placeholders testID="details-placeholder">
+          <Shape style={[styles.backdrop, styles.stillBackdrop]} />
+          <View style={styles.facts}>
+            <Shape style={styles.nameShape} />
+            <Shape style={styles.lineShape} />
+          </View>
+        </Placeholders>
+      </Docked>
+    );
+  }
   if (!title || !opened) return <Message text="The provider no longer lists this title." />;
   return <Details title={title} opened={opened} />;
 }
@@ -119,9 +141,13 @@ function Details({ title, opened }: { title: Title; opened: OwnedId }) {
   );
   const shownTitle = useMemo(() => ({ ...title, ...version }), [title, version]);
   // Details answer only the version they were read for: another version shows loading at once.
+  // Try again reads the same version anew; until that answers, its facts show as loading.
+  const [again, setAgain] = useState(0);
+  const [retried, setRetried] = useState<Loaded<TitleDetails> | null>(null);
   const details = useRead(
     `${title.kind}|${ownedKey(version)}`,
     useCallback(() => detailsOf(shownTitle), [shownTitle]),
+    again,
   );
   const failedHere = useFailure(title.kind, version);
   const roster = useRoster();
@@ -267,12 +293,21 @@ function Details({ title, opened }: { title: Title; opened: OwnedId }) {
           </Text>
         ) : null}
         {movieProgress ? <Text style={styles.left}>{timeLeftOf(movieProgress) ?? ""}</Text> : null}
-        {details.kind === "failed" ? (
-          <Message text={details.error} />
+        {details.kind === "failed" && details !== retried ? (
+          <Message
+            text={details.error}
+            action={{
+              label: "Try again",
+              onPress: () => {
+                setRetried(details);
+                setAgain((count) => count + 1);
+              },
+            }}
+          />
         ) : facts ? (
           <About facts={facts} provider={!title.tmdbId} />
         ) : (
-          <Text style={styles.dim}>Loading details</Text>
+          <PlaceholderLines widths={["100%", "92%", "56%"]} />
         )}
       </View>
       {facts?.kind === "series" ? (
@@ -613,6 +648,9 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.6 },
   disabled: { opacity: 0.35 },
   backdrop: { width: "100%", aspectRatio: 16 / 11, backgroundColor: "#000000" },
+  stillBackdrop: { backgroundColor: colors.fill, borderRadius: 0 },
+  nameShape: { width: "60%", height: 28 },
+  lineShape: { width: "40%", height: 14 },
   capsule: {
     position: "absolute",
     left: 16,

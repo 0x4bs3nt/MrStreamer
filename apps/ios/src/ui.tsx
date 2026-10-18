@@ -149,23 +149,6 @@ export function Notice({
   );
 }
 
-/** Still rows at the list's real height while channels load. Nothing in them moves. */
-export function PlaceholderRows({ height, count = 8 }: { height: number; count?: number }) {
-  return (
-    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      {Array.from({ length: count }, (_, index) => (
-        <View key={index} style={[styles.row, { height }]}>
-          <View style={[styles.mark, styles.rowMark]} />
-          <View style={styles.names}>
-            <View style={[styles.bar, { width: `${55 - (index % 3) * 10}%` }]} />
-            <View style={[styles.bar, styles.barShort]} />
-          </View>
-        </View>
-      ))}
-    </View>
-  );
-}
-
 export function TextButton({
   label,
   onPress,
@@ -211,8 +194,6 @@ const styles = StyleSheet.create({
   message: { padding: 24, gap: 12, alignItems: "flex-start" },
   messageText: { color: colors.dim, fontSize: 15, marginTop: 4 },
   headline: { color: colors.text, fontSize: 17, fontWeight: "600" },
-  bar: { height: 12, borderRadius: 3, backgroundColor: colors.fill },
-  barShort: { width: "30%", marginTop: 8 },
   textButton: { minHeight: 44, justifyContent: "center" },
   textButtonLabel: { color: colors.text, fontSize: 17, fontWeight: "600" },
   destructive: { color: "#FF453A" },

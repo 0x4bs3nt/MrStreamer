@@ -7,7 +7,7 @@ import { colors, Message } from "../../../ui.tsx";
 
 /**
  * Settings' Add provider, or a saved provider's Edit when `id` names it: the form Connect shows,
- * pushed on Home's stack. Saving goes back to Settings.
+ * pushed on the stack Settings is on. Saving goes back to Settings.
  */
 export default function Provider() {
   const { id } = useLocalSearchParams<{ id?: string }>();

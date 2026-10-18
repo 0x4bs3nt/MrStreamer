@@ -31,6 +31,8 @@ const scenario = vi.hoisted(() => ({
   /** The film's download as the owner has it, and what it was asked to do. */
   download: undefined as Download | undefined,
   asked: [] as string[],
+  /** How each read of the film's details answers; by default, never. */
+  details: (): Promise<unknown> => new Promise(() => undefined),
 }));
 
 vi.mock("react-native", async () => {
@@ -72,7 +74,31 @@ vi.mock("../src/ui.tsx", async () => {
   const { createElement } = await import("react");
   return {
     colors: { text: "#FFFFFF", dim: "#8E8E93" },
-    Message: ({ text }: { text: string }) => createElement("p", null, text),
+    Message: ({ text, action }: { text: string; action?: { label: string; onPress(): void } }) =>
+      createElement(
+        "p",
+        null,
+        text,
+        action
+          ? createElement(
+              "button",
+              { "data-testid": action.label, onClick: action.onPress },
+              action.label,
+            )
+          : null,
+      ),
+  };
+});
+vi.mock("../src/loading.tsx", async () => {
+  const { createElement, Fragment } = await import("react");
+  const pass = ({ children }: { children?: React.ReactNode }) =>
+    createElement(Fragment, null, children);
+  return {
+    Docked: pass,
+    Placeholders: pass,
+    Shape: () => null,
+    PlaceholderLines: () => createElement("div", { "data-testid": "placeholder-lines" }),
+    loadingStatus: (what: string) => ({ text: `Loading ${what}.` }),
   };
 });
 vi.mock("../src/titles-ui.tsx", () => ({
@@ -83,6 +109,7 @@ vi.mock("../src/titles-ui.tsx", () => ({
 }));
 vi.mock("../src/account.ts", () => ({
   members: () => scenario.members,
+  retryTitles: () => undefined,
   useRoster: () => ({ kind: "ready", members: scenario.members }),
 }));
 vi.mock("../src/resume.ts", () => ({
@@ -97,8 +124,7 @@ vi.mock("../src/titles.ts", () => ({
   useMetadataVersion: () => 0,
   titleOf: (index: IndexedCatalogue, kind: "movie" | "series", version: OwnedId) =>
     byIds(index, kind, [version])[0],
-  // Details that never answer: the page shows its facts as loading.
-  detailsOf: () => new Promise(() => undefined),
+  detailsOf: () => scenario.details(),
   useCollections: () => null,
   episodesOf: async () => [],
 }));
@@ -186,6 +212,7 @@ afterEach(() => {
   scenario.played.length = 0;
   scenario.download = undefined;
   scenario.asked.length = 0;
+  scenario.details = () => new Promise(() => undefined);
 });
 
 function mount() {
@@ -208,6 +235,7 @@ function mount() {
     render,
     press,
     text: () => container.textContent ?? "",
+    has: (testID: string) => container.querySelector(`[data-testid="${testID}"]`) !== null,
     /** Plays, and answers whose version played. */
     play() {
       press("details-play");
@@ -305,5 +333,37 @@ describe("a film's download", () => {
     React.act(() => scenario.menu!.pick(0));
     await React.act(async () => undefined);
     expect(scenario.asked).toEqual(["remove d-1"]);
+  });
+});
+
+describe("a film's facts", () => {
+  it("offer Try again when they couldn't be read, and show as loading until it answers", async () => {
+    providers("a");
+    let answer: (facts: unknown) => void = () => undefined;
+    scenario.details = () => Promise.reject(new Error("The provider didn't answer"));
+    const page = mount();
+    await React.act(async () => undefined);
+    expect(page.has("Try again")).toBe(true);
+    // The title and Play stay while its facts failed.
+    expect(page.has("details-play")).toBe(true);
+
+    scenario.details = () => new Promise((resolve) => (answer = resolve));
+    page.press("Try again");
+    expect(page.has("Try again")).toBe(false);
+    expect(page.has("placeholder-lines")).toBe(true);
+
+    await React.act(async () =>
+      answer({
+        kind: "movie",
+        plot: "A film that answered the second time.",
+        directors: [],
+        cast: [],
+        genres: [],
+        duration: null,
+        backdropUrl: null,
+      }),
+    );
+    expect(page.text()).toContain("A film that answered the second time.");
+    expect(page.has("placeholder-lines")).toBe(false);
   });
 });

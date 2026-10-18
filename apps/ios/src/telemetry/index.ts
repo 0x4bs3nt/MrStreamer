@@ -101,6 +101,9 @@ export function onSearchText(text: string): void {
 function featureOf(path: string): IosFeature | null {
   if (path === "/") return "home";
   const [first, second] = path.split("/").slice(1);
+  // Downloads and Settings open on whichever tab asked for them: /live/settings is Settings.
+  if (second === "settings" || second === "downloads") return second;
+  if (second === "provider") return null;
   switch (first) {
     case "live":
       return "live_tv";

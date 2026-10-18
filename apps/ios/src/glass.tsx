@@ -15,18 +15,22 @@ import { store, useStore } from "./store.ts";
 // The app's own controls over pictures, drawn as Liquid Glass where iOS draws its bars that way:
 // Home's preview buttons, Watch's panel and buttons. Before iOS 26, or with Reduce Transparency
 // on, they are solid instead, and follow the setting as it changes. Lists and pictures are never
-// glass. Nothing here animates by itself; glass changes its style without animating under Reduce
-// Motion.
+// glass, apart from the status line loading.tsx floats over them. Nothing here animates by
+// itself; glass changes its style without animating under Reduce Motion.
 
 const supported = isGlassEffectAPIAvailable() && isLiquidGlassAvailable();
 
-const accessibility = store({ reduceTransparency: false, reduceMotion: false });
+const accessibility = store({ reduceTransparency: false, reduceMotion: false, motionRead: false });
 let watching = false;
 function watchAccessibility() {
   if (watching) return;
   watching = true;
   const set = (key: "reduceTransparency" | "reduceMotion") => (on: boolean) =>
-    accessibility.set((current) => (current[key] === on ? current : { ...current, [key]: on }));
+    accessibility.set((current) =>
+      current[key] === on && (key !== "reduceMotion" || current.motionRead)
+        ? current
+        : { ...current, [key]: on, motionRead: current.motionRead || key === "reduceMotion" },
+    );
   void AccessibilityInfo.isReduceTransparencyEnabled().then(set("reduceTransparency"));
   void AccessibilityInfo.isReduceMotionEnabled().then(set("reduceMotion"));
   AccessibilityInfo.addEventListener("reduceTransparencyChanged", set("reduceTransparency"));
@@ -36,6 +40,20 @@ function watchAccessibility() {
 function useAccessibility() {
   watchAccessibility();
   return useStore(accessibility);
+}
+
+/** Whether Reduce Motion is on: what moves on its own, as Search arriving, fades instead. */
+export function useReduceMotion(): boolean {
+  return useAccessibility().reduceMotion;
+}
+
+/**
+ * Whether something may move on its own for as long as it lasts, as loading shapes' highlight:
+ * only once iOS has said Reduce Motion is off, so it never starts before the setting is known.
+ */
+export function useMotionAllowed(): boolean {
+  const { reduceMotion, motionRead } = useAccessibility();
+  return motionRead && !reduceMotion;
 }
 
 /** Whether the app's controls are glass now. */

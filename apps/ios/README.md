@@ -7,7 +7,7 @@ the desktop's install, build or packages.
 
 It connects Xtream subscriptions, one or several, and shows everything from all of them
 together, as the desktop does: there is no subscription to switch to. Live lists a country's channels with their
-providers' logos, its categories as text tabs, and plays them; Movies and Series browse the
+providers' logos, the country first in its row of category tabs, and plays them; Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
 A movie or an episode plays in Watch from where it stopped. Home leads with the preview, then
@@ -50,8 +50,21 @@ its address, which AVKit's logs print. The player's failures reach the screen th
 `withoutLogin` (`src/errors.ts`). `patches/` also makes expo-file-system's two handlers of
 background session wakes answer at once for a session not theirs: Expo calls the system's handler
 only once every handler answered, and theirs would wait forever on the app's download session.
+
+On iOS 26.1 and later react-native-screens 4.29.0 lost a tab the viewer picked whenever a React
+commit landed between UIKit's `shouldSelectTab:` and `didSelectTab:`: the tab showed, but JS kept
+the one before, so the tab took no touches and leaving a tab closed nothing. `patches/` carries
+upstream's fix to `RNSTabBarController.mm`, unchanged: it marks the controller's own selections
+instead of the viewer's. It is the v4 backport of
+[#4862](https://github.com/software-mansion/react-native-screens/pull/4862),
+97ec4e250282bf4bdf376da9cd293ee9dfb385da, which applies to 4.29.0 byte for byte, then the
+follow-up [#4894](https://github.com/software-mansion/react-native-screens/pull/4894) (#4890),
+23127222c39b6d44aded6ef11130a7513dbb2735, both in react-native-screens 4.30.0
+([issue #4855](https://github.com/software-mansion/react-native-screens/issues/4855)). Drop it
+once the SDK's react-native-screens is 4.30.0 or later.
+
 SDK 58 links prebuilt modules, which a patch can't reach, so `package.json` has autolinking build
-ExpoFileSystem and ExpoVideo from their patched source.
+ExpoFileSystem, ExpoVideo and RNScreens from their patched source.
 
 ## How it is built
 
@@ -162,16 +175,29 @@ Each responsibility has one owner, a plain module with a store the screens read:
   after installing removes what an earlier install left there, by an index of the ids it wrote;
   writes, removals and clearing run one at a time so none loses another's change to the index.
 
-Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home's Downloads and
-Settings are pushed from its top bar, Settings' provider form (`provider`, Add provider or a
-provider's Edit) above Settings, and `connect` shows until a subscription is saved. With copies on
+Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home, Live, Movies
+and Series. Every screen of theirs has one top bar (`src/header.tsx`): the brand on the left, after
+the back button on a pushed screen, and Search, Downloads and Settings on the right, less the
+button of the screen it is on. Downloads, Settings and Settings' provider form (`provider`, Add
+provider or a provider's Edit) are Home's screens, pushed on the tab they were asked from (the other
+tabs' route files re-export them), and close as the viewer leaves that tab; Movies' and Series'
+details under them stay. `search` opens over the tabs, fading in, and closes back onto the screen
+it opened over; it keeps its text until the app ends, and says, above the keyboard (or atop the
+results when too little room is left there), when the latest text is still being searched and which
+providers' lists are still loading or failed. `connect` shows until a subscription is saved. With copies on
 the phone, Connect also opens `offline`, the same Downloads outside the tabs, so copies play with
 no provider saved, after a relaunch too. Connect and `provider` share `src/provider-form.tsx`. Settings lists each provider as a row with how it
 stands; pressing one offers Retry, its reloads, Edit and Remove as a system sheet, and Remove asks
 whether to delete its history too.
 Watch (`src/watch.tsx`) is a layer over the navigation rather than a route, because the view that
-starts Picture in Picture has to stay while it plays. A movie or an episode turns it to landscape
-(`expo-screen-orientation`); closing it unlocks again, and iOS turns the screens under it as the
+starts Picture in Picture has to stay while it plays. Its Downloads and Settings open on the tab
+under it, closing Search first if Watch came back over it (`openOnTabs` in `src/header.tsx`):
+Picture in Picture takes what plays where it can, else Watch is set aside paused (`setAside` in
+`playback.ts`) and the accessory brings it back, a title from where it paused and a channel live
+again. With no provider saved there are no tabs and no accessory, so Watch offers only Downloads,
+the offline list, and only while Picture in Picture can take the copy; a copy set aside when the
+last provider is removed shows in Watch again as it stood. A movie or an episode turns it to
+landscape (`expo-screen-orientation`); closing it unlocks again, and iOS turns the screens under it as the
 phone is held. On the simulator the screens follow its device orientation (agent-device's
 `orientation`), not where Watch left them. `patches/` makes expo-video report Picture in Picture
 brought back to the app, which its own view never forwarded, and hold AVKit's answer until Watch
@@ -180,7 +206,11 @@ Watch's Audio and Subtitles list the tracks the player reports. Expo-video named
 label and language alone, so English stereo and English surround were one track to it; `patches/`
 gives each its place among what plays now as its `id`, and selects by it.
 `src/glass.tsx` draws the app's own controls as Liquid Glass, and solid before iOS 26 or with
-Reduce Transparency on.
+Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
+`titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them
+while the screen is in front, the app active and Reduce Motion off, and a status line in glass at
+the bottom of the screen naming what loads, updates or failed by provider, with Retry and
+Settings, over content that stays usable.
 
 Live channels are asked for as HLS, which AVPlayer plays and panels serve beside MPEG-TS. On the
 simulator the fixture channels showed what that covers: H.264 with AAC or AC-3 plays; MPEG-2 fails

@@ -67,7 +67,10 @@ vi.mock("react-native", async () => {
   };
 });
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.0.0" } } }));
-vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
+vi.mock("expo-router", () => ({
+  router: { push: () => undefined },
+  useRootNavigationState: () => ({ index: 0, routes: [{ name: "(tabs)" }] }),
+}));
 vi.mock("expo-video", () => ({ isPictureInPictureSupported: () => true }));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 // Downloads open from a row of their own, which this test leaves out.

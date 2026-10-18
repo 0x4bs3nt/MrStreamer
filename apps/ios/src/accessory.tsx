@@ -8,12 +8,22 @@ import { colors } from "./ui.tsx";
 /**
  * The now playing accessory over the tabs, on the system's own glass. iOS draws it twice, above
  * the bar and inline in a shrunk bar, so it keeps no state: both read and control the one player.
+ * Set aside for Downloads or Settings, it says how the stream stands: paused, connecting, playing
+ * or why it failed.
  */
 export function NowPlaying() {
   const placement = NativeTabs.BottomAccessory.usePlacement();
   const { phase, pip, external } = usePlayback();
   if (phase.kind === "idle") return null;
-  const where = external ? "AirPlay" : pip ? "Picture in Picture" : "";
+  const where = external
+    ? "AirPlay"
+    : pip
+      ? "Picture in Picture"
+      : phase.kind === "paused"
+        ? "Paused"
+        : phase.kind === "loading"
+          ? "Connecting"
+          : "Playing";
   const status = phase.kind === "failed" ? phase.error : where;
   return (
     <View style={styles.row}>
@@ -25,7 +35,11 @@ export function NowPlaying() {
         style={styles.open}
         testID="accessory-open"
       >
-        <SymbolView name={external ? "airplay.video" : "pip"} size={18} tintColor={colors.text} />
+        <SymbolView
+          name={external ? "airplay.video" : pip ? "pip" : "play.rectangle"}
+          size={18}
+          tintColor={colors.text}
+        />
         <View style={styles.names}>
           <Text style={styles.title} numberOfLines={1}>
             {phase.item.title}

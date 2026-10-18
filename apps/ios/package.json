@@ -15,7 +15,8 @@
       "ios": {
         "buildFromSource": [
           "ExpoFileSystem",
-          "ExpoVideo"
+          "ExpoVideo",
+          "RNScreens"
         ]
       }
     }

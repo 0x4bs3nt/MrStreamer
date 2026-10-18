@@ -57,6 +57,8 @@ vi.mock("../src/account.ts", () => ({
   shownOf: (titles: { kind: string; value?: unknown }) =>
     titles.kind === "ready" ? titles.value : null,
   retryTitles: () => undefined,
+  reloadTitles: () => undefined,
+  useRoster: () => ({ kind: "ready", members: [] }),
 }));
 vi.mock("../src/sources.ts", () => ({ currentSource: () => undefined, sourceOf: () => null }));
 vi.mock("../src/viewing.ts", async () => {
@@ -107,11 +109,27 @@ vi.mock("../src/titles-ui.tsx", async () => {
     Artwork: () => null,
     CollectionTileView: () => null,
     TextTabs: () => null,
+    PlaceholderShelf: () => null,
+    PlaceholderGrid: () => null,
     Shelf: ({ name, titles }: { name: string; titles: readonly Title[] }) => shown(name, titles),
     PosterGrid: ({ titles }: { titles: readonly Title[] }) => shown("grid", titles),
   };
 });
 vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
+vi.mock("../src/header.tsx", () => ({ tabHref: () => "/" }));
+vi.mock("../src/loading.tsx", async () => {
+  const { createElement, Fragment } = await import("react");
+  const pass = ({ children }: { children?: React.ReactNode }) =>
+    createElement(Fragment, null, children);
+  return {
+    Docked: pass,
+    Placeholders: pass,
+    Shape: () => null,
+    libraryStatus: () => null,
+    loadingStatus: (what: string) => ({ text: `Loading ${what}.` }),
+    useDockInset: () => 0,
+  };
+});
 vi.mock("@mrstreamer/core/metadata/store", () => ({
   metadataStore: (deps: { onChange: (change: { content: boolean }) => void }) => {
     edges.notify = deps.onChange;

@@ -1,12 +1,20 @@
 import { collectionRows } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
 import { VideoView } from "expo-video";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import { ActionSheetIOS, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { playChannel, retryChannels, useCatalogue } from "../../../account.ts";
+import {
+  playChannel,
+  retry as retryProvider,
+  retryChannels,
+  useCatalogue,
+  useRoster,
+} from "../../../account.ts";
 import { failureOf } from "../../../errors.ts";
 import { Glass, IconButton } from "../../../glass.tsx";
+import { tabHref } from "../../../header.tsx";
 import type { Channel, Library } from "../../../library.ts";
+import { Docked, libraryStatus, Placeholders, Shape, useDockInset } from "../../../loading.tsx";
 import {
   openWatch,
   player,
@@ -19,7 +27,7 @@ import {
 import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
 import { useSavedState } from "../../../storage.ts";
 import { named, useCollections, useMetadataVersion, useTitleLists } from "../../../titles.ts";
-import { Shelf } from "../../../titles-ui.tsx";
+import { PlaceholderShelf, Shelf } from "../../../titles-ui.tsx";
 import { ChannelLogo, colors, Message, Notice } from "../../../ui.tsx";
 import { removeFromContinue } from "../../../viewing.ts";
 import { useWatchlist, watchlistTitles } from "../../../watchlist.ts";
@@ -33,10 +41,20 @@ const MOVIES = 20;
  * Home: the Stage, a muted preview of what plays or of the channel to play, then On now,
  * Continue watching, the watchlist and Movies for you. On now lists the channels watched lately,
  * or the first of Live's country until there are any; their programmes join when iOS reads a
- * guide, favourites when iOS has them. Downloads join Home as they come to iOS.
+ * guide, favourites when iOS has them. Downloads join Home as they come to iOS. Until channels
+ * and movies first come, still shapes hold On now and Movies for you; what loads, updates or
+ * failed by provider is the status line at the bottom.
  */
 export default function Home() {
   const catalogue = useCatalogue();
+  const roster = useRoster();
+  // A failure with no channels at all has its own notice below the Stage.
+  const status = libraryStatus(roster.kind === "ready" ? roster.members : [], {
+    channels: catalogue.kind !== "failed",
+    titles: true,
+    retry: retryProvider,
+    settings: openSettings,
+  });
   const { recentChannels: recent = [], region } = useSavedState();
   const playback = usePlayback();
   const continuing = useContinueWatching();
@@ -70,39 +88,59 @@ export default function Home() {
         : null;
 
   return (
-    <ScrollView style={styles.screen} contentInsetAdjustmentBehavior="automatic">
-      <Stage
-        playback={playback}
-        channel={shown}
-        line={
-          !suggested
-            ? ""
-            : recentChannels.length > 0
-              ? "Last watched"
-              : library
-                ? placeOf(library, suggested)
-                : ""
-        }
-        onPlay={() => suggested && preview(suggested)}
-      />
-      {library && onNow.length > 0 ? (
-        <OnNow channels={onNow} library={library} playing={playing} onPress={preview} />
-      ) : null}
-      {catalogue.kind === "failed" ? (
-        <Notice
-          failure={failureOf(catalogue.error, catalogue.member.entry.server)}
-          actions={[{ label: "Try again", onPress: retryChannels }]}
+    <Docked status={status}>
+      <Content>
+        <Stage
+          playback={playback}
+          channel={shown}
+          line={
+            !suggested
+              ? ""
+              : recentChannels.length > 0
+                ? "Last watched"
+                : library
+                  ? placeOf(library, suggested)
+                  : ""
+          }
+          onPlay={() => suggested && preview(suggested)}
         />
-      ) : null}
-      <TitleRows />
-      <MoviesForYou />
-      {catalogue.kind === "loading" ? <Message text="Loading channels" /> : null}
-      {library && onNow.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
-        <Message text="Pick a channel in Live, or a movie or series." />
-      ) : null}
+        {library && onNow.length > 0 ? (
+          <OnNow channels={onNow} library={library} playing={playing} onPress={preview} />
+        ) : catalogue.kind === "loading" ? (
+          <OnNowPlaceholder />
+        ) : null}
+        {catalogue.kind === "failed" ? (
+          <Notice
+            failure={failureOf(catalogue.error, catalogue.member.entry.server)}
+            actions={[{ label: "Try again", onPress: retryChannels }]}
+          />
+        ) : null}
+        <TitleRows />
+        <MoviesForYou />
+        {library && onNow.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
+          <Message text="Pick a channel in Live, or a movie or series." />
+        ) : null}
+      </Content>
+    </Docked>
+  );
+}
+
+/** Home's scrolling content, clear of the status line at its end. */
+function Content({ children }: { children: ReactNode }) {
+  const inset = useDockInset();
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentInsetAdjustmentBehavior="automatic"
+      contentContainerStyle={{ paddingBottom: inset }}
+    >
+      {children}
     </ScrollView>
   );
 }
+
+/** Settings, on Home's own stack. */
+const openSettings = () => router.push(tabHref("(home)", "settings"));
 
 const placeOf = (library: Library, channel: Channel) => library.placeOf.get(channel.key) ?? "";
 
@@ -166,6 +204,25 @@ function OnNow({
   );
 }
 
+/** On now's place while channels first load: its heading and a few still tiles. */
+function OnNowPlaceholder() {
+  return (
+    <Placeholders style={styles.block} testID="home-on-now-placeholder">
+      <View style={styles.head}>
+        <Shape style={styles.headShape} />
+      </View>
+      <View style={[styles.tiles, styles.stillTiles]}>
+        {Array.from({ length: 4 }, (_, index) => (
+          <View key={index} style={styles.tile}>
+            <Shape style={[styles.tileLogo, styles.tileShape]} />
+            <Shape style={styles.tileNameShape} />
+          </View>
+        ))}
+      </View>
+    </Placeholders>
+  );
+}
+
 /** "News" from "Netherlands · News": the country is Live's menu, the tile says the category. */
 const shelfOf = (place: string) => place.split(" · ").at(-1) ?? place;
 
@@ -175,6 +232,7 @@ const shelfOf = (place: string) => place.split(" · ").at(-1) ?? place;
  */
 function MoviesForYou() {
   const made = useCollections("movie");
+  const lists = useTitleLists();
   const shelf = useMemo(() => {
     if (!made) return null;
     const [row] = collectionRows(made, "for-you", null);
@@ -182,6 +240,8 @@ function MoviesForYou() {
     const all = made.list("all").slice(0, MOVIES);
     return all.length > 0 ? { name: "Movies", titles: all } : null;
   }, [made]);
+  // Still posters until the first collections are made; a failure says so in the status line.
+  if (!made) return lists.kind === "failed" ? null : <PlaceholderShelf />;
   if (!shelf) return null;
   return <Shelf name={shelf.name} titles={shelf.titles} onPress={(title) => openDetails(title)} />;
 }
@@ -392,4 +452,8 @@ const styles = StyleSheet.create({
   tileLogo: { width: 112, height: 63 },
   tileName: { color: colors.text, fontSize: 13, marginTop: 6 },
   tileLine: { color: colors.dim, fontSize: 12, marginTop: 1 },
+  headShape: { width: 96, height: 16 },
+  stillTiles: { flexDirection: "row", overflow: "hidden" },
+  tileShape: { borderRadius: 6 },
+  tileNameShape: { width: 72, height: 10, marginTop: 8 },
 });

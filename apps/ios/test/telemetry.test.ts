@@ -420,7 +420,8 @@ describe("what the app reports of its use", () => {
     ])
       app.onTelemetryScreen(path);
     for (const text of ["c", SEARCH, "", "x", "xy"]) app.onSearchText(text);
-    app.onTelemetryScreen("/settings");
+    // Settings pushed on Live, from the top bar there, is Settings.
+    app.onTelemetryScreen("/live/settings");
     app.onTelemetryScreen("/search");
     app.onSearchText(SEARCH);
 

@@ -1,54 +1,15 @@
-import { router, Stack, useNavigation, useRoute } from "expo-router";
-import { useEffect } from "react";
+import { Stack } from "expo-router";
+import { tabScreenOptions } from "../../../header.tsx";
 
 /**
- * Home, with Downloads and Settings opening from its system glass buttons, and Settings' provider
- * form above Settings. Home opens at its root from the other tabs: what it pushed closes as the
- * viewer leaves for another tab, while Movies and Series keep their stacks. A screen over all the
- * tabs, as Runtime proof, leaves it open to go back to.
+ * Home, with the shared top bar (`header.tsx`): Downloads and Settings open on its stack, and
+ * Settings' provider form above Settings. Home opens at its root from the other tabs: what it
+ * pushed closes as the viewer leaves for another tab.
  */
 export default function HomeLayout() {
-  const navigation = useNavigation();
-  const { key } = useRoute();
-  useEffect(
-    () =>
-      navigation.addListener("blur", () => {
-        const tabs = navigation.getState();
-        if (!tabs || tabs.routes[tabs.index]?.key === key) return;
-        const stack = tabs.routes.find((route) => route.key === key)?.state?.key;
-        if (stack) navigation.dispatch({ type: "POP_TO_TOP", target: stack });
-      }),
-    [navigation, key],
-  );
   return (
-    <Stack
-      screenOptions={{
-        contentStyle: { backgroundColor: "#000000" },
-        headerTintColor: "#FFFFFF",
-        headerTitleStyle: { color: "#FFFFFF" },
-      }}
-    >
-      <Stack.Screen
-        name="index"
-        options={{
-          title: "",
-          headerTransparent: true,
-          unstable_headerRightItems: () => [
-            {
-              type: "button",
-              label: "Downloads",
-              icon: { type: "sfSymbol", name: "arrow.down.circle" },
-              onPress: () => router.push("/downloads"),
-            },
-            {
-              type: "button",
-              label: "Settings",
-              icon: { type: "sfSymbol", name: "gearshape" },
-              onPress: () => router.push("/settings"),
-            },
-          ],
-        }}
-      />
+    <Stack screenOptions={tabScreenOptions("(home)")}>
+      <Stack.Screen name="index" options={{ title: "", headerTransparent: true }} />
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
       <Stack.Screen name="provider" options={{ title: "" }} />
