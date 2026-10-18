@@ -4,7 +4,15 @@ import { type } from "arktype";
 import { writeJsonFile } from "../platform/json-file.ts";
 import { lazy } from "@mrstreamer/contracts/lazy";
 import { PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
-import { AnalyticsRecord, type ProfileOrigin } from "./model.ts";
+import {
+  AnalyticsRecord,
+  LegacyRecord,
+  SummaryBlock,
+  SUMMARY_TTL_MS,
+  WINDOW_MS,
+  OUTBOX_BYTES,
+  type ProfileOrigin,
+} from "./model.ts";
 
 /** Snapshot before other app services write. Absence of analytics alone never proves freshness. */
 export async function profileOrigin(dataDir: string): Promise<ProfileOrigin> {
@@ -60,7 +68,7 @@ export function analyticsStore(dataDir: string) {
         const parsed: unknown = JSON.parse(text);
         const current = withoutSummaries(parsed);
         migrated = current !== parsed;
-        const checked = AnalyticsRecord()(withoutFutureDiagnostics(current));
+        const checked = LegacyRecord()(withoutFutureDiagnostics(current));
         if (
           checked instanceof type.errors ||
           checked.firstSeen !== (checked.installationId !== null) ||
@@ -71,6 +79,35 @@ export function analyticsStore(dataDir: string) {
         )
           throw new Error();
         record = checked;
+        // Optional new work cannot turn valid .15 consent into an unavailable preference.
+        const optional = type({ "summaries?": "unknown" })(current);
+        if (!(optional instanceof type.errors) && optional.summaries !== undefined) {
+          const block = SummaryBlock()(optional.summaries);
+          if (
+            !(block instanceof type.errors) &&
+            checked.enabled &&
+            block.installationId === checked.installationId &&
+            [
+              ...block.pending.map((item) => item.event),
+              block.usage,
+              block.unfinished?.event,
+            ].every(
+              (event) =>
+                !event ||
+                (event.distinct_id === checked.installationId &&
+                  Date.now() - Date.parse(event.timestamp) <= SUMMARY_TTL_MS &&
+                  (event.event !== "usage_window" ||
+                    (event.timestamp === event.properties.window_start &&
+                      Date.parse(event.properties.window_end) -
+                        Date.parse(event.properties.window_start) ===
+                        WINDOW_MS &&
+                      Date.parse(event.timestamp) % WINDOW_MS === 0 &&
+                      Object.keys(event.properties.counts).length > 0))),
+            ) &&
+            Buffer.byteLength(JSON.stringify(block)) <= OUTBOX_BYTES
+          )
+            record = { ...checked, summaries: block };
+        }
       } catch {
         throw new Error("Analytics state unavailable.");
       }

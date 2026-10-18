@@ -1,9 +1,9 @@
 import { request } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { type } from "arktype";
-import { CaptureEvent } from "./model.ts";
+import { CaptureEvent, usageKeys } from "./model.ts";
 
-type CaptureResult = "accepted" | "retry" | "discard";
+type CaptureResult = "accepted" | "retry" | "not_sent" | "discard";
 export interface CaptureTransport {
   readonly kind: "local" | "production";
   send(event: CaptureEvent, signal: AbortSignal): Promise<CaptureResult>;
@@ -126,8 +126,18 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
           1000,
         );
         req.once("close", () => clearTimeout(timeout));
-        req.once("error", () => resolve("retry"));
-        req.end(body);
+        // Do not hand a body to the transport until connect/TLS completes. A failure before
+        // this callback is provably pre-body; every later failure is ambiguous and spends a try.
+        let possibleTransmission = false;
+        req.once("socket", (socket) => {
+          const send = () => {
+            if (req.destroyed) return;
+            possibleTransmission = true;
+            req.end(body);
+          };
+          socket.once(url.protocol === "https:" ? "secureConnect" : "connect", send);
+        });
+        req.once("error", () => resolve(possibleTransmission ? "retry" : "not_sent"));
       });
     },
   };
@@ -136,6 +146,25 @@ function capture(url: URL, projectToken: string, kind: CaptureTransport["kind"])
 /** Copies each event's own fixed fields by name, never by spreading a validated object. */
 function ownProperties(event: CaptureEvent) {
   switch (event.event) {
+    case "usage_window":
+      return {
+        window_start: event.properties.window_start,
+        window_end: event.properties.window_end,
+        counts: Object.fromEntries(
+          usageKeys.flatMap((key) => {
+            const count = event.properties.counts[key];
+            return count === undefined ? [] : [[key, count]];
+          }),
+        ),
+      };
+    case "stream_summary":
+      return {
+        stream_type: event.properties.stream_type,
+        started_at: event.properties.started_at,
+        started_update_channel: event.properties.started_update_channel,
+        watch_duration_seconds: event.properties.watch_duration_seconds,
+        end_reason: event.properties.end_reason,
+      };
     case "app_active_day":
       return { activity_date: event.properties.activity_date };
     case "stream_started":

@@ -10,7 +10,13 @@ import { isDeepStrictEqual } from "node:util";
 import { type } from "arktype";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import type { Result } from "@mrstreamer/contracts/errors";
-import { CaptureEvent, type CaptureName, type CaptureOf } from "../../src/main/analytics/model.ts";
+import {
+  CaptureEvent,
+  AnalyticsRecord,
+  type UsageKey,
+  type CaptureName,
+  type CaptureOf,
+} from "../../src/main/analytics/model.ts";
 import { startFakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, delay, type Page } from "./app.ts";
@@ -27,7 +33,10 @@ const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const desktop = join(root, "apps/desktop");
 const evidenceRoot = join(root, ".local/verification");
 const evidence = await evidenceDirectory(evidenceRoot, "analytics-");
-const [packagedExecutable, ...packagedArgs] = process.argv.slice(2);
+const observeRollover = process.argv.includes("--observe-rollover");
+const [packagedExecutable, ...packagedArgs] = process.argv
+  .slice(2)
+  .filter((arg) => arg !== "--observe-rollover");
 const appVersion = (
   JSON.parse(await readFile(join(desktop, "package.json"), "utf8")) as { version: string }
 ).version;
@@ -372,14 +381,32 @@ async function analyticsFile(): Promise<Record<string, unknown>> {
   return kept;
 }
 
+/** Counters must be durable immediately, although their HTTP capture waits for sealing. */
+async function usageCount(key: UsageKey): Promise<number> {
+  const stored = AnalyticsRecord().assert(await analyticsFile());
+  const active = stored.summaries?.usage;
+  return (
+    sent().reduce(
+      (sum, event) =>
+        sum + (event.event === "usage_window" ? (event.properties.counts[key] ?? 0) : 0),
+      0,
+    ) + (active?.event === "usage_window" ? (active.properties.counts[key] ?? 0) : 0)
+  );
+}
+
+async function unfinished() {
+  const event = AnalyticsRecord().assert(await analyticsFile()).summaries?.unfinished?.event;
+  return event?.event === "stream_summary" ? event : undefined;
+}
+
 async function productPaths() {
   await keyEscape();
   await namedButton("header button", "Live TV");
   // Actual guide expansion/favourite/search use, without treating schedule queries as actions.
   await click('button[aria-label="Later programmes"]');
-  await waitFor(async () => count("epg_opened") === 1);
+  await waitFor(async () => (await usageCount("action_epg_opened")) === 1);
   await click('button[aria-label="Add to favourites"]');
-  await waitFor(async () => count("favourite_added") === 1);
+  await waitFor(async () => (await usageCount("action_favourite_added")) === 1);
   await click('button[aria-label="Search"]');
   await send("Input.insertText", { text: "TEST | H.264 + AAC" });
   await waitFor(() =>
@@ -387,7 +414,7 @@ async function productPaths() {
       "document.querySelector('[aria-label=\"Search results\"] [aria-selected=true]')?.textContent.includes('H.264 + AAC') ?? false",
     ),
   );
-  await waitFor(async () => count("search_used") === 1);
+  await waitFor(async () => (await usageCount("action_search_used")) === 1);
   await send("Input.dispatchKeyEvent", {
     type: "rawKeyDown",
     key: "Enter",
@@ -400,9 +427,8 @@ async function productPaths() {
     code: "Enter",
     windowsVirtualKeyCode: 13,
   });
-  await waitFor(
-    async () => count("stream_started", (e) => e.properties.stream_type === "live") === 1,
-  );
+  await waitFor(async () => (await unfinished())?.properties.stream_type === "live");
+  if (count("stream_summary") !== 0) throw new Error("Playback sent before its end.");
   const liveStarted = Date.now();
   await waitFor(() =>
     live().evaluate<boolean>(
@@ -422,12 +448,11 @@ async function productPaths() {
   const previewFrom = Date.now();
   await delay(12_000);
   const previewTo = Date.now();
-  if (count("stream_started") !== 1 || count("stream_stopped") !== 0)
-    throw new Error("Home preview started or stopped a run.");
+  if (count("stream_summary") !== 0) throw new Error("Home preview started or stopped a run.");
   await snapshot("excluded-home-preview");
   await namedButton("button", "Watch");
   await delay(2500);
-  if (count("stream_started") !== 1) throw new Error("Preview promotion counted another start.");
+  if (count("stream_summary") !== 0) throw new Error("Preview promotion ended the logical play.");
   await keyEscape();
   await namedButton("header button", "Movies");
   await namedButton("nav button", "All movies");
@@ -441,16 +466,15 @@ async function productPaths() {
   await namedButton('[role="dialog"] button', "Play");
   // The title's run ends the live run, which reports its own active time once.
   await waitFor(
-    async () => count("stream_stopped", (e) => e.properties.stream_type === "live") === 1,
+    async () => count("stream_summary", (e) => e.properties.stream_type === "live") === 1,
   );
   const liveStopped = Date.now();
-  await waitFor(
-    async () => count("stream_started", (e) => e.properties.stream_type === "vod") === 1,
-  );
+  await waitFor(async () => (await unfinished())?.properties.stream_type === "vod");
+  const titleSummaryId = (await unfinished())?.uuid;
   const liveStop = sent().find(
-    (event) => event.event === "stream_stopped" && event.properties.stream_type === "live",
+    (event) => event.event === "stream_summary" && event.properties.stream_type === "live",
   );
-  if (liveStop?.event !== "stream_stopped") throw new Error("No live stop.");
+  if (liveStop?.event !== "stream_summary") throw new Error("No live stop.");
   const watched = liveStop.properties.watch_duration_seconds;
   const wall = (liveStopped - liveStarted) / 1000;
   const preview = (previewTo - previewFrom) / 1000;
@@ -462,12 +486,12 @@ async function productPaths() {
   await click('button[aria-label="Pause"]');
   await click('button[aria-label="Forward 10 seconds"]');
   await delay(1200);
-  if (count("stream_started", (e) => e.properties.stream_type === "vod") !== 1)
+  if ((await unfinished()) && (await unfinished())?.uuid !== titleSummaryId)
     throw new Error("Paused seek created another start.");
   await click('[data-view="title"] button[aria-label="Play"]');
   await delay(1500);
-  if (count("stream_started", (e) => e.properties.stream_type === "vod") !== 1)
-    throw new Error("Resume created another start.");
+  if ((await unfinished()) && (await unfinished())?.uuid !== titleSummaryId)
+    throw new Error("Resume created another logical play.");
   await snapshot("vod-paused-seek-resume");
   await keyEscape();
   await keyEscape();
@@ -477,10 +501,12 @@ async function productPaths() {
     live().evaluate<boolean>("!!document.querySelector('[data-view=title] video')"),
   );
   await waitFor(
-    async () => count("stream_started", (e) => e.properties.stream_type === "vod") === 2,
+    async () =>
+      (await unfinished())?.properties.stream_type === "vod" &&
+      (await unfinished())?.uuid !== titleSummaryId,
   );
   await waitFor(
-    async () => count("stream_stopped", (e) => e.properties.stream_type === "vod") === 1,
+    async () => count("stream_summary", (e) => e.properties.stream_type === "vod") === 1,
   );
   await snapshot("copy-playing");
   await keyEscape();
@@ -512,7 +538,7 @@ async function productPaths() {
   await delay(1500);
   if (
     count("stream_error") !== 1 ||
-    count("stream_started", (e) => e.properties.stream_type === "vod") !== 2
+    count("stream_summary", (e) => e.properties.stream_type === "vod") !== 2
   )
     throw new Error("A failed open repeated its error or started.");
   const failedOpen = sent().find((event) => event.event === "stream_error");
@@ -535,10 +561,7 @@ async function productPaths() {
   await keyEscape();
   await settings();
   await click('[role="checkbox"][aria-label="Next episode"]');
-  await waitFor(
-    async () =>
-      count("settings_changed", (e) => e.properties.setting_key === "autoplay_next") === 1,
-  );
+  await waitFor(async () => (await usageCount("setting_autoplay_next")) === 1);
   offerUpdate = true;
   await namedButton("button", "Check now");
   await waitFor(
@@ -546,9 +569,9 @@ async function productPaths() {
   );
   await keyEscape();
   await click("[data-update-notice]");
-  await waitFor(async () => count("update_seen") === 1);
+  await waitFor(async () => (await usageCount("action_update_seen")) === 1);
   await namedButton("button", "Not now");
-  await waitFor(async () => count("update_dismissed") === 1);
+  await waitFor(async () => (await usageCount("action_update_dismissed")) === 1);
   await snapshot("update-panel-dismissed");
   await settings();
   rejectUpdate = true;
@@ -593,10 +616,33 @@ async function productPaths() {
     "player",
     "details",
   ] as const)
-    if (count("feature_opened", (e) => e.properties.feature === feature) < 1)
+    if ((await usageCount(`feature_${feature}`)) < 1)
       throw new Error(`No real entry for ${feature}.`);
   for (const action of ["playlist_added", "playlist_refreshed"] as const)
-    if (count(action) < 1) throw new Error(`Missing source action ${action}.`);
+    if ((await usageCount(`action_${action}`)) < 1)
+      throw new Error(`Missing source action ${action}.`);
+  if (observeRollover) {
+    const before = count("usage_window");
+    const from = Date.now();
+    const boundary = Math.floor(from / 300000) * 300000 + 300000;
+    // Real wall time, with no clock injection. Ordinary settings input above supplied the fact.
+    while (Date.now() < boundary) {
+      abort.signal.throwIfAborted();
+      await delay(Math.min(1000, boundary - Date.now()));
+    }
+    await waitFor(async () => count("usage_window") > before);
+    observations.realUsageRollover = {
+      from: new Date(from).toISOString(),
+      boundary: new Date(boundary).toISOString(),
+      through: new Date().toISOString(),
+      before,
+      after: count("usage_window"),
+    };
+  }
+  // Graceful native quit seals the last fragment. Restart keeps identity and no active play.
+  await quit();
+  await launch();
+  await settings();
   const enabled = sent();
   if (payloads.some((payload) => record(payload) && payload["event"] === "app_summary_day"))
     throw new Error("A daily summary was sent.");
@@ -985,7 +1031,7 @@ try {
           .digest("hex"),
         limitations: [
           "Local capture, no live PostHog project/dashboard/retention acceptance",
-          "Abrupt termination without quit loses an unflushed stream_stopped; not exercised",
+          "Abrupt termination recovers the last persisted interrupted journal only after a later launch; focused owner tests cover recovery",
           packagedExecutable
             ? "Packaged executable against local capture; installed upgrade/native acceptance remains separate"
             : "Source build; native installed acceptance pending",
