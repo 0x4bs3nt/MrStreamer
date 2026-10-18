@@ -293,6 +293,10 @@ describe("durable usage and logical-play summaries", () => {
       const { token, binding } = run(first.owner);
       await vi.advanceTimersByTimeAsync(0);
       const admitted = (await first.store.load())?.summaries?.unfinished;
+      expect(admitted).toMatchObject({
+        watchMs: 0,
+        event: { properties: { watch_duration_seconds: 0 } },
+      });
       const writes = first.writes.length;
       for (let tick = 1; tick <= 120; tick++) {
         await vi.advanceTimersByTimeAsync(1000);
@@ -309,7 +313,8 @@ describe("durable usage and logical-play summaries", () => {
       }
       await vi.advanceTimersByTimeAsync(0);
       expect(first.writes.length).toBe(writes);
-      first.owner.notePlaybackState(token, binding, 122, "paused");
+      let sequence = 122;
+      first.owner.notePlaybackState(token, binding, sequence, "paused");
       await vi.advanceTimersByTimeAsync(0);
       const counted = cadence === "steady" ? 120 : 60;
       expect(first.writes.length).toBe(writes + 1);
@@ -328,22 +333,39 @@ describe("durable usage and logical-play summaries", () => {
         ]);
       };
       await recover(paused, counted);
-      first.owner.notePlaybackState(token, binding, 123, "playing");
-      for (let tick = 1; tick <= 300; tick++) {
+      for (let tick = 1; tick <= 60; tick++) {
         await vi.advanceTimersByTimeAsync(1000);
-        first.owner.notePlaybackState(token, binding, tick + 123, "playing");
+        first.owner.notePlaybackState(token, binding, ++sequence, "seeking");
+        first.owner.notePlaybackState(token, binding, ++sequence, "waiting");
+        first.owner.notePlaybackState(token, binding, ++sequence, "paused");
       }
       await vi.advanceTimersByTimeAsync(0);
+      expect(first.writes.length).toBe(writes + 1);
+      expect(await first.store.load()).toEqual(paused);
+      await recover(await first.store.load(), counted);
+      first.owner.notePlaybackState(token, binding, ++sequence, "playing");
+      await vi.advanceTimersByTimeAsync(1000);
+      first.owner.notePlaybackState(token, binding, ++sequence, "paused");
+      await vi.advanceTimersByTimeAsync(0);
       expect(first.writes.length).toBe(writes + 2);
+      expect((await first.store.load())?.summaries?.unfinished?.watchMs).toBe((counted + 1) * 1000);
+      await recover(await first.store.load(), counted + 1);
+      first.owner.notePlaybackState(token, binding, ++sequence, "playing");
+      for (let tick = 1; tick <= 300; tick++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        first.owner.notePlaybackState(token, binding, ++sequence, "playing");
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.writes.length).toBe(writes + 3);
       const threshold = await first.store.load();
-      expect(threshold?.summaries?.unfinished).toMatchObject({ watchMs: (counted + 300) * 1000 });
-      await recover(threshold, counted + 300);
+      expect(threshold?.summaries?.unfinished).toMatchObject({ watchMs: (counted + 301) * 1000 });
+      await recover(threshold, counted + 301);
       first.owner.endPlayback(token);
       await vi.advanceTimersByTimeAsync(0);
       expect(first.events.filter((event) => event.event === "stream_summary")).toMatchObject([
         {
           uuid: admitted?.event.uuid,
-          properties: { end_reason: "ended", watch_duration_seconds: counted + 300 },
+          properties: { end_reason: "ended", watch_duration_seconds: counted + 301 },
         },
       ]);
     },

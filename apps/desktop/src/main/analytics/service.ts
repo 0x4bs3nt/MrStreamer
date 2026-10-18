@@ -188,7 +188,10 @@ export class Analytics {
    * Opting out drops the current run without a stop; one continuing across opt-in has no start.
    */
   configure(enabled: boolean): Promise<AnalyticsSettings> {
-    if (!enabled) this.invalidatePlayback();
+    if (!enabled) {
+      this.invalidatePlayback();
+      this.directRetry.clear();
+    }
     this.paused = true;
     const revision = ++this.revision;
     this.incoming = [];
@@ -439,7 +442,12 @@ export class Analytics {
       this.interval = { mono, until: mono + (this.binding.output === "local" ? 5000 : 15000) };
     } else {
       this.interval = null;
-      if (changed && (state === "paused" || state === "stopped")) this.checkpointPlayback();
+      if (
+        changed &&
+        (state === "paused" || state === "stopped") &&
+        this.run.watchMs !== this.run.checkpointMs
+      )
+        this.checkpointPlayback();
     }
   }
 
@@ -1088,6 +1096,11 @@ export class Analytics {
       record = bounded(record);
       await deadline(this.store.save(record), IO_MS);
       this.record = record;
+      // Retry deadlines belong only to direct work that survived the durable save.
+      const pending = new Set(record.pending.map((item) => item.event.uuid));
+      for (const uuid of this.directRetry.keys()) {
+        if (!pending.has(uuid)) this.directRetry.delete(uuid);
+      }
     } catch {
       this.unavailable();
       throw new Error("Analytics preference could not be saved.");
@@ -1106,6 +1119,7 @@ export class Analytics {
     this.clearWindow();
     this.request?.abort();
     this.clearRetry();
+    this.directRetry.clear();
   }
 
   private clearRetry(): void {

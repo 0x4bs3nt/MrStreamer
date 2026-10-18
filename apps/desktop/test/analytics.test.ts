@@ -614,6 +614,59 @@ describe("analytics delivery and deadlines", () => {
     for (const event of days) expect(event).toEqual(days[0]);
   });
 
+  it("keeps pending direct backoff through a saved preference and rejects a stale retry after consent ABA", async () => {
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    const store = memoryStore();
+    const incidents: CaptureEvent[] = [];
+    let answer: ((result: "retry" | "accepted") => void) | undefined;
+    let active: AbortSignal | undefined;
+    const { owner } = await start({
+      store,
+      transport: {
+        async send(event, signal) {
+          if (event.event !== "renderer_exited") return "accepted";
+          incidents.push(structuredClone(event));
+          active = signal;
+          return new Promise<"retry" | "accepted">((resolve) => {
+            answer = resolve;
+          });
+        },
+      },
+    });
+    owner.setForeground(true);
+    await vi.advanceTimersByTimeAsync(0);
+    owner.noteRendererExit("crashed");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(incidents).toHaveLength(1);
+    answer!("retry");
+    await vi.advanceTimersByTimeAsync(0);
+    const pending = (await store.load())?.pending;
+    expect(pending).toMatchObject([{ attempts: 1, event: { uuid: incidents[0]!.uuid } }]);
+    await owner.configure(true);
+    expect((await store.load())?.pending).toEqual(pending);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(incidents).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(incidents).toEqual([incidents[0], incidents[0]]);
+    const stale = answer!;
+    await owner.configure(false);
+    expect(active?.aborted).toBe(true);
+    expect((await store.load())?.pending).toEqual([]);
+    await owner.configure(true);
+    stale("retry");
+    await vi.advanceTimersByTimeAsync(0);
+    owner.noteRendererExit("other");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(incidents).toHaveLength(3);
+    expect(incidents[2]!.uuid).not.toBe(incidents[0]!.uuid);
+    answer!("accepted");
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(incidents).toHaveLength(3);
+    expect((await store.load())?.pending).toEqual([]);
+  });
+
   it("rate-limits captures and bounds the persisted outbox behind a hung transport, keeping first-seen", async () => {
     vi.useFakeTimers({
       toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
