@@ -515,6 +515,15 @@ async function productPaths() {
     count("stream_started", (e) => e.properties.stream_type === "vod") !== 2
   )
     throw new Error("A failed open repeated its error or started.");
+  const failedOpen = sent().find((event) => event.event === "stream_error");
+  if (
+    !failedOpen ||
+    failedOpen.event !== "stream_error" ||
+    failedOpen.properties.diagnostic_stage !== "deliver" ||
+    failedOpen.properties.diagnostic_reason !== "provider_unavailable"
+  )
+    throw new Error("The failed open lost its fixed provider failure context.");
+  observations.failedOpenDiagnostic = failedOpen;
   await snapshot("failed-open");
   await keyEscape();
   await keyEscape();

@@ -5,10 +5,26 @@ import { act } from "react";
 import {
   observeMediaPlayback,
   PlaybackObservation,
+  playbackFailure,
 } from "../../src/renderer/src/player/analytics.ts";
+import { appFailure } from "@mrstreamer/contracts/analytics";
 import type { AnalyticsPlaybackState } from "@mrstreamer/contracts/analytics";
 
 afterEach(() => vi.useRealTimers());
+
+it("preserves the renderer's output-error projection while main and iOS keep theirs", () => {
+  for (const kind of ["unreachable", "not-fetched", "no-network"] as const) {
+    const error = { kind: "output", failure: { kind } } as const;
+    expect(playbackFailure(error)).toBe("unavailable");
+    expect(appFailure(error)).toBe("network");
+  }
+  const error = {
+    kind: "output",
+    failure: { kind: "media", detail: "PRIVATE missing codec" },
+  } as const;
+  expect(playbackFailure(error)).toBe("unavailable");
+  expect(appFailure(error)).toBe("unsupported");
+});
 it("requires unpaused progress after waiting and seek, and stops renewing when the engine ends", async () => {
   vi.useFakeTimers();
   const video = document.createElement("video");
@@ -193,7 +209,12 @@ it("reports a live mid-play network failure on its closed binding while recovery
   expect(ipc.argsOf("playback.close")).toContainEqual({ sessionId: "session" });
   const control = ipc.argsOf("analytics.playbackBegin")[0]!.measurement.control;
   expect(ipc.argsOf("analytics.playbackFailure")).toEqual([
-    { token: control, binding, failure: "network" },
+    {
+      token: control,
+      binding,
+      failure: "network",
+      diagnostic: { diagnostic_stage: "deliver", diagnostic_reason: "network" },
+    },
   ]);
   player.reset();
 });

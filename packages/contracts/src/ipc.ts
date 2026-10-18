@@ -3,7 +3,12 @@
 // Add a method by giving it an input schema in `ipcInputs` and a result type in `IpcOutputs`.
 // The main process refuses to start unless every method has a handler (see src/main/ipc.ts).
 import { type } from "arktype";
-import { analyticsFeatures, analyticsFailures, PlaybackControl } from "./analytics.ts";
+import {
+  analyticsFeatures,
+  analyticsFailures,
+  PlaybackControl,
+  PlaybackDiagnostic,
+} from "./analytics.ts";
 import {
   OnlineSubtitlePreferences,
   SubtitleCredentialInput,
@@ -323,6 +328,7 @@ export const ipcInputs = {
       sessionId: "string",
       "selector?": { kind: "'hls'", requestId: "string <= 256 | null" },
     }),
+  "playback.diagnostic": () => type({ sessionId: "string" }),
   "playback.tracks": () => type({ sessionId: "string" }),
   "playback.playing": () => type({ sessionId: "string" }),
   "output.status": none,
@@ -405,6 +411,7 @@ export const ipcInputs = {
       token: "string.uuid",
       binding: "string.uuid | null",
       failure: type.enumerated(...analyticsFailures),
+      "diagnostic?": PlaybackDiagnostic(),
     }),
   "analytics.playbackEligible": () => type({ token: "string.uuid", eligible: "boolean" }),
   "analytics.playbackEnd": () => type({ token: "string.uuid" }),
@@ -642,6 +649,7 @@ export interface IpcOutputs {
   "playback.closeAll": null;
   /** Why a session's upstream request failed, or null if it has not failed. */
   "playback.failure": StreamFailure | null;
+  "playback.diagnostic": PlaybackDiagnostic | null;
   /** A playing channel's sound and subtitle tracks; null until its stream has started. */
   "playback.tracks": ChannelTracks | null;
   /** Which of a channel's streams its session plays, and those that failed first. */

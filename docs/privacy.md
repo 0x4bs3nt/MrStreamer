@@ -1,6 +1,6 @@
 # Privacy policy
 
-Last updated 17 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 18 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
 
 Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
 
@@ -37,6 +37,8 @@ We can't see, copy or delete any of it. **Diagnostics…** in Settings > About s
 - the app's window stops unexpectedly. Closing the window or quitting doesn't count, and a crash of the whole app or a power cut can't be counted
 
 Events say whether live TV or a movie or episode played, not which one, from which subscription or from where. A search event never contains what you searched for.
+
+Desktop 0.0.15 reports playback failures only with the broad reason above. From desktop 0.0.16, that same failure event can also include fixed diagnostic categories: where it failed, the typed reason, the container family, direct or converted delivery, known video and audio codec families, and whether no fallback, audio conversion, video conversion or repair was in use. Unknown facts stay unknown or are omitted. These categories do not add another event. They never include raw errors, decoder messages, tool output, file paths, stream addresses, provider details, content identifiers or credentials. A decode rejection does not tell us that a codec is missing. The exact fixed values are listed in the [telemetry catalogue](https://github.com/Mr-Streamer-OSS/MrStreamer/blob/main/docs/telemetry.md). The iPhone app does not send this additional desktop context.
 
 The app also sends an observation the first time it observes this profile with its main window in the foreground, and at most one per UTC day after that. The app sends each to PostHog straight away and tries up to three times in all, so a retry can happen as you quit or after the next start. Up to 64 wait on your computer; beyond that the oldest are dropped, keeping the first observation. The app collects at most 60 new events a minute, not counting the first and daily observations; the rest are dropped. Events still waiting and retries are sent as soon as they can be. Events from before the app first observed this profile, and some from just before it closes unexpectedly, are dropped. Builds without our project configuration send nothing. Daily totals that 0.0.12 or 0.0.13 kept or queued and hadn't sent are deleted when you update, without being sent.
 

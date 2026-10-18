@@ -824,6 +824,7 @@ async function start(): Promise<void> {
       "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
       "playback.closeAll": () =>
         Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
+      "playback.diagnostic": ({ sessionId }) => playback.diagnostic(sessionId),
       "playback.failure": ({ sessionId, selector }) => playback.failure(sessionId, selector),
       "playback.tracks": ({ sessionId }) => playback.tracks(sessionId),
       "playback.playing": ({ sessionId }) => playback.playing(sessionId),
@@ -979,10 +980,10 @@ async function start(): Promise<void> {
           return null;
         });
       },
-      "analytics.playbackFailure": ({ token: control, binding, failure }, frame) => {
+      "analytics.playbackFailure": ({ token: control, binding, failure, diagnostic }, frame) => {
         const token = analytics.controlledPlayback(control, frame);
         return Effect.sync(() => {
-          if (token) analytics.notePlaybackFailure(token, binding, failure);
+          if (token) analytics.notePlaybackFailure(token, binding, failure, diagnostic);
           return null;
         });
       },

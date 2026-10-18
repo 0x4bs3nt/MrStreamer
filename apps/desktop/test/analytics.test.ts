@@ -700,6 +700,190 @@ function streams(events: readonly CaptureEvent[]) {
 }
 
 describe("direct product and reliability events", () => {
+  it("sends fixed diagnostic facts once per incident, preserving recovery, moves and privacy guards", async () => {
+    const capture = await captureServer();
+    const { owner } = await start({ transport: localCapture(capture.endpoint) });
+    owner.setForeground(true);
+    await until(() => capture.payloads.length === 2);
+    const token = owner.beginPlayback("live");
+    if (!token) throw new Error("No playback run.");
+    const binding = owner.bindPlayback(token, "local");
+    if (!binding) throw new Error("No playback binding.");
+    const diagnostic = {
+      diagnostic_stage: "decode",
+      diagnostic_reason: "decode_rejected",
+      diagnostic_container: "mpegts",
+      diagnostic_delivery: "converted",
+      diagnostic_video_codec: "h264",
+      diagnostic_audio_codec: "aac",
+      diagnostic_fallback: "repair",
+    } as const;
+    owner.notePlaybackFailure(token, binding, "unsupported", diagnostic);
+    owner.notePlaybackFailure(token, binding, "unsupported", { diagnostic_reason: "unknown" });
+    const remote = owner.bindPlayback(token, "remote");
+    if (!remote) throw new Error("No remote binding.");
+    owner.notePlaybackFailure(token, remote, "unsupported", diagnostic);
+    await until(() => capture.payloads.length === 3);
+    const event = CaptureEvent()(capture.payloads[2]);
+    if (event instanceof type.errors) throw new Error("Invalid diagnostic body.");
+    expect(capture.payloads[2]).toEqual({ api_key: "mrstreamer-local-verification", ...event });
+    expect(event).toMatchObject({
+      event: "stream_error",
+      properties: { stream_type: "live", error_type: "unsupported", ...diagnostic },
+    });
+    owner.notePlaybackState(token, remote, 1, "playing");
+    owner.notePlaybackFailure(token, binding, "unsupported", diagnostic); // old binding
+    owner.notePlaybackFailure(token, remote, "network", {
+      diagnostic_stage: "deliver",
+      diagnostic_reason: "network",
+    });
+    await until(() => capture.payloads.length === 5);
+    expect(capture.payloads.filter((body) => CaptureEvent()(body) instanceof type.errors)).toEqual(
+      [],
+    );
+    owner.setPlaybackEligible(token, false);
+    owner.notePlaybackState(token, remote, 2, "playing");
+    owner.notePlaybackFailure(token, remote, "unsupported", diagnostic);
+    await owner.configure(false);
+    owner.notePlaybackFailure(token, remote, "unsupported", diagnostic);
+    await owner.settings();
+    expect(capture.payloads).toHaveLength(5);
+    expect(streams(capture.payloads.map((body) => CaptureEvent().assert(body)))).toEqual([
+      "error live unsupported",
+      "started live",
+      "error live network",
+    ]);
+  });
+
+  it("rejects arbitrary diagnostic values at capture and IPC and reconstructs only fixed HTTP fields", async () => {
+    const capture = await captureServer();
+    const transport = localCapture(capture.endpoint);
+    if (!transport) throw new Error("No local transport.");
+    const base = {
+      uuid: randomUUID(),
+      distinct_id: randomUUID(),
+      timestamp: new Date().toISOString(),
+      event: "stream_error" as const,
+      properties: {
+        ...properties,
+        profile_origin: "fresh" as const,
+        $process_person_profile: false as const,
+        $geoip_disable: true as const,
+        stream_type: "live" as const,
+        error_type: "unsupported" as const,
+      },
+    };
+    const context = {
+      diagnostic_stage: "decode",
+      diagnostic_reason: "decode_rejected",
+      diagnostic_container: "mpegts",
+      diagnostic_delivery: "direct",
+      diagnostic_video_codec: "h264",
+      diagnostic_audio_codec: "aac",
+      diagnostic_fallback: "none",
+    } as const;
+    for (const key of Object.keys(context)) {
+      const bad = {
+        ...base,
+        properties: {
+          ...base.properties,
+          ...context,
+          [key]: "https://login:password@private.example/media/123?token=PRIVATE",
+        },
+      };
+      expect(CaptureEvent()(bad)).toBeInstanceOf(type.errors);
+      expect(await transport.send(bad, new AbortController().signal)).toBe("discard");
+      expect(
+        ipcInputs["analytics.playbackFailure"]()({
+          token: randomUUID(),
+          binding: null,
+          failure: "unsupported",
+          diagnostic: { ...context, [key]: "PRIVATE" },
+        }),
+      ).toBeInstanceOf(type.errors);
+    }
+    const valid = CaptureEvent().assert({
+      ...base,
+      properties: {
+        ...base.properties,
+        ...context,
+        stderr: "PRIVATE",
+        provider: "PRIVATE",
+        path: "/PRIVATE",
+        codec: "PRIVATE",
+        url: "PRIVATE",
+        content_id: "PRIVATE",
+        error: "PRIVATE",
+        credentials: "PRIVATE",
+      },
+    });
+    expect(await transport.send(valid, new AbortController().signal)).toBe("accepted");
+    expect(capture.payloads).toEqual([
+      {
+        api_key: "mrstreamer-local-verification",
+        ...base,
+        properties: { ...base.properties, ...context },
+      },
+    ]);
+    expect(JSON.stringify(capture.payloads)).not.toContain("PRIVATE");
+  });
+
+  it("keeps enabled consent, identity and old queued events when future optional diagnostics are unknown", async () => {
+    const dataDir = await tempDir();
+    const id = randomUUID();
+    const event = {
+      uuid: randomUUID(),
+      distinct_id: id,
+      timestamp: new Date().toISOString(),
+      event: "stream_error",
+      properties: {
+        ...properties,
+        profile_origin: "fresh",
+        $process_person_profile: false,
+        $geoip_disable: true,
+        stream_type: "live",
+        error_type: "unsupported",
+      },
+    };
+    const future = Object.fromEntries(
+      ["stage", "reason", "container", "delivery", "video_codec", "audio_codec", "fallback"].map(
+        (key) => [`diagnostic_${key}`, "future_value"],
+      ),
+    );
+    await writeFile(
+      join(dataDir, "analytics.json"),
+      JSON.stringify({
+        format: 2,
+        enabled: true,
+        installationId: id,
+        profileOrigin: "fresh",
+        firstSeen: true,
+        lastDay: new Date().toISOString().slice(0, 10),
+        pending: [
+          { event: { ...event, properties: { ...event.properties, ...future } }, attempts: 1 },
+          { event: { ...event, uuid: randomUUID() }, attempts: 0 },
+        ],
+      }),
+    );
+    const loaded = await analyticsStore(dataDir).load();
+    expect(loaded).toMatchObject({
+      enabled: true,
+      installationId: id,
+      pending: [
+        { event, attempts: 1 },
+        { event: { event: "stream_error" }, attempts: 0 },
+      ],
+    });
+    const { owner, events } = await start({ dataDir });
+    expect(await owner.settings()).toEqual({ enabled: true, transport: "local" });
+    owner.setForeground(true);
+    await until(() => events.length === 2);
+    expect(events[0]).toEqual(event);
+    expect(JSON.stringify(events)).not.toContain("future_value");
+    await owner.configure(false);
+    expect(await saved(dataDir)).toMatchObject({ enabled: false, installationId: id, pending: [] });
+  });
+
   it("sends each completed action, setting, screen, outcome and renderer exit with only fixed fields", async () => {
     const capture = await captureServer();
     const { owner } = await start({ transport: localCapture(capture.endpoint) });

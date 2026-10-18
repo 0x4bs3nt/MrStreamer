@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { type } from "arktype";
 import { writeJsonFile } from "../platform/json-file.ts";
 import { lazy } from "@mrstreamer/contracts/lazy";
+import { PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
 import { AnalyticsRecord, type ProfileOrigin } from "./model.ts";
 
 /** Snapshot before other app services write. Absence of analytics alone never proves freshness. */
@@ -59,7 +60,7 @@ export function analyticsStore(dataDir: string) {
         const parsed: unknown = JSON.parse(text);
         const current = withoutSummaries(parsed);
         migrated = current !== parsed;
-        const checked = AnalyticsRecord()(current);
+        const checked = AnalyticsRecord()(withoutFutureDiagnostics(current));
         if (
           checked instanceof type.errors ||
           checked.firstSeen !== (checked.installationId !== null) ||
@@ -80,5 +81,33 @@ export function analyticsStore(dataDir: string) {
     save(record: AnalyticsRecord): Promise<void> {
       return writeJsonFile(path, record);
     },
+  };
+}
+
+/** New optional diagnostic literals cannot invalidate otherwise valid consent or legacy work. */
+function withoutFutureDiagnostics(value: unknown): unknown {
+  const queue = type({
+    pending: type({ event: type({ event: "string", properties: "object" }) }).array(),
+  })(value);
+  if (queue instanceof type.errors) return value;
+  return {
+    ...queue,
+    pending: queue.pending.map((item) =>
+      item.event.event !== "stream_error"
+        ? item
+        : {
+            ...item,
+            event: {
+              ...item.event,
+              properties: Object.fromEntries(
+                Object.entries(item.event.properties).filter(
+                  ([key, entry]) =>
+                    !key.startsWith("diagnostic_") ||
+                    !(PlaybackDiagnostic()({ [key]: entry }) instanceof type.errors),
+                ),
+              ),
+            },
+          },
+    ),
   };
 }

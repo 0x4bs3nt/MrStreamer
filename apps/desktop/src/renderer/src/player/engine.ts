@@ -1,4 +1,4 @@
-import type { AnalyticsPlaybackState } from "@mrstreamer/contracts/analytics";
+import type { AnalyticsPlaybackState, PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
 import { observeMediaPlayback } from "./analytics.ts";
 // Playback engines behind one interface, so the rest of the UI only ever talks to `Engine`. The
 // main process delivers each stream in codecs these engines decode; see src/main/playback.
@@ -30,6 +30,7 @@ const BROKEN_TIMING_STALL_MS = 4000;
 export type EngineName = "mpegts.js" | "hls.js" | "native";
 
 export interface EngineError {
+  readonly diagnosticReason?: PlaybackDiagnostic["diagnostic_reason"];
   /**
    * `network`: data stopped arriving. `media`: decoding failed. `unsupported`: a codec the engine
    * cannot play. `wrong-container`: not the format this engine reads at all, so another engine may.
@@ -304,6 +305,7 @@ function hlsError(data: ErrorData, source: string): EngineError {
   return {
     kind: network ? "network" : unsupported ? "unsupported" : "media",
     detail: data.details,
+    ...(parsing ? { diagnosticReason: "malformed_input" as const } : {}),
     failure: { kind: "hls", requestId },
   };
 }

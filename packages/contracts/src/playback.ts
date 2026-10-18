@@ -1,6 +1,7 @@
 // Stream sessions: the main process opens the upstream connection and hands the UI a local URL.
 import type { TitleRef } from "./ondemand.ts";
 import type { OwnedId } from "./subscription.ts";
+import type { PlaybackDiagnostic } from "./analytics.ts";
 
 /** Container formats the UI's playback engines know how to load. */
 export type StreamFormat = "mpegts" | "hls";
@@ -149,11 +150,13 @@ export interface SubtitleTrack {
 /** Why the provider did not deliver a stream. */
 export type StreamFailure =
   /** 401/403 and similar: wrong login, or every allowed connection is in use. */
-  | { readonly kind: "refused"; readonly status: number }
-  /** 404/410: the channel has no stream right now. */
-  | { readonly kind: "unavailable"; readonly status: number }
-  | { readonly kind: "provider-error"; readonly status: number }
-  /** No response before the timeout, or the connection dropped. */
-  | { readonly kind: "network"; readonly detail: string }
-  /** The stream arrived, but its format cannot be played or converted here. */
-  | { readonly kind: "unsupported"; readonly detail: string };
+  (
+    | { readonly kind: "refused"; readonly status: number }
+    /** 404/410: the channel has no stream right now. */
+    | { readonly kind: "unavailable"; readonly status: number }
+    | { readonly kind: "provider-error"; readonly status: number }
+    /** No response before the timeout, or the connection dropped. */
+    | { readonly kind: "network"; readonly detail: string }
+    /** The stream arrived, but its format cannot be played or converted here. */
+    | { readonly kind: "unsupported"; readonly detail: string }
+  ) & { readonly diagnostic?: PlaybackDiagnostic };

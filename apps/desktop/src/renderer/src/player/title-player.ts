@@ -1,4 +1,10 @@
-import { PlaybackObservation, playbackFailure, streamFailure } from "./analytics.ts";
+import { appDiagnostic, streamDiagnostic } from "@mrstreamer/contracts/analytics";
+import {
+  PlaybackObservation,
+  playbackFailure,
+  streamFailure,
+  engineDiagnostic,
+} from "./analytics.ts";
 // The controller for movies and episodes: which title is open, where it is, its tracks, and
 // what the viewer does with it. It plays in the same element as live TV (see player.ts): opening a
 // title stops the live stream, and starting a live channel closes the title, so the provider sees
@@ -648,17 +654,23 @@ async function recover(
   wasPlaying: boolean,
   paused: boolean,
 ): Promise<void> {
-  const upstream = session
-    ? await call("playback.failure", {
-        sessionId: session.id,
-        ...(error.failure ? { selector: error.failure } : {}),
-      }).catch(() => null)
-    : null;
+  const [upstream, context] = session
+    ? await Promise.all([
+        call("playback.failure", {
+          sessionId: session.id,
+          ...(error.failure ? { selector: error.failure } : {}),
+        }).catch(() => null),
+        call("playback.diagnostic", { sessionId: session.id }).catch(() => null),
+      ])
+    : [null, null];
   if (mine !== generation) return;
   const fallback = !upstream && !wasPlaying && !convertSound && error.kind !== "network";
   if (!fallback)
     observation.failure(
       upstream ? streamFailure(upstream) : error.kind === "network" ? "network" : "unsupported",
+      upstream
+        ? streamDiagnostic(upstream)
+        : engineDiagnostic(error, "mp4", convertSound ? "audio" : "none", context),
     );
   stopEngine();
   if (fallback) {
@@ -1236,7 +1248,7 @@ export const titlePlayer = {
     } catch (cause) {
       if (mine !== generation) return;
       const error = appError(cause);
-      observation.failure(playbackFailure(error));
+      observation.failure(playbackFailure(error), appDiagnostic(error));
       store.setState({
         phase: {
           kind: "failed",

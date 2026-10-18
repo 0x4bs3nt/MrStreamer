@@ -432,6 +432,15 @@ describe("playback", () => {
     expect(await playback.failure(session.sessionId)).toEqual({
       kind: "unsupported",
       detail: "This stream carries h264 video and mp2 sound.",
+      diagnostic: {
+        diagnostic_stage: "convert",
+        diagnostic_reason: "tool_missing",
+        diagnostic_container: "mpegts",
+        diagnostic_delivery: "converted",
+        diagnostic_video_codec: "h264",
+        diagnostic_audio_codec: "mpeg_audio",
+        diagnostic_fallback: "none",
+      },
     });
     await playback.dispose();
   });

@@ -1,4 +1,8 @@
-import type { AnalyticsFailure } from "@mrstreamer/contracts/analytics";
+import {
+  appDiagnostic,
+  type PlaybackDiagnostic,
+  type AnalyticsFailure,
+} from "@mrstreamer/contracts/analytics";
 import type { Failed } from "@mrstreamer/core/failure";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -12,7 +16,7 @@ import { appFailure } from "./operations.ts";
  */
 export function observeOpen<A>(
   coordination: Effect.Success<typeof PlaybackCoordination>,
-  observe: () => (failure: AnalyticsFailure) => void,
+  observe: () => (failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void,
   open: (turn: number) => Effect.Effect<A, Failed>,
   before: Effect.Effect<void, Failed> = Effect.void,
 ): Effect.Effect<A, Failed> {
@@ -26,7 +30,10 @@ export function observeOpen<A>(
           if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
           if (yield* coordination.passed(turn)) return;
           const error = Cause.findErrorOption(exit.cause);
-          failed(error._tag === "Some" ? appFailure(error.value.error) : "app");
+          failed(
+            error._tag === "Some" ? appFailure(error.value.error) : "app",
+            error._tag === "Some" ? appDiagnostic(error.value.error) : undefined,
+          );
         }),
       ),
     );

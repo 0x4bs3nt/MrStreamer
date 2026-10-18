@@ -1,4 +1,10 @@
-import { PlaybackObservation, playbackFailure, streamFailure } from "./analytics.ts";
+import { appDiagnostic, streamDiagnostic } from "@mrstreamer/contracts/analytics";
+import {
+  PlaybackObservation,
+  playbackFailure,
+  streamFailure,
+  engineDiagnostic,
+} from "./analytics.ts";
 // The player controller: owns the one video element, the open stream session and the playback state.
 //
 // Every `play` call starts a new selection. Anything that resolves for an older selection is
@@ -478,7 +484,8 @@ async function start(channel: LiveChannel, repair = false, preview = false): Pro
     });
   } catch (cause) {
     if (mine === selection) {
-      observation.failure(playbackFailure(appError(cause)));
+      const error = appError(cause);
+      observation.failure(playbackFailure(error), appDiagnostic(error));
       store.setState({ phase: failed({ kind: "app", error: appError(cause) }) });
     }
     return;
@@ -755,12 +762,13 @@ async function recover(
   error: EngineError,
   repaired: boolean,
 ): Promise<void> {
-  const [upstream, stream] = await Promise.all([
+  const [upstream, stream, context] = await Promise.all([
     call("playback.failure", {
       sessionId: session.sessionId,
       ...(error.failure ? { selector: error.failure } : {}),
     }).catch(() => null),
     call("playback.playing", { sessionId: session.sessionId }).catch(() => null),
+    call("playback.diagnostic", { sessionId: session.sessionId }).catch(() => null),
   ]);
   if (mine !== selection) return;
   const problem = classify(upstream, error);
@@ -776,6 +784,9 @@ async function recover(
   }
   observation.failure(
     upstream ? streamFailure(upstream) : error.kind === "network" ? "network" : "unsupported",
+    upstream
+      ? streamDiagnostic(upstream)
+      : engineDiagnostic(error, session.format, repaired ? "repair" : "none", context),
   );
   const delay = retries(problem) ? nextReconnect() : null;
   release();

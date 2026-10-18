@@ -125,6 +125,7 @@ const bridge = {
     if (always) return Promise.resolve(always);
     const reply = replies.get(method);
     if (reply) return Promise.resolve({ ok: true, value: reply(args) });
+    if (method === "playback.diagnostic") return Promise.resolve({ ok: true, value: null });
     if (method.startsWith("analytics.")) return Promise.resolve({ ok: true, value: null });
     if (method === "viewing.episodes") {
       return Promise.resolve({ ok: true, value: { progress: [], marks: [], undoable: null } });

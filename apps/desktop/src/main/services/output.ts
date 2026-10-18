@@ -1,3 +1,8 @@
+import {
+  appDiagnostic,
+  streamDiagnostic,
+  type PlaybackDiagnostic,
+} from "@mrstreamer/contracts/analytics";
 import type { RemotePlaybackObservers, RemotePlaybackObserver } from "../analytics/observers.ts";
 import { streamFailure, appFailure } from "../analytics/operations.ts";
 // Where playback goes: this computer, or a receiver on the local network, a TV the viewer sends
@@ -217,8 +222,9 @@ export class Output extends Context.Service<
         readonly paused?: boolean | undefined;
         readonly shown: Shown;
         readonly measurement?: string | undefined;
-        /** A failed request before this load has a physical observer; fixed category only. */
-        readonly onPreloadFailure?: ((failure: AnalyticsFailure) => void) | undefined;
+        /** A failed request before this load has a physical observer; fixed category and optional diagnostic facts only. */
+        readonly onPreloadFailure?:
+          ((failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void) | undefined;
       },
     ): Effect.Effect<RemoteMedia, Failed>;
     /** Tells the receiver. Does nothing when `generation` is no longer what it plays. */
@@ -353,7 +359,10 @@ function make(deps: OutputDeps) {
     const mediaFailed = (failure: OutputFailure, stop: boolean) =>
       Effect.gen(function* () {
         const was = playing;
-        was?.measurement?.failure(appFailure({ kind: "output", failure }));
+        was?.measurement?.failure(
+          appFailure({ kind: "output", failure }),
+          appDiagnostic({ kind: "output", failure }),
+        );
         yield* drop(true);
         if (stop && was && connected) {
           yield* Effect.promise(() => connected!.connection.stop(was.generation).catch(() => {}));
@@ -403,7 +412,10 @@ function make(deps: OutputDeps) {
           const was = connected;
           if (was?.adapter !== adapter || output.kind !== "receiver") return;
           const { receiver } = output;
-          playing?.measurement?.failure(appFailure({ kind: "output", failure: event.failure }));
+          playing?.measurement?.failure(
+            appFailure({ kind: "output", failure: event.failure }),
+            appDiagnostic({ kind: "output", failure: event.failure }),
+          );
           return later(
             one(
               Effect.gen(function* () {
@@ -432,7 +444,7 @@ function make(deps: OutputDeps) {
               now.item.kind === "channel" ? yield* playback.failure(now.sessionId) : null;
             if (playing !== now) return;
             // A stream that broke is an incident the viewer may retry; otherwise the play is over.
-            if (stream) now.measurement?.failure(streamFailure(stream));
+            if (stream) now.measurement?.failure(streamFailure(stream), streamDiagnostic(stream));
             else now.measurement?.end();
             yield* drop(true);
             if (output.kind !== "receiver") return;
@@ -922,7 +934,8 @@ function make(deps: OutputDeps) {
           readonly paused?: boolean | undefined;
           readonly shown: Shown;
           readonly measurement?: string | undefined;
-          readonly onPreloadFailure?: ((failure: AnalyticsFailure) => void) | undefined;
+          readonly onPreloadFailure?:
+            ((failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void) | undefined;
         },
       ) => {
         const request = ++titleLoadRequest;
@@ -952,7 +965,10 @@ function make(deps: OutputDeps) {
                     (turn !== undefined && (yield* coordination.passed(turn)))
                   )
                     return;
-                  options.onPreloadFailure?.(appFailure(failure.error));
+                  options.onPreloadFailure?.(
+                    appFailure(failure.error),
+                    appDiagnostic(failure.error),
+                  );
                 }),
               ),
             );

@@ -363,6 +363,83 @@ function framesOf(body: Buffer): number {
 
 // Each run starts ffmpeg, which takes a moment under a busy suite.
 describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
+  it.each([
+    ["missing tool", null, "tool_missing"],
+    ["failed tool launch", "missing", "tool_failed"],
+    ["failed probe", "process.exit(1)", "probe_failed"],
+    ["malformed probe output", 'console.log("not JSON, missing decoder PRIVATE")', "probe_failed"],
+    ["excess probe output", "process.stdout.write(' '.repeat(9 * 1024 * 1024))", "probe_failed"],
+    ["unsupported input", "console.log(JSON.stringify({ streams: [] }))", "unsupported_input"],
+  ])("distinguishes %s from a confirmed missing codec", async (_name, script, reason) => {
+    const directory = await tempDir();
+    const executable = join(directory, "probe.cjs");
+    if (script && script !== "missing")
+      await writeFile(executable, `#!${process.execPath}\n${script}\n`, { mode: 0o700 });
+    const { open, dispose } = await titles({ ffprobe: script === null ? null : executable });
+    try {
+      await expect(open("TEST | Two sound tracks")).rejects.toMatchObject({
+        error: {
+          kind: "stream",
+          failure: {
+            kind: "unsupported",
+            diagnostic: {
+              diagnostic_stage: "probe",
+              diagnostic_reason: reason,
+              diagnostic_fallback: "none",
+            },
+          },
+        },
+      });
+    } finally {
+      await dispose();
+    }
+  });
+
+  it.each(["missing", "failed", "conversion"])(
+    "reports a %s converter from its typed process boundary",
+    async (mode) => {
+      const directory = await tempDir();
+      const executable = join(directory, "converter.cjs");
+      if (mode === "conversion")
+        await writeFile(
+          executable,
+          `#!${process.execPath}\nconsole.error("PRIVATE missing decoder https://login:secret@example.test"); process.exit(1);\n`,
+          { mode: 0o700 },
+        );
+      const { open, playback, dispose } = await titles({
+        ffmpeg: mode === "missing" ? null : executable,
+      });
+      try {
+        const session = await open("TEST | Two sound tracks");
+        await fetch(session.url)
+          .then((response) => response.arrayBuffer())
+          .catch(() => {});
+        const failure = await playback.failure(session.sessionId);
+        expect(failure).toMatchObject({
+          kind: "unsupported",
+          ...(mode !== "missing"
+            ? { detail: expect.stringMatching(/^The file could not be played\./) }
+            : {}),
+          diagnostic: {
+            diagnostic_stage: "convert",
+            diagnostic_reason:
+              mode === "missing"
+                ? "tool_missing"
+                : mode === "failed"
+                  ? "tool_failed"
+                  : "conversion_failed",
+            diagnostic_video_codec: "h264",
+            diagnostic_audio_codec: "eac3",
+            diagnostic_fallback: "none",
+          },
+        });
+        expect(JSON.stringify(failure?.diagnostic)).not.toContain("PRIVATE");
+      } finally {
+        await dispose();
+      }
+    },
+  );
+
   it("names HEVC for Media Source Extensions", () => {
     const remux = spawnSync(
       FFMPEG,

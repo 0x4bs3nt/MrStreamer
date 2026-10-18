@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type } from "arktype";
+import { PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
 import type {
   AnalyticsAction,
   AnalyticsFailure,
@@ -373,7 +374,14 @@ export class Analytics {
     // The producer must confirm playing again after promotion; eligibility alone proves no media.
   }
 
-  notePlaybackFailure(token: string, binding: string | null, failure: AnalyticsFailure): void {
+  notePlaybackFailure(
+    token: string,
+    binding: string | null,
+    failure: AnalyticsFailure,
+    diagnostic?: PlaybackDiagnostic,
+  ): void {
+    const context = PlaybackDiagnostic()(diagnostic ?? {});
+    if (context instanceof type.errors) return;
     if (
       this.run?.token !== token ||
       (binding === null
@@ -389,7 +397,7 @@ export class Analytics {
     this.settlePlayback();
     this.interval = null;
     this.run.incident = true;
-    this.capture("stream_error", { stream_type: this.run.kind, error_type: failure });
+    this.capture("stream_error", { stream_type: this.run.kind, error_type: failure, ...context });
   }
 
   endPlayback(token: string): void {
@@ -459,8 +467,9 @@ export class Analytics {
         }
         if (token && binding) this.notePlaybackState(token, binding, ++sequence, state);
       },
-      failure: (failure: AnalyticsFailure) => {
-        if (active && token && binding) this.notePlaybackFailure(token, binding, failure);
+      failure: (failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => {
+        if (active && token && binding)
+          this.notePlaybackFailure(token, binding, failure, diagnostic);
       },
       stop: () => {
         active = false;
@@ -477,14 +486,16 @@ export class Analytics {
   }
 
   /** A terminal result can count only in the enabled generation that observed its start. */
-  playbackFailureObserver(control: string | undefined): (failure: AnalyticsFailure) => void {
+  playbackFailureObserver(
+    control: string | undefined,
+  ): (failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void {
     // Resolve a receiver alias now, then retain the exact run through asynchronous completion.
     const token =
       control && (this.run?.token === control || this.run?.remoteControl === control)
         ? this.run.token
         : null;
-    return (failure) => {
-      if (token) this.notePlaybackFailure(token, null, failure);
+    return (failure, diagnostic) => {
+      if (token) this.notePlaybackFailure(token, null, failure, diagnostic);
     };
   }
 
@@ -492,14 +503,14 @@ export class Analytics {
   receiverLoadFailureObserver(
     control: string | undefined,
     frame: string | null,
-  ): (failure: AnalyticsFailure) => void {
+  ): (failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void {
     const token = control ? this.controlledPlayback(control, frame) : null;
-    return (failure) => {
+    return (failure, diagnostic) => {
       if (!token || !control || this.controlledPlayback(control, frame) !== token) return;
       // An earlier receiver load may still own the binding until this load takes its place.
       // The run's incident guard merges that failure with any later physical callback.
       const binding = this.binding;
-      this.notePlaybackFailure(token, binding?.token ?? null, failure);
+      this.notePlaybackFailure(token, binding?.token ?? null, failure, diagnostic);
     };
   }
 

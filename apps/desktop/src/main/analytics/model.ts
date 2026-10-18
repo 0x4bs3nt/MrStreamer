@@ -4,6 +4,7 @@ import {
   analyticsFailures,
   analyticsFeatures,
   analyticsSettings,
+  PlaybackDiagnostic,
 } from "@mrstreamer/contracts/analytics";
 import { BuildProperties } from "./properties.ts";
 import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
@@ -86,6 +87,7 @@ export const CaptureEvent = lazy(() =>
         type.unit("stream_error"),
         Common()
           .merge({ stream_type: StreamType(), error_type: ErrorType() })
+          .merge(PlaybackDiagnostic())
           .onUndeclaredKey("delete"),
       ),
     )

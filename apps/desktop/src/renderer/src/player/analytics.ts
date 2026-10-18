@@ -5,8 +5,38 @@ import type {
   PlaybackControl,
 } from "@mrstreamer/contracts/analytics";
 import type { AppError } from "@mrstreamer/contracts/errors";
-import type { StreamFailure } from "@mrstreamer/contracts/playback";
+import { streamFailure, type PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
+export { streamFailure } from "@mrstreamer/contracts/analytics";
 import { call, listen } from "../lib/ipc.ts";
+import type { EngineError } from "./engine.ts";
+
+/** The exact engine category is evidence of rejection, never proof of a missing codec. */
+export function engineDiagnostic(
+  error: EngineError,
+  container: "mpegts" | "hls" | "mp4",
+  fallback: "none" | "audio" | "repair",
+  context: PlaybackDiagnostic | null = null,
+): PlaybackDiagnostic {
+  const reason =
+    error.diagnosticReason ??
+    (error.kind === "network"
+      ? "network"
+      : (context?.diagnostic_reason ??
+        (error.kind === "wrong-container"
+          ? "unsupported_input"
+          : context?.diagnostic_delivery === "direct"
+            ? "copy_rejected"
+            : "decode_rejected")));
+  return {
+    diagnostic_container: container,
+    diagnostic_delivery: "unknown",
+    diagnostic_fallback: fallback,
+    ...context,
+    diagnostic_stage:
+      reason === "network" ? "deliver" : reason === "malformed_input" ? "inspect" : "decode",
+    diagnostic_reason: reason,
+  };
+}
 
 let controlOrder = 0;
 
@@ -161,11 +191,16 @@ export class PlaybackObservation {
       });
   }
 
-  failure(failure: AnalyticsFailure): void {
+  failure(failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic): void {
     const token = this.control?.control;
     void this.binding.then((binding) => {
       if (token && !this.onRemote)
-        return call("analytics.playbackFailure", { token, binding, failure }).catch(() => {});
+        return call("analytics.playbackFailure", {
+          token,
+          binding,
+          failure,
+          ...(diagnostic ? { diagnostic } : {}),
+        }).catch(() => {});
     });
   }
 
@@ -200,19 +235,6 @@ export function playbackFailure(error: AppError): AnalyticsFailure {
       return "app";
   }
 }
-export function streamFailure(failure: StreamFailure): AnalyticsFailure {
-  switch (failure.kind) {
-    case "network":
-      return "network";
-    case "unsupported":
-      return "unsupported";
-    case "refused":
-      return failure.status === 401 || failure.status === 403 ? "credentials" : "unavailable";
-    default:
-      return "unavailable";
-  }
-}
-
 /** Reports bounded facts only. Playing requires unpaused clock progress after a seek/wait. */
 export function observeMediaPlayback(video: HTMLVideoElement) {
   let listener: ((state: AnalyticsPlaybackState) => void) | null = null;

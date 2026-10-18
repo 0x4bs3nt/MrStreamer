@@ -454,6 +454,7 @@ describe("what a failure shows", () => {
     // The provider delivered it: the player couldn't decode it.
     await stops(null);
     expect(asked().at(-1)).toMatchObject({ repair: true });
+    expect(ipc.argsOf("analytics.playbackFailure")).toEqual([]);
     await starts();
     await stops(null, tried({}, "vrt"));
 
@@ -461,6 +462,18 @@ describe("what a failure shows", () => {
     expect(text()).toContain("VRT 1's stream arrived, but Mr. Streamer couldn't play it");
     // Trying the same stream again changes nothing; another quality may.
     expect(offered()).toEqual(["Quality", "Channels"]);
+    expect(ipc.argsOf("analytics.playbackFailure")).toEqual([
+      expect.objectContaining({
+        failure: "unsupported",
+        diagnostic: {
+          diagnostic_stage: "decode",
+          diagnostic_reason: "decode_rejected",
+          diagnostic_container: "hls",
+          diagnostic_delivery: "unknown",
+          diagnostic_fallback: "repair",
+        },
+      }),
+    ]);
     await wait(60_000);
     expect(asked()).toHaveLength(2);
   });

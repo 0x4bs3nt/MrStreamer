@@ -57,6 +57,8 @@
 // aborts its upstream requests, which ends their ffmpeg processes; the proxy closes with the
 // service.
 import { execFile, spawn } from "node:child_process";
+import type { PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
+import { liveDiagnostic, titleDiagnostic } from "../playback/diagnostic.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Readable, Transform } from "node:stream";
@@ -302,6 +304,7 @@ interface SessionBase {
   /** The request currently being served. A new request for the same session replaces it. */
   active: AbortController | null;
   failure: StreamFailure | null;
+  diagnostic: PlaybackDiagnostic | null;
   /** Where a receiver plays the session from, when one does. */
   readonly lan: Lan | null;
 }
@@ -793,6 +796,8 @@ export class Playback extends Context.Service<
      * started, and for movies and episodes.
      */
     tracks(sessionId: string): Effect.Effect<ChannelTracks | null>;
+    /** Fixed inspection/plan facts only, for the current session before engine teardown. */
+    diagnostic(sessionId: string): Effect.Effect<PlaybackDiagnostic | null>;
     /** Which of a channel's streams the session plays; null for movies and episodes. */
     playing(sessionId: string): Effect.Effect<LivePlaying | null>;
     /**
@@ -1043,6 +1048,10 @@ function make(deps: PlaybackDeps) {
             audio: chosen?.pid ?? null,
           })
         : null;
+      session.diagnostic = {
+        ...liveDiagnostic(layout, conversion, session.repair, session.playing),
+        ...start.diagnostic,
+      };
       // The player plays the first sound track its table lists; ffmpeg keeps only the chosen one.
       const chosenFirst =
         layout && chosen && chosen !== layout.audio[0] && !conversion
@@ -1075,7 +1084,15 @@ function make(deps: PlaybackDeps) {
         return;
       }
       if (!deps.ffmpeg) {
-        session.failure = { kind: "unsupported", detail: describeLayout(start.layout) };
+        session.failure = {
+          kind: "unsupported",
+          detail: describeLayout(start.layout),
+          diagnostic: {
+            ...session.diagnostic,
+            diagnostic_stage: "convert",
+            diagnostic_reason: "tool_missing",
+          },
+        };
         body.destroy();
         response.writeHead(415).end();
         report("none", "unsupported");
@@ -1256,6 +1273,13 @@ function make(deps: PlaybackDeps) {
               ? {
                   kind: "unsupported",
                   detail: t("The channel's address doesn't answer with an HLS playlist."),
+                  diagnostic: {
+                    diagnostic_stage: "inspect",
+                    diagnostic_reason: "malformed_input",
+                    diagnostic_container: "hls",
+                    diagnostic_delivery: "direct",
+                    diagnostic_fallback: "none",
+                  },
                 }
               : noStream;
           report(failure.kind);
@@ -1355,7 +1379,15 @@ function make(deps: PlaybackDeps) {
       signal.addEventListener("abort", stop, { once: true });
       child.on("error", (cause) => {
         if (!signal.aborted) {
-          session.failure = { kind: "unsupported", detail: String(cause) };
+          session.failure = {
+            kind: "unsupported",
+            detail: String(cause),
+            diagnostic: {
+              ...session.diagnostic,
+              diagnostic_stage: "convert",
+              diagnostic_reason: "tool_failed",
+            },
+          };
           report("unsupported");
         }
         response.destroy();
@@ -1371,6 +1403,11 @@ function make(deps: PlaybackDeps) {
           session.failure = {
             kind: "unsupported",
             detail: `${t("The stream could not be converted.")} ${detail}`,
+            diagnostic: {
+              ...session.diagnostic,
+              diagnostic_stage: "convert",
+              diagnostic_reason: "conversion_failed",
+            },
           };
           report("unsupported");
         }
@@ -1790,6 +1827,12 @@ function make(deps: PlaybackDeps) {
         session.failure = {
           kind: "unsupported",
           detail: t("This build has no ffmpeg to play movies and episodes."),
+          diagnostic: {
+            ...titleDiagnostic(probe, null, run.audio),
+            diagnostic_stage: !deps.ffmpeg ? "convert" : "probe",
+            diagnostic_reason: !deps.ffmpeg ? "tool_missing" : "probe_failed",
+            diagnostic_fallback: run.convertSound ? "audio" : "none",
+          },
         };
         response.writeHead(415).end();
         return;
@@ -1825,8 +1868,13 @@ function make(deps: PlaybackDeps) {
           outcome,
         });
 
+      session.diagnostic = {
+        ...titleDiagnostic(probe, plan, run.audio),
+        diagnostic_fallback: run.convertSound ? "audio" : "none",
+      };
       const child = spawn(deps.ffmpeg, plan.args, { stdio: ["ignore", "pipe", "pipe"] });
       let errors = "";
+      let spawnFailed = false;
       child.stderr.on("data", (chunk: Buffer) => {
         errors = (errors + chunk.toString()).slice(-2000);
       });
@@ -1860,6 +1908,7 @@ function make(deps: PlaybackDeps) {
       });
       child.on("error", (cause) => {
         errors = String(cause);
+        spawnFailed = true;
       });
 
       const start = textRelay();
@@ -1973,6 +2022,11 @@ function make(deps: PlaybackDeps) {
         const failure: StreamFailure = session.failure ?? {
           kind: "unsupported",
           detail: `${t("The file could not be played.")} ${lastLine(errors, child.exitCode, child.signalCode, pictureStart)}`,
+          diagnostic: {
+            ...session.diagnostic,
+            diagnostic_stage: "convert",
+            diagnostic_reason: spawnFailed ? "tool_failed" : "conversion_failed",
+          },
         };
         session.failure = failure;
         report(failure.kind);
@@ -2012,6 +2066,11 @@ function make(deps: PlaybackDeps) {
           session.failure = {
             kind: "unsupported",
             detail: `${t("The file could not be played.")} ${lastLine(errors, code, child.signalCode)}`,
+            diagnostic: {
+              ...session.diagnostic,
+              diagnostic_stage: "convert",
+              diagnostic_reason: spawnFailed ? "tool_failed" : "conversion_failed",
+            },
           };
         }
         response.destroy();
@@ -2675,6 +2734,12 @@ function make(deps: PlaybackDeps) {
         report("none", "unsupported");
         return over({
           kind: "unsupported",
+          diagnostic: {
+            ...liveDiagnostic(layout, null, session.repair, session.audio),
+            diagnostic_delivery: "unknown",
+            diagnostic_stage: "inspect",
+            diagnostic_reason: !ffmpeg ? "tool_missing" : "inspection_undetermined",
+          },
           detail: ffmpeg
             ? t("A receiver plays channels sent as MPEG-TS or HLS, and this one is neither.")
             : t("This build has no ffmpeg to make a receiver's stream."),
@@ -2704,6 +2769,11 @@ function make(deps: PlaybackDeps) {
       const delivery =
         segments.video === "h264" || segments.audio === "aac" ? "converted" : "direct";
 
+      session.diagnostic = {
+        ...liveDiagnostic(layout, null, session.repair, chosen?.pid ?? null),
+        ...start.diagnostic,
+        diagnostic_delivery: delivery,
+      };
       const id = randomBytes(9).toString("base64url");
       receiver.run = id;
       receiver.first = (receiver.list.at(-1)?.index ?? -1) + 1;
@@ -2727,7 +2797,17 @@ function make(deps: PlaybackDeps) {
       // ffmpeg stops reading when it fails or is killed; that write error is not the stream's.
       child.stdin.on("error", () => {});
       body.pipe(child.stdin);
-      child.on("error", (cause) => over({ kind: "unsupported", detail: String(cause) }));
+      child.on("error", (cause) =>
+        over({
+          kind: "unsupported",
+          detail: String(cause),
+          diagnostic: {
+            ...session.diagnostic,
+            diagnostic_stage: "convert",
+            diagnostic_reason: "tool_failed",
+          },
+        }),
+      );
       child.on("close", (code) => {
         signal.removeEventListener("abort", stop);
         body.destroy();
@@ -2739,6 +2819,11 @@ function make(deps: PlaybackDeps) {
             : {
                 kind: "unsupported",
                 detail: `${t("The stream could not be made into one a receiver plays.")} ${lastLine(errors, code, child.signalCode)}`,
+                diagnostic: {
+                  ...session.diagnostic,
+                  diagnostic_stage: "convert",
+                  diagnostic_reason: "conversion_failed",
+                },
               });
         report(delivery, failure.kind);
         over(failure);
@@ -3060,6 +3145,7 @@ function make(deps: PlaybackDeps) {
 
       const child = spawn(ffmpeg, planned.args, { stdio: ["ignore", "ignore", "pipe"] });
       let errors = "";
+      let spawnFailed = false;
       child.stderr.on("data", (chunk: Buffer) => {
         errors = (errors + chunk.toString()).slice(-2000);
       });
@@ -3072,10 +3158,15 @@ function make(deps: PlaybackDeps) {
         child.on("close", resolve);
         child.on("error", (cause) => {
           errors = String(cause);
+          spawnFailed = true;
           resolve(null);
         });
       });
 
+      session.diagnostic = {
+        ...titleDiagnostic(probe, planned, load.audio),
+        diagnostic_fallback: mismatch ? "video" : "none",
+      };
       const expected = plan.starts[from]!;
       const cues: SubtitleEntry[] = [];
       // What the run reads of its subtitle track is kept with the session's file, as a run of the
@@ -3131,6 +3222,11 @@ function make(deps: PlaybackDeps) {
           session.failure ??= {
             kind: "unsupported",
             detail: `${t("The file could not be played.")} ${lastLine(errors, code, child.signalCode)}`,
+            diagnostic: {
+              ...session.diagnostic,
+              diagnostic_stage: "convert",
+              diagnostic_reason: spawnFailed ? "tool_failed" : "conversion_failed",
+            },
           };
           report(session.failure.kind);
           // Nothing more comes of this run, and the next would fail the same way.
@@ -3189,6 +3285,12 @@ function make(deps: PlaybackDeps) {
           session.failure ??= {
             kind: "unsupported",
             detail: t("The file's picture can't be cut where a receiver's playlist needs it."),
+            diagnostic: {
+              ...titleDiagnostic(session.probe, null, load.audio),
+              diagnostic_stage: "convert",
+              diagnostic_reason: "conversion_failed",
+              diagnostic_fallback: "video",
+            },
           };
           load.store.fail();
         }
@@ -3388,11 +3490,17 @@ function make(deps: PlaybackDeps) {
             failure: {
               kind: "unsupported",
               detail: t("This build has no ffprobe to read movies."),
+              diagnostic: {
+                diagnostic_stage: "probe",
+                diagnostic_reason: "tool_missing",
+                diagnostic_fallback: "none",
+              },
             },
           },
         });
       }
       const generation = session.identity.generation;
+      let toolFailed = false;
       const output = await new Promise<string | null>((resolve) => {
         const child = execFile(
           ffprobe,
@@ -3403,6 +3511,9 @@ function make(deps: PlaybackDeps) {
             resolve(error ? null : stdout);
           },
         );
+        child.once("error", () => {
+          toolFailed = true;
+        });
         const stop = () => void child.kill("SIGKILL");
         session.closed.signal.addEventListener("abort", stop, { once: true });
       });
@@ -3410,7 +3521,7 @@ function make(deps: PlaybackDeps) {
       try {
         json = output === null ? null : JSON.parse(output);
       } catch {
-        // Not JSON: the file couldn't be read, handled below.
+        // Unusable probe output is a probe failure, not evidence about the media.
       }
       const probe = json === null ? null : readProbe(json);
       if (!probe || (!probe.video && probe.audio.length === 0)) {
@@ -3420,6 +3531,15 @@ function make(deps: PlaybackDeps) {
             failure: session.failure ?? {
               kind: "unsupported",
               detail: t("The file has no picture or sound Mr. Streamer can read."),
+              diagnostic: {
+                diagnostic_stage: "probe",
+                diagnostic_reason: toolFailed
+                  ? "tool_failed"
+                  : !probe
+                    ? "probe_failed"
+                    : "unsupported_input",
+                diagnostic_fallback: "none",
+              },
             },
           },
         });
@@ -3653,6 +3773,7 @@ function make(deps: PlaybackDeps) {
           scope: forked,
           active: null,
           failure: null,
+          diagnostic: null,
         };
         register(session);
         return session;
@@ -3693,6 +3814,7 @@ function make(deps: PlaybackDeps) {
           lan,
           active: null,
           failure: null,
+          diagnostic: null,
           probe: null,
           probed: 0,
           source: null,
@@ -4042,6 +4164,12 @@ function make(deps: PlaybackDeps) {
                   kind: "stream",
                   failure: {
                     kind: "unsupported",
+                    diagnostic: {
+                      ...titleDiagnostic(probe, null, null),
+                      diagnostic_stage: "inspect",
+                      diagnostic_reason: deps.ffmpeg ? "unsupported_input" : "tool_missing",
+                      diagnostic_fallback: "none",
+                    },
                     detail: deps.ffmpeg
                       ? t(
                           "The file has no picture, or doesn't say how long it is, so a receiver can't play it.",
@@ -4156,6 +4284,12 @@ function make(deps: PlaybackDeps) {
           if (!path.startsWith(prefix)) return null;
           const id = path.slice(prefix.length);
           return /^[0-9a-z]+$/.test(id) ? session.hls.failureOf(id) : null;
+        }),
+
+      diagnostic: (sessionId: string) =>
+        Effect.sync(() => {
+          const session = sessions.get(sessionId);
+          return session && !session.closed.signal.aborted ? session.diagnostic : null;
         }),
 
       tracks: (sessionId: string) =>
@@ -4447,6 +4581,7 @@ type ReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["re
 interface StreamStart {
   /** The tracks, or null when the data is not MPEG-TS. */
   readonly layout: StreamLayout | null;
+  readonly diagnostic: PlaybackDiagnostic;
   /** What was read while inspecting; the player still needs it. */
   readonly head: readonly Uint8Array[];
   /** A read still in flight when time ran out. */
@@ -4466,6 +4601,18 @@ async function inspectStart(
   let size = 0;
   let latest: Inspection | null = null;
   let pending: Promise<ReadResult> | null = null;
+  const facts = (): PlaybackDiagnostic => {
+    const unresolved = latest?.open.flat() ?? [];
+    return {
+      // Inspection's conservative codec guesses must never be reported as observed codecs.
+      ...(unresolved.length > 0
+        ? { diagnostic_video_codec: "unknown" as const, diagnostic_audio_codec: "unknown" as const }
+        : {}),
+      ...(!latest || unresolved.length > 0
+        ? { diagnostic_reason: "inspection_undetermined" as const }
+        : {}),
+    };
+  };
   const deadline = Date.now() + INSPECT_LIMIT.ms;
   while (size < INSPECT_LIMIT.bytes) {
     pending ??= reader.read();
@@ -4485,10 +4632,12 @@ async function inspectStart(
       const decoded = candidates.filter((codec) => decoders.has(codec)).length;
       return decoded === 0 || decoded === candidates.length;
     });
-    if (latest && settled) return { layout: latest.layout, head, pending: null };
-    if (inspector.notTransportStream) return { layout: null, head, pending: null };
+    if (latest && settled)
+      return { layout: latest.layout, diagnostic: facts(), head, pending: null };
+    if (inspector.notTransportStream)
+      return { layout: null, diagnostic: facts(), head, pending: null };
   }
-  return { layout: latest?.layout ?? null, head, pending };
+  return { layout: latest?.layout ?? null, diagnostic: facts(), head, pending };
 }
 
 /** The inspected start of the stream followed by the rest of it. */

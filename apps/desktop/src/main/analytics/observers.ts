@@ -4,6 +4,7 @@ import type {
   AnalyticsPlaybackKind,
   AnalyticsPlaybackState,
   AnalyticsFailure,
+  PlaybackDiagnostic,
 } from "@mrstreamer/contracts/analytics";
 
 /** Ports expose fixed observations only. Transaction/service owners retain all private values. */
@@ -13,7 +14,7 @@ export interface UsageObservers {
 }
 export interface RemotePlaybackObserver {
   state(state: AnalyticsPlaybackState): void;
-  failure(failure: AnalyticsFailure): void;
+  failure(failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic): void;
   /** This load stops reporting: replaced, moved or recovering. The logical run goes on. */
   stop(): void;
   /** The play ended for good: stopped by the viewer or the receiver, or played to its end. */

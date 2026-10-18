@@ -149,6 +149,13 @@ function ownProperties(event: CaptureEvent) {
       return {
         stream_type: event.properties.stream_type,
         error_type: event.properties.error_type,
+        diagnostic_stage: event.properties.diagnostic_stage,
+        diagnostic_reason: event.properties.diagnostic_reason,
+        diagnostic_container: event.properties.diagnostic_container,
+        diagnostic_delivery: event.properties.diagnostic_delivery,
+        diagnostic_video_codec: event.properties.diagnostic_video_codec,
+        diagnostic_audio_codec: event.properties.diagnostic_audio_codec,
+        diagnostic_fallback: event.properties.diagnostic_fallback,
       };
     case "settings_changed":
       return { setting_key: event.properties.setting_key };
