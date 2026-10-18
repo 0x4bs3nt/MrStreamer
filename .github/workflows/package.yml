@@ -297,6 +297,12 @@ jobs:
           ditto "$mount/Mr. Streamer.app" "/Applications/Mr. Streamer.app"
           hdiutil detach "$mount"
           node test/e2e/packaged-app.ts "/Applications/Mr. Streamer.app/Contents/MacOS/Mr. Streamer" -- --use-mock-keychain
+          if [[ -f test/e2e/analytics-options.ts ]]; then
+            MR_STREAMER_FFMPEG="$PWD/vendor/ffmpeg/mac-arm64/ffmpeg" MR_STREAMER_VERIFICATION_OUTPUT="$RUNNER_TEMP/analytics-mac" \
+              node test/e2e/analytics-app.ts --expected-version="$VERSION" --expected-source="$SHA" "/Applications/Mr. Streamer.app/Contents/MacOS/Mr. Streamer"
+          else
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing native telemetry verifier"); console.log("Historical source predates native telemetry acceptance")'
+          fi
 
       - name: Smoke test the installed app on Linux
         if: runner.os == 'Linux'
@@ -305,6 +311,22 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libfuse2t64 ./dist/*.deb
           xvfb-run -a node test/e2e/packaged-app.ts "/opt/Mr. Streamer/mrstreamer" -- --no-sandbox
           xvfb-run -a node test/e2e/packaged-app.ts dist/*.AppImage -- --no-sandbox
+          if [[ -f test/e2e/analytics-options.ts ]]; then
+            MR_STREAMER_FFMPEG="$PWD/vendor/ffmpeg/linux-x64/ffmpeg" MR_STREAMER_VERIFICATION_OUTPUT="$RUNNER_TEMP/analytics-deb" \
+              xvfb-run -a node test/e2e/analytics-app.ts --expected-version="$VERSION" --expected-source="$SHA" "/opt/Mr. Streamer/mrstreamer"
+            MR_STREAMER_FFMPEG="$PWD/vendor/ffmpeg/linux-x64/ffmpeg" MR_STREAMER_VERIFICATION_OUTPUT="$RUNNER_TEMP/analytics-appimage" \
+              xvfb-run -a node test/e2e/analytics-app.ts --expected-version="$VERSION" --expected-source="$SHA" dist/*.AppImage
+          else
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing native telemetry verifier"); console.log("Historical source predates native telemetry acceptance")'
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: analytics-${{ matrix.target }}-${{ inputs.version }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/analytics-*/
+          retention-days: 14
+          if-no-files-found: warn
 
       - id: package-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -342,6 +364,7 @@ jobs:
       ffmpeg-key: ${{ steps.ffmpeg-key.outputs.key }}
     env:
       VERSION: ${{ inputs.version }}
+      SHA: ${{ inputs.sha }}
     defaults:
       run:
         shell: bash
@@ -430,6 +453,29 @@ jobs:
           Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
           node test/e2e/packaged-app.ts "$env:LOCALAPPDATA\Programs\mrstreamer\Mr. Streamer.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path 'test/e2e/analytics-options.ts') {
+            $env:MR_STREAMER_FFMPEG = "$PWD\vendor\ffmpeg\win-x64\ffmpeg.exe"
+            $env:MR_STREAMER_VERIFICATION_OUTPUT = "$env:RUNNER_TEMP\analytics-nsis"
+            node test/e2e/analytics-app.ts --expected-version="$env:VERSION" --expected-source="$env:SHA" "$env:LOCALAPPDATA\Programs\mrstreamer\Mr. Streamer.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $env:MR_STREAMER_VERIFICATION_OUTPUT = "$env:RUNNER_TEMP\analytics-windows-retry"
+            node test/e2e/analytics-app.ts --native-telemetry --native-case=windows-retry --expected-version="$env:VERSION" --expected-source="$env:SHA" "$env:LOCALAPPDATA\Programs\mrstreamer\Mr. Streamer.exe"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing native telemetry verifier"); console.log("Historical source predates native telemetry acceptance")'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: analytics-win-x64-${{ inputs.version }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/analytics-nsis/
+            ${{ runner.temp }}/analytics-windows-retry/
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: warn
 
       - id: package-artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -547,6 +593,23 @@ jobs:
           $package = Get-AppxPackage "${{ steps.check.outputs.identity-name }}"
           node test/e2e/packaged-app.ts (Join-Path $package.InstallLocation "app\Mr. Streamer.exe")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path 'test/e2e/analytics-options.ts') {
+            $env:MR_STREAMER_FFMPEG = "$PWD\vendor\ffmpeg\win-x64\ffmpeg.exe"
+            $env:MR_STREAMER_VERIFICATION_OUTPUT = "$env:RUNNER_TEMP\analytics-msix"
+            node test/e2e/analytics-app.ts --expected-version="$env:VERSION" --expected-source="$env:SHA" (Join-Path $package.InstallLocation "app\Mr. Streamer.exe")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            node -e 'if (!/^0[.]0[.]([0-9]|1[0-5])(-|$)/.test(require("./package.json").version)) throw new Error("Missing native telemetry verifier"); console.log("Historical source predates native telemetry acceptance")'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: analytics-msix-${{ inputs.version }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/analytics-msix/
+          retention-days: 14
+          if-no-files-found: warn
 
       # Started as a user would, a Store copy keeps its data in a folder of its own inside the
       # package's, apart from a direct copy's; docs/contributing/architecture.md#data.

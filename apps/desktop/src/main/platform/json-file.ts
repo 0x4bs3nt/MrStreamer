@@ -46,14 +46,32 @@ export async function readJsonFile<T>(
 
 /**
  * Writes JSON atomically, packed when the name ends in .gz: a crash mid-write leaves the previous
- * file intact.
+ * file intact. Windows replacement retries keep the same temp and bytes, with at most 70 ms of
+ * intentional delay. Callers must await each write settling before starting a newer same-path write.
  */
 export async function writeJsonFile(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.${randomUUID()}.tmp`;
   const text = JSON.stringify(value);
   await writeFile(temp, path.endsWith(".gz") ? await gzip(text, ZLIB) : text);
-  await rename(temp, path);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(temp, path);
+      return;
+    } catch (cause) {
+      const wait = [10, 20, 40][attempt];
+      if (
+        process.platform !== "win32" ||
+        wait === undefined ||
+        !(cause instanceof Error) ||
+        !("code" in cause) ||
+        typeof cause.code !== "string" ||
+        !["EPERM", "EACCES", "EBUSY"].includes(cause.code)
+      )
+        throw cause;
+      await new Promise<void>((resolve) => setTimeout(resolve, wait));
+    }
+  }
 }
 
 /** Deletes what writes interrupted by a crash or power loss left behind in `dir`. */

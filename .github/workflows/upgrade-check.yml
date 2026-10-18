@@ -74,6 +74,31 @@ jobs:
         run: |
           node apps/desktop/test/e2e/installed-upgrade.ts run \
             --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/installed-upgrade"
+      # Explicit long native acceptance stays outside the bounded release-UI aggregate.
+      - name: Native telemetry and installed .15 compatibility
+        if: startsWith(inputs.candidate, 'v0.0.16-nightly.')
+        run: |
+          node apps/desktop/test/e2e/installed-upgrade.ts telemetry \
+            --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/native-telemetry"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-telemetry/evidence/
+          retention-days: 14
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: native-telemetry-profiles-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-telemetry/profiles/
+            !${{ runner.temp }}/native-telemetry/profiles/**/Cache/
+            !${{ runner.temp }}/native-telemetry/profiles/**/Code Cache/
+            !${{ runner.temp }}/native-telemetry/profiles/**/GPUCache/
+          retention-days: 7
+          if-no-files-found: warn
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

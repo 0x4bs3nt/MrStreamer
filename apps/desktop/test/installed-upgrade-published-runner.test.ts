@@ -3,14 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installPublished, runCommand } from "./e2e/installed-upgrade.ts";
+import { installPublished, runCommand, telemetryCommand } from "./e2e/installed-upgrade.ts";
+import { installedTelemetryPair } from "./e2e/analytics-installed-pair.ts";
 import type { Receipt } from "./e2e/installed-upgrade-packages.ts";
-import { disposableRunner, install, processes } from "./e2e/installed-upgrade-windows.ts";
+import {
+  disposableRunner,
+  install,
+  processes,
+  uninstall,
+} from "./e2e/installed-upgrade-windows.ts";
 
 vi.mock("./e2e/installed-upgrade-windows.ts", async (original) => ({
   ...(await original<typeof import("./e2e/installed-upgrade-windows.ts")>()),
   disposableRunner: vi.fn(),
   install: vi.fn(),
+  uninstall: vi.fn(),
   processes: vi.fn(),
 }));
 
@@ -71,6 +78,91 @@ describe("the installed upgrade run before and around native installation", () =
       installRoot: join(temp, "install"),
       executable: join(temp, "install", "app.exe"),
       tools: [],
+    });
+  });
+
+  it("refuses telemetry outside main or against a different stable before creating a native root", async () => {
+    vi.stubEnv("GITHUB_REF", "refs/heads/feature");
+    await expect(telemetryCommand(["--packages", packages, "--root", root])).rejects.toThrow(
+      "main only",
+    );
+    vi.stubEnv("GITHUB_REF", "refs/heads/main");
+    await expect(telemetryCommand(["--packages", packages, "--root", root])).rejects.toThrow(
+      "v0.0.15",
+    );
+    await expect(readFile(join(root, "evidence", "proof.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("awaits the installed pair's owned uninstaller and propagates its failure", async () => {
+    receipt.resolved.stableTag = "v0.0.15";
+    receipt.resolved.candidateTag = "v0.0.16-nightly.20261018.379";
+    receipt.packages[0].version = "0.0.15";
+    receipt.packages[0].provenance.tag = receipt.resolved.stableTag;
+    receipt.packages[1].version = receipt.resolved.candidateTag.slice(1);
+    receipt.packages[1].provenance.tag = receipt.resolved.candidateTag;
+    for (const pkg of receipt.packages) {
+      pkg.file = `${pkg.stage}-Mr-Streamer-${pkg.version}-win-x64-setup.exe`;
+      await writeFile(join(packages, pkg.file), setup);
+    }
+    await save();
+    const evidence = join(temp, "pair-evidence");
+    await mkdir(evidence);
+    const runner = disposableRunner();
+    const candidate = receipt.packages[1];
+    vi.mocked(install).mockResolvedValue({
+      version: candidate.version,
+      seconds: 1,
+      entry: { name: "Mr. Streamer", version: candidate.version },
+      executable: runner.executable,
+      executableSha256: sha256,
+      appAsarSha256: sha256,
+      tools: {},
+    });
+    vi.mocked(processes)
+      .mockReturnValueOnce([
+        {
+          pid: 123,
+          parent: process.pid,
+          name: "setup.exe",
+          path: join(packages, candidate.file),
+          created: "2099-01-01T00:00:00Z",
+        },
+      ])
+      .mockReturnValue([]);
+    const pair = await installedTelemetryPair(packages, evidence, {
+      executable: runner.executable,
+      version: candidate.version,
+      source: candidate.source,
+    });
+    await pair.select("candidate");
+    pair.accepted();
+    let rejectUninstall: (error: Error) => void = () => {
+      throw new Error("Uninstaller was not called");
+    };
+    vi.mocked(uninstall).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectUninstall = reject;
+        }),
+    );
+    let settled = false;
+    const closing = pair.close().finally(() => {
+      settled = true;
+    });
+    const outcome = expect(closing).rejects.toThrow("owned uninstall refused");
+    await Promise.resolve();
+    expect(uninstall).toHaveBeenCalledWith(runner);
+    expect(settled).toBe(false);
+    rejectUninstall(new Error("owned uninstall refused"));
+    await outcome;
+    expect(
+      JSON.parse(await readFile(join(evidence, "native-uninstall.json"), "utf8")),
+    ).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("owned uninstall refused"),
     });
   });
 

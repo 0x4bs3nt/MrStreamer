@@ -128,18 +128,27 @@ describe.skipIf(process.platform === "win32")(
       await shown([ours(app.pid!, 1, 0), ours(77, app.pid!, 1)]);
       tree.sample();
 
-      const report = await tree.stop(async () => {
-        app.kill();
-        await exit(app);
-        // The app and its child are gone; the child's id now names another program.
-        await shown([foreign(77, 4, 20)]);
-      });
+      // Sampling happened while main was alive, outside the critical kill boundary.
+      app.kill();
+      await exit(app);
+      await shown([foreign(77, 4, 20)]);
+      const report = await tree.stop(async () => {});
 
       expect(kills()).toEqual([]);
       expect(report.owned).toEqual([
         { pid: app.pid, parent: 1, name: "Mr. Streamer.exe", created: at(0) },
         { pid: 77, parent: app.pid, name: "Mr. Streamer.exe", created: at(1) },
       ]);
+    });
+
+    it("refuses an unsampled orphan after main exits without stopping it by id", async () => {
+      await shown([ours(app.pid!, 1, 0)]);
+      const tree = ownedTree(RUNNER, app, 0);
+      app.kill();
+      await exit(app);
+      await shown([ours(77, app.pid!, 1)]);
+      await expect(tree.stop(async () => {})).rejects.toThrow(/did not all end.*77/);
+      expect(kills()).toEqual([]);
     });
 
     it("refuses an app it can't show to be the installed one, and kills it through its handle", async () => {

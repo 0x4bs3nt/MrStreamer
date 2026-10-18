@@ -32,6 +32,7 @@
 // `resolve` needs GH_TOKEN and GITHUB_REPOSITORY and runs anywhere; installed-upgrade-packages.ts
 // says what it checks. `run` runs only on that runner, from main.
 import { once } from "node:events";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { existsSync } from "node:fs";
@@ -940,7 +941,8 @@ export async function restartCandidate(
 
 const usage = `Usage:
   node apps/desktop/test/e2e/installed-upgrade.ts resolve --candidate <nightly tag> [--sha <its commit>] --out <new folder>
-  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>`;
+  node apps/desktop/test/e2e/installed-upgrade.ts run --packages <folder> --root <new folder under RUNNER_TEMP>
+  node apps/desktop/test/e2e/installed-upgrade.ts telemetry --packages <resolved .15 pair> --root <new folder under RUNNER_TEMP>`;
 
 /**
  * Resolves the newest published stable and the candidate nightly, and writes their setups with
@@ -1620,10 +1622,70 @@ const reaches = (url: string): Promise<{ url: string; status: number | null; err
 /** The window's request to a public address, which the block must stop. */
 const probe = `fetch(${JSON.stringify(OUTSIDE)}, { mode: "no-cors", cache: "no-store" }).then(() => "reached", (error) => "refused: " + error.message)`;
 
+/** The frozen .15 telemetry matrix uses the same resolved pair and disposable install owner. */
+export async function telemetryCommand(args: string[]) {
+  const { values } = parseArgs({
+    args,
+    options: { packages: { type: "string" }, root: { type: "string" } },
+  });
+  const runner = disposableRunner();
+  const root = values.root ?? "";
+  const under = relative(runner.temp, root);
+  if (
+    !values.packages ||
+    !isAbsolute(root) ||
+    !under ||
+    under.startsWith("..") ||
+    isAbsolute(under)
+  )
+    throw new Error("Telemetry requires --packages and a new --root under RUNNER_TEMP");
+  check(process.env["GITHUB_REF"] === "refs/heads/main", "Installed telemetry runs from main only");
+  const receipt = readReceipt(
+    JSON.parse(await readFile(join(values.packages, "receipt.json"), "utf8")),
+  );
+  check(
+    receipt.resolved.stableTag === "v0.0.15",
+    "Frozen telemetry acceptance requires published v0.0.15",
+  );
+  check(
+    receipt.repository === process.env["GITHUB_REPOSITORY"],
+    "Receipt belongs to another repository",
+  );
+  await mkdir(root);
+  const profiles = join(root, "profiles");
+  await mkdir(profiles);
+  const pkg = receipt.packages[1];
+  const child = spawn(
+    process.execPath,
+    [
+      fileURLToPath(new URL("./analytics-app.ts", import.meta.url)),
+      "--native-telemetry",
+      `--installed-pair=${values.packages}`,
+      `--expected-version=${pkg.version}`,
+      `--expected-source=${pkg.source}`,
+      runner.executable,
+    ],
+    {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        TMPDIR: profiles,
+        TEMP: profiles,
+        TMP: profiles,
+        MR_STREAMER_VERIFICATION_OUTPUT: join(root, "evidence"),
+        MR_STREAMER_FFMPEG: runner.tools[0],
+      },
+    },
+  );
+  const [code, signal] = (await once(child, "exit")) as [number | null, NodeJS.Signals | null];
+  if (code !== 0 || signal !== null) throw new Error(`Native telemetry failed: ${code ?? signal}`);
+}
+
 if (import.meta.main) {
   const [command, ...args] = process.argv.slice(2);
   if (command === "resolve") await resolveCommand(args);
   else if (command === "run") await runCommand(args);
+  else if (command === "telemetry") await telemetryCommand(args);
   else {
     console.error(usage);
     process.exit(2);

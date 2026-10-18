@@ -3,14 +3,25 @@ import { watch } from "node:fs";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { type } from "arktype";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import type { Result } from "@mrstreamer/contracts/errors";
+import type { UpdateStatus } from "@mrstreamer/contracts/updates";
 import {
   CaptureEvent,
   AnalyticsRecord,
@@ -21,6 +32,11 @@ import {
 import { startFakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, delay, type Page } from "./app.ts";
+import { analyticsOptions } from "./analytics-options.ts";
+import { boundary } from "./analytics-boundary.ts";
+import { closeNative } from "./analytics-exit.ts";
+import { runNativeTelemetry } from "./analytics-native.ts";
+import { disposableRunner, ownedTree } from "./installed-upgrade-windows.ts";
 import {
   electronExecutable,
   evidenceDirectory,
@@ -31,39 +47,102 @@ import {
 } from "../../../../.cursor/skills/verify-mrstreamer/scripts/session.ts";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
-const builtDesktop = process.argv
-  .find((arg) => arg.startsWith("--built-desktop="))
-  ?.slice("--built-desktop=".length);
+const options = analyticsOptions(process.argv.slice(2));
+const builtDesktop = options.builtDesktop;
 const desktop = builtDesktop ?? join(root, "apps/desktop");
-const volumeWorkload = process.argv.includes("--volume-workload");
-const evidenceRoot = join(root, ".local/verification");
-const evidence = await evidenceDirectory(evidenceRoot, "analytics-");
-const observeRollover = process.argv.includes("--observe-rollover");
-const [packagedExecutable, ...packagedArgs] = process.argv
-  .slice(2)
-  .filter(
-    (arg) =>
-      arg !== "--observe-rollover" &&
-      arg !== "--volume-workload" &&
-      !arg.startsWith("--built-desktop="),
-  );
-const appVersion = (
+const volumeWorkload = options.volume;
+const evidence = await evidenceDirectory(join(root, ".local/verification"), "analytics-");
+// Retain the complete local verifier dependency surface, plus its dependency lock.
+const verificationFiles = execFileSync(
+  "git",
+  [
+    "ls-files",
+    "apps/desktop/test/e2e/*.ts",
+    "apps/desktop/test/fake-*.ts",
+    ".cursor/skills/verify-mrstreamer/scripts/*.ts",
+    "packages/contracts/src/*.ts",
+    "apps/desktop/src/main/analytics/model.ts",
+    "**/package.json",
+    "pnpm-lock.yaml",
+  ],
+  { cwd: root, encoding: "utf8" },
+)
+  .trim()
+  .split("\n");
+const verificationHashes = Object.fromEntries(
+  await Promise.all(
+    verificationFiles.map(async (name) => {
+      const bytes = await readFile(join(root, name));
+      const destination = join(evidence, "verification-source", name);
+      await mkdir(resolve(destination, ".."), { recursive: true });
+      await writeFile(destination, bytes);
+      return [name, createHash("sha256").update(bytes).digest("hex")];
+    }),
+  ),
+);
+const observeRollover = options.rollover;
+const packagedExecutable = options.executable;
+const packagedArgs = options.appArgs;
+const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+const sourceAppVersion = (
   JSON.parse(await readFile(join(desktop, "package.json"), "utf8")) as { version: string }
 ).version;
+const sourceDirty =
+  execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim().length > 0;
+const verificationSource = {
+  revision,
+  appVersion: (
+    JSON.parse(await readFile(join(root, "apps/desktop/package.json"), "utf8")) as {
+      version: string;
+    }
+  ).version,
+  sourceKind: "verifier-checkout",
+  sourceDirty,
+};
+const appVersion = options.expectedVersion ?? sourceAppVersion;
 const build = {
   revision: builtDesktop
     ? (await readFile(join(desktop, "source-revision.txt"), "utf8")).trim()
-    : execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-  appVersion,
+    : revision,
+  appVersion: sourceAppVersion,
   sourceKind: builtDesktop ? "archived-source-build" : "checkout-source-build",
-  sourceDirty: builtDesktop
-    ? false
-    : execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).trim()
-        .length > 0,
-  mainSha256: createHash("sha256")
-    .update(await readFile(join(desktop, "out/main/index.js")))
-    .digest("hex"),
+  sourceDirty: builtDesktop ? null : sourceDirty,
+  ...(!packagedExecutable
+    ? {
+        mainSha256: createHash("sha256")
+          .update(await readFile(join(desktop, "out/main/index.js")))
+          .digest("hex"),
+      }
+    : {}),
 };
+const bundleHashes: Record<string, string> = {};
+if (!packagedExecutable) {
+  const snapshot = join(evidence, "product-bundle");
+  await cp(join(desktop, "out"), snapshot, { recursive: true });
+  for (const entry of await readdir(snapshot, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) {
+      const path = join(entry.parentPath, entry.name);
+      bundleHashes[path.slice(snapshot.length + 1)] = createHash("sha256")
+        .update(await readFile(path))
+        .digest("hex");
+    }
+  }
+}
+const candidate = {
+  executable: packagedExecutable,
+  version: appVersion,
+  source: options.expectedSource ?? build.revision,
+};
+let target = candidate;
+let localTransport = true;
+const installedHashes = new Map<string, string>();
+const attributions: {
+  version: string;
+  os: string;
+  arch: string;
+  distribution: string;
+  buildChannel: string;
+}[] = [];
 const abort = new AbortController();
 const interrupt = () => abort.abort(new Error("Verification interrupted."));
 process.once("SIGINT", interrupt);
@@ -74,12 +153,27 @@ let provider: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
 let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
 const payloads: unknown[] = [];
 const payloadBytes: number[] = [];
+const rawBodies: { body: string; at: number; closedAt?: number }[] = [];
+let holdSummary = false;
+let holdUsageOnly = false;
 let rejectCapture = false;
 const capture = createServer(async (req, res) => {
   const bytes: Buffer[] = [];
   for await (const chunk of req) bytes.push(Buffer.from(chunk));
   const body = Buffer.concat(bytes);
   payloads.push(JSON.parse(body.toString()));
+  const wire: (typeof rawBodies)[number] = { body: body.toString(), at: Date.now() };
+  rawBodies.push(wire);
+  res.once("close", () => {
+    wire.closedAt = Date.now();
+  });
+  if (
+    holdSummary &&
+    (holdUsageOnly ? ["usage_window"] : ["stream_summary", "usage_window"]).includes(
+      String(JSON.parse(body.toString()).event),
+    )
+  )
+    return;
   payloadBytes.push(body.byteLength);
   res.statusCode = rejectCapture ? 503 : 200;
   res.end("ok");
@@ -119,15 +213,62 @@ const updateFeed = createServer((_req, res) => {
 });
 const actions: { action: string; at: string }[] = [];
 const observations: Record<string, unknown> = {};
+let prefixProfile: string | undefined;
+let prefixObserving = false;
+let prefixProbe: Awaited<ReturnType<typeof boundary>> | undefined;
+const prefixErrors: string[] = [];
+const prefixCounters: {
+  key: UsageKey;
+  samples: number;
+  last: Record<string, unknown>;
+  transitions: { at: number; total: number }[];
+}[] = [];
 const pointerInputs: Record<string, unknown>[] = [];
 const log: string[] = [];
 let app: ChildProcess | undefined;
 let page: Page | undefined;
 let mainPage: Page | undefined;
+let nativeTree: ReturnType<typeof ownedTree> | undefined;
+let preparedExit:
+  | {
+      app: ChildProcess;
+      sample: {
+        pid: number | undefined;
+        reason: string;
+        startedAt: number;
+        completedAt: number;
+        wallMs: number;
+        windowsTree: boolean;
+      };
+    }
+  | undefined;
+
+// The Windows owner pins PID/start-time identity. Discover its live descendants at a quiet
+// point, before a held request or rename opens a product deadline. Consume once per exit.
+function prepareExit(reason: string) {
+  if (!app) throw new Error("No owned app to prepare for exit");
+  const startedAt = Date.now();
+  nativeTree?.sample();
+  const completedAt = Date.now();
+  const sample = {
+    pid: app.pid,
+    reason,
+    startedAt,
+    completedAt,
+    wallMs: completedAt - startedAt,
+    windowsTree: !!nativeTree,
+  };
+  preparedExit = { app, sample };
+  const samples = observations["nativeProcessSamples"];
+  observations["nativeProcessSamples"] = [...(Array.isArray(samples) ? samples : []), sample];
+}
+
 let debuggingPort = 0;
 const broadcasts = new Set<ChildProcess>();
 let failure: unknown;
 const cleanupErrors: string[] = [];
+const exits: Record<string, unknown>[] = [];
+const endTree: unknown[] = [];
 
 /** Validate a clone, then compare the complete raw wire body before any unknown-key deletion. */
 function captured(payload: unknown): CaptureEvent {
@@ -135,6 +276,20 @@ function captured(payload: unknown): CaptureEvent {
   if (event instanceof type.errors) throw new Error("Invalid capture event.");
   if (!isDeepStrictEqual(payload, { api_key: "mrstreamer-local-verification", ...event }))
     throw new Error("Unexpected raw capture fields.");
+  if (
+    !attributions.some(
+      (identity) =>
+        event.properties.app_version === identity.version &&
+        event.properties.os === identity.os &&
+        event.properties.arch === identity.arch &&
+        event.properties.distribution === identity.distribution &&
+        event.properties.build_channel === identity.buildChannel &&
+        (identity.distribution === "store"
+          ? event.properties.update_channel === "none"
+          : event.properties.update_channel !== "none"),
+    )
+  )
+    throw new Error("Wire attribution differs from the actual launched package");
   return event;
 }
 
@@ -176,16 +331,20 @@ async function send(method: string, params: Record<string, unknown> = {}) {
 }
 
 async function launch() {
+  preparedExit = undefined;
   const port = await freePort();
   debuggingPort = port;
   const inspectorPort = await freePort();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !name.startsWith("MR_STREAMER_") && name !== "ELECTRON_RUN_AS_NODE",
+      ([name]) =>
+        !name.startsWith("MR_STREAMER_") &&
+        name !== "ELECTRON_RUN_AS_NODE" &&
+        name !== "NODE_OPTIONS",
     ),
   );
   app = spawn(
-    packagedExecutable ?? (await electronExecutable()),
+    target.executable ?? (await electronExecutable()),
     [
       `--remote-debugging-port=${port}`,
       `--inspect=${inspectorPort}`,
@@ -194,7 +353,7 @@ async function launch() {
       "--enable-automation",
       "--use-mock-keychain",
       ...(process.platform === "linux" ? ["--no-sandbox"] : []),
-      ...(packagedExecutable ? packagedArgs : [desktop]),
+      ...(target.executable ? packagedArgs : [desktop]),
     ],
     {
       cwd: root,
@@ -209,14 +368,21 @@ async function launch() {
         MR_STREAMER_UPDATE_API: updateEndpoint,
         MR_STREAMER_TMDB_API: tmdb!.url,
         MR_STREAMER_TMDB_KEY: "test-key",
-        MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT: endpoint,
+        ...(localTransport ? { MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT: endpoint } : {}),
       },
     },
   );
+  await new Promise<void>((resolve, reject) => {
+    app!.once("error", reject);
+    app!.once("spawn", resolve);
+  }).catch((error: unknown) => {
+    app = undefined;
+    throw error;
+  });
   for (const stream of [app.stdout, app.stderr])
     stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-  page = await connect(port);
-  mainPage = await connect(inspectorPort, "node");
+  page = await connect(port, "page", { app });
+  mainPage = await connect(inspectorPort, "node", { app });
   if ((await mainPage.evaluate<number>("process.pid")) !== app.pid)
     throw new Error("Wrong main inspector process.");
   const identity = await send("Browser.getBrowserCommandLine");
@@ -224,7 +390,7 @@ async function launch() {
   if (
     !Array.isArray(arguments_) ||
     ![
-      ...(packagedExecutable ? [] : [desktop]),
+      ...(target.executable ? [] : [desktop]),
       `--user-data-dir=${profile}`,
       `--remote-debugging-port=${port}`,
     ].every((arg) => arguments_.includes(arg))
@@ -232,13 +398,124 @@ async function launch() {
     throw new Error("Wrong app instance.");
   const url = await live().evaluate<string>("location.href");
   if (
-    packagedExecutable
+    target.executable
       ? !url.startsWith("file:") ||
         !/\/(?:resources|Resources)\/app\.asar\/out\/renderer\//.test(url)
       : !url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href)
   )
     throw new Error("Wrong renderer build.");
-  observations["instance"] = { pid: app.pid, port, inspectorPort, profile, url, endpoint };
+  const nativeIdentity = await mainPage.evaluate<{
+    pid: number;
+    executable: string;
+    resources: string;
+    appPath: string;
+    version: string;
+    mainSha256: string;
+    platform: string;
+    arch: string;
+    packaged: boolean;
+  }>(`(async () => {
+    const {app} = process.getBuiltinModule('module').createRequire(process.execPath)('electron');
+    const fs = process.getBuiltinModule('fs').promises;
+    const {createHash} = process.getBuiltinModule('crypto');
+    const path = process.getBuiltinModule('path');
+    return {pid:process.pid, executable:process.execPath, resources:process.resourcesPath,
+      appPath:app.getAppPath(), version:app.getVersion(), platform:process.platform, arch:process.arch, packaged:app.isPackaged, mainSha256:createHash('sha256')
+        .update(await fs.readFile(path.join(app.getAppPath(),'out/main/index.js'))).digest('hex')};
+  })()`);
+  if (nativeIdentity.pid !== app.pid || nativeIdentity.version !== target.version)
+    throw new Error("Main identity/version differs from the selected candidate");
+  if (
+    target.executable &&
+    !target.executable.endsWith(".AppImage") &&
+    resolve(nativeIdentity.executable).toLowerCase() !== resolve(target.executable).toLowerCase()
+  )
+    throw new Error("Main runs a different executable");
+  await waitFor(() => live().evaluate<boolean>("!!window.mrStreamer"));
+  const status = await live().evaluate<Result<UpdateStatus>>(
+    "window.mrStreamer.invoke('updates.status')",
+  );
+  const expectedDistribution =
+    target.executable && /[\\/]WindowsApps[\\/]/i.test(target.executable) ? "store" : "direct";
+  if (
+    !status.ok ||
+    status.value.version !== target.version ||
+    status.value.distribution !== expectedDistribution
+  )
+    throw new Error("Public installed version/distribution differs from the selected package");
+  attributions.push({
+    version: target.version,
+    os:
+      nativeIdentity.platform === "darwin"
+        ? "macos"
+        : nativeIdentity.platform === "win32"
+          ? "windows"
+          : nativeIdentity.platform,
+    arch: nativeIdentity.arch,
+    distribution: status.value.distribution,
+    buildChannel: nativeIdentity.packaged
+      ? target.version.includes("-nightly.")
+        ? "nightly"
+        : "stable"
+      : "unknown",
+  });
+  const asar = target.executable ? join(nativeIdentity.resources, "app.asar") : undefined;
+  if (asar && nativeIdentity.appPath.toLowerCase() !== asar.toLowerCase())
+    throw new Error("Main app path differs from its installed resources");
+  if (
+    target.executable &&
+    !url.startsWith(pathToFileURL(join(nativeIdentity.appPath, "out/renderer/")).href)
+  )
+    throw new Error("Renderer is outside the actual installed app");
+  if (options.native && process.platform === "win32")
+    nativeTree = ownedTree(disposableRunner(), app);
+  observations["instance"] = {
+    port,
+    inspectorPort,
+    profile,
+    url,
+    endpoint,
+    ...nativeIdentity,
+    expected: target,
+    ...(target.executable
+      ? {
+          executableSha256: createHash("sha256")
+            .update(await readFile(nativeIdentity.executable))
+            .digest("hex"),
+          launcherSha256: createHash("sha256")
+            .update(await readFile(target.executable))
+            .digest("hex"),
+          asarSha256: createHash("sha256")
+            .update(await readFile(asar!))
+            .digest("hex"),
+        }
+      : {}),
+  };
+  if (asar) {
+    const digest = createHash("sha256")
+      .update(await readFile(asar))
+      .digest("hex");
+    const snapshot = join(evidence, `product-${digest}.asar`);
+    try {
+      await access(snapshot);
+    } catch {
+      await cp(asar, snapshot);
+    }
+  }
+  if (target.executable) {
+    const key = JSON.stringify(target);
+    const instance = observations["instance"];
+    if (!record(instance)) throw new Error("Missing installed identity");
+    const hashes = JSON.stringify([
+      instance["executableSha256"],
+      instance["launcherSha256"],
+      instance["asarSha256"],
+    ]);
+    const previous = installedHashes.get(key);
+    if (previous && previous !== hashes)
+      throw new Error("Installed candidate bytes changed between starts");
+    installedHashes.set(key, hashes);
+  }
   const instances = observations["instances"];
   observations["instances"] = [
     ...(Array.isArray(instances) ? instances : []),
@@ -248,11 +525,46 @@ async function launch() {
 }
 
 async function quit() {
-  if (app) await stop(app, page);
+  if (app) {
+    const closing = app;
+    mainPage?.close();
+    mainPage = undefined;
+    if (options.native) {
+      if (preparedExit?.app !== closing) prepareExit("quit-fallback");
+      const preparation = { ...preparedExit!.sample, usedAt: Date.now() };
+      preparedExit = undefined;
+      const end = await closeNative(closing, async () => {
+        await page?.send("Browser.close");
+      });
+      exits.push({ ...end, preparation });
+      if (end.forced && process.platform !== "win32" && closing.pid) {
+        try {
+          process.kill(-closing.pid, "SIGKILL");
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+        }
+      }
+      await waitFor(async () => broadcasts.size === 0, 4000);
+      if (nativeTree) {
+        endTree.push(await nativeTree.stop(async () => {}));
+        nativeTree = undefined;
+      }
+      app = undefined;
+      if (
+        end.forced ||
+        end.alreadyExited ||
+        end.requestError ||
+        end.code !== 0 ||
+        end.signal !== null
+      )
+        throw new Error("Native quit was not graceful: " + JSON.stringify(end));
+    } else await stop(closing, page);
+  }
   page?.close();
   page = undefined;
   mainPage?.close();
   mainPage = undefined;
+  if (options.native) await waitFor(async () => broadcasts.size === 0, 4000);
 }
 
 /** Re-resolve named targets and require settled geometry and a hit before actual pointer input. */
@@ -343,6 +655,19 @@ async function settings() {
   );
 }
 
+async function verifyAbout() {
+  await settings();
+  await namedButton("nav button", "About");
+  await waitFor(() => live().evaluate<boolean>("!!document.querySelector('a[href*=\"/tree/\"]')"));
+  const shown = await live().evaluate<{ source: string; text: string }>(
+    `({source:document.querySelector('a[href*="/tree/"]').href.split('/tree/')[1],text:document.body.innerText})`,
+  );
+  if (shown.source !== target.source || !shown.text.includes(target.version))
+    throw new Error("About does not match the pinned version/source");
+  await snapshot("about-" + (observations["instances"] as unknown[]).length);
+  await keyEscape();
+}
+
 const checkbox = '[role="checkbox"][aria-label="Share basic usage statistics"]';
 async function preference() {
   const result = await live().evaluate<Result<Preferences>>(
@@ -403,15 +728,171 @@ async function analyticsFile(): Promise<Record<string, unknown>> {
 
 /** Counters must be durable immediately, although their HTTP capture waits for sealing. */
 async function usageCount(key: UsageKey): Promise<number> {
-  const stored = AnalyticsRecord().assert(await analyticsFile());
-  const active = stored.summaries?.usage;
-  return (
-    sent().reduce(
-      (sum, event) =>
-        sum + (event.event === "usage_window" ? (event.properties.counts[key] ?? 0) : 0),
-      0,
-    ) + (active?.event === "usage_window" ? (active.properties.counts[key] ?? 0) : 0)
-  );
+  const observing =
+    prefixObserving && (key === "action_epg_opened" || key === "action_favourite_added");
+  let diagnostic = observing ? prefixCounters.find((sample) => sample.key === key) : undefined;
+  if (observing && !diagnostic) {
+    diagnostic = { key, samples: 0, last: {}, transitions: [] };
+    prefixCounters.push(diagnostic);
+  }
+  if (diagnostic) {
+    diagnostic.samples++;
+    diagnostic.last = { readStartedAt: Date.now(), stage: "read" };
+  }
+  try {
+    let kept: Record<string, unknown>;
+    if (diagnostic) {
+      const bytes = await readFile(join(profile, "analytics.json"));
+      Object.assign(diagnostic.last, {
+        readEndedAt: Date.now(),
+        rawBase64: bytes.toString("base64"),
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        stage: "parse",
+      });
+      const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+      if (!record(parsed)) throw new Error("Invalid analytics state.");
+      kept = parsed;
+      diagnostic.last.stage = "record-validation";
+    } else kept = await analyticsFile();
+    const stored = AnalyticsRecord().assert(kept);
+    const active = stored.summaries?.usage;
+    if (diagnostic) diagnostic.last.stage = "wire-validation";
+    const received = sent();
+    const total =
+      received.reduce(
+        (sum, event) =>
+          sum + (event.event === "usage_window" ? (event.properties.counts[key] ?? 0) : 0),
+        0,
+      ) + (active?.event === "usage_window" ? (active.properties.counts[key] ?? 0) : 0);
+    if (diagnostic) {
+      Object.assign(diagnostic.last, {
+        stage: "complete",
+        sampledAt: Date.now(),
+        total,
+        active: active && { uuid: active.uuid, counts: active.properties.counts },
+        pending: stored.summaries?.pending.map((item) => ({
+          uuid: item.event.uuid,
+          event: item.event.event,
+          counts: item.event.event === "usage_window" ? item.event.properties.counts : undefined,
+          attempts: item.attempts,
+          failures: item.failures,
+          nextAttemptAt: item.nextAttemptAt,
+        })),
+        receivedUsage: received.flatMap((event, index) =>
+          event.event === "usage_window" ? [{ uuid: event.uuid, ...rawBodies[index] }] : [],
+        ),
+      });
+      if (diagnostic.transitions.at(-1)?.total !== total) {
+        diagnostic.transitions.push({ at: Date.now(), total });
+        if (diagnostic.transitions.length > 8) diagnostic.transitions.shift();
+      }
+    }
+    return total;
+  } catch (error) {
+    if (diagnostic) Object.assign(diagnostic.last, { failedAt: Date.now(), error: String(error) });
+    throw error;
+  }
+}
+
+// Ordinary guide/favourite prefix only: passive public renames, never an armed boundary.
+async function observePrefix() {
+  prefixProfile = profile;
+  prefixObserving = true;
+  observations.guideFavouriteDiagnostics = {
+    profile,
+    counters: prefixCounters,
+    errors: prefixErrors,
+  };
+  try {
+    const userData = await mainPage!.evaluate<string>(
+      `process.getBuiltinModule('module').createRequire(process.execPath)('electron').app.getPath('userData')`,
+    );
+    const paths = {
+      profile,
+      userData,
+      ownedReal: await realpath(profile),
+      appReal: await realpath(userData),
+    };
+    observations.guideFavouritePaths = paths;
+    if (!profiles.includes(profile) || paths.ownedReal !== paths.appReal)
+      throw new Error("Passive probe requires the same real owned app profile");
+    prefixProbe = await boundary(mainPage!, profile, userData);
+    observations.guideFavouriteProbeInstalledAt = Date.now();
+  } catch (error) {
+    prefixErrors.push(`attach: ${String(error)}`);
+  }
+}
+
+async function restorePrefix() {
+  const probe = prefixProbe;
+  prefixProbe = undefined;
+  prefixObserving = false;
+  if (!probe) return;
+  try {
+    try {
+      const measurements = await probe.measurements();
+      observations.guideFavouriteRenames = {
+        capturedAt: Date.now(),
+        count: measurements.length,
+        measurements,
+      };
+    } finally {
+      await probe.restore();
+      observations.guideFavouriteProbeRestoredAt = Date.now();
+    }
+  } catch (error) {
+    prefixErrors.push(`restore/measurements: ${String(error)}`);
+  }
+}
+
+/** Retain owned bytes and public reads before screenshot/quit; preserve the original failure. */
+async function capturePrefixFailure() {
+  if (profile !== prefixProfile || !profiles.includes(profile)) return;
+  const destination = join(evidence, "guide-favourite-failure");
+  const capture = async (name: string, read: () => Promise<unknown>) => {
+    const startedAt = Date.now();
+    try {
+      const value = await read();
+      await writeFile(
+        join(destination, name),
+        JSON.stringify({ startedAt, completedAt: Date.now(), value }, null, 2),
+      );
+    } catch (error) {
+      prefixErrors.push(`${name}: ${String(error)}`);
+    }
+  };
+  try {
+    await mkdir(destination, { recursive: true });
+  } catch (error) {
+    prefixErrors.push(`failure capture: ${String(error)}`);
+    return;
+  }
+  await capture("counter-samples.json", async () => prefixCounters);
+  await capture("rename-measurements.json", async () => observations.guideFavouriteRenames);
+  await capture("analytics.json.read.json", async () => {
+    const bytes = await readFile(join(profile, "analytics.json"));
+    await writeFile(join(destination, "analytics.json"), bytes);
+    return { bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  });
+  await capture("temporary-files.json", async () => {
+    const files = await readdir(profile, { withFileTypes: true });
+    const temporary = files.filter(
+      (file) => file.isFile() && /^analytics\.json\.[0-9a-f-]{36}\.tmp$/.test(file.name),
+    );
+    for (const file of temporary) {
+      await capture(`${file.name}.read.json`, async () => {
+        const bytes = await readFile(join(profile, file.name));
+        await writeFile(join(destination, file.name), bytes);
+        return { bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      });
+    }
+    return temporary.map((file) => file.name);
+  });
+  if (page)
+    for (const method of ["preferences.get", "viewing.get"])
+      await capture(`${method}.json`, () =>
+        live().evaluate(`window.mrStreamer.invoke(${JSON.stringify(method)})`),
+      );
 }
 
 async function unfinished() {
@@ -499,11 +980,13 @@ async function volumePaths() {
 async function productPaths() {
   await keyEscape();
   await namedButton("header button", "Live TV");
+  await observePrefix();
   // Actual guide expansion/favourite/search use, without treating schedule queries as actions.
   await click('button[aria-label="Later programmes"]');
   await waitFor(async () => (await usageCount("action_epg_opened")) === 1);
   await click('button[aria-label="Add to favourites"]');
   await waitFor(async () => (await usageCount("action_favourite_added")) === 1);
+  await restorePrefix();
   await click('button[aria-label="Search"]');
   await send("Input.insertText", { text: "TEST | H.264 + AAC" });
   await waitFor(() =>
@@ -659,24 +1142,44 @@ async function productPaths() {
   await settings();
   await click('[role="checkbox"][aria-label="Next episode"]');
   await waitFor(async () => (await usageCount("setting_autoplay_next")) === 1);
-  offerUpdate = true;
-  await namedButton("button", "Check now");
-  await waitFor(
-    async () => count("update_check_ended", (e) => e.properties.outcome === "success") === 1,
+  const updateStatus = await live().evaluate<Result<UpdateStatus>>(
+    "window.mrStreamer.invoke('updates.status')",
   );
-  await keyEscape();
-  await click("[data-update-notice]");
-  await waitFor(async () => (await usageCount("action_update_seen")) === 1);
-  await namedButton("button", "Not now");
-  await waitFor(async () => (await usageCount("action_update_dismissed")) === 1);
-  await snapshot("update-panel-dismissed");
-  await settings();
-  rejectUpdate = true;
-  await namedButton("button", "Check now");
-  await waitFor(
-    async () => count("update_check_ended", (e) => e.properties.outcome === "failed") === 1,
-  );
-  await snapshot("update-check-failed");
+  if (!updateStatus.ok) throw new Error("Cannot observe update distribution");
+  if (updateStatus.value.distribution === "store") {
+    await waitFor(() =>
+      live().evaluate<boolean>(
+        "document.body.textContent.includes('Microsoft Store') && Array.from(document.querySelectorAll('button')).some(b => b.textContent === 'Open Store')",
+      ),
+    );
+    if (
+      count("update_check_ended") !== 0 ||
+      (await usageCount("action_update_seen")) !== 0 ||
+      (await usageCount("action_update_dismissed")) !== 0
+    )
+      throw new Error("Store installation emitted direct-updater captures");
+    observations.storeManagedUpdates = true;
+    await snapshot("store-managed-updates");
+  } else {
+    offerUpdate = true;
+    await namedButton("button", "Check now");
+    await waitFor(
+      async () => count("update_check_ended", (e) => e.properties.outcome === "success") === 1,
+    );
+    await keyEscape();
+    await click("[data-update-notice]");
+    await waitFor(async () => (await usageCount("action_update_seen")) === 1);
+    await namedButton("button", "Not now");
+    await waitFor(async () => (await usageCount("action_update_dismissed")) === 1);
+    await snapshot("update-panel-dismissed");
+    await settings();
+    rejectUpdate = true;
+    await namedButton("button", "Check now");
+    await waitFor(
+      async () => count("update_check_ended", (e) => e.properties.outcome === "failed") === 1,
+    );
+    await snapshot("update-check-failed");
+  }
   if (!mainPage) throw new Error("No owned main inspector.");
   // A real renderer crash in our disposable process, with main left alive to receive the exit.
   const electronModule = `process.getBuiltinModule('module').createRequire(${JSON.stringify(join(desktop, "package.json"))})('electron')`;
@@ -821,245 +1324,348 @@ try {
   if (!updateAddress || typeof updateAddress === "string")
     throw new Error("No local update endpoint.");
   updateEndpoint = `http://127.0.0.1:${updateAddress.port}`;
-  if (packagedExecutable)
-    observations["packagedExecutable"] = {
-      path: packagedExecutable,
-      args: packagedArgs,
-      sha256: createHash("sha256")
-        .update(await readFile(packagedExecutable))
-        .digest("hex"),
-    };
-  await launch();
-  await connectFixture();
-  await waitFor(async () => (await preference()).analyticsEnabled === true);
-  await waitFor(async () => count("installation_observed") === 1 && count("app_active_day") === 1);
-  if (
-    (await live().evaluate<string>(
-      `document.querySelector(${JSON.stringify(checkbox)}).getAttribute('aria-checked')`,
-    )) !== "true"
-  )
-    throw new Error("Default control is not checked.");
-  await snapshot("on");
-  injectedFailure("analytics");
-  actions.push({
-    action: "Opened real General Privacy control, default checked",
-    at: new Date().toISOString(),
-  });
-  const first = sent().find((event) => event.event === "installation_observed");
-  const day = sent().find((event) => event.event === "app_active_day");
-  if (!first || !day) throw new Error("Wrong capture events.");
-  for (const payload of payloads) {
-    if (
-      !record(payload) ||
-      Object.keys(payload).sort().join() !==
-        ["api_key", "distinct_id", "event", "properties", "timestamp", "uuid"].sort().join()
-    )
-      throw new Error("Unexpected capture envelope.");
-    if (payload["api_key"] !== "mrstreamer-local-verification")
-      throw new Error("Wrong local project.");
-  }
-  const expectedChannel = packagedExecutable
-    ? appVersion.includes("-nightly.")
-      ? "nightly"
-      : "stable"
-    : "unknown";
-  for (const event of [first, day]) {
-    if (
-      event.properties.app_version !== appVersion ||
-      event.properties.build_channel !== expectedChannel
-    )
-      throw new Error("Capture version/channel does not match this invocation.");
-  }
-  observations["channelAttribution"] = {
-    expected: expectedChannel,
-    actual: first.properties.build_channel,
-    appVersion,
-  };
-  observations["firstSeenOrigin"] = first.properties.profile_origin;
-  observations["payloadAllowlist"] = Object.keys(first.properties).sort();
-  observations["activityAllowlist"] = Object.keys(day.properties).sort();
-  if (volumeWorkload) await volumePaths();
-  else await productPaths();
-  const enabledCaptures = payloads.length;
-  if (new Set(sent().map((event) => event.uuid)).size !== enabledCaptures)
-    throw new Error("A capture was delivered twice.");
-  await click(checkbox);
-  await waitFor(async () => (await preference()).analyticsEnabled === false);
-  await snapshot("off");
-  actions.push({ action: "Turned sharing off through the checkbox", at: new Date().toISOString() });
-  await quit();
-  await launch();
-  await settings();
-  if ((await preference()).analyticsEnabled !== false)
-    throw new Error("Opt-out did not survive restart.");
-  await snapshot("restart-off");
-  await delay(1200);
-  if (payloads.length !== enabledCaptures)
-    throw new Error("Disabled profile captured after restart.");
-  actions.push({
-    action: "Restarted same profile, checkbox remains off and capture count unchanged",
-    at: new Date().toISOString(),
-  });
-  await click(checkbox);
-  await waitFor(async () => (await preference()).analyticsEnabled === true);
-  await snapshot("reenabled");
-  await delay(1200);
-  if (payloads.length !== enabledCaptures) throw new Error("Re-enable duplicated first-seen/day.");
-  const diagnostics = await live().evaluate<unknown>(
-    "window.mrStreamer.invoke('diagnostics.preview')",
-  );
-  if (JSON.stringify(diagnostics).includes(first.distinct_id))
-    throw new Error("Installation identity leaked into diagnostics.");
-  const stored: unknown = JSON.parse(await readFile(join(profile, "analytics.json"), "utf8"));
-  if (
-    !record(stored) ||
-    stored["installationId"] !== first.distinct_id ||
-    !Array.isArray(stored["pending"]) ||
-    stored["pending"].length !== 0
-  )
-    throw new Error("Wrong persisted identity/outbox.");
-  observations["captures"] = payloads.length;
-  observations["optOutSurvivedRestart"] = true;
-  observations["identityPreserved"] = true;
-  observations["diagnosticsExcludeIdentity"] = true;
-  // A format-one profile with a queued daily summary: the summary and its counts are discarded,
-  // never sent, while consent, identity and the other queued event survive with their UUID.
-  await quit();
-  profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-legacy-"));
-  profiles.push(profile);
-  const legacyId = randomUUID();
-  const legacyEnvelope = (event: string, extra: object) => ({
-    uuid: randomUUID(),
-    distinct_id: legacyId,
-    timestamp: "2026-10-12T09:00:00.000Z",
-    event,
-    properties: { ...first.properties, profile_origin: "upgrading", ...extra },
-  });
-  const legacyInstall = legacyEnvelope("installation_observed", {});
-  const legacySummary = legacyEnvelope("app_summary_day", {
-    summary_date: "2026-10-11",
-    counts: { features: { home: 2 }, saturated: false },
-  });
-  await writeFile(
-    join(profile, "analytics.json"),
-    JSON.stringify({
-      format: 1,
-      enabled: true,
-      installationId: legacyId,
-      profileOrigin: "upgrading",
-      firstSeen: true,
-      lastDay: "2026-10-12",
-      summary: {
-        day: "2026-10-13",
-        counts: { features: { home: 1 }, saturated: false },
-        properties: legacyInstall.properties,
-        ready: null,
-        reportedDay: "2026-10-11",
+  if (options.native) {
+    await runNativeTelemetry({
+      options,
+      evidence,
+      abort: abort.signal,
+      candidate,
+      page: () => live(),
+      main: () => {
+        if (!mainPage) throw new Error("No owned main");
+        return mainPage;
       },
-      pending: [
-        { event: legacyInstall, attempts: 1 },
-        { event: legacySummary, attempts: 0 },
-      ],
-    }),
-  );
-  const legacyFrom = payloads.length;
-  await launch();
-  await waitFor(async () =>
-    payloads
-      .slice(legacyFrom)
-      .some((payload) => record(payload) && payload["uuid"] === legacyInstall.uuid),
-  );
-  await waitFor(async () =>
-    payloads
-      .slice(legacyFrom)
-      .some((payload) => record(payload) && payload["event"] === "app_active_day"),
-  );
-  await delay(2000);
-  const legacySent = payloads.slice(legacyFrom).map(captured);
-  if (
-    payloads
-      .slice(legacyFrom)
-      .some(
-        (payload) =>
-          record(payload) &&
-          (payload["event"] === "app_summary_day" || payload["uuid"] === legacySummary.uuid),
+      profile: () => profile,
+      fresh: async () => {
+        await quit();
+        profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-"));
+        profiles.push(profile);
+      },
+      launch: async (selected = candidate, local = true) => {
+        target = selected;
+        localTransport = local;
+        await launch();
+      },
+      connect: connectFixture,
+      settings,
+      verifyAbout,
+      click,
+      namedButton,
+      escape: keyEscape,
+      snapshot,
+      preference,
+      quit,
+      prepareExit,
+      waitFor,
+      read: async () => AnalyticsRecord().assert(await analyticsFile()),
+      bodies: rawBodies,
+      events: sent,
+      capture: async (mode) => {
+        holdSummary = mode === "hold" || mode === "hold-usage";
+        holdUsageOnly = mode === "hold-usage";
+        rejectCapture = mode === "reject";
+        if (mode === "offline") {
+          capture.closeAllConnections();
+          await new Promise<void>((resolve) => capture.close(() => resolve()));
+        } else if (!capture.listening) {
+          await new Promise<void>((resolve) =>
+            capture.listen(Number(new URL(endpoint).port), "127.0.0.1", resolve),
+          );
+        }
+      },
+      kill: async () => {
+        if (!app || app.exitCode !== null || app.signalCode !== null)
+          throw new Error("No live owned main to kill");
+        const owned = app;
+        if (preparedExit?.app !== owned) prepareExit("kill-fallback");
+        const preparation = { ...preparedExit!.sample, usedAt: Date.now() };
+        preparedExit = undefined;
+        const pid = await mainPage!.evaluate<number>("process.pid");
+        if (pid !== owned.pid) throw new Error("Wrong main kill target");
+        mainPage?.close();
+        mainPage = undefined;
+        owned.kill("SIGKILL");
+        await waitFor(async () => owned.exitCode !== null || owned.signalCode !== null, 4000);
+        const killedAt = Date.now();
+        if (process.platform !== "win32" && owned.pid) {
+          try {
+            process.kill(-owned.pid, "SIGKILL");
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+          }
+        }
+        await waitFor(async () => broadcasts.size === 0, 4000);
+        if (nativeTree) {
+          endTree.push(await nativeTree.stop(async () => {}));
+          nativeTree = undefined;
+        }
+        exits.push({
+          pid,
+          code: owned.exitCode,
+          signal: owned.signalCode,
+          forced: true,
+          kind: "intentional-main-kill",
+          preparation,
+          at: Date.now(),
+        });
+        page?.close();
+        page = undefined;
+        app = undefined;
+        await waitFor(async () => broadcasts.size === 0, 4000);
+        return killedAt;
+      },
+      observations,
+    });
+  } else {
+    await launch();
+    await connectFixture();
+    if (packagedExecutable) {
+      await keyEscape();
+      await verifyAbout();
+      await settings();
+    }
+    await waitFor(async () => (await preference()).analyticsEnabled === true);
+    await waitFor(
+      async () => count("installation_observed") === 1 && count("app_active_day") === 1,
+    );
+    if (
+      (await live().evaluate<string>(
+        `document.querySelector(${JSON.stringify(checkbox)}).getAttribute('aria-checked')`,
+      )) !== "true"
+    )
+      throw new Error("Default control is not checked.");
+    await snapshot("on");
+    injectedFailure("analytics");
+    actions.push({
+      action: "Opened real General Privacy control, default checked",
+      at: new Date().toISOString(),
+    });
+    const first = sent().find((event) => event.event === "installation_observed");
+    const day = sent().find((event) => event.event === "app_active_day");
+    if (!first || !day) throw new Error("Wrong capture events.");
+    for (const payload of payloads) {
+      if (
+        !record(payload) ||
+        Object.keys(payload).sort().join() !==
+          ["api_key", "distinct_id", "event", "properties", "timestamp", "uuid"].sort().join()
       )
-  )
-    throw new Error("A migrated daily summary was sent.");
-  if (!isDeepStrictEqual(legacySent[0], legacyInstall))
-    throw new Error("The queued legacy event changed identity or content.");
-  if (legacySent.some((event) => event.distinct_id !== legacyId))
-    throw new Error("Migration changed the installation identity.");
-  const migrated = await analyticsFile();
-  if (migrated["format"] !== 2 || "summary" in migrated || migrated["installationId"] !== legacyId)
-    throw new Error("Migrated state kept daily counts or lost identity.");
-  observations["legacyMigration"] = {
-    sent: legacySent.map((event) => event.event),
-    legacyEventSentUnchanged: true,
-    summaryNeverSent: true,
-    storedAfter: migrated,
-  };
-  await snapshot("legacy-migrated");
-  actions.push({
-    action: "Started a seeded format-one profile; its queued summary was discarded, not sent",
-    at: new Date().toISOString(),
-  });
-  // A fresh profile observes real pending events while the local capture boundary refuses them.
-  await quit();
-  rejectCapture = true;
-  profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-pending-"));
-  profiles.push(profile);
-  const refusedFrom = payloads.length;
-  await launch();
-  await connectFixture();
-  const outbox = async () => {
-    const kept: unknown = JSON.parse(await readFile(join(profile, "analytics.json"), "utf8"));
-    if (!record(kept) || !Array.isArray(kept["pending"]))
-      throw new Error("Invalid analytics outbox.");
-    return kept;
-  };
-  await waitFor(async () => {
-    const kept = await outbox();
-    return Array.isArray(kept["pending"]) && kept["pending"].length >= 2;
-  });
-  // A refused event is retried with the same UUID, timestamp and body.
-  await waitFor(async () => {
-    const refused = payloads.slice(refusedFrom).filter(record);
-    return refused.some((payload, index) =>
-      refused.slice(index + 1).some((later) => isDeepStrictEqual(later, payload)),
+        throw new Error("Unexpected capture envelope.");
+      if (payload["api_key"] !== "mrstreamer-local-verification")
+        throw new Error("Wrong local project.");
+    }
+    const expectedChannel = packagedExecutable
+      ? appVersion.includes("-nightly.")
+        ? "nightly"
+        : "stable"
+      : "unknown";
+    for (const event of [first, day]) {
+      if (
+        event.properties.app_version !== appVersion ||
+        event.properties.build_channel !== expectedChannel
+      )
+        throw new Error("Capture version/channel does not match this invocation.");
+    }
+    observations["channelAttribution"] = {
+      expected: expectedChannel,
+      actual: first.properties.build_channel,
+      appVersion,
+    };
+    observations["firstSeenOrigin"] = first.properties.profile_origin;
+    observations["payloadAllowlist"] = Object.keys(first.properties).sort();
+    observations["activityAllowlist"] = Object.keys(day.properties).sort();
+    if (volumeWorkload) await volumePaths();
+    else await productPaths();
+    const enabledCaptures = payloads.length;
+    if (new Set(sent().map((event) => event.uuid)).size !== enabledCaptures)
+      throw new Error("A capture was delivered twice.");
+    await click(checkbox);
+    await waitFor(async () => (await preference()).analyticsEnabled === false);
+    await snapshot("off");
+    actions.push({
+      action: "Turned sharing off through the checkbox",
+      at: new Date().toISOString(),
+    });
+    await quit();
+    await launch();
+    await settings();
+    if ((await preference()).analyticsEnabled !== false)
+      throw new Error("Opt-out did not survive restart.");
+    await snapshot("restart-off");
+    await delay(1200);
+    if (payloads.length !== enabledCaptures)
+      throw new Error("Disabled profile captured after restart.");
+    actions.push({
+      action: "Restarted same profile, checkbox remains off and capture count unchanged",
+      at: new Date().toISOString(),
+    });
+    await click(checkbox);
+    await waitFor(async () => (await preference()).analyticsEnabled === true);
+    await snapshot("reenabled");
+    await delay(1200);
+    if (payloads.length !== enabledCaptures)
+      throw new Error("Re-enable duplicated first-seen/day.");
+    const diagnostics = await live().evaluate<unknown>(
+      "window.mrStreamer.invoke('diagnostics.preview')",
     );
-  });
-  observations["refusedRetriedIdentically"] = true;
-  observations["pendingBeforeOptOut"] = await outbox();
-  await snapshot("pending-on");
-  await click(checkbox);
-  await waitFor(async () => {
-    const kept = await outbox();
-    return (
-      kept["enabled"] === false && Array.isArray(kept["pending"]) && kept["pending"].length === 0
+    if (JSON.stringify(diagnostics).includes(first.distinct_id))
+      throw new Error("Installation identity leaked into diagnostics.");
+    const stored: unknown = JSON.parse(await readFile(join(profile, "analytics.json"), "utf8"));
+    if (
+      !record(stored) ||
+      stored["installationId"] !== first.distinct_id ||
+      !Array.isArray(stored["pending"]) ||
+      stored["pending"].length !== 0
+    )
+      throw new Error("Wrong persisted identity/outbox.");
+    observations["captures"] = payloads.length;
+    observations["optOutSurvivedRestart"] = true;
+    observations["identityPreserved"] = true;
+    observations["diagnosticsExcludeIdentity"] = true;
+    // A format-one profile with a queued daily summary: the summary and its counts are discarded,
+    // never sent, while consent, identity and the other queued event survive with their UUID.
+    await quit();
+    profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-legacy-"));
+    profiles.push(profile);
+    const legacyId = randomUUID();
+    const legacyEnvelope = (event: string, extra: object) => ({
+      uuid: randomUUID(),
+      distinct_id: legacyId,
+      timestamp: "2026-10-12T09:00:00.000Z",
+      event,
+      properties: { ...first.properties, profile_origin: "upgrading", ...extra },
+    });
+    const legacyInstall = legacyEnvelope("installation_observed", {});
+    const legacySummary = legacyEnvelope("app_summary_day", {
+      summary_date: "2026-10-11",
+      counts: { features: { home: 2 }, saturated: false },
+    });
+    await writeFile(
+      join(profile, "analytics.json"),
+      JSON.stringify({
+        format: 1,
+        enabled: true,
+        installationId: legacyId,
+        profileOrigin: "upgrading",
+        firstSeen: true,
+        lastDay: "2026-10-12",
+        summary: {
+          day: "2026-10-13",
+          counts: { features: { home: 1 }, saturated: false },
+          properties: legacyInstall.properties,
+          ready: null,
+          reportedDay: "2026-10-11",
+        },
+        pending: [
+          { event: legacyInstall, attempts: 1 },
+          { event: legacySummary, attempts: 0 },
+        ],
+      }),
     );
-  });
-  observations["pendingAfterOptOut"] = await outbox();
-  await snapshot("pending-cleared");
-  actions.push({
-    action: "Opted out with actual pending events; persisted queue is empty",
-    at: new Date().toISOString(),
-  });
-  await quit();
-  const countAfterQuit = payloads.length;
-  await launch();
-  await settings();
-  await delay(1200);
-  if ((await preference()).analyticsEnabled !== false || payloads.length !== countAfterQuit)
-    throw new Error("Pending profile captured after opt-out restart.");
-  await snapshot("pending-restart-off");
-  observations["pendingQueueCleared"] = true;
-  observations["pendingRestartCaptures"] = payloads.length - countAfterQuit;
+    const legacyFrom = payloads.length;
+    await launch();
+    await waitFor(async () =>
+      payloads
+        .slice(legacyFrom)
+        .some((payload) => record(payload) && payload["uuid"] === legacyInstall.uuid),
+    );
+    await waitFor(async () =>
+      payloads
+        .slice(legacyFrom)
+        .some((payload) => record(payload) && payload["event"] === "app_active_day"),
+    );
+    await delay(2000);
+    const legacySent = payloads.slice(legacyFrom).map(captured);
+    if (
+      payloads
+        .slice(legacyFrom)
+        .some(
+          (payload) =>
+            record(payload) &&
+            (payload["event"] === "app_summary_day" || payload["uuid"] === legacySummary.uuid),
+        )
+    )
+      throw new Error("A migrated daily summary was sent.");
+    if (!isDeepStrictEqual(legacySent[0], legacyInstall))
+      throw new Error("The queued legacy event changed identity or content.");
+    if (legacySent.some((event) => event.distinct_id !== legacyId))
+      throw new Error("Migration changed the installation identity.");
+    const migrated = await analyticsFile();
+    if (
+      migrated["format"] !== 2 ||
+      "summary" in migrated ||
+      migrated["installationId"] !== legacyId
+    )
+      throw new Error("Migrated state kept daily counts or lost identity.");
+    observations["legacyMigration"] = {
+      sent: legacySent.map((event) => event.event),
+      legacyEventSentUnchanged: true,
+      summaryNeverSent: true,
+      storedAfter: migrated,
+    };
+    await snapshot("legacy-migrated");
+    actions.push({
+      action: "Started a seeded format-one profile; its queued summary was discarded, not sent",
+      at: new Date().toISOString(),
+    });
+    // A fresh profile observes real pending events while the local capture boundary refuses them.
+    await quit();
+    rejectCapture = true;
+    profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-pending-"));
+    profiles.push(profile);
+    const refusedFrom = payloads.length;
+    await launch();
+    await connectFixture();
+    const outbox = async () => {
+      const kept: unknown = JSON.parse(await readFile(join(profile, "analytics.json"), "utf8"));
+      if (!record(kept) || !Array.isArray(kept["pending"]))
+        throw new Error("Invalid analytics outbox.");
+      return kept;
+    };
+    await waitFor(async () => {
+      const kept = await outbox();
+      return Array.isArray(kept["pending"]) && kept["pending"].length >= 2;
+    });
+    // A refused event is retried with the same UUID, timestamp and body.
+    await waitFor(async () => {
+      const refused = payloads.slice(refusedFrom).filter(record);
+      return refused.some((payload, index) =>
+        refused.slice(index + 1).some((later) => isDeepStrictEqual(later, payload)),
+      );
+    });
+    observations["refusedRetriedIdentically"] = true;
+    observations["pendingBeforeOptOut"] = await outbox();
+    await snapshot("pending-on");
+    await click(checkbox);
+    await waitFor(async () => {
+      const kept = await outbox();
+      return (
+        kept["enabled"] === false && Array.isArray(kept["pending"]) && kept["pending"].length === 0
+      );
+    });
+    observations["pendingAfterOptOut"] = await outbox();
+    await snapshot("pending-cleared");
+    actions.push({
+      action: "Opted out with actual pending events; persisted queue is empty",
+      at: new Date().toISOString(),
+    });
+    await quit();
+    const countAfterQuit = payloads.length;
+    await launch();
+    await settings();
+    await delay(1200);
+    if ((await preference()).analyticsEnabled !== false || payloads.length !== countAfterQuit)
+      throw new Error("Pending profile captured after opt-out restart.");
+    await snapshot("pending-restart-off");
+    observations["pendingQueueCleared"] = true;
+    observations["pendingRestartCaptures"] = payloads.length - countAfterQuit;
+  }
   observations["productionAnalyticsRequests"] = 0;
   observations["productionExclusionEvidence"] =
     "Transport accepts only this literal loopback endpoint; explicit isolated profile and automation also exclude configured production transport.";
 } catch (error) {
   failure = error;
+  await restorePrefix();
+  await capturePrefixFailure();
   if (page) await snapshot("failure").catch(() => {});
 } finally {
   const clean = async (operation: () => Promise<unknown>) => {
@@ -1084,12 +1690,13 @@ try {
       await new Promise<void>((resolve) => capture.close(() => resolve()));
     });
   const appExited = !app || app.exitCode !== null || app.signalCode !== null;
-  if (appExited)
+  if (appExited && !failure && cleanupErrors.length === 0)
     for (const owned of profiles) await clean(() => rm(owned, { recursive: true, force: true }));
   process.off("SIGINT", interrupt);
   process.off("SIGTERM", interrupt);
   if (cleanupErrors.length) failure ??= new Error(cleanupErrors.join("\n"));
   await writeFile(join(evidence, "payloads.json"), JSON.stringify(payloads, null, 2));
+  await writeFile(join(evidence, "wire.json"), JSON.stringify(rawBodies, null, 2));
   await writeFile(join(evidence, "electron.log"), log.join(""));
   await writeFile(
     join(evidence, "proof.json"),
@@ -1101,8 +1708,17 @@ try {
         pointerInputs,
         scenario: "analytics",
         build: packagedExecutable ? undefined : build,
-        verificationSource: packagedExecutable ? build : undefined,
-        mode: packagedExecutable ? "packaged-executable" : "source-build",
+        verificationSource,
+        bundleHashes,
+        mode: options.native
+          ? "native-telemetry"
+          : packagedExecutable
+            ? "packaged-executable"
+            : "source-build",
+        exits,
+        verificationHashes,
+        endTree,
+        retainedProfiles: failure || cleanupErrors.length ? profiles : [],
         observed: observations,
         cleanup: {
           appExited,
@@ -1124,12 +1740,12 @@ try {
           cwd: root,
           encoding: "utf8",
         }).trim(),
-        mainSha256: createHash("sha256")
-          .update(await readFile(join(desktop, "out/main/index.js")))
-          .digest("hex"),
+        mainSha256: build.mainSha256,
         limitations: [
           "Local capture, no live PostHog project/dashboard/retention acceptance",
-          "Abrupt termination recovers the last persisted interrupted journal only after a later launch; focused owner tests cover recovery",
+          options.native
+            ? "Only recorded nativeCases ran; selecting a subset does not establish the complete native release matrix"
+            : "Main-process crash and installed compatibility remain separate acceptance",
           packagedExecutable
             ? "Packaged executable against local capture; installed upgrade/native acceptance remains separate"
             : "Source build; native installed acceptance pending",
