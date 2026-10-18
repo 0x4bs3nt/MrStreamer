@@ -73,11 +73,14 @@ const profiles: string[] = [];
 let provider: Awaited<ReturnType<typeof startFakeProvider>> | undefined;
 let tmdb: Awaited<ReturnType<typeof startFakeTmdb>> | undefined;
 const payloads: unknown[] = [];
+const payloadBytes: number[] = [];
 let rejectCapture = false;
 const capture = createServer(async (req, res) => {
   const bytes: Buffer[] = [];
   for await (const chunk of req) bytes.push(Buffer.from(chunk));
-  payloads.push(JSON.parse(Buffer.concat(bytes).toString()));
+  const body = Buffer.concat(bytes);
+  payloads.push(JSON.parse(body.toString()));
+  payloadBytes.push(body.byteLength);
   res.statusCode = rejectCapture ? 503 : 200;
   res.end("ok");
 });
@@ -481,7 +484,7 @@ async function volumePaths() {
       mainFsWriteBlocks: after.fsWrite - before.fsWrite,
       observedAtomicAnalyticsWrites: temporaryWrites.size,
       requests: payloads.length,
-      bytes: Buffer.byteLength(JSON.stringify(payloads)),
+      bytes: payloadBytes.reduce((total, size) => total + size, 0),
       events: sent(),
       limits:
         "One Linux run. Main CPU excludes renderer/GPU/FFmpeg. fs.watch counts distinct analytics temp files; native rename latency remains separate.",
