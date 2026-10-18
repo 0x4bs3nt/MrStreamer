@@ -13,6 +13,7 @@
 // A channel has no length: ffmpeg cuts what the provider sends every two seconds or so, and says
 // how long each piece turned out.
 import type { SubtitleEntry } from "./subtitle-history.ts";
+import { AAC_STEREO_ARGUMENTS, H264_IMAGE_ARGUMENTS } from "./conversion-settings.ts";
 
 /** How long a segment of a movie is, about: the first index entry this long after the last start. */
 export const SEGMENT_S = 4;
@@ -296,11 +297,11 @@ export function liveSegmentArguments(
       ...["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-crf", "21"],
       // A keyframe every 50 frames, as for the app's own player: a segment ends at one.
       ...["-g", "50"],
-      ...["-vf", "yadif=deint=interlaced,scale=w='min(1920,iw)':h=-2", "-pix_fmt", "yuv420p"],
+      ...H264_IMAGE_ARGUMENTS,
     );
   }
   if (segments.audio === "copy") args.push("-c:a", "copy");
-  if (segments.audio === "aac") args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2");
+  if (segments.audio === "aac") args.push(...AAC_STEREO_ARGUMENTS);
   args.push(
     ...["-f", "segment", "-segment_format", "mpegts", "-individual_header_trailer", "0"],
     ...["-segment_format_options", "mpegts_flags=+pat_pmt_at_frames"],

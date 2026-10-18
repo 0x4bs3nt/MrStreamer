@@ -13,6 +13,7 @@ import type { Codec, SubtitleFormat } from "@mrstreamer/contracts/playback";
 import type { AudioFacts, SubtitleFacts } from "@mrstreamer/core/ondemand/tracks";
 import type { SubtitleCodec } from "@mrstreamer/core/subtitles/decoder";
 import { segmentArguments, type RunCuts } from "./receiver.ts";
+import { AAC_STEREO_ARGUMENTS, H264_IMAGE_ARGUMENTS } from "./conversion-settings.ts";
 
 export interface TitleProbe {
   /**
@@ -362,16 +363,14 @@ export function titlePlan(
   } else if (video) {
     args.push(
       ...["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-g", "50"],
-      // As for live channels: deinterlace what the file marks as interlaced, and keep 4K within
-      // 1080p so the conversion keeps up on an ordinary CPU.
-      ...["-vf", "yadif=deint=interlaced,scale=w='min(1920,iw)':h=-2", "-pix_fmt", "yuv420p"],
+      ...H264_IMAGE_ARGUMENTS,
     );
   }
   if (sound && copySound) {
     args.push("-c:a", "copy");
     // AAC from an MPEG-TS file comes with ADTS headers, which MP4 doesn't take.
     if (sound.codec === "aac") args.push("-bsf:a", "aac_adtstoasc");
-  } else if (sound) args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2");
+  } else if (sound) args.push(...AAC_STEREO_ARGUMENTS);
   args.push(
     // delay_moov waits for the first packets before describing the tracks, which copied AC-3 and
     // E-AC-3 need.
@@ -448,11 +447,11 @@ export function receiverPlan(
       ...(run.cuts.keyframes.length > 0
         ? ["-force_key_frames", run.cuts.keyframes.map((time) => time.toFixed(6)).join(",")]
         : []),
-      ...["-vf", "yadif=deint=interlaced,scale=w='min(1920,iw)':h=-2", "-pix_fmt", "yuv420p"],
+      ...H264_IMAGE_ARGUMENTS,
     );
   }
   if (sound && copySound) args.push("-c:a", "copy");
-  else if (sound) args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2");
+  else if (sound) args.push(...AAC_STEREO_ARGUMENTS);
   args.push(...segmentArguments(run.cuts, run.from, run.first, urls.segments));
   if (side) args.push(...side.args);
   return {

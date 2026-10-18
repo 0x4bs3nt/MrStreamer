@@ -3,6 +3,7 @@
 // picture byte for byte and gets its sound re-encoded as AAC.
 import type { Codec } from "@mrstreamer/contracts/playback";
 import type { StreamLayout } from "./inspect.ts";
+import { AAC_STEREO_ARGUMENTS, H264_IMAGE_ARGUMENTS } from "./conversion-settings.ts";
 
 export interface Conversion {
   readonly video: "copy" | "h264" | "none";
@@ -82,18 +83,11 @@ export function ffmpegArguments(conversion: Conversion): string[] {
       "21",
       "-g",
       "50",
-      // Deinterlace frames the source marks as interlaced, and keep 4K within 1080p so the
-      // conversion keeps up on an ordinary CPU.
-      "-vf",
-      "yadif=deint=interlaced,scale=w='min(1920,iw)':h=-2",
-      "-pix_fmt",
-      "yuv420p",
+      ...H264_IMAGE_ARGUMENTS,
     );
   }
   if (conversion.audio === "copy") args.push("-c:a", "copy");
-  // Stereo: Chromium's player cannot always read converted 5.1 AAC, and plays 5.1 as stereo on
-  // stereo outputs anyway.
-  if (conversion.audio === "aac") args.push("-c:a", "aac", "-b:a", "192k", "-ac", "2");
+  if (conversion.audio === "aac") args.push(...AAC_STEREO_ARGUMENTS);
   args.push("-f", "mpegts", "-muxdelay", "0", "-muxpreload", "0", "pipe:1");
   return args;
 }
