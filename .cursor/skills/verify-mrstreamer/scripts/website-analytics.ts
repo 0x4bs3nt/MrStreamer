@@ -486,8 +486,6 @@ app.on('window-all-closed', () => app.quit());
       throw new Error("Fresh visit stored something.");
     const os = await evaluate<string>("document.documentElement.dataset.os ?? 'any'");
     observed["detectedSystem"] = os;
-    await click(".hero .cta");
-    await wait(() => captures.some((c) => c.raw.includes('"download_clicked"')), "download click");
     await scrollToEnd();
     await wait(
       () => captures.filter((c) => c.raw.includes('"feature_section_viewed"')).length >= 6,
@@ -509,6 +507,29 @@ app.on('window-all-closed', () => app.quit());
     await wide();
     await delay(300);
     observed["homeGeometry1280"] = await evaluate(geometry);
+    // Home's Download button is a link to /download. The download click comes from an installer
+    // there: route /download, location page.
+    act("Click the hero's Download link, then an installer on /download");
+    await click(".hero .cta");
+    await wait(
+      () =>
+        evaluate<boolean>(
+          "location.pathname === '/download' && document.readyState === 'complete'",
+        ),
+      "download page",
+    );
+    await wait(() => captures.some((c) => pageOf(c) === "/download"), "download page view");
+    await click("main .rows a[data-installer]");
+    await wait(
+      () =>
+        captures.some(
+          (c) =>
+            c.raw.includes('"download_clicked"') &&
+            c.raw.includes('"route":"/download"') &&
+            c.raw.includes('"location":"page"'),
+        ),
+      "download click",
+    );
 
     // 1b. Real measurements on a long guide: a slow interaction, a layout shift and part of the
     // page scrolled. The helper adds the slow handler and the shifting block; the browser and

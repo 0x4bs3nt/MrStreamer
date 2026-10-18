@@ -46,13 +46,13 @@ type Choice = "on" | "off";
 /** What the switch shows. "refused": GPC or Do Not Track. "unavailable": local storage failed. */
 type Status = Choice | "refused" | "unavailable";
 
+/** The home page's parts, by the ids index.html gives its sections. */
 const HOME_SECTIONS = [
   "live-tv",
   "tv-guide",
   "movies-and-series",
   "sound-and-subtitles",
   "what-you-need",
-  "questions",
   "downloads",
 ] as const;
 type HomeSection = (typeof HOME_SECTIONS)[number];
@@ -101,6 +101,7 @@ type SiteEvent =
           /** Every installer link and the Store carry stable releases. Nightlies are on GitHub. */
           readonly download_type: "stable";
           readonly route: string;
+          /** Where on the page. Every installer link now sits in /download's body, as "page". */
           readonly location: "hero" | "page";
         };
     }
@@ -507,7 +508,7 @@ export function startSiteAnalytics(capture: SiteCapture | null): () => void {
   const seen = new Map<Element, () => SiteEvent | undefined>();
   const opened = location.hash.slice(1);
   if (route === "/")
-    for (const section of document.querySelectorAll("main > section[id]")) {
+    for (const section of document.querySelectorAll("main section[id]")) {
       const id = HOME_SECTIONS.find((known) => known === section.id);
       if (id)
         seen.set(section, () => ({

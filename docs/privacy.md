@@ -58,7 +58,7 @@ Each event carries a random installation identifier, an event identifier, the ti
 
 mrstreamer.app is hosted by Vercel, which receives your IP address and browser identification with each request, as any web host does.
 
-To link the newest installers, the home, download and about pages ask GitHub for the public list of releases. GitHub gets your IP address and browser identification.
+To link the newest installers, the download and about pages ask GitHub for the public list of releases. GitHub gets your IP address and browser identification. The home page links the download page and doesn't ask GitHub.
 
 ### Website analytics
 

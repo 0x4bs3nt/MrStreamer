@@ -48,7 +48,7 @@
         "operatingSystem": "macOS 13 or later (Apple silicon), Windows 11 (64-bit), Linux (64-bit)",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-        "downloadUrl": "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest",
+        "downloadUrl": "https://mrstreamer.app/download",
         "screenshot": [
           "https://mrstreamer.app/generated/home-1920.webp",
           "https://mrstreamer.app/generated/live-tv-1920.webp",
@@ -72,92 +72,19 @@
         <nav aria-label="Site">
           <a href="/docs">Guides</a>
           <a href="/faq">FAQ</a>
-          <a class="heavy" href="/download">Downloads</a>
+          <a class="button small" href="/download">Download</a>
         </nav>
       </header>
 
       <main id="main">
         <section class="hero">
-          <h1><span class="kicker">Mr. Streamer</span> IPTV without the junk.</h1>
-          <p class="lead">
-            Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. No ads, no
-            account. Bring the subscription you already have.
-          </p>
-          <!-- One button shows. src/system.ts picks the visitor's system, and the first stays when it can't. -->
-          <div class="actions">
-            <a class="cta button primary" data-for="any" href="#downloads">
-              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-                <path
-                  d="M8 2v11M3.5 8.5 8 13l4.5-4.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-              Downloads
-            </a>
-            <a
-              class="cta badge"
-              data-for="windows"
-              href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge"
-            >
-              <img
-                src="/icons/microsoft-store.svg"
-                alt="Get it from Microsoft"
-                width="161"
-                height="44"
-                loading="lazy"
-              />
-            </a>
-            <a
-              class="cta button primary"
-              data-for="mac"
-              data-installer="dmg"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-            >
-              <img
-                src="/icons/apple.svg"
-                alt=""
-                width="24"
-                height="24"
-                aria-hidden="true"
-                loading="lazy"
-              />
-              Download for Mac
-            </a>
-            <a
-              class="cta button primary"
-              data-for="linux"
-              data-installer="appImage"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-            >
-              <img
-                src="/icons/linux.svg"
-                alt=""
-                width="24"
-                height="24"
-                aria-hidden="true"
-                loading="lazy"
-              />
-              Download for Linux
-            </a>
-          </div>
-          <p class="note" data-for="any">
-            macOS 13 or later on Apple silicon, Windows 11, 64-bit Linux.
-          </p>
-          <p class="note" data-for="windows">
-            Windows 11, 64-bit. The Store keeps it updated.
-            <a href="#downloads">Setup .exe and other systems</a>.
-          </p>
-          <p class="note" data-for="mac">
-            <span data-version="dmg"></span> macOS 13 or later, Apple silicon only.
-            <a href="#downloads">Other systems</a>.
-          </p>
-          <p class="note" data-for="linux">
-            <span data-version="appImage"></span> 64-bit Linux. The AppImage needs FUSE 2.
-            <a href="#downloads">.deb and other systems</a>.
+          <img class="mark" src="/generated/mark.svg" alt="" width="100" height="100" />
+          <h1>Mr. Streamer</h1>
+          <p class="line">Live TV, movies and series.</p>
+          <p class="lead">An open source IPTV player for Mac, Windows and Linux.</p>
+          <!-- Every download action on this page is a link to /download, where the installers are. -->
+          <p class="actions">
+            <a class="cta button primary" href="/download">Download</a>
           </p>
         </section>
 
@@ -165,10 +92,13 @@
           <picture class="frame">
             <source
               media="(max-width: 43.74em)"
-              srcset="/generated/home-phone-1280.webp 1280w, /generated/home-phone-2560.webp 2560w"
+              srcset="
+                /generated/home-stage-cut-574.webp   574w,
+                /generated/home-stage-cut-1148.webp 1148w
+              "
               sizes="95vw"
-              width="2560"
-              height="1600"
+              width="1148"
+              height="1080"
             />
             <img
               src="/generated/home-1920.webp"
@@ -178,7 +108,7 @@
                 /generated/home-1920.webp 1920w,
                 /generated/home-2560.webp 2560w
               "
-              sizes="(min-width: 100em) 1360px, (min-width: 70em) 85vw, 120vw"
+              sizes="(min-width: 80em) 1088px, (min-width: 70em) 85vw, 95vw"
               width="2560"
               height="1600"
               alt="Home with Watchlist and Customize, a muted live preview, Continue watching and a recommendation based on Canyon Hours"
@@ -187,213 +117,142 @@
           </picture>
         </div>
 
-        <section class="feature" id="live-tv">
-          <div class="text" data-reveal>
-            <h2>Live TV</h2>
-            <p>What's on now and next, your favourites, and the channels you watched last.</p>
-          </div>
-          <div class="shot" data-reveal>
+        <!-- Three windows fanned out from one spot: the whole of Home, and the Live TV and TV Guide cuts. -->
+        <section class="stack" aria-label="Home, Live TV and the TV Guide" data-reveal>
+          <img
+            class="layer"
+            src="/generated/home-1440.webp"
+            srcset="
+              /generated/home-960.webp   960w,
+              /generated/home-1440.webp 1440w,
+              /generated/home-1920.webp 1920w
+            "
+            sizes="(min-width: 80em) 850px, (min-width: 70em) 66vw, 74vw"
+            width="2560"
+            height="1600"
+            alt="Home, behind"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            class="layer"
+            src="/generated/live-tv-cut-600.webp"
+            srcset="/generated/live-tv-cut-600.webp 600w, /generated/live-tv-cut-1200.webp 1200w"
+            sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 32vw"
+            width="1200"
+            height="1000"
+            alt="Live TV with a playing preview and the channel list, in front"
+            loading="lazy"
+            decoding="async"
+          />
+          <img
+            class="layer"
+            src="/generated/tv-guide-cut-600.webp"
+            srcset="/generated/tv-guide-cut-600.webp 600w, /generated/tv-guide-cut-1200.webp 1200w"
+            sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 32vw"
+            width="1200"
+            height="1000"
+            alt="The TV Guide grid with an aired programme open, in front"
+            loading="lazy"
+            decoding="async"
+          />
+          <p class="replay"><button type="button" data-replay hidden>Replay</button></p>
+        </section>
+
+        <div class="gallery">
+          <section class="feature" id="live-tv" data-reveal>
             <picture class="frame">
-              <source
-                media="(max-width: 43.74em)"
-                srcset="
-                  /generated/live-tv-phone-600.webp   600w,
-                  /generated/live-tv-phone-1200.webp 1200w
-                "
-                sizes="95vw"
-                width="1200"
-                height="1300"
-              />
               <img
-                src="/generated/live-tv-1920.webp"
+                src="/generated/live-tv-cut-600.webp"
                 srcset="
-                  /generated/live-tv-960.webp   960w,
-                  /generated/live-tv-1440.webp 1440w,
-                  /generated/live-tv-1920.webp 1920w,
-                  /generated/live-tv-2560.webp 2560w
+                  /generated/live-tv-cut-600.webp   600w,
+                  /generated/live-tv-cut-1200.webp 1200w
                 "
-                sizes="(min-width: 100em) 1080px, (min-width: 70em) 68vw, 120vw"
-                width="2560"
-                height="1600"
+                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
+                width="1200"
+                height="1000"
                 alt="Live TV with a playing preview and a channel list showing current programmes"
                 loading="lazy"
                 decoding="async"
               />
             </picture>
-          </div>
-        </section>
+            <h2>Live TV</h2>
+            <p>See what's on, keep favourites and switch channels.</p>
+          </section>
 
-        <section class="feature reverse" id="tv-guide">
-          <div class="text" data-reveal>
-            <h2>TV Guide</h2>
-            <p>
-              Every channel by the hour. Play what already aired from its start when your provider
-              keeps catch-up.
-            </p>
-          </div>
-          <div class="shot" data-reveal>
+          <section class="feature" id="tv-guide" data-reveal>
             <picture class="frame">
-              <source
-                media="(max-width: 43.74em)"
-                srcset="
-                  /generated/tv-guide-phone-632.webp   632w,
-                  /generated/tv-guide-phone-1264.webp 1264w
-                "
-                sizes="95vw"
-                width="1264"
-                height="1128"
-              />
               <img
-                src="/generated/tv-guide-1920.webp"
+                src="/generated/tv-guide-cut-600.webp"
                 srcset="
-                  /generated/tv-guide-960.webp   960w,
-                  /generated/tv-guide-1440.webp 1440w,
-                  /generated/tv-guide-1920.webp 1920w,
-                  /generated/tv-guide-2560.webp 2560w
+                  /generated/tv-guide-cut-600.webp   600w,
+                  /generated/tv-guide-cut-1200.webp 1200w
                 "
-                sizes="(min-width: 100em) 1000px, (min-width: 70em) 63vw, 120vw"
-                width="2560"
-                height="1600"
+                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
+                width="1200"
+                height="1000"
                 alt="The TV Guide grid of channels by time, an aired programme open with Play from start and Watch live, and catch-up signs beside the channels that keep recordings"
                 loading="lazy"
                 decoding="async"
               />
             </picture>
-          </div>
-        </section>
+            <h2>TV Guide</h2>
+            <p>
+              Browse the schedule and watch earlier programmes when your provider supports catch-up.
+            </p>
+          </section>
 
-        <section class="feature" id="sound-and-subtitles">
-          <div class="text" data-reveal>
-            <h2>Sound and subtitles</h2>
-            <p>Every track your provider sends, on live channels and on demand.</p>
-          </div>
-          <div class="shot whole" data-reveal>
+          <section class="feature" id="movies-and-series" data-reveal>
             <picture class="frame">
-              <source
-                media="(max-width: 43.74em)"
-                srcset="
-                  /generated/watching-phone-884.webp   884w,
-                  /generated/watching-phone-1768.webp 1768w
-                "
-                sizes="95vw"
-                width="1768"
-                height="1516"
-              />
               <img
-                src="/generated/watching-1920.webp"
+                src="/generated/library-cut-600.webp"
                 srcset="
-                  /generated/watching-960.webp   960w,
-                  /generated/watching-1440.webp 1440w,
-                  /generated/watching-1920.webp 1920w,
-                  /generated/watching-2560.webp 2560w
+                  /generated/library-cut-600.webp   600w,
+                  /generated/library-cut-1200.webp 1200w
                 "
-                sizes="(min-width: 100em) 1080px, (min-width: 70em) 68vw, 120vw"
-                width="2560"
-                height="1600"
-                alt="An episode playing with English subtitles beside the subtitle panel's track, timing and appearance controls"
-                loading="lazy"
-                decoding="async"
-              />
-            </picture>
-          </div>
-        </section>
-
-        <section class="feature reverse" id="movies-and-series">
-          <div class="text" data-reveal>
-            <h2>Movies and series</h2>
-            <p>Story, cast and artwork. Pick up where you stopped, with the next episode ready.</p>
-          </div>
-          <div class="shot" data-reveal>
-            <picture class="frame">
-              <source
-                media="(max-width: 43.74em)"
-                srcset="
-                  /generated/library-phone-620.webp   620w,
-                  /generated/library-phone-1240.webp 1240w
-                "
-                sizes="95vw"
-                width="1240"
-                height="1400"
-              />
-              <img
-                src="/generated/library-1920.webp"
-                srcset="
-                  /generated/library-960.webp   960w,
-                  /generated/library-1440.webp 1440w,
-                  /generated/library-1920.webp 1920w,
-                  /generated/library-2560.webp 2560w
-                "
-                sizes="(min-width: 100em) 1000px, (min-width: 70em) 63vw, 120vw"
-                width="2560"
-                height="1600"
+                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
+                width="1200"
+                height="1000"
                 alt="Canyon Hours details with its story, cast, Play and Save"
                 loading="lazy"
                 decoding="async"
               />
             </picture>
-          </div>
+            <h2>Movies and series</h2>
+            <p>Continue where you left off. Save a watchlist and download for offline viewing.</p>
+          </section>
+
+          <section class="feature" id="sound-and-subtitles" data-reveal>
+            <picture class="frame">
+              <img
+                src="/generated/watching-cut-884.webp"
+                srcset="
+                  /generated/watching-cut-884.webp   884w,
+                  /generated/watching-cut-1768.webp 1768w
+                "
+                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
+                width="1768"
+                height="1474"
+                alt="An episode playing with English subtitles beside the subtitle panel's track, timing and appearance controls"
+                loading="lazy"
+                decoding="async"
+              />
+            </picture>
+            <h2>Sound and subtitles</h2>
+            <p>Choose audio and subtitle tracks. Search online subtitles with your own API key.</p>
+          </section>
+        </div>
+
+        <section class="need" id="what-you-need" data-reveal>
+          <h2>Bring your subscription.</h2>
+          <p>Connect Xtream Codes or an M3U playlist. No channels are included.</p>
         </section>
 
-        <section class="column" id="what-you-need" data-reveal>
-          <h2>What you need</h2>
-          <p>
-            An IPTV subscription. Mr. Streamer includes no channels and sells none. It plays what
-            your provider gives you.
-          </p>
-          <p>
-            Xtream Codes access gets you live TV, movies and series. That's a server address,
-            username and password, or an M3U link that carries them. A playlist gets live TV, and
-            movies and series once you map its groups.
-          </p>
-          <p>
-            The guide comes from your provider. Channels it doesn't cover show their name and
-            category instead.
-          </p>
-          <p>
-            Your login goes to your provider, in every request the app makes to it. Favourites,
-            history and settings stay on your computer. No account required. Basic usage statistics
-            are on by default and can be turned off in Settings.
-          </p>
-        </section>
-
-        <section class="column" id="questions">
-          <p>Questions about playlists, downloads or updates? <a href="/faq">Read the FAQ</a>.</p>
-        </section>
-
-        <section class="column" id="downloads">
-          <h2 data-reveal>Downloads</h2>
-          <p class="download-links" data-reveal>
-            <span data-release-version>Stable release on GitHub.</span>
-            Mac
-            <a
-              data-installer="dmg"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-              >DMG<span class="where"> on GitHub Releases</span></a
-            >. Windows
-            <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge"
-              >Microsoft Store</a
-            >
-            or
-            <a
-              data-installer="exe"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-              >setup .exe<span class="where"> on GitHub Releases</span></a
-            >
-            (unsigned; SmartScreen may warn). Linux
-            <a
-              data-installer="appImage"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-              >AppImage<span class="where"> on GitHub Releases</span></a
-            >
-            or
-            <a
-              data-installer="deb"
-              href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-              >.deb<span class="where"> on GitHub Releases</span></a
-            >.
-          </p>
-          <p data-reveal>
-            Requirements, checksums and source are on the <a href="/download">download page</a>.
+        <section class="downloads" id="downloads" data-reveal>
+          <h2>Download</h2>
+          <p>macOS 13 or later on Apple silicon, Windows 11 or 64-bit Linux.</p>
+          <p class="actions">
+            <a class="button primary" href="/download">Download</a>
           </p>
         </section>
       </main>

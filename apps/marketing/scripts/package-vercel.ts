@@ -13,9 +13,9 @@
 // - a page names a file the package lacks, or has no script or styles
 // - a listed page lacks its address, description or social picture, or the sitemap
 //   doesn't list it
-// - the home page lacks the script that picks its one download button, links an installer
-//   anywhere but this repository's releases, or describes the app to search engines in data
-//   that doesn't read or shows a picture the package lacks
+// - the home or download page lacks the script that names the visitor's system, a page links
+//   an installer anywhere but this repository's releases, or the home page describes the app to
+//   search engines in data that doesn't read or shows a picture the package lacks
 // - a Markdown page lacks source headings, or a public link or fragment is missing
 // - search engines could list 404.html
 // - robots.txt doesn't name the sitemap, or a route answers with a missing page
@@ -133,10 +133,14 @@ check("404.html", {
   "the tag that keeps it out of search results": '<meta name="robots" content="noindex"',
 });
 
-// The home page's download button, installer links and structured data.
+// The system script on the pages that use it, the download page's installer links and the home
+// page's structured data.
 const home = read("index.html");
-if (!home.includes("document.documentElement.dataset.os=")) {
-  problems.push(`${LISTED["/"]} lacks the script that names the visitor's system.`);
+for (const address of ["/", "/download"]) {
+  const file = LISTED[address] ?? "";
+  if (!read(file).includes("document.documentElement.dataset.os=")) {
+    problems.push(`${file} lacks the script that names the visitor's system.`);
+  }
 }
 const RELEASES = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases";
 const installer = new RegExp(
@@ -147,9 +151,9 @@ const links = [
     .join("\n")
     .matchAll(/<a\s[^>]*\bdata-installer="\w+"[^>]*>/g),
 ].map(([tag]) => /\shref="([^"]*)"/.exec(tag)?.[1] ?? "");
-if (links.length === 0) problems.push(`${LISTED["/"]} links no installer.`);
+if (links.length === 0) problems.push(`${LISTED["/download"]} links no installer.`);
 for (const link of new Set(links.filter((link) => !installer.test(link)))) {
-  problems.push(`${LISTED["/"]} links an installer at "${link}", outside the project's releases.`);
+  problems.push(`An installer link goes to "${link}", outside the project's releases.`);
 }
 try {
   const [, json = ""] = /<script type="application\/ld\+json">(.*?)<\/script>/s.exec(home) ?? [];

@@ -197,14 +197,23 @@ describe("one stable download contract across pages and metadata", () => {
       expect(document.title).toBe("Download Mr. Streamer 0.0.8 for Mac, Windows and Linux");
     },
   );
-  it("links the same verified installers and the same release's checksums, notes and sources", () => {
+  it("describes the verified release on the home page and links its installers, checksums, notes and sources on the download page", () => {
     open(writeDownloads(home, released));
-    const homepageLinks = links();
     expect(appData()["softwareVersion"]).toBe("0.0.8");
     expect(appData()["alternateName"]).toBe("Mr. Streamer: IPTV Player");
     expect(appData()["screenshot"]).toHaveLength(5);
+    expect(appData()["downloadUrl"]).toBe("https://mrstreamer.app/download");
+    // Every download action on the home page is a link to /download: no installer, no Store.
+    expect(links()).toEqual({});
+    expect(document.querySelectorAll('main a[href="/download"]')).toHaveLength(2);
     open(writeDownloads(renderPage("download/index.html", released, null), released));
-    expect(links()).toEqual(homepageLinks);
+    const files = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v0.0.8";
+    expect(links()).toEqual({
+      dmg: `${files}/Mr-Streamer-0.0.8-mac-arm64.dmg`,
+      exe: `${files}/Mr-Streamer-0.0.8-win-x64-setup.exe`,
+      appImage: `${files}/Mr-Streamer-0.0.8-linux-x86_64.AppImage`,
+      deb: `${files}/Mr-Streamer-0.0.8-linux-amd64.deb`,
+    });
     expect(document.title).toBe("Download Mr. Streamer 0.0.8 for Mac, Windows and Linux");
     expect(document.querySelector('[data-release-link="checksums"]')?.getAttribute("href")).toBe(
       "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/tag/v0.0.8#assets",
@@ -222,6 +231,8 @@ describe("one stable download contract across pages and metadata", () => {
     expect(Object.values(links()).every((link) => link === LATEST)).toBe(true);
     open(writeDownloads(home, { version: "0.0.8", installers: [] }));
     expect(appData()).not.toHaveProperty("softwareVersion");
+    const withdrawn: Downloads = { version: "0.0.8", installers: [] };
+    open(writeDownloads(renderPage("download/index.html", withdrawn, null), withdrawn));
     expect(document.querySelector("[data-release-version]")?.textContent).toBe(
       "Stable release on GitHub.",
     );
@@ -238,11 +249,6 @@ describe("one stable download contract across pages and metadata", () => {
       const refreshed = document.documentElement.innerHTML;
       open(writeDownloads(renderPage("download/index.html", later, null), later));
       expect(document.documentElement.innerHTML).toBe(refreshed);
-      open(writeDownloads(home, released));
-      showDownloads(document, later);
-      expect(appData()["softwareVersion"]).toBe(
-        later.installers.length ? later.version : undefined,
-      );
     }
   });
 });

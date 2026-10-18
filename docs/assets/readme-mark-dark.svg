@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Mr. Streamer mark: top hat with a play button and band cut out of the crown. -->
+  <defs>
+    <mask id="cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
+      <rect width="100" height="100" fill="#fff"/>
+      <polygon points="43.5,25 43.5,47 62,36" fill="#000" stroke="#000" stroke-width="4.5" stroke-linejoin="round"/>
+      <path d="M20 57.5Q50 59.5 80 57.5L80 64.5Q50 66.5 20 64.5Z" fill="#000"/>
+    </mask>
+  </defs>
+  <g transform="translate(0 3)" fill="#e6edf3">
+    <path mask="url(#cutouts)" d="M31.5 73C31 55 29.5 35 28.2 16.5Q27.9 11 33.5 11L66.5 11Q72.1 11 71.8 16.5C70.5 35 69 55 68.5 73Z"/>
+    <path d="M10 70C13 65 19 69.5 28 70.3Q50 72.3 72 70.3C81 69.5 87 65 90 70C88.5 79.5 78 81.36 70 82Q50 83.6 30 82C22 81.36 11.5 79.5 10 70Z"/>
+  </g>
+</svg>

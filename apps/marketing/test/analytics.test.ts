@@ -40,6 +40,8 @@ const report = (name: "LCP" | "CLS" | "INP", value: number) =>
 const root = join(import.meta.dirname, "..");
 const home = readFileSync(join(root, "index.html"), "utf8");
 const missing = readFileSync(join(root, "404.html"), "utf8");
+/** The download page, where every installer link and the Store sit. */
+const download = renderPage("download/index.html", null, null);
 /** A production build's capture: the site's own route to PostHog. */
 const CAPTURE = {
   endpoint: "https://mrstreamer.app/ingest/i/v0/e/",
@@ -173,10 +175,15 @@ describe("website analytics", () => {
   it("count downloads, GitHub links and how long the page was in view, once", () => {
     let now = 1_000;
     vi.spyOn(performance, "now").mockImplementation(() => now);
+    // The home page's Download links lead to /download and count as nothing but its page view.
     start(home);
-    click('.hero a[data-installer="dmg"]');
-    click('#downloads a[data-installer="exe"]');
-    click('#downloads a[href^="https://apps.microsoft.com/"]');
+    click(".hero .cta");
+    click('#downloads a[href="/download"]');
+    expect(events()).toEqual([["$pageview", { route: "/", ...unknown, ...fixed("/") }]]);
+    start(download, "/download");
+    click('.mine a[data-installer="dmg"]');
+    click('.rows a[data-installer="exe"]');
+    click('.rows a[href^="https://apps.microsoft.com/"]');
     click('footer a[href="https://github.com/Mr-Streamer-OSS/MrStreamer"]');
     click('footer a[href$="/issues/new/choose"]');
     click('footer a[href="/faq"]');
@@ -185,18 +192,19 @@ describe("website analytics", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     dispatchEvent(new Event("pagehide"));
     Reflect.deleteProperty(document, "visibilityState");
-    expect(events()).toEqual([
-      ["$pageview", { route: "/", ...unknown, ...fixed("/") }],
+    const page = fixed("/download");
+    expect(events().slice(1)).toEqual([
+      ["$pageview", { route: "/download", ...unknown, ...page }],
       [
         "download_clicked",
         {
           os_hint: "mac",
           kind: "dmg",
           download_type: "stable",
-          route: "/",
-          location: "hero",
+          route: "/download",
+          location: "page",
           ...unknown,
-          ...fixed("/"),
+          ...page,
         },
       ],
       [
@@ -205,10 +213,10 @@ describe("website analytics", () => {
           os_hint: "windows",
           kind: "exe",
           download_type: "stable",
-          route: "/",
+          route: "/download",
           location: "page",
           ...unknown,
-          ...fixed("/"),
+          ...page,
         },
       ],
       [
@@ -217,18 +225,22 @@ describe("website analytics", () => {
           os_hint: "windows",
           kind: "store",
           download_type: "stable",
-          route: "/",
+          route: "/download",
           location: "page",
           ...unknown,
-          ...fixed("/"),
+          ...page,
         },
       ],
-      ["github_link_clicked", { route: "/", link_location: "footer_source", ...fixed("/") }],
-      ["github_link_clicked", { route: "/", link_location: "footer_bug", ...fixed("/") }],
-      ["$pageleave", { route: "/", visible: "30s_2m", ...depth("/", 1, 1), ...fixed("/") }],
+      ["github_link_clicked", { route: "/download", link_location: "footer_source", ...page }],
+      ["github_link_clicked", { route: "/download", link_location: "footer_bug", ...page }],
+      [
+        "$pageleave",
+        { route: "/download", visible: "30s_2m", ...depth("/download", 1, 1), ...page },
+      ],
     ]);
     // Only what comes as the page closes or follows a link outlives the page.
     expect(sent().map(({ init }) => init.keepalive)).toEqual([
+      false,
       false,
       true,
       true,
@@ -413,12 +425,12 @@ describe("website analytics", () => {
 
   it("send nothing after a stored off, and turning on waits for the next page", () => {
     localStorage.setItem(CHOICE, "off");
-    start(home);
+    start(download, "/download");
     expect(footer()).toBe("Site analytics: off. Turn on What's counted");
     button()?.click();
     expect(localStorage.getItem(CHOICE)).toBe("on");
     expect(footer()).toBe("Site analytics: on. Turn off What's counted");
-    click('.hero a[data-installer="dmg"]');
+    click('.rows a[data-installer="dmg"]');
     dispatchEvent(new Event("pagehide"));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(vitals.LCP).toHaveLength(0);
@@ -427,14 +439,14 @@ describe("website analytics", () => {
   });
 
   it("abort what is on its way when turned off, and send nothing after", () => {
-    start(home);
+    start(download, "/download");
     const signal = sent()[0]?.init.signal;
     expect(signal?.aborted).toBe(false);
     button()?.click();
     expect(signal?.aborted).toBe(true);
     expect(localStorage.getItem(CHOICE)).toBe("off");
     expect(footer()).toBe("Site analytics: off. Turn on What's counted");
-    click('.hero a[data-installer="dmg"]');
+    click('.rows a[data-installer="dmg"]');
     dispatchEvent(new Event("pagehide"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -507,7 +519,6 @@ describe("website analytics", () => {
 });
 
 describe("where a visit entered the site", () => {
-  const download = renderPage("download/index.html", null, null);
   /** The entry codes on each page view and download click, in order. */
   const entries = () =>
     sent()
@@ -526,8 +537,11 @@ describe("where a visit entered the site", () => {
       "/?utm_source=GitHub&utm_medium=readme&utm_campaign=release&utm_content=jane%40example.com&utm_term=iptv&gclid=Cj0secret",
       "https://github.com/Mr-Streamer-OSS/MrStreamer",
     );
-    click('.hero a[data-installer="dmg"]');
+    click(".hero .cta");
+    start(download, "/download", "https://mrstreamer.app/");
+    click('.rows a[data-installer="dmg"]');
     expect(entries()).toEqual([
+      ["$pageview", "github", "readme", "release"],
       ["$pageview", "github", "readme", "release"],
       ["download_clicked", "github", "readme", "release"],
     ]);
@@ -601,8 +615,8 @@ describe("where a visit entered the site", () => {
     start(home, "/");
     start(home, "/?utm_source=mastodon&utm_campaign=launch", "https://mastodon.social/");
     start(download, "/download", "https://mrstreamer.app/");
-    start(home, "/", "https://news.ycombinator.com/");
-    click('.hero a[data-installer="dmg"]');
+    start(download, "/download", "https://news.ycombinator.com/");
+    click('.rows a[data-installer="dmg"]');
     expect(entries()).toEqual([
       ["$pageview", "bing", "search", "none"],
       ["$pageview", "bing", "search", "none"],
@@ -680,7 +694,7 @@ describe("where a visit entered the site", () => {
     expect(signal?.aborted).toBe(true);
     expect(sessionStorage.getItem(ENTRY)).toBeNull();
     expect(footer()).toBe("Site analytics: on. Turn off What's counted");
-    click('.hero a[data-installer="dmg"]');
+    click('footer a[href="https://github.com/Mr-Streamer-OSS/MrStreamer"]');
     dispatchEvent(new Event("pagehide"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     start(download, "/download", "https://mrstreamer.app/");
@@ -688,17 +702,17 @@ describe("where a visit entered the site", () => {
   });
 
   it("give a page restored from the back-forward cache the tab's entry as it is now", () => {
-    start(home, "/", "https://github.com/");
+    start(download, "/download", "https://github.com/");
     // A later page in the tab came from Google, then the visitor went back.
     sessionStorage.setItem(
       ENTRY,
       JSON.stringify({ entry_source: "google", entry_medium: "search", entry_campaign: "none" }),
     );
     dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
-    click('.hero a[data-installer="dmg"]');
+    click('.rows a[data-installer="dmg"]');
     sessionStorage.clear();
     dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
-    click('.hero a[data-installer="dmg"]');
+    click('.rows a[data-installer="dmg"]');
     expect(entries()).toEqual([
       ["$pageview", "github", "referral", "none"],
       ["download_clicked", "google", "search", "none"],

@@ -1,9 +1,9 @@
-// Which desktop system a visitor is on, so the home page's hero shows one download button: the
-// Microsoft Store badge, Download for Mac or Download for Linux. Anything else, and anything this
-// can't tell, shows the Downloads button that scrolls to the full list.
+// Which desktop system a visitor is on, so the download page puts that system's installer first:
+// the Microsoft Store badge, Download the DMG or Download the AppImage above the rows for every
+// system. Anything else, and anything this can't tell, gets the rows alone.
 //
-// The build writes `systemOf`'s own text into the head of index.html (vite.config.ts), where it
-// runs before the page paints and sets data-os on <html>. styles.css shows the button that
+// The build writes `systemOf`'s own text into the head of every page (vite.config.ts), where it
+// runs before the page paints and sets data-os on <html>. styles.css shows the block that
 // matches. So the function uses nothing outside itself. It reads what every request already
 // carries, asks for no detailed hints, and stores and sends nothing.
 

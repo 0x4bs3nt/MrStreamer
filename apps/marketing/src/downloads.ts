@@ -151,11 +151,6 @@ function hrefOf(downloads: Downloads, installer: string | undefined): string {
   return known ? urlOf(downloads.version, known) : LATEST;
 }
 
-/** What a system's line says about the version, and nothing when its installer isn't linked. */
-function versionOf(downloads: Downloads, installer: string | undefined): string {
-  return hrefOf(downloads, installer) === LATEST ? "" : `Version ${downloads.version}.`;
-}
-
 /** General release facts name a version only when at least one of its installers is known. */
 function releaseVersion(downloads: Downloads): string {
   return downloads.installers.length
@@ -174,16 +169,12 @@ function downloadTitle(downloads: Downloads): string {
 }
 
 /**
- * The open page with `downloads` in it: every a[data-installer] goes to its installer, and every
- * [data-version] names the version beside it. An installer the release lacks goes to the
- * Releases page, without a version.
+ * The open page with `downloads` in it: every a[data-installer] goes to its installer. An
+ * installer the release lacks goes to the Releases page. General release facts name the version.
  */
 export function showDownloads(page: ParentNode, downloads: Downloads): void {
   for (const link of page.querySelectorAll<HTMLAnchorElement>("a[data-installer]")) {
     link.href = hrefOf(downloads, link.dataset["installer"]);
-  }
-  for (const line of page.querySelectorAll<HTMLElement>("[data-version]")) {
-    line.textContent = versionOf(downloads, line.dataset["version"]);
   }
   for (const line of page.querySelectorAll<HTMLElement>("[data-release-version]")) {
     line.textContent = releaseVersion(downloads);
@@ -231,10 +222,6 @@ export function writeDownloads(
   return stamped
     .replace(/<a\s[^>]*\bdata-installer="(\w+)"[^>]*>/g, (tag, installer: string) =>
       tag.replace(/\shref="[^"]*"/, ` href="${hrefOf(downloads, installer)}"`),
-    )
-    .replace(
-      /(<span\s[^>]*\bdata-version="(\w+)"[^>]*>)[^<]*/g,
-      (_, tag: string, installer: string) => tag + versionOf(downloads, installer),
     )
     .replace(
       /(<span\s[^>]*\bdata-release-version[^>]*>)[^<]*/g,

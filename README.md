@@ -1,102 +1,37 @@
-<p align="center"><img src="docs/assets/banner.png" alt="Mr. Streamer, with its Home page" width="100%"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-mark-dark.svg">
+    <img src="docs/assets/readme-mark-light.svg" alt="" width="72" height="72">
+  </picture>
+</p>
 
 <h1 align="center">Mr. Streamer</h1>
 
-<p align="center"><strong>IPTV without the junk.</strong></p>
+<p align="center">Live TV, movies and series.<br>An open source IPTV player for Mac, Windows and Linux.</p>
 
-A clean, fast, open-source IPTV player for macOS, Windows and Linux. Bring your own Xtream Codes or M3U subscription and watch live TV with a programme guide, movies and series. It includes no channels, shows no ads and needs no account.
+<p align="center"><strong><a href="https://mrstreamer.app/download">Download</a></strong> · <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">Microsoft Store</a></p>
 
-<p align="center">
-  <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://get.microsoft.com/images/en-us%20light.svg">
-      <img src="https://get.microsoft.com/images/en-us%20dark.svg" alt="Get it from Microsoft" width="200">
-    </picture>
-  </a>
-</p>
+<img src="docs/assets/readme-poster.webp" alt="Home with a live preview, favourites and Continue watching, with Live TV and the TV Guide in front of it" width="100%">
 
-<p align="center"><strong><a href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest">Download for macOS, Windows or Linux</a></strong></p>
-
-### Live TV
-
-<img src="docs/assets/readme-live-tv.webp" alt="Live TV: channels with what's on now and next" width="100%">
-
-A programme guide with [search](docs/user/live-tv.md#the-guide), favourites in [the order you want](docs/user/live-tv.md#the-guide), and the channels you watched last. XMLTV guides of [your own](docs/user/subscriptions.md#guides-from-other-addresses) fill in the channels it doesn't cover.
-
-### Movies and series
-
-<img src="docs/assets/readme-library.webp" alt="A title's details: its story, cast and episodes, with Play and its sound language" width="100%">
-
-Stories, artwork and cast, with resume, the next episode and a [watchlist](docs/user/movies-and-series.md#watchlist). You can [mark episodes watched or unwatched](docs/user/movies-and-series.md#marking-episodes).
-
-### Sound and subtitles
-
-<img src="docs/assets/readme-watching.webp" alt="A series playing with English subtitles, and the subtitle menu" width="100%">
-
-Every track your provider sends, on live channels and on demand.
+- Live TV with favourites and a [programme guide](docs/user/live-tv.md#the-guide). Aired programmes play from their start when your provider keeps catch-up.
+- Movies and series with resume, a [watchlist](docs/user/movies-and-series.md#watchlist) and [offline downloads](docs/user/downloads.md).
+- Every sound and subtitle track your provider sends, and [online subtitle search](docs/user/playback.md#online-subtitles-from-009) with your own API key.
 
 The pictures come from a test provider with made-up titles and public-domain footage.
 
-## What you need
+## Your subscription
 
-An IPTV subscription with Xtream Codes access: a server address, username and password, or an M3U link that contains them. An M3U playlist link starts with live TV. Version 0.0.9 can also import movies and episodes after you [map its groups](docs/user/subscriptions.md#mapping-mixed-playlists). You can add [several](docs/user/subscriptions.md), and their channels, movies and series show together.
+Connect Xtream Codes or an M3U playlist. Mr. Streamer includes no channels and sells none. [Set up a subscription](docs/user/subscriptions.md).
 
-Mr. Streamer supplies no channels, playlists or subscriptions. It has no ads, your login and what you watched stay on your computer, and it's free and open source.
+## Install
 
-<details>
-<summary><strong>Install notes</strong></summary>
-
-On Windows, the [Microsoft Store](https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge) installs Mr. Streamer and keeps it updated. Every other installer is on the [Releases page](https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest).
-
-| System                              | File                                          |
-| ----------------------------------- | --------------------------------------------- |
-| macOS 13 or later, Apple silicon    | `Mr-Streamer-<version>-mac-arm64.dmg`         |
-| Windows 11, 64-bit                  | `Mr-Streamer-<version>-win-x64-setup.exe`     |
-| Linux, 64-bit (Ubuntu, Debian)      | `Mr-Streamer-<version>-linux-amd64.deb`       |
-| Linux, 64-bit (other distributions) | `Mr-Streamer-<version>-linux-x86_64.AppImage` |
-
-**macOS:** open the DMG and drag Mr. Streamer to Applications.
-
-**Windows:** without the Store, run the setup file. It installs for your user account, without administrator rights. The installer isn't signed yet, so SmartScreen may warn that the app is unrecognised: choose **More info**, then **Run anyway**.
-
-**Linux:** install the deb with `sudo apt install ./Mr-Streamer-<version>-linux-amd64.deb`. The AppImage runs without installing: make it executable (`chmod +x`) and open it. AppImages need FUSE 2; on Ubuntu, `sudo apt install libfuse2t64` provides it.
-
-</details>
-
-<details>
-<summary><strong>First steps</strong></summary>
-
-1. Enter your provider's server address, username and password, or paste the M3U link your provider sent. Mr. Streamer checks the login and loads your channels; movies and series follow. A playlist link starts with channels. In 0.0.9, map its groups in Settings to import movies and series too. An address without `http://` or `https://` connects encrypted when the server allows it; otherwise Mr. Streamer asks before sending your login unencrypted.
-2. **Live TV** lists every channel with what's on now and next. Click one to watch; the list opens over the picture to switch.
-3. **Movies** and **Series** open on For you. A poster opens its details; **Play** or **Resume** starts it.
-4. In Settings (⌘, or Ctrl ,), **General** sets the app's own language (English, Nederlands, Français, Deutsch or Español), the languages for titles, sound and subtitles, and your update channel; **Subscriptions** shows your accounts, refreshes their lists and adds another one, whose channels, movies and series show beside the first's.
-
-Mr. Streamer looks for updates after it starts and every four hours. When one is ready, **Update** appears in the top bar: download it, then restart when it suits you. **Stable** gets tested releases, **Nightly** the newest builds.
-
-</details>
-
-<details>
-<summary><strong>Limits</strong></summary>
-
-- One stream at a time, across every subscription you add: Xtream Codes access, or an M3U playlist. Mixed-playlist movie and series import needs 0.0.9 and explicit group mapping.
-- [Download movies and episodes](docs/user/downloads.md) to watch offline. Live TV cannot be recorded. [Playing on a TV](docs/user/playback.md#playing-on-a-tv) uses AirPlay on macOS and Google Cast on Windows; the Linux builds play on the computer only.
-- Surround sound that needs converting plays as stereo, and converting a picture uses much more of your computer's processor than playing it as it is.
-- Choosing another sound track on a live channel starts the channel again for a moment.
-- The Windows installer isn't signed yet; the Microsoft Store version is.
-
-[What plays](docs/user/playback.md#known-limits) lists the formats and every known limit.
-
-</details>
+macOS 13 or later on Apple silicon, Windows 11, or 64-bit Linux. [Installers, requirements and checksums](https://mrstreamer.app/download) are on the website, and the files on [GitHub Releases](https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest).
 
 ## Help
 
-[Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md)
+[Subscriptions](docs/user/subscriptions.md) · [Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md)
 
 Found a bug? [Report it](https://github.com/Mr-Streamer-OSS/MrStreamer/issues/new/choose) with your system, the Mr. Streamer version from Settings > About, and what happened.
-
-## What's next
-
-We're working hard on an iOS app, and it's in active development. iPadOS is planned next, with Apple TV to follow.
 
 ## Contributing
 

@@ -2,24 +2,116 @@
 <p>
   <span data-release-version>Stable release on GitHub.</span>
   <a data-release-link="notes" href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
-    >What changed</a
+    >Release notes</a
   >.
 </p>
-<p>
-  On Windows, the Microsoft Store installs Mr. Streamer and keeps it updated. Every other installer
-  comes from GitHub Releases, and the app then checks for updates on its own.
-</p>
+<!--
+  The visitor's own system first. The script in the head names it in data-os on <html>
+  (src/system.ts), and styles.css shows the block that matches. Without a named system, as on a
+  phone, on a system with no installer or with scripts off, none shows and the rows below stand.
+-->
+<div class="mine" data-for="mac">
+  <div>
+    <h2>Mac <span class="me">your system</span></h2>
+    <p class="note">macOS 13 or later, Apple silicon.</p>
+  </div>
+  <p class="actions">
+    <a
+      class="button primary"
+      data-installer="dmg"
+      href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
+    >
+      <img src="/icons/apple.svg" alt="" width="24" height="24" aria-hidden="true" loading="lazy" />
+      Download the DMG
+    </a>
+  </p>
+</div>
+<div class="mine" data-for="windows">
+  <div>
+    <h2>Windows <span class="me">your system</span></h2>
+    <p class="note">Windows 11, 64-bit.</p>
+  </div>
+  <p class="actions">
+    <a class="badge" href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">
+      <img
+        src="/icons/microsoft-store.svg"
+        alt="Get it from Microsoft"
+        width="161"
+        height="44"
+        loading="lazy"
+      />
+    </a>
+    <a data-installer="exe" href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
+      >Setup .exe</a
+    >
+  </p>
+</div>
+<div class="mine" data-for="linux">
+  <div>
+    <h2>Linux <span class="me">your system</span></h2>
+    <p class="note">64-bit Linux. The AppImage needs FUSE 2.</p>
+  </div>
+  <p class="actions">
+    <a
+      class="button primary"
+      data-installer="appImage"
+      href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
+    >
+      <img src="/icons/linux.svg" alt="" width="24" height="24" aria-hidden="true" loading="lazy" />
+      Download the AppImage
+    </a>
+    <a data-installer="deb" href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
+      >.deb</a
+    >
+  </p>
+</div>
+<!-- A row for each system, with a drawing of its file. The drawings are plain lines, not system marks. -->
 <dl class="rows">
   <div class="row">
+    <svg
+      class="glyph"
+      viewBox="0 0 72 64"
+      width="72"
+      height="64"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="12" y="10" width="48" height="36" rx="6" />
+      <ellipse cx="36" cy="28" rx="12" ry="12" />
+      <circle cx="36" cy="28" r="3" fill="currentColor" stroke="none" />
+      <path d="M8 56h56" />
+    </svg>
     <dt>macOS 13 or later, Apple silicon</dt>
     <dd>
       <a data-installer="dmg" href="https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest"
         >Download the DMG<span class="where"> on GitHub Releases</span></a
       >
-      <small>Open it and drag Mr. Streamer to Applications.</small>
+      <small>Open it and drag Mr. Streamer to Applications. Signed and notarized.</small>
     </dd>
   </div>
   <div class="row">
+    <svg
+      class="glyph"
+      viewBox="0 0 72 64"
+      width="72"
+      height="64"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="10" y="10" width="52" height="40" rx="5" />
+      <path d="M10 20h52" />
+      <circle cx="16" cy="15" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="21" cy="15" r="1.4" fill="currentColor" stroke="none" />
+      <path d="M36 26v15M30 36l6 5 6-5" />
+    </svg>
     <dt>Windows 11, 64-bit</dt>
     <dd>
       <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">Microsoft Store</a>
@@ -27,12 +119,27 @@
         >Download the setup .exe<span class="where"> on GitHub Releases</span></a
       >
       <small>
-        The .exe installs for your user without administrator rights. It isn't signed yet, so
-        SmartScreen may warn. Choose More info, then Run anyway.
+        The Store keeps it updated. The .exe installs for your user without administrator rights. It
+        isn't signed yet, so SmartScreen may warn: choose More info, then Run anyway.
       </small>
     </dd>
   </div>
   <div class="row">
+    <svg
+      class="glyph"
+      viewBox="0 0 72 64"
+      width="72"
+      height="64"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 22l24-10 24 10v24l-24 10-24-10z" />
+      <path d="M12 22l24 10 24-10M36 32v24" />
+    </svg>
     <dt>Linux, 64-bit</dt>
     <dd>
       <a
@@ -45,12 +152,12 @@
       >
       <small>
         The AppImage needs FUSE 2, which is libfuse2t64 on Ubuntu. The .deb is for Ubuntu and
-        Debian.
+        Debian. Neither is signed: check the checksum.
       </small>
     </dd>
   </div>
 </dl>
-<h2 id="checking-a-download">Checking a download</h2>
+<h2 id="checking-a-download">Checksums</h2>
 <p>
   Compare the file with
   <a

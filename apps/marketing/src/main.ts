@@ -1,11 +1,13 @@
-// Every page runs website analytics (analytics.ts). Home moves its window; home, download and
-// about keep release links current:
-// - Each part comes in once as it scrolls into view, and the hero's window tips upright as the
-//   page scrolls. The reader starts all of it, nothing runs while the page sits still, and nothing
-//   is hidden waiting for this script: without it the page is whole and the window upright.
-//   styles.css holds the keyframes and switches them off for reduced motion.
-// - One request for the update feed points the download links at a stable release published
-//   since the site was built (downloads.ts). Without an answer the built links stand.
+// Every page runs website analytics (analytics.ts). Home moves; download and about keep release
+// links current:
+// - Each part comes in once as it scrolls into view, the stack of windows fans out and can be
+//   replayed, and the hero's window tips upright as the page scrolls. The reader starts all of
+//   it, nothing runs while the page sits still, and nothing is hidden waiting for this script:
+//   without it the page is whole, the window upright and the stack fanned out. styles.css holds
+//   the keyframes and switches them off for reduced motion.
+// - One request for the update feed points the download and about pages' links at a stable
+//   release published since the site was built (downloads.ts). Home links /download and holds no
+//   installer, so it doesn't ask. Without an answer the built links stand.
 import { startSiteAnalytics, type SiteCapture } from "./analytics.ts";
 import { FEED, showFeedDownloads } from "./downloads.ts";
 
@@ -51,39 +53,72 @@ if (hero) {
   tilt();
 }
 
-/** Takes `revealed` off a part whose animation ended, or was dropped before it could. */
-const settle = ({ currentTarget }: Event): void => {
-  if (!(currentTarget instanceof Element)) return;
-  currentTarget.classList.remove("revealed");
-  currentTarget.removeEventListener("animationend", settle);
-  currentTarget.removeEventListener("animationcancel", settle);
+/**
+ * The parts that are `revealed` right now, each with the run that revealed it. A part carries
+ * the class, and the will-change it brings, only while its animations run.
+ */
+const playing = new Map<Element, symbol>();
+
+/** Ends a part's motion where it stands. Its animations are dropped with the class. */
+const settle = (part: Element): void => {
+  playing.delete(part);
+  part.classList.remove("revealed");
 };
 
-// What is on screen when the page opens stays as it is: only what scrolls in later comes in.
+/**
+ * Runs a part's animations once, from where their keyframes start to where the part rests, and
+ * settles it once every one of them, the stack's windows included, has finished or was dropped.
+ * A replay cuts a run short and starts over; the older run then leaves the newer one alone.
+ */
+async function play(part: Element): Promise<void> {
+  if (calm.matches) return;
+  settle(part);
+  // Flushes the style with the class off, so a part still running starts afresh.
+  part.getAnimations({ subtree: true });
+  const run = Symbol("run");
+  playing.set(part, run);
+  part.classList.add("revealed");
+  await Promise.allSettled(part.getAnimations({ subtree: true }).map(({ finished }) => finished));
+  if (playing.get(part) === run) settle(part);
+}
+
+// What is on screen when the page opens stays as it is: only what scrolls in later comes in, and
+// once. A part stays watched, so leaving the screen mid-run settles it where it stands.
 let opening = true;
+const entered = new WeakSet<Element>();
 const reveal = new IntersectionObserver(
   (entries) => {
     for (const { isIntersecting, target } of entries) {
-      if (!isIntersecting) continue;
-      reveal.unobserve(target);
-      if (opening || calm.matches) continue;
-      // A window's animation runs on the panel over it, and ends here all the same.
-      target.addEventListener("animationend", settle);
-      target.addEventListener("animationcancel", settle);
-      target.classList.add("revealed");
+      if (!isIntersecting) {
+        if (playing.has(target)) settle(target);
+        continue;
+      }
+      if (entered.has(target)) continue;
+      entered.add(target);
+      if (!opening) void play(target);
     }
     opening = false;
   },
   // A little before it shows, so it never appears and then starts over.
   { rootMargin: "0px 0px 10% 0px" },
 );
-for (const element of document.querySelectorAll("[data-reveal]")) reveal.observe(element);
+for (const part of document.querySelectorAll("[data-reveal]")) reveal.observe(part);
 
-// Asking for less motion halfway leaves nothing mid-animation.
+// Replay fans the stack out again. It shows only where the script can run the fan.
+const stack = document.querySelector(".stack");
+const replay = document.querySelector<HTMLButtonElement>("[data-replay]");
+if (stack && replay) {
+  replay.hidden = calm.matches;
+  replay.addEventListener("click", () => void play(stack));
+}
+
+// Hiding the page, or asking for less motion halfway, leaves nothing mid-animation.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) for (const part of [...playing.keys()]) settle(part);
+});
 calm.addEventListener("change", () => {
-  for (const element of document.querySelectorAll(".revealed")) {
-    element.classList.remove("revealed");
-  }
+  for (const part of [...playing.keys()]) settle(part);
+  if (replay) replay.hidden = calm.matches;
 });
 
 /** Shows the stable release the update feed names now. Without an answer the built links stand. */
@@ -96,5 +131,5 @@ async function refreshDownloads(): Promise<void> {
   }
 }
 
-// Home, download and about refresh through the same feed contract.
+// Download and about refresh through the same feed contract. Home has neither mark, so it doesn't.
 if (document.querySelector("[data-installer], [data-release-version]")) void refreshDownloads();

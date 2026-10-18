@@ -10,7 +10,9 @@ The website shows five captures of the real app. They live in `docs/assets`:
 | `marketing-library.png`  | A series' details, with its story, cast, Play, Save and a related title                               |
 | `marketing-watching.png` | An episode playing, its subtitle on screen and the subtitle panel beside it                           |
 
-Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these five files, and the social picture too. The page changes when you commit new captures and at no other time.
+Each is the whole window at 1280 × 800 points and twice the pixels, 2560 × 1600, saved as a lossless PNG. `apps/marketing/scripts/prepare-assets.ts` cuts every size the page uses from these five files, and the social picture too: the whole Home window, and a cut of each window for the four features, the stack of three windows and a phone's hero. The page changes when you commit new captures and at no other time.
+
+The README shows the same captures as committed files in `docs/assets`: `readme-poster.webp`, the Home window with the Live TV and TV Guide cuts in front of it on black, and `readme-mark-light.svg` and `readme-mark-dark.svg`, the mark in GitHub's text colours. `node apps/marketing/scripts/prepare-assets.ts --readme` writes them from the same masters and `apps/desktop/assets/brand/mark.svg`; commit the result with new captures. Nothing is painted into a capture: the poster only places whole cuts beside each other.
 
 Nothing in them comes from a real provider, film or person. The channels, programmes, titles, cast and subtitles are invented, and [`docs/assets/marketing-demo-sources.json`](../assets/marketing-demo-sources.json) lists every one. The moving pictures are public domain. Keep it that way. No provider's catalogue, no real posters, no real faces, no agency emblems.
 
@@ -39,7 +41,7 @@ onmac pull .local/marketing-captures .local/marketing-proof
 
 If doctor reports a missing Electron binary, run the documented `onmac run -- node apps/desktop/node_modules/electron/install.js`, then repeat doctor. Inspect the pulled original PNGs before copying masters and `marketing-capture.json` from the pulled `assets/` folder into `docs/assets`. `--only` with capture names (`library`, `watching`, `live-tv`, `tv-guide`, `home`) refreshes those alone: it takes only the stages they need, writes only their masters and replaces only their manifest entries, each with its own `provenance`. Every master's entry is replaced as soon as the master is written, so a stage that fails later leaves no stale hash. Copy just those files. Keep the unchanged masters and their original provenance; an entry's `provenance` overrides the manifest's top-level capture provenance. Retain raw PNGs and proof on Linux, then run `onmac clean` for this checkout only. Leave every other app, checkout and capture alone.
 
-Finally run `pnpm build:marketing` locally and inspect the real site at wide and 390px widths. This builds local output; deployment is separate.
+Finally run `pnpm build:marketing` locally and inspect the real site at wide and 390px widths, then `node apps/marketing/scripts/prepare-assets.ts --readme` for the README's poster. This builds local output; deployment is separate.
 
 Linux captures remain available with `xvfb-run -a node apps/desktop/scripts/marketing-capture.ts --cache-dir <ignored cache>`. Linux needs Inter and fontconfig. A Linux capture does not establish native macOS rendering. Do not replace masters with partial or blank captures.
 
@@ -89,7 +91,7 @@ The script verifies the owned CDP arguments and renderer URL, then retains raw p
 ## Before you commit new captures
 
 - Look at all five files at full size. Check the names, the pictures and the subtitle against the manifest.
-- Run `pnpm build:marketing` and look at the page on a wide screen and a phone. The phone shows a part of each window, set in `prepare-assets.ts`. If the app's layout moved, move those parts with it and keep `index.html`'s sizes in step.
+- Run `pnpm build:marketing` and look at the page on a wide screen and a phone. The features, the stack and the phone's hero show parts of the windows, set in `CUTS` in `prepare-assets.ts`. If the app's layout moved, move those parts with it and keep `index.html`'s sizes in step. Regenerate the README's poster with `--readme` and look at it too.
 - Put the new files' sizes in the pull request, each and in total. They are lossless and run to a few megabytes.
 
 The original PR 208 captures were made on the Mac mini on 11 October 2026 from Personal Home source `7b54b5265a9a62c1b20ed890c012f2041baa443a`. Live TV, details and watching retain those masters and the manifest's original top-level provenance.
@@ -98,4 +100,4 @@ Home was replaced on 12 October 2026 from merged Stage source `5db40b13ec7b3bf7a
 
 The TV Guide was added on 14 October 2026 with `--only tv-guide` on the Mac mini, with this capture script and demo manifest (their hashes are in its entry). Its `appSource`, `7bfb1a0f`, is this branch before its commits were squashed; its app code is that of `401072a16537c8b57658776440463656339cf0cc`. That unsigned source build reports 0.0.12 on macOS 27.0.1, arm64 and Electron 44.4.5. Its phone asset is 632 × 564 points at 250,236: the catch-up signs, the open programme with Play from start, and the now line.
 
-Home's phone asset keeps the full 1280 × 800 window so Watchlist, Customize, the left-hand Stage preview, compact channel list and personalized rows all survive. The watching crop is 884 × 758 points at 396,42, keeping the real subtitle beside the right-hand panel. Live TV and details keep their existing crops. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.
+The cuts are in points of the 1280 × 800 window. A phone's hero shows the Home stage, 574 × 540 at 16,56: the stage preview, favourites and the start of Continue watching. The four features and the stack share one 6:5 shape: Live TV 600 × 500 at 236,56, the TV Guide 600 × 500 at 246,236 with the catch-up signs and the open programme, the details 600 × 500 at 174,60, and watching 884 × 737 at 396,42, keeping the real subtitle beside the right-hand panel. The 1200 × 630 social asset fits the complete Home window instead of cutting off the recommendation reason. All assets derive from captured pixels; never paint missing UI into a capture.

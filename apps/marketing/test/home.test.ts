@@ -2,31 +2,27 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  LATEST,
-  installers,
-  showDownloads,
-  writeDownloads,
-  type Downloads,
-} from "../src/downloads.ts";
+import { renderPage } from "../scripts/pages.ts";
+import { LATEST, installers, writeDownloads, type Downloads } from "../src/downloads.ts";
 import type { System } from "../src/system.ts";
 
-// The home page as a visitor gets it: index.html under styles.css, with <html> marked as the
-// script in the head marks it. What shows is what the stylesheet leaves on display.
+// The home and download pages as a visitor gets them: the HTML under styles.css, with <html>
+// marked as the script in the head marks it. What shows is what the stylesheet leaves on display.
 
 const root = join(import.meta.dirname, "..");
-const html = readFileSync(join(root, "index.html"), "utf8");
+const home = readFileSync(join(root, "index.html"), "utf8");
 const css = readFileSync(join(root, "src/styles.css"), "utf8");
 
 const STORE = "https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge";
 const FILES = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download";
 const RELEASED: Downloads = { version: "0.0.7", installers };
+const SYSTEMS = [undefined, "windows", "mac", "linux"] as const;
 
 /**
- * Opens the page for a visitor on `system`, undefined for one whose system the script couldn't
+ * Opens a page for a visitor on `system`, undefined for one whose system the script couldn't
  * name. The build wrote `downloads` into it, or nothing when it found no release.
  */
-function open(system?: System, downloads?: Downloads): void {
+function open(html: string, system?: System, downloads?: Downloads): void {
   const page = downloads ? writeDownloads(html, downloads) : html;
   document.documentElement.innerHTML = page.replace(
     /<link rel="stylesheet"[^>]*>/,
@@ -35,6 +31,8 @@ function open(system?: System, downloads?: Downloads): void {
   if (system) document.documentElement.dataset["os"] = system;
   else document.documentElement.removeAttribute("data-os");
 }
+const openDownload = (system?: System, downloads?: Downloads) =>
+  open(renderPage("download/index.html", downloads ?? null, null), system, downloads);
 
 const displayed = (node: Node): boolean =>
   !(node instanceof HTMLElement) || getComputedStyle(node).display !== "none";
@@ -52,128 +50,163 @@ const said = (element: Element): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-/** The hero's buttons and the lines under them, as [words, address] and words. */
-const hero = () => ({
-  buttons: shown(".hero .actions a").map((button) => [
-    said(button) || button.querySelector("img")?.alt,
-    button.getAttribute("href"),
-  ]),
-  lines: shown(".hero .note").map(said),
-});
+/** The links that show under `selector`, as [words, address]. */
+const links = (selector: string) =>
+  shown(selector).map((link) => [
+    said(link) || link.querySelector("img")?.alt,
+    link.getAttribute("href"),
+  ]);
 
-/** The links in Downloads, as [words, address]. */
-const listed = () =>
-  shown("#downloads .download-links a").map((link) => [said(link), link.getAttribute("href")]);
-
-describe("the hero", () => {
-  it("offers Downloads, which scrolls to the list, when the system is unknown", () => {
-    open(undefined, RELEASED);
-
-    expect(hero()).toEqual({
-      buttons: [["Downloads", "#downloads"]],
-      lines: ["macOS 13 or later on Apple silicon, Windows 11, 64-bit Linux."],
-    });
-  });
-
-  it("offers the Microsoft Store alone on Windows", () => {
-    open("windows", RELEASED);
-
-    expect(hero()).toEqual({
-      buttons: [["Get it from Microsoft", STORE]],
-      lines: ["Windows 11, 64-bit. The Store keeps it updated. Setup .exe and other systems."],
-    });
-  });
-
-  it("offers the DMG alone on a Mac", () => {
-    open("mac", RELEASED);
-
-    expect(hero()).toEqual({
-      buttons: [["Download for Mac", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`]],
-      lines: ["Version 0.0.7. macOS 13 or later, Apple silicon only. Other systems."],
-    });
-  });
-
-  it("offers the AppImage alone on Linux", () => {
-    open("linux", RELEASED);
-
-    expect(hero()).toEqual({
-      buttons: [["Download for Linux", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`]],
-      lines: ["Version 0.0.7. 64-bit Linux. The AppImage needs FUSE 2. .deb and other systems."],
-    });
-  });
-
-  it("names no version, and sends its button to the Releases page, without a known installer", () => {
-    open("mac");
-    expect(hero()).toEqual({
-      buttons: [["Download for Mac", LATEST]],
-      lines: ["macOS 13 or later, Apple silicon only. Other systems."],
-    });
-
-    // The release is out, without its AppImage.
-    open("linux", { version: "0.0.8", installers: ["dmg", "exe", "deb"] });
-    expect(hero()).toEqual({
-      buttons: [["Download for Linux", LATEST]],
-      lines: ["64-bit Linux. The AppImage needs FUSE 2. .deb and other systems."],
-    });
-  });
-});
-
-describe("Downloads", () => {
-  it.each([undefined, "windows", "mac", "linux"] as const)(
-    "lists the Store and every installer for a visitor on %s",
+describe("the home page", () => {
+  it.each(SYSTEMS)(
+    "sends a visitor on %s to the download page, and holds no installer",
     (system) => {
-      open(system, RELEASED);
+      open(home, system, RELEASED);
 
-      expect(listed()).toEqual([
-        ["DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`],
-        ["Microsoft Store", STORE],
-        ["setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
-        ["AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
-        [".deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+      expect(document.querySelectorAll("header")).toHaveLength(1);
+      expect(links("header nav a")).toEqual([
+        ["Guides", "/docs"],
+        ["FAQ", "/faq"],
+        ["Download", "/download"],
       ]);
+      expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
+      expect(links("#downloads a")).toEqual([["Download", "/download"]]);
+      expect(
+        document.querySelector(
+          '[data-installer], [data-release-version], a[href^="https://apps."]',
+        ),
+      ).toBeNull();
     },
   );
 
-  it("sends every installer to the Releases page, and says so, when no release is known", () => {
-    open();
+  it("is whole without scripts: the stack's three windows rest fanned out, with no Replay", () => {
+    open(home);
 
-    expect(listed()).toEqual([
-      ["DMG on GitHub Releases", LATEST],
-      ["Microsoft Store", STORE],
-      ["setup .exe on GitHub Releases", LATEST],
-      ["AppImage on GitHub Releases", LATEST],
-      [".deb on GitHub Releases", LATEST],
-    ]);
-  });
-
-  it("links the installers a release has, and the Releases page for the one it lacks", () => {
-    open(undefined, { version: "0.0.8", installers: ["dmg", "exe", "appImage"] });
-
-    expect(listed()).toEqual([
-      ["DMG", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-mac-arm64.dmg`],
-      ["Microsoft Store", STORE],
-      ["setup .exe", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-win-x64-setup.exe`],
-      ["AppImage", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-x86_64.AppImage`],
-      [".deb on GitHub Releases", LATEST],
-    ]);
+    expect(shown(".stack .layer")).toHaveLength(3);
+    expect(document.querySelector<HTMLButtonElement>("[data-replay]")?.hidden).toBe(true);
+    expect(document.querySelector(".revealed")).toBeNull();
   });
 });
 
-describe("a release published after the build", () => {
-  const body = () => document.body.innerHTML;
+describe("the download page", () => {
+  /** The visitor's own block: its heading, read with its parts apart, its line and its links. */
+  const mine = () =>
+    shown(".mine").map((block) => ({
+      heading: [...(block.querySelector("h2")?.childNodes ?? [])]
+        .map((node) => node.textContent?.trim())
+        .join(" "),
+      line: said(block.querySelector(".note") ?? block),
+      links: [...block.querySelectorAll("a")].map((link) => [
+        said(link) || link.querySelector("img")?.alt,
+        link.getAttribute("href"),
+      ]),
+    }));
 
-  it.each<[string, Downloads]>([
-    ["a newer one", { version: "0.0.8", installers }],
-    ["one without its .deb and DMG", { version: "0.0.8", installers: ["exe", "appImage"] }],
-    ["one with no installer", { version: "0.0.8", installers: [] }],
-    ["the one before, after the newest was withdrawn", { version: "0.0.6", installers }],
-  ])("leaves the open page as a build with it would: %s", (_, later) => {
-    open("mac", later);
-    const built = body();
+  it("shows no block for a visitor whose system is unknown", () => {
+    openDownload(undefined, RELEASED);
+    expect(mine()).toEqual([]);
+  });
 
-    open("mac", RELEASED);
-    showDownloads(document, later);
+  it("puts the Microsoft Store first on Windows, with the setup .exe beside it", () => {
+    openDownload("windows", RELEASED);
+    expect(mine()).toEqual([
+      {
+        heading: "Windows your system",
+        line: "Windows 11, 64-bit.",
+        links: [
+          ["Get it from Microsoft", STORE],
+          ["Setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
+        ],
+      },
+    ]);
+  });
 
-    expect(body()).toBe(built);
+  it("puts the DMG first on a Mac", () => {
+    openDownload("mac", RELEASED);
+    expect(mine()).toEqual([
+      {
+        heading: "Mac your system",
+        line: "macOS 13 or later, Apple silicon.",
+        links: [["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`]],
+      },
+    ]);
+  });
+
+  it("puts the AppImage first on Linux, with the .deb beside it", () => {
+    openDownload("linux", RELEASED);
+    expect(mine()).toEqual([
+      {
+        heading: "Linux your system",
+        line: "64-bit Linux. The AppImage needs FUSE 2.",
+        links: [
+          ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
+          [".deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+        ],
+      },
+    ]);
+  });
+
+  it("names no version, and sends the block's link to the Releases page, without a known installer", () => {
+    openDownload("mac");
+    expect(mine()).toEqual([
+      {
+        heading: "Mac your system",
+        line: "macOS 13 or later, Apple silicon.",
+        links: [["Download the DMG", LATEST]],
+      },
+    ]);
+
+    // The release is out, without its AppImage.
+    openDownload("linux", { version: "0.0.8", installers: ["dmg", "exe", "deb"] });
+    expect(mine()[0]?.line).toBe("64-bit Linux. The AppImage needs FUSE 2.");
+    expect(mine()[0]?.links).toEqual([
+      ["Download the AppImage", LATEST],
+      [".deb", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-amd64.deb`],
+    ]);
+  });
+
+  it.each(SYSTEMS)(
+    "lists the Store and every installer in its rows for a visitor on %s",
+    (system) => {
+      openDownload(system, RELEASED);
+
+      expect(links(".rows a")).toEqual([
+        ["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`],
+        ["Microsoft Store", STORE],
+        ["Download the setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
+        ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
+        ["Download the .deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+      ]);
+      expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
+        "Version 0.0.7.",
+      );
+    },
+  );
+
+  it("sends every row to the Releases page, and says so, when no release is known", () => {
+    openDownload();
+
+    expect(links(".rows a")).toEqual([
+      ["Download the DMG on GitHub Releases", LATEST],
+      ["Microsoft Store", STORE],
+      ["Download the setup .exe on GitHub Releases", LATEST],
+      ["Download the AppImage on GitHub Releases", LATEST],
+      ["Download the .deb on GitHub Releases", LATEST],
+    ]);
+    expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
+      "Stable release on GitHub.",
+    );
+  });
+
+  it("links the installers a release has, and the Releases page for the one it lacks", () => {
+    openDownload(undefined, { version: "0.0.8", installers: ["dmg", "exe", "appImage"] });
+
+    expect(links(".rows a")).toEqual([
+      ["Download the DMG", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-mac-arm64.dmg`],
+      ["Microsoft Store", STORE],
+      ["Download the setup .exe", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-win-x64-setup.exe`],
+      ["Download the AppImage", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-x86_64.AppImage`],
+      ["Download the .deb on GitHub Releases", LATEST],
+    ]);
   });
 });
