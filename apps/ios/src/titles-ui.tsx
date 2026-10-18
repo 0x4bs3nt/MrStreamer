@@ -229,7 +229,10 @@ export function PlaceholderShelf() {
   );
 }
 
-/** Text tabs under the title, as the desktop's Movies and Series have them. */
+/**
+ * Text tabs under the title, as the desktop's Movies and Series have them. Every tab, and the lead,
+ * is at least 44 points square to press; the space between labels is their padding.
+ */
 export function TextTabs<T extends string>({
   tabs,
   value,
@@ -249,7 +252,7 @@ export function TextTabs<T extends string>({
       contentContainerStyle={styles.tabs}
       accessibilityRole="tablist"
     >
-      {lead}
+      {lead ? <View style={styles.lead}>{lead}</View> : null}
       {tabs.map((tab) => {
         const selected = tab.value === value;
         return (
@@ -383,8 +386,15 @@ const styles = StyleSheet.create({
   shelfName: { color: colors.text, fontSize: 20, fontWeight: "700", flexShrink: 1 },
   chevron: { color: colors.dim, fontSize: 22, fontWeight: "600" },
   shelfRow: { paddingHorizontal: 16, gap: 10 },
-  tabs: { paddingHorizontal: 16, gap: 20 },
-  tab: { minHeight: 44, justifyContent: "center" },
+  tabs: { paddingHorizontal: 6 },
+  lead: { paddingHorizontal: 10, justifyContent: "center" },
+  tab: {
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   tabLabel: { color: colors.dim, fontSize: 17 },
   tabSelected: { color: colors.text, fontWeight: "700" },
   grid: { paddingHorizontal: 16, paddingBottom: 24, gap: 14 },

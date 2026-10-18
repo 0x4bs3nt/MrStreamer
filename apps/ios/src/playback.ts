@@ -129,15 +129,22 @@ export const playbackClock: Pick<Store<number>, "get" | "subscribe"> = clock;
 export const usePlaybackClock = () => useStore(clock);
 export const usePlaybackLength = () => useStore(length);
 
+/** A channel that plays or is about to, and how it stands, in the accessory's words. */
+export interface ChannelStatus {
+  readonly id: string;
+  readonly word: "Connecting" | "Paused" | "Playing";
+}
+
 /**
- * The channel that plays or is about to, for channel lists to mark; none once it failed or
- * stopped, or while a title plays. A movie's key can read like a channel's of the same
- * subscription, so a title never counts.
+ * The channel that plays or is about to, for channel lists and tiles to mark with how it stands;
+ * none once it failed or stopped, or while a title plays. A movie's key can read like a channel's
+ * of the same subscription, so a title never counts.
  */
-export function playingChannel(phase: Phase): string | null {
-  return phase.kind === "idle" || phase.kind === "failed" || !phase.item.live
-    ? null
-    : phase.item.id;
+export function channelStatus(phase: Phase): ChannelStatus | null {
+  if (phase.kind === "idle" || phase.kind === "failed" || !phase.item.live) return null;
+  const word =
+    phase.kind === "loading" ? "Connecting" : phase.kind === "paused" ? "Paused" : "Playing";
+  return { id: phase.item.id, word };
 }
 
 /**

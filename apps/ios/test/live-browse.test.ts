@@ -4,6 +4,7 @@ import type { LiveCatalogue, ProviderChannel } from "@mrstreamer/core/provider";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
 import { buildLibrary, type Channel, type Library } from "../src/library.ts";
+import type { Phase } from "../src/playback.ts";
 import type { SavedState } from "../src/storage.ts";
 
 // Live's browsing, as the viewer meets it: All of every provider and country on first open, each
@@ -26,6 +27,8 @@ const scenario = vi.hoisted(() => ({
   members: [] as Member[],
   catalogue: { kind: "loading" } as Catalogue,
   saved: {} as Partial<SavedState>,
+  /** What the one player does. */
+  phase: { kind: "idle" } as Phase,
   /** What the screen did, in order. */
   did: [] as string[],
   /** The system sheet last shown. */
@@ -127,9 +130,10 @@ vi.mock("../src/account.ts", () => ({
   retryChannels: () => undefined,
   reloadAllChannels: () => undefined,
 }));
-vi.mock("../src/playback.ts", () => ({
-  usePlayback: () => ({ phase: { kind: "idle" }, watch: false }),
-  playingChannel: () => null,
+vi.mock("expo-video", () => ({ createVideoPlayer: () => ({}) }));
+vi.mock("../src/playback.ts", async (original) => ({
+  channelStatus: (await original<typeof import("../src/playback.ts")>()).channelStatus,
+  usePlayback: () => ({ phase: scenario.phase, watch: false }),
 }));
 vi.mock("../src/storage.ts", () => ({
   useSavedState: () => scenario.saved,
@@ -259,6 +263,7 @@ beforeEach(() => {
     catalogue: ready(both),
     // A country an earlier build saved: Live no longer opens on it.
     saved: { region: "Belgium", recentChannels: [] },
+    phase: { kind: "idle" },
     did: [],
     sheet: null,
   });
@@ -304,6 +309,44 @@ describe("For you", () => {
     expect(scenario.did).toEqual([]);
     press("live-play");
     expect(scenario.did).toEqual(["play a:10 in Watch"]);
+  });
+
+  it("says how the channel it marks stands: connecting, paused or playing", () => {
+    scenario.saved = { recentChannels: ["a:10"] };
+    const item = {
+      id: "a:10",
+      subscriptionId: "a",
+      title: "NOS Journaal",
+      place: "Netherlands · News · Home",
+      live: true,
+      next: false,
+      versions: false,
+    };
+    const shown = (kind: "loading" | "paused" | "playing") => {
+      scenario.phase = { kind, item };
+      open();
+      press("tab-for-you");
+      const lead = text("live-lead");
+      const tile = text("live-tile-a:10");
+      press("tab-all");
+      return { lead, tile, row: text("channel-a:10") };
+    };
+    const words = ["Connecting", "Paused", "Playing"];
+    for (const [kind, word] of [
+      ["loading", "Connecting"],
+      ["paused", "Paused"],
+      ["playing", "Playing"],
+    ] as const) {
+      const { lead, tile, row } = shown(kind);
+      for (const line of [lead, tile, row]) {
+        expect(line).toContain(word);
+        for (const other of words.filter((each) => each !== word)) {
+          expect(line).not.toContain(other);
+        }
+      }
+    }
+    // Another channel keeps its place.
+    expect(text("channel-b:10")).toContain("Netherlands · News · Cabin");
   });
 
   it("names its shelves by category and country, telling one name's providers apart", () => {

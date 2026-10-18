@@ -187,7 +187,7 @@ vi.mock("../src/resume.ts", () => ({
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" } }),
-  playingChannel: () => null,
+  channelStatus: () => null,
 }));
 vi.mock("../src/glass.tsx", async () => {
   const { createElement } = await import("react");

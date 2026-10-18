@@ -162,7 +162,7 @@ vi.mock("../src/account.ts", () => ({
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" }, watch: scenario.watch }),
-  playingChannel: () => null,
+  channelStatus: () => null,
 }));
 vi.mock("../src/storage.ts", () => ({ useSavedState: () => ({}), writeState: () => undefined }));
 vi.mock("../src/titles.ts", () => ({

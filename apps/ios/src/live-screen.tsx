@@ -24,7 +24,7 @@ import { Glass, IconButton } from "./glass.tsx";
 import { tabHref } from "./header.tsx";
 import type { Channel, Library, Region, Shelf } from "./library.ts";
 import { Docked, libraryStatus, loadingStatus, PlaceholderRows, useDockInset } from "./loading.tsx";
-import { playingChannel, usePlayback } from "./playback.ts";
+import { channelStatus, usePlayback } from "./playback.ts";
 import { useSavedState, writeState } from "./storage.ts";
 import { store, useStore } from "./store.ts";
 import { ShelfHead, TextTabs } from "./titles-ui.tsx";
@@ -250,7 +250,7 @@ function ChannelList({
 }) {
   const height = useRowHeight();
   const inset = useDockInset();
-  const playing = playingChannel(usePlayback().phase);
+  const playing = channelStatus(usePlayback().phase);
   const [top, setTop] = useState(0);
   const onPress = useCallback((channel: Channel) => watch(library, channel), [library]);
   return (
@@ -258,7 +258,7 @@ function ChannelList({
       style={styles.screen}
       data={channels}
       keyExtractor={(channel) => channel.key}
-      extraData={playing}
+      extraData={playing && `${playing.id} ${playing.word}`}
       ListHeaderComponent={
         <View onLayout={(event) => setTop(event.nativeEvent.layout.height)}>{header}</View>
       }
@@ -266,7 +266,7 @@ function ChannelList({
         <ChannelRow
           channel={item}
           detail={library.placeOf.get(item.key) ?? ""}
-          playing={item.key === playing}
+          status={item.key === playing?.id ? playing.word : null}
           height={height}
           onPress={onPress}
         />
@@ -300,7 +300,7 @@ function ForYou({
   header: ReactNode;
 }) {
   const inset = useDockInset();
-  const playing = playingChannel(usePlayback().phase);
+  const playing = channelStatus(usePlayback().phase);
   const { recentChannels } = useSavedState();
   const recent = useMemo(() => {
     // By the channel each key names: a key can be one of its streams'.
@@ -320,8 +320,8 @@ function ForYou({
   }, [library, region, recentChannels]);
   const onPress = useCallback((channel: Channel) => watch(library, channel), [library]);
   const lineOf = (channel: Channel, otherwise: string) =>
-    channel.key === playing
-      ? "Playing"
+    channel.key === playing?.id
+      ? playing.word
       : channel.ambiguous
         ? (library.labels.get(channel.subscriptionId) ?? otherwise)
         : otherwise;
@@ -337,8 +337,8 @@ function ForYou({
         <Lead
           channel={recent.lead}
           line={
-            recent.lead.key === playing
-              ? "Playing"
+            recent.lead.key === playing?.id
+              ? playing.word
               : ["Last watched", library.placeOf.get(recent.lead.key)].filter(Boolean).join(" · ")
           }
           onPlay={onPress}
@@ -580,7 +580,6 @@ function Country({
           accessibilityRole="button"
           accessibilityLabel={`Clear ${chosen.name}`}
           onPress={() => onChoose(null)}
-          hitSlop={8}
           style={({ pressed }) => [styles.clear, pressed && styles.pressed]}
           testID="live-country-clear"
         >
@@ -602,7 +601,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginBottom: 8,
   },
-  country: { flexDirection: "row", alignItems: "center", gap: 8, maxWidth: 220 },
+  // The name keeps 200 points beside the clear button, which takes 44.
+  country: { flexDirection: "row", alignItems: "center", maxWidth: 244 },
   countryButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -611,7 +611,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   countryName: { color: colors.text, fontSize: 15, fontWeight: "600", flexShrink: 1 },
-  clear: { minHeight: 44, justifyContent: "center" },
+  clear: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   lead: {
     marginHorizontal: 16,
     marginTop: 8,

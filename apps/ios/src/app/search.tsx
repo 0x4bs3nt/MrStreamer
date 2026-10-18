@@ -26,7 +26,7 @@ import { useReduceMotion } from "../glass.tsx";
 import { openOnTabs, useTabs } from "../header.tsx";
 import { searchChannels, type Channel, type Library } from "../library.ts";
 import { StatusLine, useStatusAnnouncement, useStatusFits, type Status } from "../loading.tsx";
-import { playingChannel, usePlayback } from "../playback.ts";
+import { channelStatus, usePlayback } from "../playback.ts";
 import { openDetails } from "../resume.ts";
 import { onSearchText } from "../telemetry/index.ts";
 import {
@@ -202,7 +202,7 @@ export default function Search() {
   // Closes Search and opens Settings on the tab under it.
   const settings = () => (tabs ? openOnTabs(tabs, "settings") : close());
 
-  const playing = playingChannel(phase);
+  const playing = channelStatus(phase);
   const searching = typed.trim() !== "";
   // The latest text isn't searched yet: the last results stay meanwhile.
   const pending = query.trim() !== "" && typed !== query;
@@ -266,7 +266,7 @@ export default function Search() {
           style={styles.screen}
           sections={sections}
           keyExtractor={(row) => (row.kind === "title" ? row.title.key : row.channel.key)}
-          extraData={playing}
+          extraData={playing && `${playing.id} ${playing.word}`}
           renderSectionHeader={({ section }) => (
             <Text style={styles.section} accessibilityRole="header">
               {section.total > section.data.length
@@ -281,7 +281,7 @@ export default function Search() {
               <ChannelRow
                 channel={item.channel}
                 detail={library?.placeOf.get(item.channel.key) ?? ""}
-                playing={item.channel.key === playing}
+                status={item.channel.key === playing?.id ? playing.word : null}
                 height={height}
                 onPress={watch}
               />
