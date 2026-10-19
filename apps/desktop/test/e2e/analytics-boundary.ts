@@ -50,11 +50,15 @@ type Reader = {
 };
 
 /** Holds one public filesystem promise around a real atomic rename, never an analytics method. */
-export async function boundary(main: Page, profile: string, directory = profile) {
-  await main.evaluate(
+export async function boundary(main: Page, profile: string, directory?: string) {
+  directory ??= await main.evaluate<string>(
+    `process.getBuiltinModule('module').createRequire(process.execPath)('electron').app.getPath('userData')`,
+  );
+  const attachment = await main.evaluate<Awaited<ReturnType<typeof install>>>(
     `(${install.toString()})(${JSON.stringify(profile)},${JSON.stringify(directory)})`,
   );
   return {
+    attachment,
     arm: async (spec: Boundary) => {
       await main.evaluate(`globalThis.__nativeTelemetryFS.arm(${JSON.stringify(spec)})`);
     },
@@ -81,8 +85,12 @@ async function install(profile: string, directory: string) {
     !process.argv.includes("--enable-automation")
   )
     throw new Error("Filesystem probe requires the owned automated profile");
-  // Electron can return the same Windows directory under its long rather than 8.3 name.
-  if (directory !== profile && (await fs.realpath(directory)) !== (await fs.realpath(profile)))
+  // Compare ownership by realpath for Windows 8.3/long names and macOS /var versus /private/var aliases.
+  // Keep the actual userData string for matching: Windows may retain the short name.
+  // Canonicalizing the destination would miss those renames; resolve nothing per rename.
+  const ownedReal = await fs.realpath(profile);
+  const appReal = directory === profile ? ownedReal : await fs.realpath(directory);
+  if (appReal !== ownedReal)
     throw new Error("Filesystem probe directory differs from the owned profile");
   const original = fs.rename;
   const destination = path.join(directory, "analytics.json");
@@ -288,5 +296,12 @@ async function install(profile: string, directory: string) {
   global.__nativeTelemetryFS = probe;
   fs.rename = wrapped;
   syncBuiltinESMExports();
-  return { pid: process.pid, profile, boundary: "actual public fs.rename on owned analytics.json" };
+  return {
+    pid: process.pid,
+    profile,
+    directory,
+    ownedReal,
+    appReal,
+    boundary: "actual public fs.rename on owned analytics.json",
+  };
 }

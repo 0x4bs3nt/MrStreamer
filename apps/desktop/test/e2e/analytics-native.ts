@@ -72,6 +72,44 @@ export async function runNativeTelemetry(c: Context) {
     "Checkpoint/slow-write promise holds are controlled delays, not physical slow-disk measurements. The Windows reader case uses actual OS handles.",
   ];
   const selected = c.options.nativeCase;
+  type Probe = Awaited<ReturnType<typeof boundary>>;
+  const attachments: Probe["attachment"][] = [];
+  const timeouts: {
+    at: number;
+    attachment: Probe["attachment"];
+    measurements: Awaited<ReturnType<Probe["measurements"]>>;
+  }[] = [];
+  const recordingErrors: string[] = [];
+  c.observations.nativeBoundaryAttachments = attachments;
+  c.observations.nativeBoundaryTimeouts = timeouts;
+  c.observations.nativeBoundaryRecordingErrors = recordingErrors;
+  const attachBoundary = async (directory?: string) => {
+    const probe = await boundary(c.main(), c.profile(), directory);
+    attachments.push(probe.attachment);
+    return probe;
+  };
+  const waitForHit = async (probe: Probe) => {
+    try {
+      await c.waitFor(async () => !!(await probe.hit()), 1500);
+    } catch (error) {
+      // Only record after the wait failed, outside the armed kill deadline. Keep its error.
+      try {
+        const snapshot = {
+          at: Date.now(),
+          attachment: probe.attachment,
+          measurements: await probe.measurements(),
+        };
+        timeouts.push(snapshot);
+        await writeFile(
+          join(c.evidence, `boundary-timeout-${timeouts.length}.json`),
+          JSON.stringify(snapshot, null, 2),
+        );
+      } catch (recordingError) {
+        recordingErrors.push(String(recordingError));
+      }
+      throw error;
+    }
+  };
   let boundaryIndex = 0;
   const pending = (record: AnalyticsRecord) => record.summaries?.pending ?? [];
   const wires = (uuid: string) =>
@@ -162,8 +200,8 @@ export async function runNativeTelemetry(c: Context) {
     );
     return { checkpoint: event, ...reconcileBodies(wires(event.uuid).map((wire) => wire.body)) };
   };
-  const killAt = async (probe: Awaited<ReturnType<typeof boundary>>) => {
-    await c.waitFor(async () => !!(await probe.hit()), 1500);
+  const killAt = async (probe: Probe) => {
+    await waitForHit(probe);
     const hit = await probe.hit();
     assert(hit);
     // Retain the real before/after bytes externally before killing main. Never restore them.
@@ -328,7 +366,7 @@ export async function runNativeTelemetry(c: Context) {
         await fresh();
         const admitted = await play();
         await delay(8000);
-        const probe = await boundary(c.main(), c.profile());
+        const probe = await attachBoundary();
         c.prepareExit(`checkpoint-${phase}`);
         await probe.arm({ kind: "checkpoint", phase, uuid: admitted.uuid });
         await home();
@@ -400,7 +438,7 @@ export async function runNativeTelemetry(c: Context) {
         await fresh();
         const admitted = await play();
         await delay(1100);
-        const probe = await boundary(c.main(), c.profile());
+        const probe = await attachBoundary();
         c.prepareExit(`${spec.kind}-${spec.phase}`);
         await probe.arm({ ...spec, uuid: admitted.uuid });
         await stop();
@@ -612,10 +650,10 @@ export async function runNativeTelemetry(c: Context) {
       await play();
       await delay(1200);
       const before = await c.read();
-      const probe = await boundary(c.main(), c.profile());
+      const probe = await attachBoundary();
       await probe.arm({ kind: "checkpoint", phase: "before" });
       await home();
-      await c.waitFor(async () => !!(await probe.hit()), 1500);
+      await waitForHit(probe);
       const hit = await probe.hit();
       assert(hit);
       await delay(Math.max(0, 1650 - (Date.now() - hit.at)));
@@ -668,7 +706,7 @@ export async function runNativeTelemetry(c: Context) {
         await c.escape();
         await c.namedButton("header button", "Live TV");
         await c.waitFor(async () => (await counter("feature_live_tv")) > 0);
-        const probe = await boundary(c.main(), c.profile());
+        const probe = await attachBoundary();
         const denied = new Set(["EPERM", "EACCES", "EBUSY"]);
         try {
           for (const [mode, key, selector] of [
@@ -794,7 +832,7 @@ export async function runNativeTelemetry(c: Context) {
       await run("windows-rename", async () => {
         await fresh();
         await play();
-        const probe = await boundary(c.main(), c.profile());
+        const probe = await attachBoundary();
         await delay(1200);
         await home();
         await c.waitFor(async () => (await probe.measurements()).length > 0);
@@ -957,7 +995,7 @@ export async function runNativeTelemetry(c: Context) {
                 .evaluate<string>(
                   `process.getBuiltinModule('module').createRequire(process.execPath)('electron').app.getPath('userData')`,
                 );
-              probe = await boundary(c.main(), c.profile(), userData);
+              probe = await attachBoundary(userData);
               receipt.old.attachedAt = new Date().toISOString();
               receipt.old.profile = c.profile();
               receipt.old.userData = userData;
