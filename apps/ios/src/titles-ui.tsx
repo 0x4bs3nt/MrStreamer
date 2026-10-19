@@ -1,5 +1,5 @@
 import type { Title } from "@mrstreamer/contracts/ondemand";
-import { memo, useState, type ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import {
   FlatList,
   Image,
@@ -12,12 +12,14 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { useArtwork } from "./artwork-cache.ts";
 import { Placeholders, Shape, useDockInset } from "./loading.tsx";
 import { colors } from "./ui.tsx";
 
 // Movies and series as content: posters, shelves of them, text tabs and grids, on solid true
-// black. Pictures are React Native's own Image; a title without one, or whose picture doesn't
-// load, shows its name on a tint worked out from it, as the desktop does.
+// black. Pictures are React Native's own Image of a file artwork-cache.ts keeps; a title without
+// one, or whose picture doesn't load, shows its name on a tint worked out from it, as the desktop
+// does.
 
 /** A hue from a name, the desktop's `hueOf`, so a title has the same tint everywhere. */
 function hueOf(text: string): number {
@@ -31,7 +33,7 @@ function sized(url: string, width: 154 | 342 | 780 | 1280): string {
   return url.replace(/^(https?:\/\/image\.tmdb\.org\/t\/p\/)[^/]+\//, `$1w${width}/`);
 }
 
-/** A picture, or the name on a tint when there is none or it doesn't load. */
+/** A picture, or the name on a tint when there is none or it doesn't load; the tint while fetched. */
 export function Artwork({
   url,
   name,
@@ -46,12 +48,11 @@ export function Artwork({
   /** Only the tint, where the name shows beside it. */
   plain?: boolean;
 }) {
-  // The link that failed: a tile reused for another title tries its own.
-  const [failed, setFailed] = useState<string | null>(null);
+  const picture = useArtwork(url === null ? null : sized(url, width));
   const hue = hueOf(name);
   return (
     <View style={[styles.art, { backgroundColor: `hsl(${hue}, 28%, 14%)` }, style]}>
-      {plain || (url && url !== failed) ? null : (
+      {plain || picture.kind === "shown" || picture.kind === "pending" ? null : (
         <Text
           style={[styles.artName, { color: `hsl(${hue}, 50%, 82%)` }]}
           numberOfLines={4}
@@ -60,12 +61,12 @@ export function Artwork({
           {name}
         </Text>
       )}
-      {url && url !== failed ? (
+      {picture.kind === "shown" ? (
         <Image
-          source={{ uri: sized(url, width) }}
+          source={{ uri: picture.uri }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
-          onError={() => setFailed(url)}
+          onError={picture.broke}
           accessibilityIgnoresInvertColors
         />
       ) : null}

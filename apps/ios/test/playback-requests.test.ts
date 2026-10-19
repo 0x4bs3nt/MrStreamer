@@ -233,7 +233,8 @@ describe("a series' resume", () => {
     resume(seriesEntry("s1"));
     held.details.shift()?.reject(new Error("unreachable"));
     await settle();
-    expect(pushed).toEqual([`/series/title/${encodeURIComponent(`${SUB}:s1`)}`]);
+    // The version that goes on is asked for, over any version picked before for the series.
+    expect(pushed).toEqual([`/series/title/${encodeURIComponent(`${SUB}:s1`)}?asked=1`]);
   });
 });
 

@@ -1,6 +1,6 @@
 import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
 import type { Channel } from "./library.ts";
-import { memo, useState } from "react";
+import { memo } from "react";
 import {
   Image,
   Pressable,
@@ -11,6 +11,7 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import { useArtwork } from "./artwork-cache.ts";
 import type { Failure } from "./errors.ts";
 
 // Plain true-black content: rows, logos, lines of text and the one text button. No glass here.
@@ -32,7 +33,8 @@ function monogram(title: string): string {
 
 /**
  * The channel's logo as its provider lists it, on a dark tile so dark and transparent logos still
- * read, or its monogram when it has none or the logo doesn't load.
+ * read, or its monogram when it has none or the logo doesn't load. The tile stays empty while the
+ * logo is fetched (artwork-cache.ts).
  */
 export function ChannelLogo({
   channel,
@@ -44,20 +46,18 @@ export function ChannelLogo({
   /** A tile, not a row's mark: the monogram larger. */
   large?: boolean;
 }) {
-  // The link that failed: a tile reused for another channel tries its own.
-  const [failed, setFailed] = useState<string | null>(null);
-  const url = channel.logoUrl && channel.logoUrl !== failed ? channel.logoUrl : null;
+  const logo = useArtwork(channel.logoUrl);
   return (
     <View style={[styles.mark, style]}>
-      {url ? (
+      {logo.kind === "shown" ? (
         <Image
-          source={{ uri: url }}
+          source={{ uri: logo.uri }}
           style={styles.logo}
           resizeMode="contain"
-          onError={() => setFailed(url)}
+          onError={logo.broke}
           accessibilityIgnoresInvertColors
         />
-      ) : (
+      ) : logo.kind === "pending" ? null : (
         <Text
           style={[styles.markText, large && styles.markLarge]}
           allowFontScaling={false}

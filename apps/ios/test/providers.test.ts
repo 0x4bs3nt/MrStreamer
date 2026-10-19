@@ -863,6 +863,66 @@ describe("removing a subscription", () => {
     expect(progress.map((each) => each.position)).toEqual([200]);
   });
 
+  it("keeps the version picked with its history, plays it once added again, and erases it with it", async () => {
+    const { app, a, b } = await twoProviders();
+    const both = (title: { versions: readonly { subscriptionId: string }[] }) =>
+      new Set(title.versions.map((v) => v.subscriptionId)).size === 2;
+    const shared = titlesOf(app).find((title) => title.tmdbId && both(title));
+    const own = titlesOf(app).find(
+      (title) => title.tmdbId && title.versions.every((v) => v.subscriptionId === a),
+    );
+    const picked = shared?.versions.find((v) => v.subscriptionId === b);
+    if (!shared || !own || !picked) throw new Error("The lists lack a shared or own film");
+    const now = (title: typeof shared) => {
+      const found = titlesOf(app).find((each) => each.tmdbId === title.tmdbId);
+      if (!found) throw new Error("The film isn't listed");
+      return found;
+    };
+    const stateOf = () => JSON.parse(memory.files.get(doc("state.json")) ?? "{}");
+    app.pickVersion(shared, { subscriptionId: b, id: picked.id });
+    app.pickVersion(own, own.versions[0]!);
+    // Another write of state.json keeps the picks, and they keep it.
+    const [channel] = channels(app).filter((each) => each.subscriptionId === a);
+    if (!channel) throw new Error("No channel");
+    watchChannel(app, a, channel.id);
+    expect(stateOf().recentChannels).toContain(channel.key);
+    expect(app.pickedVersion(now(shared), app.readState())).toEqual({
+      subscriptionId: b,
+      id: picked.id,
+    });
+    expect(stateOf().titleVersions[b]).toBeDefined();
+
+    await app.remove(b, { keepHistory: true });
+    await until(() => !both(now(shared)), "the film from the first alone");
+    expect(app.pickedVersion(now(shared), app.readState())).toBeNull();
+    expect(stateOf().titleVersions[b]).toBeDefined();
+    expect(await app.add({ server: two.url, ...TWO })).toBe(b);
+    await until(() => both(now(shared)), "the film from both again");
+    expect(app.pickedVersion(now(shared), app.readState())).toEqual({
+      subscriptionId: b,
+      id: picked.id,
+    });
+
+    const again = await launch();
+    await until(
+      () => both(titlesOf(again).find((each) => each.tmdbId === shared.tmdbId) ?? { versions: [] }),
+      "the film after a relaunch",
+    );
+    const relaunched = titlesOf(again).find((each) => each.tmdbId === shared.tmdbId)!;
+    expect(again.pickedVersion(relaunched, again.readState())).toEqual({
+      subscriptionId: b,
+      id: picked.id,
+    });
+
+    for (const password of [ONE.password, TWO.password]) {
+      expect(memory.files.get(doc("state.json"))).not.toContain(password);
+    }
+    await again.remove(b, { keepHistory: false });
+    expect(stateOf().titleVersions[b]).toBeUndefined();
+    expect(stateOf().titleVersions[a]).toEqual({ [`movie:${own.tmdbId}`]: own.versions[0]!.id });
+    expect(stateOf().recentChannels).toContain(channel.key);
+  });
+
   it("erases its history when asked, leaving a film the other saved too on the watchlist", async () => {
     const { app, a, b } = await twoProviders();
     const watchlist = await import("../src/watchlist.ts");

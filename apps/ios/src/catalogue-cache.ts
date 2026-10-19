@@ -10,6 +10,7 @@ import { pacer, type Steps } from "@mrstreamer/core/steps";
 import { type, type ArkErrors } from "arktype";
 import { Directory, File, Paths } from "expo-file-system";
 import { inTasks } from "./library.ts";
+import { holds, safeUrl, URL_LENGTH } from "./login-safety.ts";
 
 // Each subscription's last channel list and movie and series lists, as its provider gave them,
 // kept in Caches/catalogues so a launch can show them before, or instead of, asking again.
@@ -48,8 +49,6 @@ const TOTAL_BYTES = 256 * 1024 * 1024;
 /** A copy older than this, or from further ahead than the clock may drift, isn't shown. */
 const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 const MAX_AHEAD = 10 * 60 * 1000;
-/** The longest artwork address kept. */
-const URL_LENGTH = 2048;
 
 const folder = () => new Directory(Paths.cache, "catalogues");
 /** A file name per id: letters, digits and "-" as they are, every other UTF-16 unit as "_" and hex. */
@@ -426,16 +425,6 @@ function* copies<A, B extends object>(
   return copied;
 }
 
-/** Whether a text within `value`, a copied row, holds `password`. Artwork kept has none. */
-function holds(value: unknown, password: string): boolean {
-  if (typeof value === "string") return value.includes(password);
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Object.values(value).some((each: unknown) => holds(each, password))
-  );
-}
-
 type Art = (url: string | null) => string | null;
 
 const categoryCopy = ({ id, name }: ProviderCategory) => ({ id, name }) satisfies ProviderCategory;
@@ -468,55 +457,3 @@ const titleCopy = (title: ProviderTitle, art: Art) =>
     ...(title.metadata === undefined ? {} : { metadata: title.metadata }),
     ...(title.episodeFiles === undefined ? {} : { episodeFiles: [...title.episodeFiles] }),
   }) satisfies ProviderTitle;
-
-const decoded = (text: string) => {
-  try {
-    return decodeURIComponent(text);
-  } catch {
-    return null;
-  }
-};
-
-/** How many layers of encoding, or addresses within addresses, are looked through. */
-const LAYERS = 4;
-
-type Login = { readonly username: string; readonly password: string };
-
-/**
- * `url` when the disk may keep it: an http(s) address of at most 2048 characters that doesn't
- * give the login away (`exposes`). Otherwise null.
- */
-function safeUrl(url: string | null, username: string, password: string): string | null {
-  if (url === null || url.length > URL_LENGTH) return null;
-  const parsed = URL.parse(url);
-  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return null;
-  return exposes(url, { username, password }, LAYERS, parsed) ? null : url;
-}
-
-/**
- * Whether `text`, an address or a part of one, gives the login away: it is the username, or
- * holds the password, as written or decoded as percent or form encoding ("+" a space) spells it,
- * and so on for `layers` more decodings; an address within it, such as an image proxy's, counts
- * with its own login, path parts, fragment, and query names and values. Text that won't decode,
- * or still decodes or holds an address after the last layer, counts as giving it away.
- */
-function exposes(
-  text: string,
-  login: Login,
-  layers: number,
-  address = text.includes(":") ? URL.parse(text) : null,
-): boolean {
-  const { username, password } = login;
-  if ((username !== "" && text === username) || (password !== "" && text.includes(password))) {
-    return true;
-  }
-  const next = new Set([decoded(text), decoded(text.replaceAll("+", " "))]);
-  next.delete(text);
-  if (!address && next.size === 0) return false;
-  if (layers === 0 || next.has(null)) return true;
-  if (address && (address.username !== "" || address.password !== "")) return true;
-  const parts = address
-    ? [address.hash.slice(1), ...address.pathname.split("/"), ...[...address.searchParams].flat()]
-    : [];
-  return [...parts, ...next].some((part) => part !== null && exposes(part, login, layers - 1));
-}

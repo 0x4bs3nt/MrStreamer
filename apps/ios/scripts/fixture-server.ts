@@ -33,7 +33,10 @@
 // their ids and sizes. What it declares, with a hash of the titles, is in server.json and at the
 // control port's /profile. FIXTURE_LOGOS=png lists channel logos as PNG marks (`pngLogo`) at this
 // server's address, which passes them on from the panel and logs them, in place of the SVG
-// addresses the panel lists at its own port without serving them.
+// addresses the panel lists at its own port without serving them. With them, FIXTURE_ART_CACHEABLE=1
+// answers the logos with `Cache-Control: public, max-age=86400`, as a panel letting caches keep
+// them would, and FIXTURE_ART_LOGIN=1 lists each logo's address with the login in its query, as
+// some panels do; the log leaves the query out.
 //
 // The control port listens on the workbench only and is never tunnelled to the Mac:
 //   POST /fail-catalogue?status=503    channel and category lists answer that; status=none restores
@@ -82,6 +85,11 @@ const fixtures = join(root, "apps/desktop/test/fixtures");
 mkdirSync(out, { recursive: true });
 const second = process.env.FIXTURE_SECOND === "1";
 const pngLogos = process.env.FIXTURE_LOGOS === "png";
+const cacheableArt = pngLogos && process.env.FIXTURE_ART_CACHEABLE === "1";
+const artLogin =
+  pngLogos && process.env.FIXTURE_ART_LOGIN === "1"
+    ? `?username=${encodeURIComponent(USERNAME)}&password=${encodeURIComponent(PASSWORD)}`
+    : "";
 const log = join(out, second ? `requests-${port}.jsonl` : "requests.jsonl");
 
 /** A looped recording, cut into segments of the durations its playlist gives. */
@@ -319,7 +327,8 @@ function sendHere(reply: IncomingMessage, response: ServerResponse) {
   reply.on("end", () => {
     const body = Buffer.concat(chunks)
       .toString("utf8")
-      .replaceAll(panel.origin, `http://127.0.0.1:${port}`);
+      .replaceAll(panel.origin, `http://127.0.0.1:${port}`)
+      .replace(/(\/logos\/\d+\.png)/g, `$1${artLogin}`);
     const { "content-length": _length, "transfer-encoding": _encoding, ...headers } = reply.headers;
     response.writeHead(reply.statusCode ?? 502, headers).end(body);
   });
@@ -409,7 +418,13 @@ createServer((request, response) => {
           path: `${url.pathname}${url.searchParams.get("action") ? `?action=${url.searchParams.get("action")}` : ""}`,
         });
         if (pngLogos && action === "get_live_streams") return sendHere(reply, response);
-        response.writeHead(reply.statusCode ?? 502, reply.headers);
+        const cacheable = cacheableArt && url.pathname.startsWith("/logos/");
+        response.writeHead(
+          reply.statusCode ?? 502,
+          cacheable
+            ? { ...reply.headers, "cache-control": "public, max-age=86400" }
+            : reply.headers,
+        );
         reply.pipe(response);
       },
     );

@@ -44,6 +44,8 @@ const scenario = vi.hoisted(() => ({
   appChanged: null as ((state: string) => void) | null,
 }));
 
+// ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
   const { createElement, useEffect } = await import("react");
   type Props = {

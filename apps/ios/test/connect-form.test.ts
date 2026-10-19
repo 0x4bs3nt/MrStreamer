@@ -42,6 +42,8 @@ vi.mock("../src/downloads.ts", () => ({
   useDownloads: () => ({ items: [], bytes: 0, free: null, ended: 0 }),
 }));
 vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
+// ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   type Props = { children?: React.ReactNode; testID?: string };

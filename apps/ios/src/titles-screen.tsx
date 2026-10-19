@@ -110,6 +110,8 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
   const inset = useDockInset();
   const chosen = useStore(places)[kind];
   const open = useCallback((title: Title) => openDetails(title), []);
+  // A 4K tile asks for its 4K version.
+  const openAsked = useCallback((title: Title) => openDetails(title, true), []);
 
   /** For you starts with titles like the one of this kind watched last. */
   const like = useMemo(() => {
@@ -163,7 +165,7 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
       <PosterGrid
         key={tab}
         titles={made.list(tab === "4k" ? "4k" : "all")}
-        onPress={open}
+        onPress={tab === "4k" ? openAsked : open}
         header={<View style={styles.gridHead}>{header}</View>}
         empty={<Message text={kind === "movie" ? "No movies." : "No series."} />}
         testID={`${kind}-grid`}
@@ -291,7 +293,8 @@ export function CollectionScreen({ kind, id }: { kind: TitleKind; id: Collection
     () => (made ? { name: made.name(id) ?? "", titles: made.list(id) } : null),
     [made, id],
   );
-  const open = useCallback((title: Title) => openDetails(title), []);
+  // A 4K tile asks for its 4K version; other collections name the title.
+  const open = useCallback((title: Title) => openDetails(title, id === "4k"), [id]);
   if (!found) {
     return (
       <Docked status={status ?? loadingStatus(kind === "movie" ? "movies" : "series")}>

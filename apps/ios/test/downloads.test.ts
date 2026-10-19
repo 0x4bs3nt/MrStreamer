@@ -368,6 +368,55 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(doc().forgetting).toEqual([]);
   });
 
+  it("keeps a copy's pictures in its folder, fetched on the session that keeps no URL cache", async () => {
+    await install();
+    // The panel's pictures are on image.example: served here, its backdrops refused.
+    const online = globalThis.fetch;
+    const pictures = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.hostname !== "image.example") return online(input, init);
+      return Promise.resolve(
+        url.pathname.startsWith("/b/")
+          ? new Response("gone", { status: 404 })
+          : new Response(`picture ${url.pathname}`),
+      );
+    });
+    // What this test starts, it ends, passing or not, before its spy goes.
+    let app: App | null = null;
+    let film: { readonly id: string } | null = null;
+    try {
+      const started = await launch();
+      app = started;
+      const { a } = await withProviders(started);
+      const poster = `https://image.example/p/${movie().id}.jpg`;
+      const wide = `https://image.example/b/m${movie().id}.jpg`;
+      const copy = await started.addDownload(movieRef(a));
+      film = copy;
+      const item = () => started.downloadList().items.find((each) => each.id === copy.id);
+      await until(
+        () => isComplete(started, copy.id) && item()?.posterUrl != null,
+        "the copy's poster",
+      );
+      await until(() => native.tasks.some((each) => each.url === wide), "its backdrop asked for");
+      await sleep(50);
+      const kept = new DiskFile(native.root, "documents", "downloads", copy.id, "poster");
+      expect(item()?.posterUrl).toBe(kept.uri);
+      expect(kept.textSync()).toBe(`picture /p/${movie().id}.jpg`);
+      expect(item()?.wideUrl).toBeNull();
+      expect(new DiskFile(native.root, "documents", "downloads", copy.id, "wide").exists).toBe(
+        false,
+      );
+      // Every picture request, this test's and an earlier one's of the same film alike.
+      const asked = native.tasks.filter((each) => each.url === poster || each.url === wide);
+      expect(new Set(asked.map((each) => each.url))).toEqual(new Set([poster, wide]));
+      expect(asked.every((each) => each.sessionType === "foreground")).toBe(true);
+    } finally {
+      if (film) await app?.removeDownload(film.id).catch(() => undefined);
+      app?.stop();
+      pictures.mockRestore();
+    }
+  });
+
   it("answers a title asked for twice with one download, and keeps two providers' same id apart", async () => {
     await install();
     const app = await launch();

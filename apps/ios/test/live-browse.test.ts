@@ -35,6 +35,8 @@ const scenario = vi.hoisted(() => ({
   sheet: null as Sheet | null,
 }));
 
+// ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
   const { createElement, Fragment, isValidElement } = await import("react");
   type Props = { children?: React.ReactNode; testID?: string };

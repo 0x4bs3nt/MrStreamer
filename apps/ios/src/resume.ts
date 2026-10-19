@@ -17,10 +17,16 @@ import { seriesViewing, useViewing } from "./viewing.ts";
 // Continue watching as Home and For you show it, by core's `continueEntries`, and resuming an
 // entry as the desktop does: a movie where it stopped, a series where its episodes say it goes on.
 
-/** The details page of a title's version, in the Movies or Series tab, named by its `ownedKey`. */
-export function detailsHref(kind: TitleKind, version: OwnedId) {
+/**
+ * The details page of a title's version, in the Movies or Series tab, named by its `ownedKey`.
+ * `asked` when that version itself is asked for, as a 4K tile or Continue watching asks: it then
+ * shows over the version picked before (details-screen.tsx). Other openers name the title.
+ */
+export function detailsHref(kind: TitleKind, version: OwnedId, asked = false) {
   const key = encodeURIComponent(ownedKey(version));
-  return kind === "movie" ? (`/films/title/${key}` as const) : (`/series/title/${key}` as const);
+  const path =
+    kind === "movie" ? (`/films/title/${key}` as const) : (`/series/title/${key}` as const);
+  return asked ? (`${path}?asked=1` as const) : path;
 }
 
 /** The version a details page names, or null for a key that names none. */
@@ -30,9 +36,9 @@ export function versionOf(key: string): OwnedId | null {
   return at > 0 ? { subscriptionId: key.slice(0, at), id: key.slice(at + 1) } : null;
 }
 
-/** Opens a title's details in its tab, Movies or Series. */
-export function openDetails(title: Pick<Title, "kind" | "subscriptionId" | "id">) {
-  router.push(detailsHref(title.kind, title));
+/** Opens a title's details in its tab, Movies or Series; `asked` as `detailsHref` takes it. */
+export function openDetails(title: Pick<Title, "kind" | "subscriptionId" | "id">, asked = false) {
+  router.push(detailsHref(title.kind, title, asked));
 }
 
 /** Continue watching, the latest first, of both kinds or one. */
@@ -60,7 +66,8 @@ export function useContinueWatching(kind?: TitleKind): readonly ContinueEntry[] 
  */
 export function resume({ title, version, progress }: ContinueEntry) {
   const opened = { ...title, ...version };
-  const versions = () => openDetails(opened);
+  // The version that goes on is asked for: it shows over the one picked before.
+  const versions = () => openDetails(opened, true);
   if (progress) {
     playMovie(opened, version, resumePoint(progress), versions);
     return;

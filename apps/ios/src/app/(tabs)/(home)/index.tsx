@@ -284,7 +284,9 @@ function TitleRows() {
                 cancelButtonIndex: 2,
               },
               (index) => {
-                if (index === 0) openDetails({ ...title, ...entryOf(title.key)?.version });
+                // The version that goes on is asked for, over the one picked before.
+                const version = entryOf(title.key)?.version;
+                if (index === 0) openDetails({ ...title, ...version }, version !== undefined);
                 if (index === 1) void removeFromContinue(title).catch(() => undefined);
               },
             )

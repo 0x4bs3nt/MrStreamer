@@ -10,12 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 // A stand-in for the parts of expo-file-system the iOS app uses, over a real folder on this
 // machine, for tests run on Linux in place of the native module. Files and folders behave as
-// their Expo classes say. Media transfers are the app's own native module's, modelled in
-// `native-downloads.ts`, which shares the controls below.
+// their Expo classes say. `DownloadTask` fetches as the native one does: the file appears only once
+// every byte arrived, and an error answer, a cancel or an abort leaves none. Media transfers are the
+// app's own native module's, modelled in `native-downloads.ts`, which shares the controls below.
 
 /** What a file's asynchronous operation does, as `gate` is told. */
 type FileOperation = "text" | "write" | "move";
@@ -24,6 +25,8 @@ interface Native {
   readonly root: string;
   /** What `Paths.availableDiskSpace` answers. */
   free: number;
+  /** Each request a `DownloadTask` made: its address and the URLSession it asked for. */
+  readonly tasks: { readonly url: string; readonly sessionType: "foreground" | "background" }[];
   /** Each request a media transfer made: its address, the range it asked for, and when. */
   readonly requests: { readonly url: string; readonly range: string | null; readonly at: number }[];
   /** Media transfer requests not yet ended. */
@@ -59,6 +62,7 @@ export const native: Native = ((
 ).mrstreamerNativeFiles ??= {
   root: mkdtempSync(join(tmpdir(), "mrstreamer-ios-files-")),
   free: 64 * 1024 * 1024 * 1024,
+  tasks: [],
   requests: [],
   open: 0,
   pauseMs: 0,
@@ -148,6 +152,81 @@ export class File {
     }
     writeFileSync(destination.path, Buffer.from(await response.arrayBuffer()));
     return destination;
+  }
+}
+
+interface TaskOptions {
+  readonly headers?: Record<string, string>;
+  readonly sessionType?: "foreground" | "background";
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: { bytesWritten: number; totalBytes: number }) => void;
+}
+
+const aborted = () =>
+  Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+
+/**
+ * Expo's DownloadTask as its JavaScript class and iOS session answer it: `sessionType` defaults to
+ * the background session, progress gives -1 as the total when the server sends no length, and an
+ * aborted `signal` rejects with an AbortError. Pause and resume aren't modelled.
+ */
+export class DownloadTask {
+  state: "idle" | "active" | "completed" | "cancelled" | "error" = "idle";
+  readonly #url: string;
+  readonly #destination: File;
+  readonly #options: TaskOptions | undefined;
+  readonly #request = new AbortController();
+  constructor(url: string, destination: File, options?: TaskOptions) {
+    this.#url = url;
+    this.#destination = destination;
+    this.#options = options;
+  }
+  async downloadAsync(): Promise<File | null> {
+    if (this.state !== "idle")
+      throw new Error(`Cannot call downloadAsync() in state "${this.state}"`);
+    const { signal, onProgress, headers, sessionType = "background" } = this.#options ?? {};
+    if (signal?.aborted) throw aborted();
+    this.state = "active";
+    const cancel = () => this.cancel();
+    signal?.addEventListener("abort", cancel, { once: true });
+    native.tasks.push({ url: this.#url, sessionType });
+    try {
+      const response = await fetch(this.#url, {
+        signal: this.#request.signal,
+        headers: headers ?? {},
+      });
+      const totalBytes = Number(response.headers.get("content-length") ?? -1);
+      const chunks: Uint8Array[] = [];
+      let bytesWritten = 0;
+      for await (const chunk of response.body ?? []) {
+        chunks.push(chunk);
+        bytesWritten += chunk.length;
+        onProgress?.({ bytesWritten, totalBytes });
+      }
+      if (!response.ok) {
+        throw new Error(`Unable to download a file: server returned HTTP ${response.status}`);
+      }
+      if (this.#destination.exists) rmSync(this.#destination.path);
+      mkdirSync(dirname(this.#destination.path), { recursive: true });
+      writeFileSync(this.#destination.path, Buffer.concat(chunks));
+      this.state = "completed";
+      return new File(this.#destination.uri);
+    } catch (error) {
+      if (signal?.aborted) {
+        this.state = "cancelled";
+        throw aborted();
+      }
+      if (this.#request.signal.aborted) throw new Error("Download was cancelled");
+      this.state = "error";
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
+  }
+  cancel() {
+    if (this.state === "completed" || this.state === "cancelled" || this.state === "error") return;
+    this.state = "cancelled";
+    this.#request.abort();
   }
 }
 

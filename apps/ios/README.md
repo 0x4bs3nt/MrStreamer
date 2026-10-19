@@ -13,6 +13,8 @@ every category as a tile that opens its channels; a country is an optional filte
 tabs (`src/live-screen.tsx`). Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
+A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
+4K tile or Continue watching asks for its own version over it.
 A movie or an episode plays in Watch from where it stopped. Home leads with the preview, then
 channels to preview (On now: recent ones, else the country last chosen in Live), Continue watching, the watchlist
 and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
@@ -94,6 +96,35 @@ Each responsibility has one owner, a plain module with a store the screens read:
   64 MiB and 250,000 rows, every list together 256 MiB, the oldest movie and series lists going
   first. A new password or a removal deletes a subscription's copies first, and no write of the
   earlier login is saved after that.
+- `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
+  facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
+  as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one
+  operation at a time per subscription. A record holds the fields the app reads, artwork addresses
+  that could carry the login as none, and isn't written when other text holds the password. A
+  record may take 8 MiB, every record together 64 MiB and 2,048 records, counted in the UTF-8
+  bytes written with what writes under way have reserved, and a write left halfway that the disk
+  won't delete counts too; the least recently written go first, up to 64 for one write, which
+  isn't made when they don't make room. One older than 182 days isn't
+  read. A new password or a removal deletes a subscription's records with its lists, and no write
+  of the earlier login is saved after that. Launch reads no record: the budget is counted at the
+  first write.
+- `src/artwork-cache.ts`: channel logos and title pictures as files in Caches, so they show
+  again after a relaunch and offline. React Native's Image only gets a file: its own loader would
+  fetch through iOS's shared URL cache, which keeps answers on disk under their address. Pictures
+  are fetched by expo-file-system's `DownloadTask` on its foreground session, which keeps no URL
+  cache (`src/picture-transfer.ts`, which Downloads uses for a copy's pictures too), four at a
+  time and one per address, for at most 15 seconds and 5 MiB each; a picture no one shows any more
+  before its turn isn't fetched. The cache owns 160 MiB and 6,000 files, counting any it couldn't
+  delete yet: a picture is let in once it fits, the least recently shown going first but never one
+  showing, else it shows the fallback. One unseen for 60 days goes, and one fetched over 30 days
+  ago is fetched again while it shows. A failed fetch, or a file that won't draw, shows the
+  monogram or the title's name, and is tried again after five minutes or a relaunch. Only an
+  address that gives away none of the logins signed in (`login-safety.ts`), while every login
+  this process signed in still is, enters the index, which is checked again against each login
+  signed in later. Any other picture is kept only for the session, in a folder the index never
+  names and the next launch empties: an address carrying a login goes as soon as that login is
+  replaced or removed, and after such a change, lists of the earlier login may still show, so new
+  pictures wait for a relaunch to be kept. A download's own pictures stay in its folder.
 - `src/subscriptions.ts`: the registry, `subscriptions.json`, and how private beta 2's one
   subscription in `state.json` becomes its first entry under the same id. Accounts removed with
   their history kept are remembered, so adding one again takes its id, and its history, back. Ids
@@ -118,7 +149,13 @@ Each responsibility has one owner, a plain module with a store the screens read:
   name. The provider reads each list's rows a few slices per task too. Core's collections and
   search, details with TMDB's facts, and the file each version streams from, asked of its own
   subscription. TMDB's metadata comes from core's store (`metadata/store.ts`, shared with the
-  desktop) and is kept in Caches.
+  desktop) and is kept in Caches. Opened details are saved (`details-cache.ts`) and show again
+  after a restart: a provider's facts without asking while younger than a day and its lists
+  haven't come again, else while it is asked, replaced by its answer or kept when it fails; TMDB's
+  likewise for 150 days, a day when TMDB didn't know the title, and a TMDB failure is asked again
+  at the next open. The details screen shows what is saved at once, and the answers as they come
+  (`read.ts`). Nothing of a login replaced or removed since shows. Where a title streams from is
+  only ever asked of its provider under the current login, never read from a saved record.
 - `src/viewing.ts`: how far titles got, episode marks and Continue watching: core's
   `ViewingRecord` service over core's in-memory store, its snapshot in `viewing.json`, one record
   per subscription under its id.
@@ -167,8 +204,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
   127.0.0.1, its picture and each sound track copied as they are. Nothing of a new play reaches
   the provider until the last session's request has ended.
 - `src/storage.ts`: what the app keeps between launches, apart from secrets and the registry, in
-  `state.json` in Documents: recent channels by subscription, the country last chosen in Live for Home, and beta 2's
-  subscription for an older build to show. `src/files.ts` writes every file whole, through a file
+  `state.json` in Documents: recent channels by subscription, the country last chosen in Live for Home, the
+  version picked in each title's details by subscription and TMDB id, as the desktop keeps them,
+  and beta 2's subscription for an older build to show. `src/files.ts` writes every file whole, through a file
   beside it. Removing a subscription keeps its history unless the viewer deletes it too.
 - `src/telemetry/`: product statistics, on until the viewer turns them off in Settings. One owner
   keeps the viewer's choice, a random installation id and a bounded outbox in `analytics.json`,
@@ -264,7 +302,9 @@ fake TMDB under `/tmdb/3`; log in to `http://127.0.0.1:8791` as `fixture` / `fix
 and makes the channel lists, the movie and series lists, a channel or title files fail, or holds
 movie and series details back to try what a slow panel does; see `scripts/fixture-server.ts`.
 For measurements, `FIXTURE_PROFILE=measure` serves lists with known 4K titles and additions dated
-from `FIXTURE_ANCHOR`, and `FIXTURE_LOGOS=png` lists raster channel logos. A second panel, for several
+from `FIXTURE_ANCHOR`, and `FIXTURE_LOGOS=png` lists raster channel logos; with it,
+`FIXTURE_ART_CACHEABLE=1` lets caches keep them and `FIXTURE_ART_LOGIN=1` puts the login in their
+addresses, for checking what the artwork cache keeps. A second panel, for several
 providers, runs beside it on other ports with `FIXTURE_SECOND=1` and its own login, such as
 `FIXTURE_SECOND=1 FIXTURE_USERNAME=second FIXTURE_PASSWORD=second-pass node scripts/fixture-server.ts 8793 8794`;
 add it in Settings > Add provider at `http://127.0.0.1:8793`. Its channels have the first's ids.

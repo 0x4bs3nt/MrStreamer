@@ -20,6 +20,7 @@ import {
 import { appError, describeError, statusFailure } from "./errors.ts";
 import { readJson, writeJson } from "./files.ts";
 import { onReclaim, play, playbackState, playingItem, stop, type Playing } from "./playback.ts";
+import { fetchPicture } from "./picture-transfer.ts";
 import { keychainSecrets } from "./secrets.ts";
 import { currentSource, sourceOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
@@ -1321,7 +1322,10 @@ async function aboutOf(ref: TitleRef) {
   };
 }
 
-/** Fetches a download's pictures into its folder, natively, so the copy shows them offline. */
+/**
+ * Fetches a download's pictures into its folder, on the picture session that keeps no URL cache
+ * (picture-transfer.ts), so the copy shows them offline. They stay the download's own.
+ */
 async function keepArtwork(
   id: string,
   urls: { readonly poster: string | null; readonly wide: string | null },
@@ -1331,10 +1335,7 @@ async function keepArtwork(
     if (!url || !/^https?:\/\//.test(url) || !find(id)) continue;
     try {
       folderOf(id).create({ intermediates: true, idempotent: true });
-      await File.downloadFileAsync(url, artworkOf(id, artwork), {
-        idempotent: true,
-        signal: AbortSignal.timeout(ARTWORK_MS),
-      });
+      await fetchPicture(url, artworkOf(id, artwork), { timeoutMs: ARTWORK_MS });
       update(id, (latest) => ({ ...latest, artwork: { ...latest.artwork, [artwork]: true } }));
       tell();
     } catch {

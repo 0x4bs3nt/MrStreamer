@@ -6,6 +6,7 @@ import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/cor
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
 import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
+import { dropTitles, pruneDetails } from "./details-cache.ts";
 import { appError, hostOf } from "./errors.ts";
 import {
   combine,
@@ -26,6 +27,7 @@ import {
   migrateRecentChannels,
   readState,
   rememberChannel,
+  withoutVersions,
   writeState,
   type SavedState,
 } from "./storage.ts";
@@ -67,7 +69,10 @@ import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 // under a removed one's id, is given to the Keychain only once its saved lists are gone; when
 // they can't be deleted, the change fails and the login stays as it was. A removal deletes them
 // as it can, leaving the rest to the next launch or the next add. No list of an earlier login is
-// saved after a deletion, and a write under way can't bring them back.
+// saved after a deletion, and a write under way can't bring them back. When the change fails after
+// that deletion, as when the Keychain refuses the password, the subscription signs in again with
+// whichever password the Keychain holds then, or asks for one (`recoverLogin`). The details of titles
+// opened from it (details-cache.ts, which titles.ts saves while `savable` holds) go with its lists.
 
 /** A list one subscription loads; a failed or repeated load keeps the last one it had. */
 export type Loadable<A> =
@@ -174,6 +179,13 @@ function serially<A>(change: () => Promise<A>): Promise<A> {
   return run;
 }
 
+/**
+ * Resolves once every change to the subscriptions begun before has finished, failed or not: what
+ * a read whose login stopped standing (`savable`) during a new password waits for, to see which
+ * login stands after it.
+ */
+export const accountChanges = (): Promise<void> => changing.then(() => undefined);
+
 function commit(next: Registry) {
   writeRegistry(next);
   registry = next;
@@ -233,8 +245,12 @@ export const shownOf = lastOf;
 
 type Kind = Saved["kind"];
 
-/** Whether lists of `source` may still be saved as `id`'s: its login, saved and not replaced. */
-const savable = (id: string, source: Source) =>
+/**
+ * Whether lists or details of `source` may still be saved or shown as `id`'s: its login, saved
+ * and not replaced. A login counts as replaced once its saved lists start to be deleted for a new
+ * password, though `source` stays the current one until the new password signs in.
+ */
+export const savable = (id: string, source: Source) =>
   currentSource(id) === source &&
   source.revision > (dropped.get(id) ?? 0) &&
   registry.subscriptions.some((entry) => entry.id === id);
@@ -245,18 +261,19 @@ function save(id: string, source: Source, saved: Saved) {
 }
 
 /**
- * Deletes `id`'s saved lists once what reads or writes them has finished; from now on none of a
- * login signed in before is saved again. Answers whether they are all gone.
+ * Deletes `id`'s saved lists and details once what reads or writes them has finished; from now on
+ * none of a login signed in before is saved again. Answers whether they are all gone.
  */
-function dropSaved(id: string): Promise<boolean> {
+async function dropSaved(id: string): Promise<boolean> {
   dropped.set(id, revisions);
-  return dropLists(id);
+  const gone = await Promise.all([dropLists(id), dropTitles(id)]);
+  return gone.every(Boolean);
 }
 
 /**
- * Deletes `id`'s saved lists before a new password or account takes its id, or throws when some
- * are left, which the next launch would show for the new login. The login then stays as it was,
- * and its lists may be saved again.
+ * Deletes `id`'s saved lists and details before a new password or account takes its id, or throws
+ * when some are left, which the next launch would show for the new login. The login then stays as
+ * it was, and its lists may be saved again.
  */
 async function clearSaved(id: string): Promise<void> {
   const before = dropped.get(id);
@@ -267,6 +284,34 @@ async function clearSaved(id: string): Promise<void> {
     kind: "unexpected",
     detail: "The lists this iPhone saved couldn't be deleted. Try again.",
   });
+}
+
+/**
+ * After a change that cleared `id`'s saved lists for a new password failed before that password
+ * signed in, `before` is no longer savable, though it may still be the login: signs the
+ * subscription in again with the password the Keychain holds now, whichever that is, under a new
+ * revision, so it answers again while nothing saved of `before` comes back. With no password to
+ * read back, it asks for one (`needsSecret`): loads begun for `before` stop, and a list still
+ * loading fails for want of the password, what it showed last staying. Nothing when the new
+ * password already signed in.
+ */
+async function recoverLogin(id: string, before: Source | undefined): Promise<void> {
+  if (currentSource(id) !== before) return;
+  const password = await keychainSecrets.read(id).catch(() => null);
+  const entry = registry.subscriptions.find((each) => each.id === id);
+  if (!entry || currentSource(id) !== before) return;
+  if (password) return signIn(entry, password, "again");
+  dropSource(id);
+  for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${id}`)?.abort();
+  const error: AppError = { kind: "needs-secret", subscriptionId: id };
+  const settled = <A>(now: Loadable<A>): Loadable<A> =>
+    now.kind === "loading" ? { kind: "failed", error, last: now.last, since: Date.now() } : now;
+  setMember(id, (member) => ({
+    ...member,
+    needsSecret: true,
+    live: settled(member.live),
+    titles: settled(member.titles),
+  }));
 }
 
 /**
@@ -394,8 +439,15 @@ function check(id: string, source: Source, load: Promise<boolean> = Promise.reso
  * Signs a saved subscription in with `password` and loads its lists: channels at once, movies
  * and series once the login is known to be good (`checked`). At launch, with `checked` null, the
  * login is checked again, and each list shows its saved copy, which may stand for the provider's.
+ * "again", after a change that failed (`recoverLogin`): the login is checked again and both lists
+ * asked of the provider, as Retry does, those last loaded showing meanwhile; loads begun for the
+ * login before are dropped, and its copies are gone.
  */
-function signIn(entry: SubscriptionEntry, password: string, checked: AccountStatus | null) {
+function signIn(
+  entry: SubscriptionEntry,
+  password: string,
+  checked: AccountStatus | null | "again",
+) {
   const { id } = entry;
   const source: Source = {
     revision: ++revisions,
@@ -403,7 +455,16 @@ function signIn(entry: SubscriptionEntry, password: string, checked: AccountStat
     login: [entry.username, password],
   };
   setSource(id, source);
-  setMember(id, (member) => ({ ...member, needsSecret: false, account: checked }));
+  setMember(id, (member) => ({
+    ...member,
+    needsSecret: false,
+    account: checked === "again" ? null : checked,
+  }));
+  if (checked === "again") {
+    reloadChannels(id);
+    check(id, source);
+    return;
+  }
   if (checked) {
     reloadChannels(id);
     reloadTitles(id);
@@ -459,7 +520,9 @@ export function restore(): Promise<void> {
       registry.subscriptions.map((entry) => keychainSecrets.read(entry.id).catch(() => null)),
     );
     syncRoster();
-    pruneLists(registry.subscriptions.map((entry) => entry.id));
+    const ids = registry.subscriptions.map((entry) => entry.id);
+    pruneLists(ids);
+    pruneDetails(ids);
     registry.subscriptions.forEach((entry, at) => {
       const password = passwords[at];
       if (password) signIn(entry, password, null);
@@ -502,19 +565,26 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     const name = nameOf(input.name);
     const known = registry.subscriptions.find((entry) => sameAccount(entry, account));
     if (known) {
+      const before = currentSource(known.id);
       await clearSaved(known.id);
-      await keychainSecrets.write(known.id, account.password);
-      const entry = name === undefined || name === known.name ? known : { ...known, name };
-      if (entry !== known) {
-        commit({
-          ...registry,
-          subscriptions: registry.subscriptions.map((each) => (each === known ? entry : each)),
-        });
+      try {
+        await keychainSecrets.write(known.id, account.password);
+        const entry = name === undefined || name === known.name ? known : { ...known, name };
+        if (entry !== known) {
+          commit({
+            ...registry,
+            subscriptions: registry.subscriptions.map((each) => (each === known ? entry : each)),
+          });
+        }
+        // The roster follows the registry, whatever an earlier change left of it.
+        syncRoster();
+        signIn(entry, account.password, status);
+        return entry.id;
+      } catch (cause) {
+        // Best effort: the change still fails with its own error.
+        await recoverLogin(known.id, before).catch(() => undefined);
+        throw cause;
       }
-      // The roster follows the registry, whatever an earlier change left of it.
-      syncRoster();
-      signIn(entry, account.password, status);
-      return entry.id;
     }
     const retired = registry.retired.find((each) => sameAccount(each, account));
     const id = retired?.id ?? newSubscriptionId(registry, Date.now());
@@ -595,20 +665,24 @@ export async function update(
     if (signal?.aborted) return;
     const now = registry.subscriptions.find((each) => each.id === id);
     if (!now) throw new AppFailure({ kind: "no-subscription" });
-    if (password) {
-      await clearSaved(id);
-      await keychainSecrets.write(id, password);
+    const before = currentSource(id);
+    if (password) await clearSaved(id);
+    try {
+      if (password) await keychainSecrets.write(id, password);
+      const name = nameOf(change.name);
+      const next = name === undefined || name === now.name ? now : { ...now, name };
+      if (next !== now) {
+        commit({
+          ...registry,
+          subscriptions: registry.subscriptions.map((each) => (each === now ? next : each)),
+        });
+        syncRoster();
+      }
+      if (password && status) signIn(next, password, status);
+    } catch (cause) {
+      if (password) await recoverLogin(id, before).catch(() => undefined);
+      throw cause;
     }
-    const name = nameOf(change.name);
-    const next = name === undefined || name === now.name ? now : { ...now, name };
-    if (next !== now) {
-      commit({
-        ...registry,
-        subscriptions: registry.subscriptions.map((each) => (each === now ? next : each)),
-      });
-      syncRoster();
-    }
-    if (password && status) signIn(next, password, status);
   });
 }
 
@@ -658,11 +732,14 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
   });
 }
 
-/** state.json without `id`: no longer an older build's subscription, its channels gone with it. */
+/**
+ * state.json without `id`: no longer an older build's subscription; with `erase`, its channels
+ * and version picks gone with it.
+ */
 function forgotten(state: SavedState, id: string, erase: boolean): SavedState {
   const original = state.subscription?.id === id;
   return {
-    ...state,
+    ...(erase ? withoutVersions(state, id) : state),
     subscription: original ? null : state.subscription,
     ...(erase
       ? {
