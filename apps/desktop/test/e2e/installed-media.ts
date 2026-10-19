@@ -15,6 +15,7 @@ import { connect, type Page } from "./app.ts";
 import { closeNative } from "./analytics-exit.ts";
 import { installedTelemetryPair } from "./analytics-installed-pair.ts";
 import { installCatalogueWorkerProbe, type Evidence } from "./installed-catalogue-worker.ts";
+import { removeMediaSubscription } from "./installed-media-input.ts";
 import { browserFacts, probe } from "./installed-media-observer.ts";
 import { ownedGroup, type OwnershipSample } from "./installed-media-posix.ts";
 import { catalogueWorkerScripts, installedMainScript } from "./installed-worker-scripts.ts";
@@ -584,68 +585,13 @@ async function download(d: Driver, name: string) {
   );
   await d.key("Escape", 27);
 }
-async function settledPointer(
-  d: Driver,
-  label: string,
-  expression: string,
-  record: Record<string, unknown>,
-) {
-  await d.wait(() => d.exists(expression), 10_000, `${label} exists`);
-  const point = await d.page.evaluate<{ x: number; y: number }>(
-    `(()=>{const e=(${expression});e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`,
-  );
-  await d.page.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-  await d.page.evaluate("new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
-  const checked = await d.page.evaluate<{
-    x: number;
-    y: number;
-    hit: boolean;
-    tag?: string;
-    expanded: string | null;
-  } | null>(
-    `(()=>{const e=(${expression});if(!e)return null;const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);return {x,y,hit:hit===e||e.contains(hit),tag:hit?.tagName,expanded:e.getAttribute('aria-expanded')}})()`,
-  );
-  record["pointer"] = { at: Date.now(), label, expression, before: point, after: checked };
-  assert(checked?.hit, "Row target not under pointer");
-  for (const type of ["mousePressed", "mouseReleased"])
-    await d.page.send("Input.dispatchMouseEvent", {
-      type,
-      x: checked.x,
-      y: checked.y,
-      button: "left",
-      clickCount: 1,
-    });
-}
-async function remove(d: Driver, record: Record<string, unknown>) {
+async function remove(d: Driver, record: Record<string, unknown>, save: () => Promise<void>) {
   await d.click("Settings", labelled("Settings"));
   await d.click("Subscriptions", button("nav button", "Subscriptions"));
-  const row = `[...document.querySelectorAll('li')].find(r=>r.querySelector('button')?.textContent.includes(' · '))`;
-  const rowButton = `(${row})?.querySelector('button[aria-expanded]')`;
-  await d.wait(() => d.exists(rowButton), 10_000, "subscription header");
-  const expanded = await d.page.evaluate<string>(`(${rowButton}).getAttribute('aria-expanded')`);
-  record["rowState"] = { at: Date.now(), expanded };
-  assert(expanded === "true" || expanded === "false");
-  if (expanded === "false")
-    await settledPointer(d, "Open collapsed subscription", rowButton, record);
-  await d.wait(
-    () => d.exists(`(${row})?.querySelector('[role=region]')`),
-    10_000,
-    "subscription row",
-  );
-  await d.click(
-    "Ask removal",
-    `[...(${row})?.querySelectorAll('button')??[]].find(b=>b.textContent.trim().startsWith('Remove '))`,
-  );
-  await d.wait(
-    () => d.page.evaluate<boolean>("document.body.innerText.includes('from this device?')"),
-    10_000,
-    "removal confirmation",
-  );
-  await d.click(
-    "Remove",
-    `[...(${row})?.querySelectorAll('button')??[]].find(b=>b.textContent.trim()==='Remove')`,
-  );
-  await d.wait(() => d.exists('document.querySelector("form input")'), 30_000, "Connect");
+  await removeMediaSubscription(d, async (trace) => {
+    record["removalInput"] = trace;
+    await save();
+  });
   assert.equal((await d.read("subscription.list")).length, 0);
 }
 
@@ -1239,7 +1185,7 @@ async function runCase(
     proof.facts["completedCopies"] = copies;
     assert.equal(copies.length, variant === "av1" ? 2 : 1);
     assert(copies.every((copy) => copy.status.kind === "complete"));
-    await remove(d, proof.facts);
+    await remove(d, proof.facts, save);
     const cutoff = {
       at: Date.now(),
       rendererRequestsFrom: d.requests.length,
@@ -1564,6 +1510,7 @@ export async function installedMedia(args: string[]) {
     const helpers = [
       "app.ts",
       "installed-media-observer.ts",
+      "installed-media-input.ts",
       "installed-media-posix.ts",
       "analytics-exit.ts",
       "analytics-installed-pair.ts",
