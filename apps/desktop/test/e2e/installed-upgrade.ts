@@ -51,6 +51,7 @@ import { catalogueWorkerScripts } from "./installed-worker-scripts.ts";
 import { startFakeProvider, type FakeProvider } from "../fake-provider.ts";
 import { startFakeTmdb } from "../fake-tmdb.ts";
 import { connect, launch, type Page } from "./app.ts";
+import { restoreAudioInput } from "./installed-upgrade-audio.ts";
 import {
   bootstrapSubtitles,
   pauseMain,
@@ -314,6 +315,13 @@ export function driver(page: Page, evidence: string, stage: Stage) {
           code: name,
           windowsVirtualKeyCode: code,
         });
+    },
+    async restoreAudio(): Promise<void> {
+      const file = `${stage}-restore-audio-input.json`;
+      did(`Restore Audio in evidence: ${file}`);
+      await restoreAudioInput(d, (trace) =>
+        writeFile(join(evidence, file), JSON.stringify(trace, null, 2)),
+      );
     },
     /** Uses the closed select's type-ahead instead of a platform-specific native popup. */
     async select(action: string, element: string, value: string): Promise<void> {
@@ -661,12 +669,7 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
   // through Settings, then require all the original state, including provider progress, intact.
   await d.click("Open Settings", labelled("Settings"));
   await d.click("Open General", button("nav button", "General"));
-  await d.select("Restore Audio in", labelled("Audio in"), audioLanguage);
-  await d.wait(
-    async () => (await d.read("preferences.get")).audioLanguage === audioLanguage,
-    10_000,
-    "the original saved audio preference",
-  );
+  await d.restoreAudio();
   await d.capture("settings-restored");
   await d.key("Escape", 27);
   const after = await state(d, titles);
@@ -1456,6 +1459,9 @@ export async function runCommand(args: string[]) {
       appHelperSha256: sha256(await readFile(new URL("./app.ts", import.meta.url))),
       subtitleHelperSha256: sha256(
         await readFile(new URL("./installed-subtitles.ts", import.meta.url)),
+      ),
+      audioInputHelperSha256: sha256(
+        await readFile(new URL("./installed-upgrade-audio.ts", import.meta.url)),
       ),
     },
     receipt,

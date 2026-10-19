@@ -317,6 +317,8 @@ Every process the app started must have ended before the next setup or start, an
 
 Proof calls the third phase `candidate-restart`, with the same version and source. It claims no second version upgrade. Stable 0.0.11's Watchlist on Home and later builds' top-bar Watchlist are both reached through public UI paths.
 
+The stable audio restore saves bounded input/change events, DOM/public snapshots and key times in `stable-restore-audio-input.json`, linked from `proof.json`'s actions; successful Windows persistence is shown by the candidate's retained settings and `stable-settings-restored.png`, while failures retain the closed profile.
+
 The long movie's copy resumes within each stage and from the position left by the preceding stage. It must start five seconds before where it was left, as the player goes back, give or take three seconds. Before it resumes, the time it was left at must be kept within two. A copy that jumps ahead fails as surely as one that starts over.
 
 Changes go through the window with pointer and keys; state is read only through the app's read-only calls. Evidence, `proof.json` and screenshots with their text, is uploaded for 14 days. `proof.json` keeps the verification workflow commit, run and helper hashes separate from the installed versions and sources. On success the run removes its firewall rules, uninstalls the app and deletes the profile. On failure, its own or a cleanup step's, it still removes the rules and stops the fake services, but leaves the install, the profile and `profile.lock` as they are, and uploads the profile without Chromium's caches for 7 days. `proof.json` names what is still on disk. The profile holds only the fake subscription, fixtures and synthetic TMDB/SubDL keys.
