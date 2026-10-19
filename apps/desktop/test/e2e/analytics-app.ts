@@ -35,6 +35,7 @@ import { connect, delay, type Page } from "./app.ts";
 import { analyticsOptions } from "./analytics-options.ts";
 import { boundary } from "./analytics-boundary.ts";
 import { closeNative } from "./analytics-exit.ts";
+import { failRendererLaunch } from "./analytics-launch-diagnostic.ts";
 import { runNativeTelemetry } from "./analytics-native.ts";
 import { disposableRunner, ownedTree } from "./installed-upgrade-windows.ts";
 import {
@@ -330,7 +331,9 @@ async function send(method: string, params: Record<string, unknown> = {}) {
   return reply.result;
 }
 
+let launchOrdinal = 0;
 async function launch() {
+  const ordinal = ++launchOrdinal;
   preparedExit = undefined;
   const port = await freePort();
   debuggingPort = port;
@@ -383,8 +386,8 @@ async function launch() {
     stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
   page = await connect(port, "page", { app });
   mainPage = await connect(inspectorPort, "node", { app });
-  if ((await mainPage.evaluate<number>("process.pid")) !== app.pid)
-    throw new Error("Wrong main inspector process.");
+  const comparedMainPid = await mainPage.evaluate<number>("process.pid");
+  if (comparedMainPid !== app.pid) throw new Error("Wrong main inspector process.");
   const identity = await send("Browser.getBrowserCommandLine");
   const arguments_ = record(identity) ? identity["arguments"] : null;
   if (
@@ -402,8 +405,23 @@ async function launch() {
       ? !url.startsWith("file:") ||
         !/\/(?:resources|Resources)\/app\.asar\/out\/renderer\//.test(url)
       : !url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href)
-  )
-    throw new Error("Wrong renderer build.");
+  ) {
+    await failRendererLaunch(new Error("Wrong renderer build."), {
+      evidence,
+      observations,
+      page,
+      mainPage,
+      app,
+      rejectedUrl: url,
+      comparedMainPid,
+      browserArguments: arguments_,
+      pagePort: port,
+      inspectorPort,
+      profile,
+      target,
+      launchOrdinal: ordinal,
+    });
+  }
   const nativeIdentity = await mainPage.evaluate<{
     pid: number;
     executable: string;
