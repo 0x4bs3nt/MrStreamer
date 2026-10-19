@@ -6,11 +6,12 @@
 //
 // 1. stable: connect the fake provider, choose HD, Dutch sound and French subtitles, star two
 //    channels, save a movie to the watchlist and play part of it and an episode, and save an
-//    online subtitle with its timing through the subtitle panel.
+//    online subtitle with its timing through the subtitle panel. Download two movies and an
+//    episode, play the copies and resume, then restore the original Dutch sound preference.
 // 2. candidate: those settings, favourites in order, watchlist, progress and the saved subtitle
-//    are all still there, with no new subtitle request. Download two movies and an episode, then
-//    play the copies: skip, change sound track, show the movie's embedded French subtitles, leave
-//    and resume.
+//    are all still there, with no new subtitle request. Before playing anything, require stable's
+//    completed copies with their details, artwork and local progress. Play those inherited copies:
+//    resume, skip, change sound track, show embedded French and saved online subtitles.
 // 3. candidate-restart: the same installed files start again, and what the candidate left is all
 //    still there, copies, artwork and their progress included. Remove the subscription in
 //    Settings, stop the provider, TMDB, artwork and subtitle service, block outbound connections
@@ -42,7 +43,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateSync } from "node:zlib";
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 import type { Result } from "../../../../packages/contracts/src/errors.ts";
 import type { IpcArgs, IpcMethod, IpcOutput } from "../../../../packages/contracts/src/ipc.ts";
 import { installCatalogueWorkerProbe, type Evidence } from "./installed-catalogue-worker.ts";
@@ -477,6 +478,7 @@ async function state(d: Driver, titles: Fixtures) {
   };
 }
 type State = Awaited<ReturnType<typeof state>>;
+type Copies = IpcOutput<"downloads.list">["items"];
 
 /**
  * Fails unless `now` keeps what `before` held: every preference set then, the favourites in their
@@ -516,12 +518,57 @@ function retained(before: State, now: State, what: string) {
   };
 }
 
+/** Exact completed copies and saved details, with progress present as before and within 2 s. */
+function retainedCopies(before: Copies, now: Copies, what: string) {
+  if (
+    before.length !== 3 ||
+    now.length !== before.length ||
+    new Set(before.map((each) => each.id)).size !== before.length ||
+    new Set(now.map((each) => each.id)).size !== now.length
+  )
+    throw new Error(`${what} lost or changed the three unique copies.`);
+  for (const prior of before) {
+    const current = now.find((each) => each.id === prior.id);
+    if (!current) throw new Error(`${what} lost the copy ${prior.id}.`);
+    const { progress: priorProgress, ...priorDetails } = prior;
+    const { progress, ...details } = current;
+    const keptProgress =
+      priorProgress === null
+        ? progress === null
+        : progress !== null &&
+          progress.duration === priorProgress.duration &&
+          Math.abs(progress.position - priorProgress.position) < 2;
+    if (
+      prior.status.kind !== "complete" ||
+      current.status.kind !== "complete" ||
+      !isDeepStrictEqual(details, priorDetails) ||
+      !keptProgress
+    )
+      throw new Error(`${what} changed the copy ${prior.id}: ${JSON.stringify(current)}`);
+  }
+  return { kept: true };
+}
+
+/** The 150 s fixture must retain a nonzero position before its last 30 s of credits. */
+function longCopyProgress(copies: Copies, titles: Fixtures, what: string) {
+  const progress = copies.find(
+    (each) => each.title.kind === "movie" && each.title.id === titles.long,
+  )?.progress;
+  if (
+    !progress ||
+    !Number.isFinite(progress.duration) ||
+    !(progress.position > 0 && progress.position < progress.duration - 30)
+  )
+    throw new Error(`${what} left no nonzero unfinished progress on the long movie's copy.`);
+  return progress;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The stages
 
 /**
  * The prior stable release, from the Connect screen on, including a saved online subtitle with
- * its timing, chosen while the movie plays.
+ * its timing, chosen while the movie plays, then completed copies with local playback progress.
  */
 export async function seedStable(d: Driver, services: Services, titles: Fixtures) {
   await d.wait(() => d.exists("document.querySelector('form input')"), 30_000, "the Connect form");
@@ -608,7 +655,32 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
     !seeded.progress.some((each) => each.title.kind === "episode")
   )
     throw new Error(`The stable release didn't keep what was set: ${JSON.stringify(seeded)}`);
-  return { ...seeded, savedSubtitle };
+  await downloadCopies(d);
+  const played = await playCopies(d, titles);
+  // Stable remembers the alternate track as a global preference. Restore the original seed
+  // through Settings, then require all the original state, including provider progress, intact.
+  await d.click("Open Settings", labelled("Settings"));
+  await d.click("Open General", button("nav button", "General"));
+  await d.select("Restore Audio in", labelled("Audio in"), audioLanguage);
+  await d.wait(
+    async () => (await d.read("preferences.get")).audioLanguage === audioLanguage,
+    10_000,
+    "the original saved audio preference",
+  );
+  await d.capture("settings-restored");
+  await d.key("Escape", 27);
+  const after = await state(d, titles);
+  retained(seeded, after, "Playing copies on stable");
+  const copies = (await d.read("downloads.list")).items;
+  if (
+    copies.length !== 3 ||
+    new Set(copies.map((each) => each.id)).size !== 3 ||
+    copies.some((each) => each.status.kind !== "complete")
+  )
+    throw new Error("Stable didn't keep the three completed copies after playing them.");
+  longCopyProgress(copies, titles, "Stable");
+  await d.capture("copies-before-upgrade");
+  return { ...seeded, savedSubtitle, played, copies, after };
 }
 
 /**
@@ -762,31 +834,8 @@ async function copiesShown(d: Driver, count: number) {
   );
 }
 
-/**
- * The candidate nightly over the stable release: everything kept, the saved online subtitle and
- * its timing included, then copies downloaded and played.
- */
-export async function upgradeToCandidate(d: Driver, titles: Fixtures, seeded: State) {
-  const kept = retained(seeded, await state(d, titles), "Upgrading to candidate");
-  await d.click("Open Settings", labelled("Settings"));
-  await d.click("Open General", button("nav button", "General"));
-  await d.capture("settings");
-  await d.key("Escape", 27);
-  await d.click("Open Live TV", button("header button", "Live TV"));
-  await d.click("Open Favourites", listEntry("Favourites"));
-  await d.capture("favourites");
-  await openWatchlist(d);
-  await d.capture("watchlist");
-
-  await openMovie(d, "Long subtitles");
-  await d.click(
-    "Play or resume before downloading subtitles",
-    `[...document.querySelectorAll('[role="dialog"] button')].find(b => ['Play', 'Resume'].includes(b.textContent.trim()))`,
-  );
-  await playing(d);
-  const savedSubtitle = await observeSavedSubtitle(d);
-  await leaveTitle(d);
-  await d.key("Escape", 27);
+/** Downloads the existing fixture selection through stable's movie and episode controls. */
+async function downloadCopies(d: Driver) {
   for (const movie of ["Two sound tracks", "Long subtitles"]) {
     await openMovie(d, movie);
     await d.click(`Download ${movie}`, button('[role="dialog"] button', "Download"));
@@ -810,9 +859,49 @@ export async function upgradeToCandidate(d: Driver, titles: Fixtures, seeded: St
   );
   await copiesShown(d, 3);
   await d.capture("copies");
-  const played = await playCopies(d, titles);
+}
+
+/**
+ * The candidate nightly over stable: require inherited copies before any playback, then check
+ * provider state and saved subtitles, and play only those same copies from their old progress.
+ */
+export async function upgradeToCandidate(
+  d: Driver,
+  titles: Fixtures,
+  seeded: Awaited<ReturnType<typeof seedStable>>,
+) {
+  const kept = retained(seeded, await state(d, titles), "Upgrading to candidate");
+  const inherited = (await d.read("downloads.list")).items;
+  const copiesKept = retainedCopies(seeded.copies, inherited, "Upgrading to candidate");
+  const stableLongProgress = longCopyProgress(seeded.copies, titles, "Stable");
+  longCopyProgress(inherited, titles, "Upgrading to candidate");
+  await d.click("Open Downloads", button("header button", "Downloads"));
+  await copiesShown(d, inherited.length);
+  await d.capture("copies-kept");
+  await d.click("Open Settings", labelled("Settings"));
+  await d.click("Open General", button("nav button", "General"));
+  await d.capture("settings");
+  await d.key("Escape", 27);
+  await d.click("Open Live TV", button("header button", "Live TV"));
+  await d.click("Open Favourites", listEntry("Favourites"));
+  await d.capture("favourites");
+  await openWatchlist(d);
+  await d.capture("watchlist");
+
+  await openMovie(d, "Long subtitles");
+  await d.click(
+    "Play or resume with the saved subtitle",
+    `[...document.querySelectorAll('[role="dialog"] button')].find(b => ['Play', 'Resume'].includes(b.textContent.trim()))`,
+  );
+  await playing(d);
+  const savedSubtitle = await observeSavedSubtitle(d);
+  await leaveTitle(d);
+  await d.key("Escape", 27);
+  await d.click("Open Downloads", button("header button", "Downloads"));
+  const played = await playCopies(d, titles, stableLongProgress.position);
   return {
     kept,
+    inherited: { ...copiesKept, copies: inherited },
     savedSubtitle,
     played,
     copies: (await d.read("downloads.list")).items,
@@ -845,17 +934,8 @@ export async function restartCandidate(
   await d.click("Open Downloads", button("header button", "Downloads"));
   await copiesShown(d, upgraded.copies.length);
   const copies = (await d.read("downloads.list")).items;
-  for (const prior of upgraded.copies) {
-    const now = copies.find((each) => each.id === prior.id);
-    if (
-      !now ||
-      now.name !== prior.name ||
-      now.status.kind !== "complete" ||
-      now.posterUrl !== prior.posterUrl ||
-      Math.abs((now.progress?.position ?? 0) - (prior.progress?.position ?? 0)) >= 2
-    )
-      throw new Error(`${operation} changed the copy ${prior.id}: ${JSON.stringify(now)}`);
-  }
+  retainedCopies(upgraded.copies, copies, operation);
+  const left = longCopyProgress(copies, titles, operation);
   await d.capture("copies-kept");
 
   await d.click("Open Settings", labelled("Settings"));
@@ -906,15 +986,15 @@ export async function restartCandidate(
     10_000,
   );
   const standalone = (await d.read("downloads.list")).items;
-  if (standalone.some((each) => each.subscription !== null))
-    throw new Error("A copy still needs its subscription.");
+  retainedCopies(
+    copies.map((each) => ({ ...each, subscription: null })),
+    standalone,
+    "Removing the subscription",
+  );
+  longCopyProgress(standalone, titles, "Removing the subscription");
   await d.capture("copies-without-subscription");
   const from = new Date();
   const requestsFrom = d.requests.length;
-  const left = upgraded.copies.find(
-    (each) => each.title.kind === "movie" && each.title.id === titles.long,
-  )?.progress;
-  if (!left) throw new Error("The upgrade left no progress on the long movie's copy.");
   const played = await playCopies(d, titles, left.position);
   const outside = d.requests
     .slice(requestsFrom)
@@ -1404,7 +1484,7 @@ export async function runCommand(args: string[]) {
   const block = outboundBlock(runner);
   let blocking = false;
   let failed: unknown;
-  let seeded: State | undefined;
+  let seeded: Awaited<ReturnType<typeof seedStable>> | undefined;
   let upgraded: AfterCandidate | undefined;
   try {
     let previous: string | null = null;
@@ -1537,6 +1617,7 @@ export async function runCommand(args: string[]) {
         if (pkg.stage === "candidate")
           record(proof.stages, pkg.stage, {
             kept: upgraded!.kept,
+            inherited: upgraded!.inherited,
             savedSubtitle: upgraded!.savedSubtitle,
             played: upgraded!.played,
             copies: upgraded!.copies,
@@ -1603,7 +1684,7 @@ export async function runCommand(args: string[]) {
       ...receipt.limits,
       "Decoded sound is not audible output; GPU, native menus and dialogs are not checked.",
       "The stable episode is a 12-second clip, recorded as finished: unfinished-episode resume is not shown. The movie's unfinished progress and its copy's resume are.",
-      "Saved online subtitles are seeded on stable through UI with a paused-main SubDL boundary, then checked on candidate and offline restart.",
+      "Completed copies, saved online subtitles and local progress are seeded on stable through UI with a paused-main SubDL boundary. Copies are checked before candidate playback after the real installer upgrade, then played on the same candidate's offline restart, not a second upgrade.",
       "Installs are by the silent setup, not by the in-app updater, and the direct setup alone, not the Microsoft Store package.",
     ];
     await writeFile(join(evidence, "proof.json"), JSON.stringify(proof, null, 2));

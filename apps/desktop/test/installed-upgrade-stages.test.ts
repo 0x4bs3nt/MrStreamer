@@ -1,11 +1,14 @@
-// What the installed upgrade check's candidate restart accepts as a copy playing from where it was
-// left. The window is a stand-in that plays and keeps copies as `Player` says, plays on while the
-// check waits, and shows the saved online subtitle at its saved timing; the stage itself is the
-// real one, read-only calls, clicks and checks included.
+// The installed upgrade check must inherit stable's copies before playing anything, and resume
+// them after a restart. The window stands in for public reads and UI input; the stages are real.
 import { describe, expect, it } from "vitest";
 import type { Download } from "../../../packages/contracts/src/downloads.ts";
 import { SUBTITLE_CUE, SUBTITLE_TIMING } from "./e2e/installed-subtitles.ts";
-import { restartCandidate, type AfterCandidate, type Driver } from "./e2e/installed-upgrade.ts";
+import {
+  upgradeToCandidate,
+  restartCandidate,
+  type AfterCandidate,
+  type Driver,
+} from "./e2e/installed-upgrade.ts";
 
 /** Where the stand-in starts a copy, and what it keeps when the viewer leaves it. */
 interface Player {
@@ -41,23 +44,20 @@ const CUE = {
   end: SUBTITLE_CUE.end * SUBTITLE_TIMING.speed + SUBTITLE_TIMING.offset,
 };
 
-/** The restart after an upgrade that left the long movie's copy at 55 s, playing as `player`. */
-function restart(player: Player) {
-  let copies = [
-    copy("long", "movie", 55),
-    copy("sound", "movie", null),
-    copy("ep", "episode", null),
-  ];
+/** Public state and a window that plays on while the stage waits, using `player`'s resume rule. */
+function standIn(player: Player = PLAYER) {
+  let copies = [copy("long", "movie", 55), copy("sound", "movie", null), copy("ep", "episode", 0)];
   let removed = false;
   let playing: string | null = null;
   let time = 0;
   let plays = 0;
   const state = {
-    preferences: {},
+    preferences: { volume: 1, muted: false },
     favourites: [],
     watchlist: { total: 0, entries: [] },
     progress: [],
   };
+  const actions: string[] = [];
   const answers: Record<string, () => unknown> = {
     "subscription.list": () => (removed ? [] : [{ id: "subscription" }]),
     "preferences.get": () => state.preferences,
@@ -83,6 +83,12 @@ function restart(player: Player) {
       throw new Error(`Timed out waiting for ${what}`);
     },
     async click(action: string, element: string) {
+      actions.push(action);
+      if (action === "Play or resume with the saved subtitle") {
+        playing = "provider";
+        time = 1.5;
+        return;
+      }
       if (action === "Confirm removal") {
         removed = true;
         copies = copies.map((each) => ({ ...each, subscription: null }));
@@ -105,7 +111,9 @@ function restart(player: Player) {
       );
       playing = null;
     },
-    capture: () => Promise.resolve(),
+    async capture(name: string) {
+      actions.push(`Capture ${name}`);
+    },
     read: (method: string) => Promise.resolve(answers[method]!()),
     video: () =>
       Promise.resolve({ time, width: 640, audio: 1000, paused: false, title: playing !== null }),
@@ -124,12 +132,118 @@ function restart(player: Player) {
       },
     },
   } as unknown as Driver;
+  return { d, copies, state, actions };
+}
+
+/** The restart after an upgrade that left the long movie's copy at 55 s. */
+function restart(player: Player) {
+  const { d, copies, state } = standIn(player);
   const upgraded = { after: state, copies } as unknown as AfterCandidate;
   return restartCandidate(d, { long: "long-title", formats: [] }, upgraded, {
     cutOff: () => Promise.resolve({}),
     refused: () => [],
   });
 }
+
+function stableSeed({ state, copies }: ReturnType<typeof standIn>) {
+  return {
+    ...state,
+    after: state,
+    copies: structuredClone(copies),
+    played: {},
+    savedSubtitle: {
+      release: "fixture",
+      timing: SUBTITLE_TIMING,
+      cue: SUBTITLE_CUE,
+      interval: CUE,
+      before: { time: 41, caption: "" },
+      shown: { time: 43.5, caption: SUBTITLE_CUE.text },
+    },
+  } satisfies Parameters<typeof upgradeToCandidate>[2];
+}
+
+describe("the installed upgrade check's inherited copies", () => {
+  it("captures the inherited snapshot before playing and resumes stable's local position", async () => {
+    const app = standIn();
+    const seeded = stableSeed(app);
+    app.copies.reverse();
+
+    const upgraded = await upgradeToCandidate(app.d, { long: "long-title", formats: [] }, seeded);
+
+    expect(upgraded.inherited).toEqual({ kept: true, copies: [...seeded.copies].reverse() });
+    expect(upgraded.played["longStartedAt"]).toEqual({ started: 50.5, keptBefore: 55 });
+    expect(app.actions.indexOf("Capture copies-kept")).toBeLessThan(
+      app.actions.indexOf("Play or resume with the saved subtitle"),
+    );
+    expect(app.actions.filter((action) => action.startsWith("Download"))).toEqual([]);
+  });
+
+  it.each<[string, (copies: Download[]) => Download[]]>([
+    ["missing copies", () => []],
+    ["a missing episode", (copies) => copies.slice(0, 2)],
+    ["an extra copy", (copies) => [...copies, copy("extra", "movie", null)]],
+    [
+      "a replaced ID",
+      (copies) => copies.map((each, i) => (i === 0 ? { ...each, id: "replacement" } : each)),
+    ],
+    ["a duplicate ID", (copies) => [copies[0]!, copies[0]!, copies[2]!]],
+    ...(
+      [
+        ["an incomplete copy", { status: { kind: "queued" } }],
+        ["a changed title", { title: { kind: "movie", id: "another-file" } }],
+        ["a changed name", { name: "changed" }],
+        ["changed episode details", { episodeName: "changed" }],
+        ["a changed year", { year: 2000 }],
+        ["a changed saved duration", { duration: 149 }],
+        ["a changed language", { originalLanguage: "nl" }],
+        ["changed poster artwork", { posterUrl: "mrstreamer://download/changed/poster" }],
+        ["changed wide artwork", { wideUrl: "mrstreamer://download/changed/wide" }],
+        ["a changed byte size", { size: 999 }],
+        ["a changed subscription", { subscription: { id: "another-account", name: "Fake" } }],
+        ["lost local progress", { progress: null }],
+        ["changed progress duration", { progress: { position: 55, duration: 149 } }],
+        ["progress at the tolerance boundary", { progress: { position: 57, duration: 150 } }],
+      ] satisfies [string, Partial<Download>][]
+    ).map(([name, change]): [string, (copies: Download[]) => Download[]] => [
+      name,
+      (copies) => copies.map((each, i) => (i === 0 ? { ...each, ...change } : each)),
+    ]),
+    [
+      "new progress where none existed",
+      (copies) =>
+        copies.map((each, i) =>
+          i === 1 ? { ...each, progress: { position: 0, duration: 150 } } : each,
+        ),
+    ],
+    [
+      "lost zero-position progress",
+      (copies) => copies.map((each, i) => (i === 2 ? { ...each, progress: null } : each)),
+    ],
+  ])("rejects %s before any playback or download", async (_, change) => {
+    const app = standIn();
+    const { d, copies, actions } = app;
+    const seeded = stableSeed(app);
+    copies.splice(0, copies.length, ...change(copies));
+
+    await expect(
+      upgradeToCandidate(d, { long: "long-title", formats: [] }, seeded),
+    ).rejects.toThrow(/cop(?:y|ies)/i);
+    expect(actions.filter((action) => /^(Play|Watch|Download)/.test(action))).toEqual([]);
+  });
+
+  it.each([0, 120])(
+    "rejects an unchanged long-copy position of %s before playback",
+    async (position) => {
+      const app = standIn();
+      app.copies[0] = { ...app.copies[0]!, progress: { position, duration: 150 } };
+
+      await expect(
+        upgradeToCandidate(app.d, { long: "long-title", formats: [] }, stableSeed(app)),
+      ).rejects.toThrow(/nonzero unfinished progress/);
+      expect(app.actions.filter((action) => /^(Play|Watch|Download)/.test(action))).toEqual([]);
+    },
+  );
+});
 
 describe("the installed upgrade check's resumed copy", () => {
   it("accepts a copy that goes back five seconds from where it was left", async () => {
