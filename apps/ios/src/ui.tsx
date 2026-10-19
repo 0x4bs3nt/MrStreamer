@@ -73,13 +73,14 @@ export function ChannelLogo({
 export const ChannelRow = memo(function ChannelRow({
   channel,
   detail,
-  playing,
+  status,
   height,
   onPress,
 }: {
   channel: Channel;
   detail: string;
-  playing: boolean;
+  /** How the channel stands while it is the one playing (`channelStatus`), in place of `detail`. */
+  status: string | null;
   height: number;
   onPress: (channel: Channel) => void;
 }) {
@@ -87,7 +88,7 @@ export const ChannelRow = memo(function ChannelRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${channel.title}${playing ? ", playing" : ""}`}
+      accessibilityLabel={[channel.title, status?.toLowerCase()].filter(Boolean).join(", ")}
       accessibilityHint={detail}
       onPress={() => onPress(channel)}
       style={({ pressed }) => [styles.row, { height }, pressed && styles.pressed]}
@@ -100,7 +101,7 @@ export const ChannelRow = memo(function ChannelRow({
           {tags ? <Text style={styles.tags}>{`  ${tags}`}</Text> : null}
         </Text>
         <Text style={styles.detail} numberOfLines={1}>
-          {playing ? "Playing" : detail}
+          {status ?? detail}
         </Text>
       </View>
     </Pressable>

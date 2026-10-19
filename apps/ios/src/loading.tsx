@@ -161,6 +161,11 @@ export const useDockInset = () => useContext(DockInset);
  * area: above the tab bar, the now playing accessory and the home indicator, however iOS sizes
  * them. The line takes at most its share of that safe area's height, measured as laid out, and
  * shows once it is known. Scrolling content below reads `useDockInset` to clear it.
+ *
+ * The content comes first, so a screen's scroll view is the first view down its first subviews,
+ * where iOS looks for the one a large title collapses with. The host stays one native view for
+ * that: flattened, its background would become an empty view ahead of the content, and the title
+ * would stay large over the rows.
  */
 export function Docked({ status, children }: { status: Status | null; children: ReactNode }) {
   const [space, setSpace] = useState(0);
@@ -168,7 +173,7 @@ export function Docked({ status, children }: { status: Status | null; children: 
   const shown = status !== null && space > GAP * 2;
   return (
     <DockInset.Provider value={shown ? height : 0}>
-      <View style={styles.fill}>
+      <View style={styles.fill} collapsable={false}>
         {children}
         <SafeAreaView
           edges={["top", "bottom", "left", "right"]}

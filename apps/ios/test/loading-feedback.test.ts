@@ -162,7 +162,7 @@ vi.mock("../src/account.ts", () => ({
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" }, watch: scenario.watch }),
-  playingChannel: () => null,
+  channelStatus: () => null,
 }));
 vi.mock("../src/storage.ts", () => ({ useSavedState: () => ({}), writeState: () => undefined }));
 vi.mock("../src/titles.ts", () => ({
@@ -209,10 +209,18 @@ const channels = [
 ] as unknown as Channel[];
 const library = {
   regions: [{ name: "Netherlands", channels, shelves: [] }],
+  channels,
   byKey: new Map(),
   placeOf: new Map(),
+  labels: new Map(),
 } as unknown as Library;
-const emptyLibrary = { regions: [], byKey: new Map(), placeOf: new Map() } as unknown as Library;
+const emptyLibrary = {
+  regions: [],
+  channels: [],
+  byKey: new Map(),
+  placeOf: new Map(),
+  labels: new Map(),
+} as unknown as Library;
 
 /** Collections Movies can browse, with nothing in any row. */
 const nothingMade = {

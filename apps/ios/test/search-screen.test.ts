@@ -187,7 +187,7 @@ vi.mock("../src/resume.ts", () => ({
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" } }),
-  playingChannel: () => null,
+  channelStatus: () => null,
 }));
 vi.mock("../src/glass.tsx", async () => {
   const { createElement } = await import("react");
@@ -234,8 +234,10 @@ const channels = [
 ] as unknown as Channel[];
 const library = {
   regions: [{ name: "Netherlands", channels, shelves: [] }],
+  channels,
   byKey: new Map(),
   placeOf: new Map(),
+  labels: new Map(),
 } as unknown as Library;
 const ready: Catalogue = { kind: "ready", library, failing: [] };
 const indexed = { kind: "ready", index: {} } as TitleLists;

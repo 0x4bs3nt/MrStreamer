@@ -20,8 +20,9 @@ import {
   player,
   retry,
   setMuted,
-  playingChannel,
+  channelStatus,
   usePlayback,
+  type ChannelStatus,
   type Playback,
 } from "../../../playback.ts";
 import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
@@ -40,10 +41,10 @@ const MOVIES = 20;
 /**
  * Home: the Stage, a muted preview of what plays or of the channel to play, then On now,
  * Continue watching, the watchlist and Movies for you. On now lists the channels watched lately,
- * or the first of Live's country until there are any; their programmes join when iOS reads a
- * guide, favourites when iOS has them. Downloads join Home as they come to iOS. Until channels
- * and movies first come, still shapes hold On now and Movies for you; what loads, updates or
- * failed by provider is the status line at the bottom.
+ * or the first of the country last chosen in Live until there are any; their programmes join
+ * when iOS reads a guide, favourites when iOS has them. Downloads join Home as they come to iOS.
+ * Until channels and movies first come, still shapes hold On now and Movies for you; what loads,
+ * updates or failed by provider is the status line at the bottom.
  */
 export default function Home() {
   const catalogue = useCatalogue();
@@ -78,7 +79,7 @@ export default function Home() {
       library && playChannel(channel, placeOf(library, channel), { watch: false }),
     [library],
   );
-  const playing = playingChannel(playback.phase);
+  const playing = channelStatus(playback.phase);
   const suggested = onNow[0] ?? null;
   const shown =
     playback.phase.kind === "idle"
@@ -153,7 +154,7 @@ function OnNow({
 }: {
   channels: readonly Channel[];
   library: Library;
-  playing: string | null;
+  playing: ChannelStatus | null;
   onPress: (channel: Channel) => void;
 }) {
   return (
@@ -177,7 +178,8 @@ function OnNow({
         contentContainerStyle={styles.tiles}
       >
         {channels.map((channel) => {
-          const line = channel.key === playing ? "Playing" : shelfOf(placeOf(library, channel));
+          const line =
+            channel.key === playing?.id ? playing.word : shelfOf(placeOf(library, channel));
           return (
             <Pressable
               key={channel.key}
