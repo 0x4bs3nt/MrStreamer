@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { catalogueWorkerScripts } from "./e2e/installed-worker-scripts.ts";
+import { catalogueWorkerScripts, installedMainScript } from "./e2e/installed-worker-scripts.ts";
 
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 /** Synthetic archive bytes at the same public manifest/data boundary as a packaged ASAR. */
@@ -74,6 +74,31 @@ describe("packaged worker startup script provenance", () => {
       expect(proof.expectedWorker).toContain("owned%20worker%20scripts%20");
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads main bytes from the pinned archive and refuses changed manifest integrity", async () => {
+    const source = "export const main = 'actual packed main';";
+    for (const corrupt of [false, true]) {
+      const fixture = await archive({ "index.js": source }, (files) => {
+        if (corrupt) files["index.js"]!.integrity = { algorithm: "SHA256", hash: "0".repeat(64) };
+      });
+      try {
+        if (corrupt)
+          await expect(installedMainScript(fixture.resources, fixture.sha256)).rejects.toThrow(
+            "integrity mismatch",
+          );
+        else {
+          const actual = await installedMainScript(fixture.resources, fixture.sha256);
+          expect(actual.source.toString()).toBe(source);
+          expect(actual.sha256).toBe(sha256(Buffer.from(source)));
+          await expect(installedMainScript(fixture.resources, "0".repeat(64))).rejects.toThrow(
+            "hash changed",
+          );
+        }
+      } finally {
+        await rm(fixture.root, { recursive: true, force: true });
+      }
     }
   });
 

@@ -2,6 +2,7 @@
 # published nightly, the candidate, on the same profile, and restarts the candidate, checking
 # what each step keeps, the last with the subscription removed and the app and its ffmpeg blocked
 # from the network. apps/desktop/test/e2e/installed-upgrade.ts runs it;
+# installed-media.ts adds installed AV1 and copied-video recovery after telemetry.
 # docs/contributing/testing.md#installed-upgrade describes it.
 #
 # - A stable release run calls it with the nightly it promotes and the commit it planned, alongside
@@ -105,6 +106,35 @@ jobs:
           [ -n "$SHA" ] && args+=(--sha "$SHA")
           node apps/desktop/test/e2e/installed-upgrade.ts telemetry \
             --packages "$RUNNER_TEMP/installed-upgrade-packages" --root "$RUNNER_TEMP/native-telemetry" "${args[@]}"
+      - name: Installed AV1 and copied-video recovery
+        if: startsWith(inputs.candidate, 'v0.0.16-nightly.')
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          args=()
+          [ -n "$SHA" ] && args+=(--sha "$SHA")
+          node apps/desktop/test/e2e/installed-media.ts \
+            --packages "$RUNNER_TEMP/installed-upgrade-packages" --out "$RUNNER_TEMP/installed-media" "${args[@]}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: installed-media-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/installed-media/evidence/
+          retention-days: 14
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: installed-media-profiles-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/installed-media/profiles/
+            !${{ runner.temp }}/installed-media/profiles/**/Cache/
+            !${{ runner.temp }}/installed-media/profiles/**/Code Cache/
+            !${{ runner.temp }}/installed-media/profiles/**/GPUCache/
+            !${{ runner.temp }}/installed-media/profiles/**/DawnGraphiteCache/
+            !${{ runner.temp }}/installed-media/profiles/**/DawnWebGPUCache/
+          retention-days: 7
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

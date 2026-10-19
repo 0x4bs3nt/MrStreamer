@@ -11,8 +11,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
-/** Reads only packed, integrity-checked static ESM imports of the unique actual worker entry. */
-export async function catalogueWorkerScripts(resources: string, expectedAsarSha256: string) {
+async function packedMainScripts(resources: string, expectedAsarSha256: string) {
   if (!isAbsolute(resources) || !/^[a-f0-9]{64}$/.test(expectedAsarSha256))
     throw new Error("Exact resources path and verified ASAR hash required");
   const archive = join(resources, "app.asar");
@@ -26,6 +25,46 @@ export async function catalogueWorkerScripts(resources: string, expectedAsarSha2
   const header: unknown = JSON.parse(bytes.subarray(16, headerEnd).toString());
   let files = object(object(header).files);
   for (const directory of ["out", "main"]) files = object(object(files[directory]).files);
+  return {
+    archive,
+    files,
+    read(name: string) {
+      const record = object(files[name]);
+      if (
+        record.unpacked ||
+        record.link ||
+        typeof record.offset !== "string" ||
+        !/^\d+$/.test(record.offset) ||
+        typeof record.size !== "number" ||
+        !Number.isSafeInteger(record.size) ||
+        record.size < 0
+      )
+        throw new Error("Expected packed script bytes in verified ASAR");
+      const offset = Number(record.offset);
+      const begin = dataStart + offset;
+      const end = begin + record.size;
+      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(end) || end > bytes.length)
+        throw new Error("Invalid ASAR script bounds");
+      const source = bytes.subarray(begin, end);
+      const sha256 = digest(source);
+      const integrity = object(record.integrity);
+      if (integrity.algorithm !== "SHA256" || integrity.hash !== sha256)
+        throw new Error("Actual ASAR script integrity mismatch");
+      return { source, sha256 };
+    },
+  };
+}
+
+/** The main entry's integrity-checked bytes from the pinned installed ASAR, without launching it. */
+export async function installedMainScript(resources: string, expectedAsarSha256: string) {
+  const packed = await packedMainScripts(resources, expectedAsarSha256);
+  return packed.read("index.js");
+}
+
+/** Reads only packed, integrity-checked static ESM imports of the unique actual worker entry. */
+export async function catalogueWorkerScripts(resources: string, expectedAsarSha256: string) {
+  const packed = await packedMainScripts(resources, expectedAsarSha256);
+  const { archive, files } = packed;
   const names = Object.keys(files).filter((name) =>
     /^catalogue-worker-[A-Za-z0-9_-]+\.js$/.test(name),
   );
@@ -36,27 +75,7 @@ export async function catalogueWorkerScripts(resources: string, expectedAsarSha2
   const queue = [entry];
   const seen = new Set(queue);
   for (const name of queue) {
-    const record = object(files[name]);
-    if (
-      record.unpacked ||
-      record.link ||
-      typeof record.offset !== "string" ||
-      !/^\d+$/.test(record.offset) ||
-      typeof record.size !== "number" ||
-      !Number.isSafeInteger(record.size) ||
-      record.size < 0
-    )
-      throw new Error("Expected packed script bytes in verified ASAR");
-    const offset = Number(record.offset);
-    const begin = dataStart + offset;
-    const end = begin + record.size;
-    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(end) || end > bytes.length)
-      throw new Error("Invalid ASAR script bounds");
-    const source = bytes.subarray(begin, end);
-    const sha256 = digest(source);
-    const integrity = object(record.integrity);
-    if (integrity.algorithm !== "SHA256" || integrity.hash !== sha256)
-      throw new Error("Actual ASAR script integrity mismatch");
+    const { source, sha256 } = packed.read(name);
     const imports: string[] = [];
     for (const statement of parseAst(source.toString()).body) {
       if (
