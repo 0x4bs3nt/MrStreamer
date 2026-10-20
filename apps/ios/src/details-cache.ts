@@ -1,5 +1,6 @@
 import { lazy } from "@mrstreamer/contracts/lazy";
 import type { TitleKind } from "@mrstreamer/contracts/ondemand";
+import { TMDB_EXPIRE_MS } from "@mrstreamer/core/metadata/policy";
 import type { EpisodeAbout, TitleAbout } from "@mrstreamer/core/metadata/tmdb";
 import type { ProviderDetails } from "@mrstreamer/core/provider";
 import { type } from "arktype";
@@ -42,8 +43,9 @@ const TOTAL_BYTES = 64 * 1024 * 1024;
 const RECORDS = 2048;
 /** The most records one write deletes to make room; one that still doesn't fit isn't written. */
 const PRUNE_BATCH = 64;
-/** A record older than this, or from further ahead than the clock may drift, isn't shown. */
+/** Provider records have their own retention limit, independent of TMDB's policy. */
 const MAX_AGE = 182 * 24 * 60 * 60 * 1000;
+/** A record from further ahead than the clock may drift isn't shown. */
 const MAX_AHEAD = 10 * 60 * 1000;
 
 const folder = () => new Directory(Paths.cache, "details");
@@ -209,6 +211,7 @@ function discard(file: File): boolean {
 async function load<R extends { readonly at: number }>(
   file: File,
   check: (json: unknown) => R | null,
+  maxAge: number,
   stands: () => boolean,
 ): Promise<R | null> {
   if (!stands() || !file.exists) return null;
@@ -218,7 +221,7 @@ async function load<R extends { readonly at: number }>(
     if (!stands()) return null;
     const record = check(json);
     const age = record ? Date.now() - record.at : NaN;
-    if (!record || !(age <= MAX_AGE && age >= -MAX_AHEAD)) throw new TypeError();
+    if (!record || !(age <= maxAge && age >= -MAX_AHEAD)) throw new TypeError();
     return record;
   } catch {
     discard(file);
@@ -369,6 +372,7 @@ export function readTitle(
         const same = record.subscriptionId === id && record.kind === kind && record.id === titleId;
         return same ? { at: record.at, listedAt: record.listedAt, value: record.value } : null;
       },
+      MAX_AGE,
       stands,
     ),
   );
@@ -413,6 +417,7 @@ export function readAbout(kind: TitleKind, tmdbId: string, language: string) {
         const record = Records.about()(json);
         return record instanceof type.errors ? null : { at: record.at, value: record.value };
       },
+      TMDB_EXPIRE_MS,
       always,
     ),
   );
@@ -441,6 +446,7 @@ export function readSeason(tmdbId: string, season: number, language: string) {
         const record = Records.season()(json);
         return record instanceof type.errors ? null : { at: record.at, value: record.value };
       },
+      TMDB_EXPIRE_MS,
       always,
     ),
   );

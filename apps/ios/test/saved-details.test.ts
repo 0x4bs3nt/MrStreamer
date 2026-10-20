@@ -343,6 +343,36 @@ describe("details saved on the phone", () => {
     );
   });
 
+  it.each([
+    [150 * 86_400_000 - 1, false],
+    [150 * 86_400_000, true],
+  ] as const)(
+    "renews TMDB details at 150 days, retaining saved seasons on failure (age: %s)",
+    async (age, due) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const start = Date.now();
+      const app = await launch({ withTmdb: true });
+      await added(app);
+      const series = await first(app, "series");
+      const details = seriesOf(await opened(app, series));
+      const season = details.seasons[0]!;
+      const episodes = await app.episodesOf(series, season);
+      await until(() => records().some((path) => path.startsWith("tmdb/season.")), "the season");
+      const abouts = tmdb.aboutRequests();
+      const seasons = tmdb.seasonRequests().length;
+
+      vi.setSystemTime(start + age);
+      tmdb.failSeasons(503);
+      const later = await launch({ withTmdb: true });
+      const again = await first(later, "series");
+      const shown = seriesOf(await later.detailsOf(again));
+      expect(shown.plot).toBe(details.plot);
+      expect(await later.episodesOf(again, shown.seasons[0]!)).toEqual(episodes);
+      expect(tmdb.aboutRequests() > abouts).toBe(due);
+      expect(tmdb.seasonRequests().length > seasons).toBe(due);
+    },
+  );
+
   it("ask TMDB again at the next open after a season or about failed", async () => {
     const app = await launch({ withTmdb: true });
     await added(app);
@@ -800,6 +830,34 @@ describe("a login replaced or removed", () => {
 });
 
 describe("the records", () => {
+  it.each([
+    [182 * 86_400_000, true],
+    [182 * 86_400_000 + 1, false],
+    [-600_000, true],
+    [-600_001, false],
+  ] as const)(
+    "reads provider and TMDB records through their inclusive age and clock-drift limits (age: %s)",
+    async (age, valid) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const start = Date.now();
+      const app = await launch({ withTmdb: true });
+      const id = await added(app);
+      const series = await first(app, "series");
+      const details = seriesOf(await opened(app, series));
+      await app.episodesOf(series, details.seasons[0]!);
+      await until(() => records().some((path) => path.startsWith("tmdb/season.")), "the season");
+
+      const cache = await import("../src/details-cache.ts");
+      vi.setSystemTime(start + age);
+      expect((await cache.readTitle(id, "series", series.id, () => true)) !== null).toBe(valid);
+      expect((await cache.readAbout("series", series.tmdbId!, "en")) !== null).toBe(valid);
+      expect(
+        (await cache.readSeason(series.tmdbId!, details.seasons[0]!.number, "en")) !== null,
+      ).toBe(valid);
+      if (!valid) expect(records()).toEqual([]);
+    },
+  );
+
   it("treat a corrupt record as missing, and delete it", async () => {
     const app = await launch();
     await added(app);

@@ -7,6 +7,7 @@
 import { type } from "arktype";
 import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 import { normalize } from "../text.ts";
+import { TMDB_EXPIRE_MS, TMDB_REFRESH_MS } from "./policy.ts";
 import {
   TmdbError,
   type StreamingService,
@@ -15,9 +16,6 @@ import {
   type TmdbKind,
 } from "./tmdb.ts";
 
-/** Fetched again after this long, and no longer used after six months, TMDB's limit. */
-const KEEP_MS = 150 * 24 * 60 * 60_000;
-const EXPIRE_MS = 182 * 24 * 60 * 60_000;
 /** Which titles each streaming service carries changes often; fetched again after a week. */
 const SERVICES_KEEP_MS = 7 * 24 * 60 * 60_000;
 /** Requests in flight at once, and at most this many a second: TMDB allows about 50. */
@@ -138,7 +136,7 @@ export function metadataStore(deps: MetadataDeps) {
         notify(true);
       }
       // What is past TMDB's limit goes, key or no key.
-      if (Object.values(file.entries).some((entry) => !fresh(entry.at, EXPIRE_MS))) {
+      if (Object.values(file.entries).some((entry) => !fresh(entry.at, TMDB_EXPIRE_MS))) {
         dirty = true;
         void save();
       }
@@ -176,14 +174,14 @@ export function metadataStore(deps: MetadataDeps) {
   const keyOf = (kind: TmdbKind, id: string) => `${kind}:${id}`;
   const fresh = (at: number, keep: number) => now() - at < keep;
   const servicesShown = (kept: MetadataFile["services"] | undefined) =>
-    kept?.region === deps.region && fresh(kept.at, EXPIRE_MS);
+    kept?.region === deps.region && fresh(kept.at, TMDB_EXPIRE_MS);
   /** Whether lists show anything of `kept`: a title TMDB knows or the region's services. */
   const shows = (kept: MetadataFile) =>
     servicesShown(kept.services) ||
-    Object.values(kept.entries).some((entry) => !entry.missing && fresh(entry.at, EXPIRE_MS));
+    Object.values(kept.entries).some((entry) => !entry.missing && fresh(entry.at, TMDB_EXPIRE_MS));
   const current = (kind: TmdbKind, id: string) => {
     const entry = file.entries[keyOf(kind, id)];
-    return entry && fresh(entry.at, EXPIRE_MS) ? entry : undefined;
+    return entry && fresh(entry.at, TMDB_EXPIRE_MS) ? entry : undefined;
   };
   /** Whether TMDB answered for the title, its name in the viewer's language included. */
   const answered = (kind: TmdbKind, id: string) => {
@@ -228,9 +226,9 @@ export function metadataStore(deps: MetadataDeps) {
       dirty = false;
       lastSave = now();
       for (const [key, entry] of Object.entries(file.entries)) {
-        if (!fresh(entry.at, EXPIRE_MS)) delete file.entries[key];
+        if (!fresh(entry.at, TMDB_EXPIRE_MS)) delete file.entries[key];
       }
-      if (file.services && !fresh(file.services.at, EXPIRE_MS)) file.services = null;
+      if (file.services && !fresh(file.services.at, TMDB_EXPIRE_MS)) file.services = null;
       await deps.write(file).catch(() => {
         dirty = true;
       });
@@ -315,7 +313,7 @@ export function metadataStore(deps: MetadataDeps) {
     const due = list
       .filter((title) => {
         const entry = file.entries[keyOf(title.kind, title.tmdbId)];
-        if (!entry || !fresh(entry.at, KEEP_MS)) return true;
+        if (!entry || !fresh(entry.at, TMDB_REFRESH_MS)) return true;
         return !entry.missing && (entry.names?.[asked] === undefined || needsEnglish(entry));
       })
       .toSorted((a, b) => b.addedAt - a.addedAt);
@@ -337,7 +335,7 @@ export function metadataStore(deps: MetadataDeps) {
         return entry.missing && (!kept || kept.missing) ? "status" : "content";
       };
       let entry = file.entries[key];
-      if (!entry || !fresh(entry.at, KEEP_MS) || entry.names?.[asked] === undefined) {
+      if (!entry || !fresh(entry.at, TMDB_REFRESH_MS) || entry.names?.[asked] === undefined) {
         const found = await ask(signal, () =>
           client.details(title.kind, title.tmdbId, asked, signal),
         );
@@ -441,7 +439,7 @@ export function metadataStore(deps: MetadataDeps) {
             ? file.services.at
             : undefined
           : file.entries[keyOf(kind, tmdbId)]?.at;
-      return at === undefined ? Infinity : at + EXPIRE_MS;
+      return at === undefined ? Infinity : at + TMDB_EXPIRE_MS;
     },
 
     /**

@@ -1,3 +1,4 @@
+import { TMDB_REFRESH_MS } from "@mrstreamer/core/metadata/policy";
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
 import type {
   CollectionTile,
@@ -499,8 +500,7 @@ const KEPT = 64;
 const DAY = 24 * 60 * 60 * 1000;
 /** A provider's saved facts younger than this show without asking again, while its lists stand. */
 const PROVIDER_FRESH = DAY;
-/** TMDB's saved answers younger than this show without asking again; one that it hasn't, a day. */
-const TMDB_FRESH = 150 * DAY;
+/** Retry a missing TMDB answer after a day; positive answers use the shared refresh policy. */
 const MISSING_FRESH = DAY;
 
 /** Keeps `value` as `key`'s, the most recently used, dropping the least recently used past KEPT. */
@@ -670,7 +670,7 @@ async function fromTmdb<A>(
   answer: (signal: AbortSignal) => Promise<A>,
   write: (saved: Saved<A | null>) => Promise<void>,
 ): Promise<{ readonly value: A | null; readonly final: boolean }> {
-  if (kept && Date.now() - kept.at < (kept.value === null ? MISSING_FRESH : TMDB_FRESH)) {
+  if (kept && Date.now() - kept.at < (kept.value === null ? MISSING_FRESH : TMDB_REFRESH_MS)) {
     return { value: kept.value, final: true };
   }
   try {

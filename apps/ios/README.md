@@ -43,6 +43,15 @@ pnpm install --frozen-lockfile
 ../../node_modules/.bin/tsc --noEmit -p . && ../../node_modules/.bin/tsc --noEmit -p scripts
 ```
 
+After shared package or export changes, also resolve and bundle the real iOS entry with Metro:
+
+```sh
+CI=1 pnpm exec expo export --platform ios --output-dir ../../.local/ios-export --max-workers 2
+```
+
+This export needs no native build or signing. It proves bundle resolution; native behavior still
+needs a simulator or device run.
+
 Expo SDK 58 is a prerelease (React Native 0.88 release candidate). It is the first SDK whose
 template adopts the UIScene life cycle, without which an app built with the iOS 27 SDK stops at
 launch. `patches/` adds `URL.parse` and `URL.canParse` to React Native's type of the global `URL`:
