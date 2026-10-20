@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+version: 1
+reviews:
+  enabled: true
+  sensitivity: medium
+  incremental_commits: true
+  check_drafts: false
+  architecture_diagrams: false
+  merge_confidence_summary: false
+  external_contributors_require_manual_review: false
+  resolve_threads_when_addressed: true
+  auto_approve_behavior: disabled
+  auto_approve: disabled
+  ultrareview: disabled
+  auto_ultrareview: disabled
+  auto_ultrareview_file_patterns: []
+  # Clear inherited YAML agents. Dashboard agents are configured separately.
+  custom_rules: []
+pr_descriptions:
+  generate: false
+  cubic_review_link: false
+issues:
+  fix_with_cubic_buttons: false
+  pr_comment_fixes: false
+  auto_fix: "off"

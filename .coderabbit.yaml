@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+early_access: false
+enable_free_tier: true
+reviews:
+  profile: quiet
+  request_changes_workflow: false
+  high_level_summary: false
+  sequence_diagrams: false
+  in_progress_fortune: false
+  poem: false
+  suggested_labels: false
+  auto_apply_labels: false
+  review_status: true
+  review_details: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    drafts: false
+  # Override the built-in pnpm lockfile exclusion without limiting other files.
+  path_filters:
+    - "**/pnpm-lock.yaml"
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  tools:
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    # CI already runs oxlint and actionlint.
+    oxc:
+      enabled: false
+    actionlint:
+      enabled: false
+  review_info: true
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    description:
+      mode: "off"
+chat:
+  art: false
+  auto_reply: false
+knowledge_base:
+  code_guidelines:
+    enabled: true
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
