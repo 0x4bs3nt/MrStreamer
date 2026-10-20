@@ -1,0 +1,21 @@
+cask "mr-streamer" do
+  version "{{VERSION}}"
+  sha256 "{{SHA256}}"
+
+  url "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download/v#{version}/Mr-Streamer-#{version}-mac-arm64.dmg"
+  name "Mr. Streamer"
+  desc "IPTV player"
+  homepage "https://mrstreamer.app/"
+
+  livecheck do
+    url :url
+    regex(/^v?(\d+\.\d+\.\d+)$/i)
+    strategy :github_latest
+  end
+
+  auto_updates true
+  depends_on arch: :arm64
+  depends_on macos: :ventura
+
+  app "Mr. Streamer.app"
+end
