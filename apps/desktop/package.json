@@ -1,7 +1,7 @@
 {
   "name": "mrstreamer",
   "productName": "Mr. Streamer",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "description": "A clean, fast, open-source IPTV player for macOS, Windows and Linux.",
   "homepage": "https://mrstreamer.app",
   "repository": {
