@@ -20,8 +20,9 @@ import { inTasks } from "../src/library.ts";
 // The collections Movies, Series, Home and details show, made in short tasks: worked out between
 // other tasks they hold what making them at once gives, with TMDB's metadata or without. The app's
 // owner (titles.ts) makes them after the lists are indexed and whenever the metadata changes what
-// they show, never while a screen draws: none until the first for the lists that show are made,
-// the last made kept until newer ones are, and none made for lists that no longer show. Both
+// they show, never while a screen draws: lists show only together with collections made of them,
+// those that show stay until newer lists' or metadata's are made, none made for lists that no
+// longer show ever show, and a removed subscription's titles go at once. Both
 // paths agree on how long collections hold: until a title passes New's 7 or 30 days, metadata
 // expires, the year turns or the clock goes back; the owner then makes them again once a screen
 // reads them, as Movies and a collection do when what they show by changes. The subscriptions,
@@ -32,9 +33,13 @@ const edges = vi.hoisted(() => ({
   members: [] as Array<{
     entry: { id: string };
     needsSecret: boolean;
-    titles: { kind: "ready"; value: OnDemandCatalogue; took: number };
+    titles:
+      | { kind: "ready"; value: OnDemandCatalogue; took: number }
+      | { kind: "failed"; error: unknown; last: OnDemandCatalogue | null; since: number };
   }>,
   roster: new Set<() => void>(),
+  /** Each subscription's login, as sources.ts keeps it while it is signed in. */
+  sources: new Map<string, { provider: { titleFile: (kind: string, id: string) => unknown } }>(),
   /** What the metadata store answers: TMDB's metadata of each title, by kind and TMDB id. */
   known: null as ((kind: string, id: string) => TitleMetadata) | null,
   services: [] as ServiceTitles[],
@@ -54,13 +59,20 @@ vi.mock("../src/account.ts", () => ({
     edges.roster.add(listener);
     return () => edges.roster.delete(listener);
   },
-  shownOf: (titles: { kind: string; value?: unknown }) =>
-    titles.kind === "ready" ? titles.value : null,
+  shownOf: (titles: { kind: string; value?: unknown; last?: unknown }) =>
+    titles.kind === "ready" ? titles.value : (titles.last ?? null),
   retryTitles: () => undefined,
   reloadTitles: () => undefined,
   useRoster: () => ({ kind: "ready", members: [] }),
 }));
-vi.mock("../src/sources.ts", () => ({ currentSource: () => undefined, sourceOf: () => null }));
+vi.mock("../src/sources.ts", () => ({
+  currentSource: (id: string) => edges.sources.get(id),
+  sourceOf: (id: string) => {
+    const found = edges.sources.get(id);
+    if (!found) throw new Error(`${id} isn't signed in`);
+    return found;
+  },
+}));
 vi.mock("../src/viewing.ts", async () => {
   const { useSyncExternalStore } = await import("react");
   const subscribe = (listener: () => void) => {
@@ -327,6 +339,7 @@ describe("the collections Movies, Series, Home and details show", () => {
     vi.resetModules();
     edges.members = [];
     edges.roster.clear();
+    edges.sources.clear();
     edges.known = null;
     edges.services = [];
     edges.expiry = null;
@@ -339,14 +352,52 @@ describe("the collections Movies, Series, Home and details show", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  const subscribe = (...ids: string[]) => {
-    edges.members = ids.map((id) => ({
+  const subscribe = (...ids: string[]) => list(ids.map((id) => [id, catalogue]));
+  /** Subscriptions with these lists, as their provider gave them, in this order. */
+  const list = (lists: ReadonlyArray<readonly [string, OnDemandCatalogue]>) => {
+    edges.members = lists.map(([id, value]) => ({
       entry: { id },
       needsSecret: false,
-      titles: { kind: "ready", value: catalogue, took: 1 },
+      titles: { kind: "ready", value, took: 1 },
     }));
     for (const listener of edges.roster) listener();
   };
+  /** The same lists as a provider gives them again: other objects, as a reload brings. */
+  const again = (): OnDemandCatalogue => ({ ...catalogue, movies: [...catalogue.movies] });
+  /** Whether `titles` holds a title of subscription `id`. */
+  const holds = (titles: readonly Title[], id: string) =>
+    titles.some((title) => title.versions.some((each) => each.subscriptionId === id));
+  /** Whether `made` lists a title of subscription `id`. */
+  const listsFrom = (made: Collections, id: string) => holds(made.list("all"), id);
+  /** Whether `made` holds the titles `index` lists of `kind`, whatever metadata ranked them. */
+  const madeOf = (made: Collections | null, kind: TitleKind, index: IndexedCatalogue | null) => {
+    if (!made || !index) return false;
+    const keys = (list: readonly Title[]) => list.map(ownedKey).toSorted().join(",");
+    return keys(made.list("all")) === keys(atOnce(kind, index).list("all"));
+  };
+  /** What a screen reads each time the lists change, while `ready` doesn't hold yet. */
+  async function watch(ready: () => boolean, what: string) {
+    const views: Array<{
+      index: IndexedCatalogue | null;
+      movie: Collections | null;
+      series: Collections | null;
+    }> = [];
+    const stop = titles.onTitleLists(() =>
+      views.push({
+        index: indexed(),
+        movie: titles.collectionsOf("movie"),
+        series: titles.collectionsOf("series"),
+      }),
+    );
+    /** Tasks in which lists showed without both kinds' collections. */
+    let bare = 0;
+    await until(() => {
+      if (indexed() && (!titles.collectionsOf("movie") || !titles.collectionsOf("series"))) bare++;
+      return ready();
+    }, what);
+    stop();
+    return { views, bare };
+  }
   const indexed = () => {
     const lists = titles.titleLists();
     return lists.kind === "ready" ? lists.index : null;
@@ -392,25 +443,21 @@ describe("the collections Movies, Series, Home and details show", () => {
     edges.notify?.({ content: true });
   };
 
-  it("are none until the first are made for the lists that show, then what making them at once gives", async () => {
-    // At the moment the lists show, neither kind has collections: screens show Loading and never
-    // make any while they draw.
-    const atShow: Array<Collections | null> = [];
-    titles.onTitleLists(() => {
-      if (indexed()) atShow.push(titles.collectionsOf("movie"), titles.collectionsOf("series"));
-    });
+  it("show the lists only with both kinds' collections made of them, as making them at once gives", async () => {
+    // Until then screens show Loading, and never make any while they draw.
     subscribe("a");
-    await until(() => indexed() !== null, "the lists");
-    expect(atShow).toEqual([null, null]);
-    await until(
-      () => titles.collectionsOf("movie") !== null && titles.collectionsOf("series") !== null,
-      "the collections",
-    );
+    expect(titles.collectionsOf("movie")).toBeNull();
+    const { views, bare } = await watch(() => indexed() !== null, "the lists");
+    expect(bare).toBe(0);
+    expect(views).toHaveLength(1);
+    const [view] = views;
     const index = indexed();
-    if (!index) throw new Error("No lists");
+    if (!view || !index) throw new Error("No lists");
+    expect(view.index).toBe(index);
     for (const kind of ["movie", "series"] as const) {
-      const made = titles.collectionsOf(kind);
+      const made = view[kind];
       if (!made) throw new Error("No collections");
+      expect(titles.collectionsOf(kind)).toBe(made);
       expect(shown(made, undefined)).toEqual(shown(atOnce(kind, index), undefined));
     }
   });
@@ -462,22 +509,158 @@ describe("the collections Movies, Series, Home and details show", () => {
     learn(1);
     expect(indexed()).toBe(before);
     expect(titles.collectionsOf("movie")).toBe(first);
-    const atShow: Array<Collections | null> = [];
-    titles.onTitleLists(() => atShow.push(titles.collectionsOf("movie")));
     /** Each collections the owner held once the new lists showed. */
     const seen = new Set<Collections>();
-    await until(() => {
+    const { views, bare } = await watch(() => {
       const made = titles.collectionsOf("movie");
       if (indexed() !== before && made) seen.add(made);
-      return seen.size > 0 && titles.collectionsOf("series") !== null;
+      return seen.size > 0;
     }, "the new lists' collections");
-    expect(atShow).toEqual([null]);
+    // The old lists and their collections showed until the new ones replaced both at once.
+    expect(bare).toBe(0);
+    const index = indexed();
+    expect(views).toHaveLength(1);
+    expect(views[0]?.index).toBe(index);
+    expect(madeOf(views[0]?.movie ?? null, "movie", index)).toBe(true);
+    expect(madeOf(views[0]?.series ?? null, "series", index)).toBe(true);
+    if (!index) throw new Error("No lists");
+    for (const made of seen) expect(listsFrom(made, "b")).toBe(true);
+    await latest("movie", index);
+  });
+
+  it("keep what shows while a subscription's lists come again, metadata changing meanwhile", async () => {
+    edges.known = tmdbOf(0);
+    subscribe("a");
+    await until(() => titles.collectionsOf("movie") !== null, "the first collections");
+    const before = indexed();
+    // A reload brings the same lists again, as a launch's from a saved copy, then TMDB answers.
+    list([["a", again()]]);
+    learn(1);
+    learn(2);
+    const { views, bare } = await watch(() => indexed() !== before, "the lists again");
+    expect(bare).toBe(0);
+    const index = indexed();
+    expect(views).toHaveLength(1);
+    expect(madeOf(views[0]?.movie ?? null, "movie", index)).toBe(true);
+    expect(madeOf(views[0]?.series ?? null, "series", index)).toBe(true);
+    if (!index) throw new Error("No lists");
+    // A reload that fails keeps the last lists: nothing is indexed or made again for it.
+    const shownNow = titles.collectionsOf("series");
+    edges.members = edges.members.map((member) => ({
+      ...member,
+      titles: {
+        kind: "failed",
+        error: null,
+        last: member.titles.kind === "ready" ? member.titles.value : member.titles.last,
+        since: 0,
+      },
+    }));
+    for (const listener of edges.roster) listener();
+    for (let task = 0; task < 100; task++) await new Promise((done) => setTimeout(done, 1));
+    expect(indexed()).toBe(index);
+    expect(titles.collectionsOf("series")).toBe(shownNow);
+    await latest("movie", index);
+  });
+
+  it("drop a removed subscription's titles at once, the others showing again once made without it", async () => {
+    subscribe("a", "b");
+    await until(() => titles.collectionsOf("movie") !== null, "the first collections");
+    const first = titles.collectionsOf("movie");
+    expect(first && listsFrom(first, "b")).toBe(true);
+    /** Reads that showed b's titles after its removal. */
+    let retired = 0;
+    const stop = titles.onTitleLists(() => {
+      const index = indexed();
+      const made = titles.collectionsOf("movie");
+      if (index && holds(kindOf(index, "movie").titles, "b")) retired++;
+      if (made && listsFrom(made, "b")) retired++;
+    });
+    subscribe("a");
+    expect(titles.titleLists().kind).toBe("loading");
+    expect(titles.collectionsOf("movie")).toBeNull();
+    expect(titles.collectionsOf("series")).toBeNull();
+    await until(() => {
+      const made = titles.collectionsOf("movie");
+      if (made && listsFrom(made, "b")) retired++;
+      return made !== null;
+    }, "the rest");
+    stop();
+    expect(retired).toBe(0);
+    const index = indexed();
+    expect(madeOf(titles.collectionsOf("movie"), "movie", index)).toBe(true);
+    expect(madeOf(titles.collectionsOf("series"), "series", index)).toBe(true);
+  });
+
+  describe("a title's file asked for while the lists are made again without a removed subscription", () => {
+    /** A login whose provider names each file by it. */
+    const loginOf = (login: string) => ({
+      provider: {
+        titleFile: async (kind: string, id: string) => ({ url: `${login}/${kind}/${id}` }),
+      },
+    });
+    /** Both subscriptions' lists showing, then b removed: a film of a's, and how many listen. */
+    async function removedB() {
+      edges.sources.set("a", loginOf("first"));
+      edges.sources.set("b", loginOf("other"));
+      subscribe("a", "b");
+      await until(() => titles.collectionsOf("movie") !== null, "the first collections");
+      const index = indexed();
+      const film =
+        index &&
+        kindOf(index, "movie")
+          .titles.flatMap((title) => title.versions)
+          .find((version) => version.subscriptionId === "a" && version.container);
+      if (!film) throw new Error("No film of a's");
+      const listening = edges.roster.size;
+      edges.sources.delete("b");
+      subscribe("a");
+      expect(titles.titleLists().kind).toBe("loading");
+      return { ref: { kind: "movie", subscriptionId: "a", id: film.id } as const, listening };
+    }
+
+    it("answers once they show, under the login that stands then", async () => {
+      const { ref, listening } = await removedB();
+      const asked = titles.titleFile(ref, new AbortController().signal);
+      // a signs in again, with a new password, while the request waits.
+      edges.sources.set("a", loginOf("second"));
+      for (const listener of edges.roster) listener();
+      expect(await asked).toMatchObject({ url: `second/movie/${ref.id}` });
+      expect(edges.roster.size).toBe(listening);
+    });
+
+    it("settles at once when it stops waiting or its subscription goes, leaving nothing behind", async () => {
+      const { ref, listening } = await removedB();
+      const controller = new AbortController();
+      const stopped = titles.titleFile(ref, controller.signal);
+      const removed = titles.titleFile(ref, new AbortController().signal);
+      controller.abort(new Error("Another title was chosen"));
+      await expect(stopped).rejects.toThrow("Another title was chosen");
+      edges.sources.delete("a");
+      edges.members = [];
+      for (const listener of edges.roster) listener();
+      await expect(removed).rejects.toMatchObject({ error: { kind: "no-subscription" } });
+      expect(edges.roster.size).toBe(listening);
+    });
+  });
+
+  it("never show lists replaced before they were indexed and made", async () => {
+    subscribe("a");
+    await until(() => titles.collectionsOf("movie") !== null, "the first collections");
+    const before = indexed();
+    const showed: Array<IndexedCatalogue | null> = [];
+    const stop = titles.onTitleLists(() => showed.push(indexed()));
+    // b's lists come, then go again before they show; a's come again meanwhile.
+    subscribe("a", "b");
+    await new Promise((done) => setTimeout(done, 1));
+    list([["a", again()]]);
+    const { bare } = await watch(() => indexed() !== before, "the latest lists");
+    stop();
+    expect(bare).toBe(0);
+    expect(showed).toEqual([indexed()]);
     const index = indexed();
     if (!index) throw new Error("No lists");
-    const fromB = (made: Collections) =>
-      made.list("all").some((title) => title.versions.some((each) => each.subscriptionId === "b"));
-    for (const made of seen) expect(fromB(made)).toBe(true);
-    await latest("movie", index);
+    expect(holds(kindOf(index, "movie").titles, "b")).toBe(false);
+    expect(madeOf(titles.collectionsOf("movie"), "movie", index)).toBe(true);
   });
 
   it("are made again once time passes what they hold, the last made showing meanwhile", async () => {

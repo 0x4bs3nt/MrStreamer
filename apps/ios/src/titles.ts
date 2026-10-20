@@ -35,7 +35,7 @@ import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/on
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
 import type { Steps } from "@mrstreamer/core/steps";
 import { File, Paths } from "expo-file-system";
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { accountChanges, members, onRoster, savable, shownOf, type Member } from "./account.ts";
 import {
   readAbout,
@@ -48,7 +48,7 @@ import {
 } from "./details-cache.ts";
 import { inTasks } from "./library.ts";
 import { currentSource, sourceOf, type Source } from "./sources.ts";
-import { store, useStore, type Store } from "./store.ts";
+import { store, useStore } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
 import { alignWatchlist } from "./watchlist.ts";
 
@@ -69,18 +69,48 @@ import { alignWatchlist } from "./watchlist.ts";
 // of a login replaced or removed since shows (`underLogin`). Saved facts are for display only:
 // where a title streams from is asked of its provider under its current login.
 //
-// Collections are made here, never while a screen draws: each kind's in short tasks once the
-// lists are indexed and again whenever TMDB's metadata changes what they show. Until the first
-// are made for the lists that show, a kind has none (`useCollections` is null); later ones
-// replace those before them only once made.
+// Collections are made here, in short tasks, never while a screen draws. What screens read of the
+// lists is one view (`shown`): the index with each kind's collections made of it, so no read and
+// no listener sees one without the other. Lists that come again, as when a subscription's lists
+// load again after a launch, are indexed and their collections made while the view before them
+// shows, which they then replace in one change. TMDB's metadata changing what collections show has
+// a kind's made again for the lists that show, those before showing meanwhile. A subscription
+// that no longer lists any titles, as once it is removed, takes the view with it at once: what
+// the others list shows again once it is indexed without it.
 
 export type TitleLists =
   | { readonly kind: "idle" }
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly index: IndexedCatalogue }
   | { readonly kind: "failed"; readonly error: AppError };
+type Unlisted = Exclude<TitleLists, { readonly kind: "ready" }>;
 
-const lists = store<TitleLists>({ kind: "idle" });
+/** One subscription's lists, as `indexSteps` takes them. */
+interface Listed {
+  readonly subscriptionId: string;
+  readonly catalogue: OnDemandCatalogue;
+}
+
+/** A kind's collections, and the lists and metadata version they were made of. */
+interface Made {
+  readonly index: IndexedCatalogue;
+  readonly version: number;
+  readonly collections: Collections;
+}
+
+/**
+ * What screens read of the lists, changed as one: lists that show come with both kinds'
+ * collections made of their index, and the subscriptions' lists the index was made of.
+ */
+type Shown =
+  | { readonly lists: Unlisted; readonly made: null }
+  | {
+      readonly lists: Extract<TitleLists, { readonly kind: "ready" }>;
+      readonly made: { readonly movie: Made; readonly series: Made };
+      readonly listed: readonly Listed[];
+    };
+
+const shown = store<Shown>({ lists: { kind: "idle" }, made: null });
 /** Rises whenever TMDB's metadata changes what lists show. */
 const metadataVersion = store(0);
 const metadataStatus = store<MetadataStatus | null>(null);
@@ -90,11 +120,54 @@ const metadataStatus = store<MetadataStatus | null>(null);
  */
 const timings = store<{ readonly fetched: number; readonly indexed: number } | null>(null);
 
-export const useTitleLists = () => useStore(lists);
 /** The lists as they stand, for owners outside React. */
-export const titleLists = () => lists.get();
-/** Calls `listener` whenever the lists change. */
-export const onTitleLists = (listener: () => void) => lists.subscribe(listener);
+export const titleLists = (): TitleLists => shown.get().lists;
+export const useTitleLists = () => useSyncExternalStore(shown.subscribe, titleLists);
+/** Calls `listener` whenever the lists change, their collections already made of them. */
+export function onTitleLists(listener: () => void): () => void {
+  let last = titleLists();
+  return shown.subscribe(() => {
+    if (titleLists() === last) return;
+    last = titleLists();
+    listener();
+  });
+}
+
+/**
+ * The index of the lists that show, for a request about subscription `id`'s titles that doesn't
+ * draw, such as a title's file, a download's details or the viewing record's series: at once
+ * while lists show, and while they are made again with `id`'s in them, as after another
+ * subscription's removal, once they show. Rejects at once with `signal`'s reason once it aborts,
+ * and when `id` can't have its titles listed: no longer saved, not signed in, or with no lists,
+ * its failure when they failed.
+ */
+export function listedIndex(id: string, signal: AbortSignal): Promise<IndexedCatalogue> {
+  return new Promise((resolve, reject) => {
+    const done = (answer: () => void) => {
+      for (const stop of stops.splice(0)) stop();
+      signal.removeEventListener("abort", settle);
+      answer();
+    };
+    const settle = () => {
+      if (signal.aborted) return done(() => reject(signal.reason));
+      const now = titleLists();
+      if (now.kind === "ready") return done(() => resolve(now.index));
+      const member = members().find((each) => each.entry.id === id);
+      if (!member) return done(() => reject(new AppFailure({ kind: "no-subscription" })));
+      if (!currentSource(id)) {
+        return done(() => reject(new AppFailure({ kind: "needs-secret", subscriptionId: id })));
+      }
+      if (shownOf(member.titles)) return;
+      const error: AppError =
+        member.titles.kind === "failed" ? member.titles.error : { kind: "no-subscription" };
+      done(() => reject(new AppFailure(error)));
+    };
+    const stops = [shown.subscribe(settle), onRoster(settle)];
+    signal.addEventListener("abort", settle);
+    settle();
+  });
+}
+
 export const useMetadataVersion = () => useStore(metadataVersion);
 export const useMetadataStatus = () => useStore(metadataStatus);
 export const useTitleTimings = () => useStore(timings);
@@ -136,12 +209,6 @@ const metadata = metadataStore({
   },
 });
 
-/** One subscription's lists, as `indexSteps` takes them. */
-interface Listed {
-  readonly subscriptionId: string;
-  readonly catalogue: OnDemandCatalogue;
-}
-
 /** The lists the index was made of, or is being made of. */
 let indexed: readonly Listed[] = [];
 let indexing: AbortController | null = null;
@@ -157,7 +224,7 @@ const sameLists = (a: readonly Listed[], b: readonly Listed[]) =>
  * What the lists are while no subscription has any: loading while one may still bring some, else
  * why the first that can't failed, a password the Keychain lost included.
  */
-function standing(all: readonly Member[]): TitleLists {
+function standing(all: readonly Member[]): Unlisted {
   if (all.length === 0) return { kind: "idle" };
   const waiting = all.some(
     (member) =>
@@ -177,7 +244,8 @@ function standing(all: readonly Member[]): TitleLists {
 /**
  * Indexes the lists of every subscription that has them, whenever one's change: those that
  * failed or load again keep what they had. Until one has lists, the state says whether any is
- * still loading or why they failed, after every change of the subscriptions.
+ * still loading or why they failed, after every change of the subscriptions. A subscription the
+ * lists that show were made of and that lists none now takes them with it at once.
  */
 function relist() {
   const all = members();
@@ -185,23 +253,26 @@ function relist() {
     const catalogue = shownOf(member.titles);
     return catalogue ? [{ subscriptionId: member.entry.id, catalogue }] : [];
   });
+  const now = shown.get();
+  const gone =
+    now.made !== null &&
+    now.listed.some((each) => !listed.some((that) => that.subscriptionId === each.subscriptionId));
   if (listed.length === 0) {
     if (indexed.length > 0) {
       indexed = [];
       indexing?.abort();
       indexing = null;
-      forget();
       metadata.want([]);
     }
     const next = standing(all);
-    const now = lists.get();
     const same =
-      now.kind === next.kind &&
-      (now.kind !== "failed" || (next.kind === "failed" && now.error === next.error));
-    if (!same) lists.set(next);
+      now.lists.kind === next.kind &&
+      (now.lists.kind !== "failed" || (next.kind === "failed" && now.lists.error === next.error));
+    if (!same) shown.set({ lists: next, made: null });
     return;
   }
-  if (sameLists(listed, indexed)) return;
+  if (gone) shown.set({ lists: { kind: "loading" }, made: null });
+  else if (sameLists(listed, indexed)) return;
   indexed = listed;
   indexing?.abort();
   const controller = new AbortController();
@@ -212,19 +283,24 @@ function relist() {
 async function index(listed: readonly Listed[], signal: AbortSignal) {
   // Indexing 25,000 movies held the JS thread for a third of a second or more in a Release build
   // on the iOS simulator, so both kinds are worked out a few slices per task, starting after the
-  // answer that brought the lists, and only a finished index shows: what showed before stays
-  // meanwhile, and screens never index a kind while they draw.
+  // answer that brought the lists, and only a finished index shows, with its collections: what
+  // showed before stays meanwhile, and screens never index a kind while they draw.
+  const wanted = () => !signal.aborted;
   const started = Date.now();
-  const index = await inTasks(indexSteps(listed, language), () => !signal.aborted);
+  const index = await inTasks(indexSteps(listed, language), wanted);
   if (!index) return;
   const took = Date.now() - started;
+  const version = metadataVersion.get();
+  const movie = await make("movie", index, version, wanted);
+  const series = movie && (await make("series", index, version, wanted));
+  if (!movie || !series || !wanted()) return;
   const fetched = Math.max(
     0,
     ...members().map((member) => (member.titles.kind === "ready" ? (member.titles.took ?? 0) : 0)),
   );
   timings.set({ fetched, indexed: took });
-  forget();
-  lists.set({ kind: "ready", index });
+  shown.set({ lists: { kind: "ready", index }, made: { movie, series }, listed });
+  // Again if TMDB's metadata changed what they show while they were made.
   collect("movie");
   collect("series");
   alignWatchlist(index);
@@ -246,31 +322,18 @@ function wantedOf(index: IndexedCatalogue) {
   );
 }
 
-/** A kind's collections, and the lists and metadata version they were made of. */
-interface Made {
-  readonly index: IndexedCatalogue;
-  readonly version: number;
-  readonly collections: Collections;
-}
-
-/** Each kind's collections as last made for the lists that show; null until the first are. */
-const made: Record<TitleKind, Store<Made | null>> = {
-  movie: store<Made | null>(null),
-  series: store<Made | null>(null),
-};
-/** Each kind's collections being made, for which lists. */
+/** Each kind whose collections are being made again for the lists that show, for which lists. */
 const making = new Map<TitleKind, IndexedCatalogue>();
 
 /**
  * The collections of `kind` for the lists that show, as TMDB's metadata stood when they were made:
- * null until the first are made, and again from when other lists show until theirs are. `reads`
- * are what the screen reads them by besides (`useHolding`).
+ * null while no lists show. `reads` are what the screen reads them by besides (`useHolding`).
  */
 export function useCollections(
   kind: TitleKind,
   reads: readonly unknown[] = [],
 ): Collections | null {
-  const kept = useStore(made[kind]);
+  const kept = useSyncExternalStore(shown.subscribe, () => shown.get().made?.[kind] ?? null);
   useHolding(kind, [kept, ...reads]);
   return kept?.collections ?? null;
 }
@@ -288,67 +351,72 @@ export function useHolding(kind: TitleKind, reads: readonly unknown[]): void {
 /** `useCollections` for owners outside React. */
 export function collectionsOf(kind: TitleKind): Collections | null {
   collect(kind);
-  return made[kind].get()?.collections ?? null;
-}
-
-/** Drops both kinds' collections: other lists, or none, show from now on. */
-function forget() {
-  made.movie.set(null);
-  made.series.set(null);
+  return shown.get().made?.[kind].collections ?? null;
 }
 
 /**
- * Makes `kind`'s collections for the lists that show, unless those made are of these lists and
- * the metadata as it stands, and still hold now: no title has passed New's 7 or 30 days, no
- * metadata they were made with has expired, the year hasn't turned and the clock hasn't gone
- * back (`validAt`). While some are being made for these lists nothing else starts, so however
- * often TMDB's metadata changes the first are made; once they are, this runs again and makes
- * the latest, or again if time passed what they hold while they were made.
+ * Makes `kind`'s collections again for the lists that show, unless those that show are of the
+ * metadata as it stands and still hold now: no title has passed New's 7 or 30 days, no metadata
+ * they were made with has expired, the year hasn't turned and the clock hasn't gone back
+ * (`validAt`). While some are being made for these lists nothing else starts, so however often
+ * TMDB's metadata changes they are made; once they are, this runs again and makes the latest, or
+ * again if time passed what they hold while they were made. They show only while their lists do.
  */
 function collect(kind: TitleKind) {
-  const now = lists.get();
-  if (now.kind !== "ready") return;
-  const { index } = now;
-  const version = metadataVersion.get();
-  const kept = made[kind].get();
-  const current =
-    kept?.index === index && kept.version === version && kept.collections.validAt(Date.now());
+  const now = shown.get();
+  if (!now.made) return;
+  const { index } = now.lists;
+  const kept = now.made[kind];
+  const current = kept.version === metadataVersion.get() && kept.collections.validAt(Date.now());
   if (current || making.get(kind) === index) return;
   making.set(kind, index);
-  void make(kind, index, version);
+  void remake(kind, index);
 }
 
-async function make(kind: TitleKind, index: IndexedCatalogue, version: number) {
+/** Makes `kind`'s collections of `index` again, to show in place of those before while it shows. */
+async function remake(kind: TitleKind, index: IndexedCatalogue) {
+  const shows = () => {
+    const now = shown.get();
+    return now.made !== null && now.lists.index === index;
+  };
+  const made = await make(kind, index, metadataVersion.get(), shows).finally(() => {
+    if (making.get(kind) === index) making.delete(kind);
+  });
+  const now = shown.get();
+  if (!made || !now.made || now.lists.index !== index) return;
+  const both = kind === "movie" ? { ...now.made, movie: made } : { ...now.made, series: made };
+  shown.set({ ...now, made: both });
+  collect(kind);
+}
+
+/**
+ * `kind`'s collections of `index`, with TMDB's metadata as it stands, `version`: null once
+ * `wanted` fails, which stops them at the next task.
+ */
+async function make(
+  kind: TitleKind,
+  index: IndexedCatalogue,
+  version: number,
+  wanted: () => boolean,
+): Promise<Made | null> {
   // Ranking 25,000 movies and their series with TMDB's metadata, then sorting their lists, held
   // the JS thread for 60 to 95 ms at once in a Release build on the iOS simulator, each time the
-  // metadata changed while Movies drew. So collections are made a few slices per task, and work
-  // for lists that no longer show stops at the next task and shows nothing.
-  const current = () => {
-    const now = lists.get();
-    return now.kind === "ready" && now.index === index;
-  };
+  // metadata changed while Movies drew. So collections are made a few slices per task.
   const tk = tmdbKind(kind);
-  let result: Collections | null;
-  try {
-    result = await inTasks(
-      madeSteps({
-        kind,
-        titles: kindOf(index, kind).titles,
-        language,
-        metadata: (id) => metadata.get(tk, id),
-        names: (id) => metadata.name(tk, id, language),
-        services: metadata.services(tk),
-        expiresAt: (id) => metadata.expiresAt(tk, id),
-        now: Date.now(),
-      }),
-      current,
-    );
-  } finally {
-    if (making.get(kind) === index) making.delete(kind);
-  }
-  if (!result || !current()) return;
-  made[kind].set({ index, version, collections: result });
-  collect(kind);
+  const collections = await inTasks(
+    madeSteps({
+      kind,
+      titles: kindOf(index, kind).titles,
+      language,
+      metadata: (id) => metadata.get(tk, id),
+      names: (id) => metadata.name(tk, id, language),
+      services: metadata.services(tk),
+      expiresAt: (id) => metadata.expiresAt(tk, id),
+      now: Date.now(),
+    }),
+    wanted,
+  );
+  return collections && { index, version, collections };
 }
 
 /**
@@ -708,12 +776,13 @@ export async function episodesOf(
  * Where a movie or an episode streams from, by the file type its provider lists: a movie's in the
  * lists or this run's answer for its details, an episode's in this run's answer for its series'.
  * Asks the subscription that lists it, under its current login, which the address carries; never
- * a saved record.
+ * a saved record. While the lists are made again with its subscription's in them, it waits for
+ * them (`listedIndex`).
  */
 export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<ProviderFile> {
+  const index = await listedIndex(ref.subscriptionId, signal);
+  // The login that stands now, whichever was signed in while the lists were made again.
   const reading = sourceOf(ref.subscriptionId).provider;
-  const ready = lists.get();
-  if (ready.kind !== "ready") throw new AppFailure({ kind: "no-subscription" });
   const missing = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   const answered = (title: Title) =>
     underLogin(ref.subscriptionId, async (source) => ({
@@ -721,7 +790,7 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
       source,
     }));
   if (ref.kind === "movie") {
-    const title = titleOf(ready.index, "movie", ref);
+    const title = titleOf(index, "movie", ref);
     if (!title) throw missing;
     const listed = title.versions.find((version) => sameOwned(version, ref))?.container;
     if (listed) return reading.titleFile("movie", ref.id, listed, signal);
@@ -729,7 +798,7 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
     return source.provider.titleFile("movie", ref.id, raw.container ?? "mp4", signal);
   }
   const series = { subscriptionId: ref.subscriptionId, id: ref.seriesId };
-  const title = titleOf(ready.index, "series", series);
+  const title = titleOf(index, "series", series);
   if (!title) throw missing;
   const { raw, source } = await answered({ ...title, ...series });
   const episode = raw.episodes.find((each) => each.id === ref.id);
@@ -749,9 +818,15 @@ onRoster(relist);
 relist();
 
 serveViewing({
-  series: (version) => {
-    const now = lists.get();
-    return now.kind === "ready" ? titleOf(now.index, "series", version) : undefined;
-  },
+  // As a title's file is looked up: once the lists show, waiting while its subscription's are
+  // made again, and none when its subscription's titles aren't listed.
+  series: (version) =>
+    listedIndex(version.subscriptionId, AbortSignal.timeout(20_000)).then(
+      (index) => titleOf(index, "series", version),
+      (cause: unknown) => {
+        if (cause instanceof AppFailure) return undefined;
+        throw cause;
+      },
+    ),
   details: detailsOf,
 });

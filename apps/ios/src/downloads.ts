@@ -24,7 +24,7 @@ import { fetchPicture } from "./picture-transfer.ts";
 import { keychainSecrets } from "./secrets.ts";
 import { currentSource, sourceOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
-import { detailsOf, episodesOf, titleFile, titleLists, titleOf } from "./titles.ts";
+import { detailsOf, episodesOf, listedIndex, titleFile, titleOf } from "./titles.ts";
 import { recordProgress } from "./viewing.ts";
 
 // Movies and episodes downloaded to this iPhone: the queue, its one transfer at a time, and the
@@ -1132,7 +1132,8 @@ async function again(record: Stored): Promise<void> {
  * Queues a movie or an episode, the exact version given, keeping its details and artwork for the
  * copy. One already queued or downloaded, or added while this looked it up, answers as it is; a
  * failed one is queued again. Rejects while its subscription isn't signed in, when its provider
- * doesn't list it, or when the subscription was removed or signed in anew meanwhile.
+ * doesn't list it, or when the subscription was removed or signed in anew meanwhile; while the
+ * lists are made again with its subscription's in them, as after another's removal, it waits.
  */
 export async function addDownload(ref: TitleRef): Promise<Download> {
   startDownloads();
@@ -1147,7 +1148,7 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
   if (known) return answer(known);
   const source = sourceOf(ref.subscriptionId);
   const file = await titleFile(ref, AbortSignal.timeout(20_000));
-  const kept = await aboutOf(ref);
+  const kept = await aboutOf(ref, AbortSignal.timeout(20_000));
   if (currentSource(ref.subscriptionId) !== source) {
     throw new AppFailure({ kind: "no-subscription" });
   }
@@ -1274,13 +1275,15 @@ function keepProgress(id: string, position: number, duration: number, since: num
   }
 }
 
-/** What a download keeps of its title's details, and where its pictures are online. */
-async function aboutOf(ref: TitleRef) {
-  const lists = titleLists();
-  if (lists.kind !== "ready") throw new AppFailure({ kind: "no-subscription" });
+/**
+ * What a download keeps of its title's details, and where its pictures are online, from the lists
+ * once they show (`listedIndex`, given up with `signal`).
+ */
+async function aboutOf(ref: TitleRef, signal: AbortSignal) {
+  const index = await listedIndex(ref.subscriptionId, signal);
   const missingTitle = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   if (ref.kind === "movie") {
-    const title = titleOf(lists.index, "movie", ref);
+    const title = titleOf(index, "movie", ref);
     if (!title) throw missingTitle;
     const details = await detailsOf({ ...title, subscriptionId: ref.subscriptionId, id: ref.id });
     return {
@@ -1298,7 +1301,7 @@ async function aboutOf(ref: TitleRef) {
     };
   }
   const version = { subscriptionId: ref.subscriptionId, id: ref.seriesId };
-  const series = titleOf(lists.index, "series", version);
+  const series = titleOf(index, "series", version);
   if (!series) throw missingTitle;
   const details = await detailsOf({ ...series, ...version });
   const seasons = details.kind === "series" ? details.seasons : [];

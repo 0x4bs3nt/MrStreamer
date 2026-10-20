@@ -39,8 +39,8 @@ import { useViewing } from "./viewing.ts";
 // virtualised grids. A row's All, a genre or a service opens its collection on the tab's stack.
 // Genres, services, popular and top rated come from TMDB, so without its metadata they are left
 // out rather than shown empty. Until a kind's first collections are made, still shapes hold For
-// you; what loads, updates or failed by provider is the status line at the bottom, over the
-// titles already there.
+// you; what loads or failed by provider is the status line at the bottom, over the titles
+// already there.
 
 type Tab = "for-you" | "new" | "genres" | "services" | "4k" | "all";
 

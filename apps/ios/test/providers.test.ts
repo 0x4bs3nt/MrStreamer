@@ -1,5 +1,6 @@
-import type { Season, TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { Episode, Season, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
+import { nextUnwatched } from "@mrstreamer/core/viewing/episodes";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Several subscriptions, saved and shown together, and the upgrade from private beta 2's one. The
@@ -759,6 +760,139 @@ describe("everything together", () => {
 });
 
 describe("removing a subscription", () => {
+  /** A film and an episode of the first provider, as a play or a download names them. */
+  async function filesOf(app: App, a: string) {
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No lists");
+    const film = kindOf(lists.index, "movie")
+      .titles.flatMap((title) => title.versions)
+      .find((version) => version.subscriptionId === a && version.container);
+    const show = kindOf(lists.index, "series").titles.find((title) =>
+      title.versions.some((version) => version.subscriptionId === a),
+    );
+    const version = show?.versions.find((each) => each.subscriptionId === a);
+    if (!film || !show || !version) throw new Error("The first provider lists no film or series");
+    const details = await app.detailsOf({ ...show, subscriptionId: a, id: version.id });
+    const episode = details.kind === "series" ? details.seasons[0]?.episodes[0] : undefined;
+    if (!episode) throw new Error("The series lists no episode");
+    const refs: readonly TitleRef[] = [
+      { kind: "movie", subscriptionId: a, id: film.id },
+      {
+        kind: "episode",
+        subscriptionId: a,
+        id: episode.id,
+        seriesId: episode.seriesId,
+        season: episode.season,
+        episode: episode.number,
+      },
+    ];
+    return refs;
+  }
+  const urlsOf = (app: App, refs: readonly TitleRef[], signal = new AbortController().signal) =>
+    Promise.all(refs.map((ref) => app.titleFile(ref, signal).then((file) => file.url)));
+
+  it("finds the remaining provider's film and episode files while the lists are made again", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    const before = await urlsOf(app, refs);
+    await app.remove(b, { keepHistory: true });
+    // The lists are made again without the removed provider's titles: nothing shows meanwhile.
+    expect(app.titleLists().kind).toBe("loading");
+    expect(await urlsOf(app, refs)).toEqual(before);
+    expect(app.titleLists().kind).toBe("ready");
+  });
+
+  /** A series of the first provider's that TMDB knows, which its marks are kept by, with its details. */
+  async function markedSeries(app: App, a: string, episodes: number) {
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No lists");
+    for (const show of kindOf(lists.index, "series").titles) {
+      const version = show.versions.find((each) => each.subscriptionId === a);
+      if (!show.tmdbId || !version) continue;
+      const details = await app.detailsOf({ ...show, subscriptionId: a, id: version.id });
+      if (details.kind !== "series") continue;
+      const numbered = details.seasons
+        .filter((season) => season.number > 0)
+        .flatMap((season) => season.episodes);
+      if (numbered.length < episodes) continue;
+      return { details, numbered, series: { subscriptionId: a, id: version.id } };
+    }
+    throw new Error(`No series of the first provider's with ${episodes} episodes`);
+  }
+  const refOf = (episode: Episode) => ({
+    kind: "episode" as const,
+    subscriptionId: episode.subscriptionId,
+    id: episode.id,
+    seriesId: episode.seriesId,
+    season: episode.season,
+    episode: episode.number,
+  });
+
+  it("keeps a remaining provider's watched episodes for Next while the lists are made again", async () => {
+    const { app, a, b } = await twoProviders();
+    const { details, numbered, series } = await markedSeries(app, a, 2);
+    const [first, watched] = numbered;
+    if (!first || !watched) throw new Error("Too few episodes");
+    const at = { id: first.id, season: first.season, episode: first.number };
+    await app.markEpisode(refOf(watched), true);
+    const before = await app.seriesViewing(series);
+    const next = (read: typeof before) => nextUnwatched(details, at, read.progress, read.marks);
+    expect(next(before)?.id).not.toBe(watched.id);
+
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    // Next, as a play of the first episode asks the record now, passes over the one watched.
+    const during = await app.seriesViewing(series);
+    expect(during.marks).toEqual(before.marks);
+    expect(next(during)?.id).toBe(next(before)?.id);
+  });
+
+  it("marks a remaining provider's episode while the lists are made again, and none once it goes", async () => {
+    const { app, a, b } = await twoProviders();
+    const { numbered, series } = await markedSeries(app, a, 1);
+    const [episode] = numbered;
+    if (!episode) throw new Error("No episode");
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    const mark = await app.markEpisode(refOf(episode), true);
+    expect(mark).toMatchObject({ season: episode.season, episode: episode.number, watched: true });
+    expect((await app.seriesViewing(series)).marks).toEqual([mark]);
+    await app.remove(a, { keepHistory: true });
+    expect(await app.seriesViewing(series)).toMatchObject({ marks: [], progress: [] });
+  });
+
+  it("asks nothing for a provider removed while its request waited", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    const asked = urlsOf(app, refs);
+    await app.remove(a, { keepHistory: true });
+    await expect(asked).rejects.toMatchObject({ error: { kind: "no-subscription" } });
+  });
+
+  it("settles a request that stops waiting at once, with why it stopped", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    await app.remove(b, { keepHistory: true });
+    const controller = new AbortController();
+    const asked = urlsOf(app, refs, controller.signal);
+    controller.abort(new Error("Another title was chosen"));
+    await expect(asked).rejects.toThrow("Another title was chosen");
+    expect(app.titleLists().kind).toBe("loading");
+  });
+
+  it("says why a provider's lists failed rather than waiting or blaming the subscription", async () => {
+    one.failTitles(503);
+    const app = await launch();
+    const a = await app.add({ server: one.url, ...ONE });
+    if (!a) throw new Error("The add was cancelled");
+    await until(() => member(app, a)?.titles.kind === "failed", "the failure");
+    const asked = app.titleFile(firstMovie(one, a), new AbortController().signal);
+    await expect(asked).rejects.toMatchObject({ error: { kind: "provider-error", status: 503 } });
+    one.failTitles(null);
+  });
+
   it("stops what plays from it, and only that", async () => {
     const { app, a, b } = await twoProviders();
     const [first] = channels(app).filter((each) => each.subscriptionId === a);
@@ -893,7 +1027,11 @@ describe("removing a subscription", () => {
     expect(stateOf().titleVersions[b]).toBeDefined();
 
     await app.remove(b, { keepHistory: true });
-    await until(() => !both(now(shared)), "the film from the first alone");
+    // The removed provider's titles go at once; the film shows again once listed from the first.
+    await until(() => {
+      const found = titlesOf(app).find((each) => each.tmdbId === shared.tmdbId);
+      return found !== undefined && !both(found);
+    }, "the film from the first alone");
     expect(app.pickedVersion(now(shared), app.readState())).toBeNull();
     expect(stateOf().titleVersions[b]).toBeDefined();
     expect(await app.add({ server: two.url, ...TWO })).toBe(b);
