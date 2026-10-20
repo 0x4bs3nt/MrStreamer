@@ -26,6 +26,15 @@ export type IpcHandlers = {
   ) => Effect.Effect<IpcOutput<M>, Failed>;
 };
 
+/** A domain adapter owns every method under its prefixes in the shared contract. */
+export type HandlersFor<D extends IpcDomain> = Pick<
+  IpcHandlers,
+  Extract<IpcMethod, `${D}.${string}`>
+>;
+
+type DomainOf<M> = M extends `${infer D}.${string}` ? D : never;
+type IpcDomain = DomainOf<IpcMethod>;
+
 /**
  * Registers every IPC method. Input is validated against its schema before the handler runs on
  * `run`, the main runtime, and any failure resolves to a typed error instead of a rejected promise.
