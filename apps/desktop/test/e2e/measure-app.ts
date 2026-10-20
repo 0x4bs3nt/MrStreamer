@@ -60,6 +60,8 @@ const { values: options, positionals } = parseArgs({
     "covered-idle": { type: "boolean", default: false },
     "idle-probes": { type: "boolean", default: false },
     "live-profile": { type: "boolean", default: false },
+    "steady-profile": { type: "boolean", default: false },
+    "query-retention": { type: "boolean", default: false },
     "diagnostics-only": { type: "boolean", default: false },
     "host-condition": { type: "string", default: "diagnostic" },
     revision: { type: "string" },
@@ -67,9 +69,15 @@ const { values: options, positionals } = parseArgs({
   allowPositionals: true,
 });
 const [executable, ...rest] = positionals;
-const probes = options["idle-probes"] || options["live-profile"];
+const probes =
+  options["idle-probes"] ||
+  options["live-profile"] ||
+  options["steady-profile"] ||
+  options["query-retention"];
 if (options["diagnostics-only"] && !probes)
-  throw new Error("--diagnostics-only requires --idle-probes or --live-profile");
+  throw new Error(
+    "--diagnostics-only requires --idle-probes, --live-profile, --steady-profile or --query-retention",
+  );
 if (options["covered-idle"] && probes)
   throw new Error("Run --covered-idle separately from the CPU/profile probes");
 if (!["diagnostic", "quiet"].includes(options["host-condition"]))
@@ -266,6 +274,8 @@ try {
       output: `${output}.probes.json`,
       idle: options["idle-probes"],
       liveProfile: options["live-profile"],
+      steadyProfile: options["steady-profile"],
+      queryRetention: options["query-retention"],
       hostCondition: options["host-condition"],
     });
   }

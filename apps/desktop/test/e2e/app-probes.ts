@@ -8,6 +8,14 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProcessMetric } from "electron";
 import { delay, key, revealFixtureList, waitFor, type Page } from "./app.ts";
+import {
+  queryRetention,
+  retentionRecord,
+  steadyProfiles,
+  steadyRecord,
+  type AttributionContext,
+  type CpuProfile,
+} from "./app-attribution.ts";
 
 const WINDOW_MS = 60_000;
 const SAMPLE_MS = 5_000;
@@ -32,17 +40,6 @@ type Sample = {
   descendants:
     | { status: "supported"; ticksPerSecond: number; processes: LinuxProcess[] }
     | { status: "unsupported"; reason: string };
-};
-type CpuProfile = {
-  nodes: {
-    id: number;
-    callFrame: { functionName: string; url: string; lineNumber: number };
-    hitCount?: number;
-  }[];
-  samples: number[];
-  timeDeltas: number[];
-  startTime: number;
-  endTime: number;
 };
 
 /** A missing/reset counter is unknown, never zero. Percent uses one logical CPU as 100%. */
@@ -275,6 +272,8 @@ export async function runAppProbes(options: {
   output: string;
   idle: boolean;
   liveProfile: boolean;
+  steadyProfile: boolean;
+  queryRetention: boolean;
   hostCondition: string;
 }) {
   const { main, page, app, output } = options;
@@ -288,9 +287,11 @@ export async function runAppProbes(options: {
   }[] = [];
   const calibration: unknown[] = [];
   const profiles: unknown[] = [];
+  let steady: ReturnType<typeof steadyRecord> | undefined;
+  let retention: ReturnType<typeof retentionRecord> | undefined;
   const identity = bundleIdentity(options.executable, options.appDirectory);
   const harnessIdentity = Object.fromEntries(
-    ["measure-app.ts", "app-probes.ts", "app.ts"].map((file) => [
+    ["measure-app.ts", "app-probes.ts", "app-attribution.ts", "app.ts"].map((file) => [
       file,
       createHash("sha256")
         .update(readFileSync(join(import.meta.dirname, file)))
@@ -330,6 +331,8 @@ export async function runAppProbes(options: {
           calibration,
           windows,
           profiles,
+          steady,
+          retention,
           actions,
         },
         null,
@@ -540,7 +543,29 @@ export async function runAppProbes(options: {
       await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[data-view="watch"]')`));
       await list();
     }
+    const attribution: AttributionContext = {
+      page,
+      main,
+      output,
+      rendererPid: owned.rendererPid,
+      action,
+      save,
+      click,
+      list,
+      metrics: async () => (await snapshot()).metrics,
+    };
+    if (options.steadyProfile) {
+      await command(page, "Emulation.setFocusEmulationEnabled", { enabled: true });
+      steady = steadyRecord();
+      await steadyProfiles(attribution, steady);
+    }
+    if (options.queryRetention) {
+      await command(page, "Emulation.setFocusEmulationEnabled", { enabled: true });
+      retention = retentionRecord();
+      await queryRetention(attribution, retention);
+    }
     if (options.liveProfile) {
+      await list();
       const targets = [
         ["main", main],
         ["renderer", page],

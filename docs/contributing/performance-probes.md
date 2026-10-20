@@ -91,6 +91,101 @@ samples, including idle/program frames; they exclude other worker isolates, nati
 GPU and painted frames. The existing `pnpm verify:desktop guide-grid-scroll` remains the deeper
 20k-channel/two-day renderer/frame diagnostic. Native scroll/paint acceptance stays separate.
 
+## Attribution probes
+
+The idle windows say how much CPU each process uses; they cannot say what runs. Two optional
+probes attribute recurring work and retained query data in the same instance, after any idle
+windows and before `--live-profile`. Both read Electron's private `ipcMain` invoke registry
+for diagnosis only, as `--covered-idle` does. Only `--query-retention` also reads React's root
+container fiber. A missing required structure fails that capture instead of reporting zero.
+Both probes restore the original invoke handlers on success or failure. If the session prevents
+restoration, its cleanup error is retained alongside any capture failure.
+
+`--steady-profile` keeps a channel playing and observes three states in turn: Live TV All
+channels with its compact preview, Watch over that page, and Home's muted preview. Each gets a
+60-second main and renderer V8 profile at 1,000 microseconds with the invoke calls made during it,
+then a separate 20-second Chromium trace with the profiler stopped. Profiles are summarized by
+function self time with their three heaviest stacks; `(idle)`, `(program)` and
+`(garbage collector)` stay separate. Program time is outside attributed JS and does not identify
+a native CPU owner. Invalid intervals, missing nodes/sample references, or empty, mismatched or
+non-finite time deltas fail the capture. Traces
+report each thread's outer-task thread time and the renderer main thread's inclusive timeline
+events and script entry points. Thread time covers traced tasks only; work outside them is not
+attributed. A thread with missing task durations reports partial or unsupported CPU, retaining
+observed time, observed/missing task counts and the missing tasks' wall time. Only a thread with
+all outer-task durations has a complete CPU total. Timeline/script
+aggregates retain wall time and count when thread durations are missing. Their `cpuMs` is null,
+with an explicit unsupported/partial CPU observation and its observed/missing event counts.
+Complete CPU totals rank first; incomplete aggregates follow by wall time. Equal-start nested
+tasks count their outermost interval once, independent of input order. A trace without a unique
+expected renderer main thread and task observations fails, as does an empty trace. Completion
+has a 30-second deadline and rejects session closure. Explicit CDP data loss fails the capture
+after retaining the supplied raw stream. Listeners are removed on success or failure. Stream
+reads have a separate 120-second total deadline, and stream close has a 10-second bound. A close
+failure also fails the capture; if reading failed too, both errors are retained. The profiler and
+tracing add work, so these windows explain where time goes, not how much an idle window costs.
+
+Each steady window and individual profile has ISO `startedAt`/`endedAt` wall-clock brackets;
+the separate trace has its own brackets. These span the start/stop protocol commands, including
+their response latency. For main-profile load alignment use that profile's brackets. Select the
+nearest unique load-log sample at or before each boundary, at most 10 seconds old. Missing,
+stale or ambiguous samples make a window ineligible. Historical action timestamps around
+`Begin <state> steady profile` and `Trace <state> for 20 seconds` are stronger anchors than file
+mtimes; an mtime-derived interval is a labeled historical fallback only. Load alignment alone
+does not approve a clean reference set, exclusions or a floor. Freeze the unchanged-parent
+reference samples and twice-clean-median rule before candidate data; retain every rejection.
+
+`--query-retention` browses All channels, every topic, the first four provider lists of the
+first country, the guide grid and one country filter applied and cleared, then opens one details
+sheet in Movies and in Series. At each lifecycle point it records the renderer's React Query
+entries with their observers, activity, `gcTime` and the JSON UTF-8 size of their data; renderer
+and main V8 heaps after two collections; main's `process.memoryUsage()`; Electron's per-process
+working sets; and the invoke calls and JSON reply sizes since the previous point. The points are
+the churn's start and end, Home, Home after a timed warm return to Live TV, Home once the longest
+inactive query's own `gcTime` plus 15 seconds has passed, and Live TV after a timed cold return.
+One renderer heap snapshot is retained at the point of most inactive data. JSON size is a
+serialization measure, not heap retention; heaps exclude worker isolates; working sets include
+native allocations and are not heap. The fixture holds only synthetic data.
+
+Timed returns use the existing renderer mutation observer and bounded 5 ms probe, with the
+click and rows-ready predicate in the same renderer observation. `retention.returnTiming`
+retains that configured resolution and the known-delay calibration samples. Calibration of an
+idle simple predicate does not establish observation error under load. Reply sizing is disabled
+during timed returns, while call counting stays on; `ipcReplySizing: false` records that choice.
+Zero reply bytes in those counts mean sizing was disabled. Other retention intervals size replies.
+Historical returns without renderer timing metadata used a harness clock and a 250 ms `waitFor`
+poll; keep them labeled
+quantized and recollect unchanged-parent timings before applying R3. Its existing timing rule
+and floor remain unchanged.
+
+Query inventory hashes are truncated to 240 characters. A full-catalogue count requires a
+complete parseable All key, all four filters empty, and successful populated data. Truncated
+or unparseable keys cannot establish that count. These counts do not prove content identity.
+Local aggregates retain unavailable observations and their capture IDs. A rule range is
+unavailable if any required completed capture lacks the observation; its sample count cannot
+silently shrink. Partial and unsupported trace threads stay in the inventory, with no complete
+CPU total for a group containing either. Missing load logs retain every affected window as
+ineligible and list the missing input. These reducers select no exclusions or thresholds.
+
+Future stream-filter bench outputs carry no historical numerical floor. The v1 recipe keeps
+output hashing and byte counting inside the timed loop. Preserve historical receipts with their
+original identities; current-parent floors require fresh unchanged-parent calibration.
+
+Run them separately from the idle calibration when CPU windows matter, for example:
+
+```sh
+xvfb-run -a node apps/desktop/test/e2e/measure-app.ts \
+  --runs 1 --subscriptions 2 --steady-profile --query-retention --diagnostics-only \
+  --revision <measured-build-sha> --json .local/measurements/attribution.json \
+  apps/desktop/node_modules/electron/dist/electron -- --no-sandbox <frozen-app-directory>
+```
+
+Profiles, traces and the snapshot sit beside the probe file as
+`<json>.probes.json.steady-<state>.<main|renderer>.cpuprofile`,
+`<json>.probes.json.steady-<state>.trace.json` and `<json>.probes.json.retention.heapsnapshot`.
+Each steady window and retention point is saved to the probe file as it completes, so a failed
+capture keeps what it observed.
+
 `<json>.probes.json` checkpoints every raw sample and retains full hashes for the runtime
 folder and the app's package/output files, process/runtime identity, calibration and failures.
 The hashes are rechecked after success. The main output retains host/tool/build metadata,

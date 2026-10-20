@@ -70,6 +70,8 @@ export async function connect(
   let nextId = 1;
   const pending = new Map<number, (message: { result?: unknown; error?: unknown }) => void>();
   const listeners = new Map<string, (params: unknown) => void>();
+  const closeListeners = new Set<() => void>();
+  let closed = false;
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(String(event.data)) as {
       id?: number;
@@ -82,10 +84,17 @@ export async function connect(
     else if (message.method) listeners.get(message.method)?.(message.params);
   });
   socket.addEventListener("close", () => {
+    closed = true;
     for (const resolve of pending.values()) resolve({ error: "DevTools connection closed" });
+    for (const listener of closeListeners) listener();
+    closeListeners.clear();
   });
   const send = (method: string, params: Record<string, unknown> = {}, timeoutMs = 10_000) =>
     new Promise<{ result?: unknown; error?: unknown }>((resolve) => {
+      if (closed) {
+        resolve({ error: "DevTools connection closed" });
+        return;
+      }
       const id = nextId++;
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -111,6 +120,14 @@ export async function connect(
       listeners.set(method, listener);
       return () => {
         if (listeners.get(method) === listener) listeners.delete(method);
+      };
+    },
+    /** Reports session closure, including a session that closed before registration. */
+    onClose(listener: () => void): () => void {
+      if (closed) listener();
+      else closeListeners.add(listener);
+      return () => {
+        closeListeners.delete(listener);
       };
     },
     async evaluate<T>(expression: string, timeoutMs = 10_000): Promise<T> {
