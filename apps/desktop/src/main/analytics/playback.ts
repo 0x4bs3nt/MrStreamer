@@ -15,7 +15,7 @@ import { appFailure } from "./operations.ts";
  * `observe`'s note; success, cancellation and supersession report nothing.
  */
 export function observeOpen<A>(
-  coordination: Effect.Success<typeof PlaybackCoordination>,
+  coordination: Pick<PlaybackCoordination["Service"], "begin" | "passed">,
   observe: () => (failure: AnalyticsFailure, diagnostic?: PlaybackDiagnostic) => void,
   open: (turn: number) => Effect.Effect<A, Failed>,
   before: Effect.Effect<void, Failed> = Effect.void,

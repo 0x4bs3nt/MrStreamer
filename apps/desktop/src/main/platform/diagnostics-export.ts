@@ -247,3 +247,5 @@ export function diagnosticsExporter(dataDir: string, context: () => Promise<Diag
     },
   };
 }
+
+export type DiagnosticsExporter = ReturnType<typeof diagnosticsExporter>;

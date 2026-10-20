@@ -50,3 +50,5 @@ export const preferencePublication = (owners: {
         }),
     };
   });
+
+export type PreferencePublication = Effect.Success<ReturnType<typeof preferencePublication>>;

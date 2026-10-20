@@ -1,14 +1,12 @@
 // Composition root: creates the window and wires the services to IPC.
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   app,
   powerMonitor,
   autoUpdater,
   BrowserWindow,
-  dialog,
   Menu,
   powerSaveBlocker,
   protocol,
@@ -19,28 +17,33 @@ import {
 } from "electron";
 import { ARTWORK_SCHEME, DOWNLOAD_ARTWORK } from "@mrstreamer/contracts/downloads";
 import type { IpcEvent, IpcEvents, IpcInput } from "@mrstreamer/contracts/ipc";
-import type { LiveChannel } from "@mrstreamer/contracts/library";
-import type { ArchiveWindow } from "@mrstreamer/contracts/playback";
-import { ownedId } from "@mrstreamer/contracts/subscription";
-import { streamsToPlay } from "@mrstreamer/core/catalogue/variants";
-import { archiveVariants } from "@mrstreamer/core/catchup";
 import { Diagnostics } from "@mrstreamer/core/diagnostics";
-import { Failed, failedWith } from "@mrstreamer/core/failure";
+import { Failed } from "@mrstreamer/core/failure";
 import { Guide } from "@mrstreamer/core/guide/service";
-import { seriesEpisodeSeasons } from "@mrstreamer/core/ondemand/details";
 import { discovery, metadataFileFor } from "@mrstreamer/core/updates/feed";
 import { ViewingRecord } from "@mrstreamer/core/viewing/service";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Stream from "effect/Stream";
-import { t } from "@mrstreamer/core/i18n";
 import { WINDOW_BAR } from "../shared/window-bar.ts";
 import { analyticsBuild } from "./analytics/build.ts";
 import { Analytics } from "./analytics/service.ts";
-import { observeOpen } from "./analytics/playback.ts";
 import { profileOrigin } from "./analytics/storage.ts";
 import { analyticsTransport } from "./analytics/transport.ts";
-import { emit, registerIpc } from "./ipc.ts";
+import { subscriptionHandlers } from "./handlers/subscriptions.ts";
+import { libraryHandlers } from "./handlers/library.ts";
+import { guideHandlers } from "./handlers/guide.ts";
+import { titleHandlers } from "./handlers/titles.ts";
+import { playbackHandlers } from "./handlers/playback.ts";
+import { subtitleHandlers } from "./handlers/subtitles.ts";
+import { outputHandlers } from "./handlers/output.ts";
+import { viewingHandlers } from "./handlers/viewing.ts";
+import { downloadHandlers } from "./handlers/downloads.ts";
+import { analyticsHandlers } from "./handlers/analytics.ts";
+import { preferenceHandlers } from "./handlers/preferences.ts";
+import { updateHandlers } from "./handlers/updates.ts";
+import { aboutHandlers } from "./handlers/about.ts";
+import { emit, registerIpc, type IpcHandlers } from "./ipc.ts";
 import { applyLanguage, languageFor } from "./language.ts";
 import { miniPlayer, miniPlayerAvailable } from "./mini-player.ts";
 import { electronInstaller } from "./platform/installer.ts";
@@ -636,332 +639,69 @@ async function start(): Promise<void> {
     ),
   );
 
-  /**
-   * The channel's streams to try, by id: the one asked for, the one picked for it in its
-   * subscription before, or Automatic's. For `archive`, of those whose catch-up keeps it alone,
-   * which fails with `catch-up` when none does. Fails when the channel has none of them.
-   */
-  const streamsOf = (channel: LiveChannel, variant: string | undefined, archive?: ArchiveWindow) =>
-    Effect.gen(function* () {
-      const preferences = {
-        ...(yield* settings.get),
-        ...(yield* settings.ofSubscription(channel.subscriptionId)),
-      };
-      const playable = archive
-        ? {
-            variants: yield* Effect.try({
-              try: () => archiveVariants(channel, archive, Date.now()),
-              catch: failedWith,
+  const pickList: IpcHandlers["output.pick"] = ({ anchor, request }) =>
+    Effect.suspend(() => {
+      const window = mainWindow;
+      const asked = window && listPlace(window, anchor);
+      // No window on screen for the list to open from: nothing changes.
+      if (!window || !asked) return output.status;
+      // The list is this window's from here on, also while it waits for the window to
+      // settle: `followList` ends it with the window, the output service with what the
+      // viewer chooses next, and the page with the view it asked from, by its name.
+      const mine = { window, page: asked.page };
+      listedFrom = mine;
+      return output
+        .pick(async (signal) => {
+          await settledInFullScreen(window, signal);
+          // The window closed or went elsewhere meanwhile, or another took its place, which
+          // leaves the place asked for behind: no list opens.
+          const from = mainWindow === window ? listPlace(window, anchor) : null;
+          if (!from || !samePage(from.page, asked.page)) return null;
+          // Nor when the viewer went to another app while the window settled: the list
+          // would open over that app, and its helper would take the keyboard from it. A
+          // window that had no keyboard when asked isn't held to this: leaving the mini
+          // player takes it away for a moment, and an O can arrive in that. Once the helper
+          // is asked for the list, it follows where the viewer goes itself (see
+          // native/airplay/Picker.swift), and takes the keyboard from this window to do so.
+          return asked.front && !from.front ? null : from.place;
+        }, request)
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (listedFrom === mine) listedFrom = null;
             }),
-          }
-        : channel;
-      const variants = streamsToPlay(playable, preferences, variant).map(({ id }) => id);
-      if (variants.length > 0) return variants;
-      return yield* new Failed({
-        error: { kind: "channel-not-found", channelId: variant ?? channel.id },
-      });
+          ),
+        );
     });
 
   registerIpc(
     (effect) => runtime.runPromiseExit(effect),
     {
-      "subscription.list": () => subscriptions.list,
-      "playlist.groups": ({ subscriptionId, query, offset, limit }) =>
-        subscriptions.playlistGroups(subscriptionId, query, offset, limit),
-      "playlist.omissions": ({ subscriptionId, offset, limit }) =>
-        subscriptions.playlistOmissions(subscriptionId, offset, limit),
-      "playlist.map": ({ subscriptionId, group, mode }) =>
-        roster.mapPlaylist(subscriptionId, group, mode),
-      "subscription.add": (login) => roster.add(login),
-      "subscription.update": ({ subscriptionId, ...change }) =>
-        roster.update(subscriptionId, change),
-      "subscription.remove": ({ subscriptionId, eraseViewing }) =>
-        Effect.as(roster.remove(subscriptionId, eraseViewing ?? false), null),
-      "subscription.recheck": ({ subscriptionId }) => subscriptions.recheck(subscriptionId),
-      "subscription.preferences": ({ subscriptionId }) => settings.ofSubscription(subscriptionId),
-      "subscription.updatePreferences": ({ subscriptionId, patch }) =>
-        settings.updateSubscription(subscriptionId, patch),
-      "liveBrowse.get": () => settings.liveBrowse,
-      "liveBrowse.remember": (selection) => settings.rememberLiveBrowse(selection),
-      "library.browse": (query) => library.browse(query),
-      "library.status": () => library.status,
-      "library.categories": () => library.categories,
-      "library.channels": (filter) => library.channels(filter),
-      "library.searchGroups": () => library.searchGroups,
-      "library.channel": ({ channel }) => library.channel(channel),
-      "library.refresh": ({ subscriptionId }) =>
-        Effect.gen(function* () {
-          const source = yield* subscriptions.sourceOf(subscriptionId);
-          return source.kind === "m3u"
-            ? (yield* roster.refreshPlaylist(subscriptionId)).catalogue
-            : yield* library.refresh(subscriptionId);
-        }),
-      "guide.listings": ({ channels }) => guide.listings(channels),
-      "guide.schedule": ({ channel, from, until }) => guide.schedule(channel, from, until),
-      "guide.range": ({ channels, from, to }) => guide.range(channels, from, to),
-      "guide.programme": ({ channel, guide: guideId, start }) =>
-        guide.programme(channel, guideId, start),
-      "guide.search": ({ query }) => guide.search(query),
-      // The transport owns cancellation and validates sender/frame ownership.
-      "guide.cancelSearch": () => Effect.succeed(null),
-      "guide.searchList": ({ query, until, request: _request, ...list }) =>
-        Effect.flatMap(library.channels(list), (channels) =>
-          guide.searchChannels(query, channels, until),
-        ),
-      "guide.status": () => guide.status,
-      "guide.refresh": ({ subscriptionId }) =>
-        Effect.gen(function* () {
-          yield* guide.refresh(subscriptionId);
-          const status = (yield* guide.status).find(
-            (each) => each.subscriptionId === subscriptionId,
-          );
-          // Removed while its guide downloaded.
-          return status ?? (yield* new Failed({ error: { kind: "no-subscription" } }));
-        }),
-      "guide.sources": () => guide.sources,
-      "guide.addSource": ({ address, label }) => guide.addSource(address, label),
-      "guide.removeSource": ({ id }) => Effect.as(guide.removeSource(id), null),
-      "guide.moveSource": ({ id, by }) => Effect.as(guide.moveSource(id, by), null),
-      "guide.refreshSource": ({ id }) => guide.refreshSource(id),
-      "guide.renameSource": ({ id, label }) => guide.renameSource(id, label),
-      "guide.map": ({ subscriptionId, channelId, guide: ref, revision }) =>
-        guide.map(subscriptionId, channelId, ref, revision),
-      "guide.mapChannels": (query) => guide.mapChannels(query),
-      "guide.mapOptions": (query) => guide.mapOptions(query),
-      "ondemand.status": () => onDemand.status,
-      "ondemand.refresh": ({ subscriptionId }) =>
-        Effect.gen(function* () {
-          const source = yield* subscriptions.sourceOf(subscriptionId);
-          return source.kind === "m3u"
-            ? (yield* roster.refreshPlaylist(subscriptionId)).titles
-            : yield* onDemand.refresh(subscriptionId);
-        }),
-      "ondemand.search": ({ query }) => onDemand.search(query),
-      "ondemand.searchKind": ({ kind, query, filters }) =>
-        onDemand.searchKind(kind, query, filters),
-      "ondemand.filterOptions": ({ kind }) => onDemand.filterOptions(kind),
-      "ondemand.details": ({ kind, version }) =>
-        Effect.tap(onDemand.details(kind, version), (details) =>
-          // What a series lists now says where its marks have it go on, on Home as in the sheet.
-          details.kind === "series"
-            ? Effect.ignore(viewing.relist(randomUUID(), version, seriesEpisodeSeasons(details)))
-            : Effect.void,
-        ),
-      "ondemand.season": ({ series, season }) => onDemand.season(series, season),
-      "ondemand.titles": ({ kind, versions }) => onDemand.titles(kind, versions),
-      "ondemand.rows": ({ kind, tab, like }) => onDemand.rows(kind, tab, like),
-      "ondemand.related": ({ kind, version }) => onDemand.related(kind, version),
-      "ondemand.recommendations": ({ seeds }) => onDemand.recommendations(seeds),
-      "ondemand.tiles": ({ kind, of }) => onDemand.tiles(kind, of),
-      "ondemand.collection": (query) => onDemand.collection(query),
-      "playback.open": (
-        {
-          channel: named,
-          variant,
-          archive,
-          decoders,
-          repair,
-          audio,
-          audioLanguage,
-          preview,
-          measurement,
-        },
-        frame,
-      ) => {
-        const token = analytics.admitPlayback("live", preview ? undefined : measurement, frame);
-        return observeOpen(
-          coordination,
-          () => analytics.playbackFailureObserver(token ?? undefined),
-          (turn) =>
-            Effect.gen(function* () {
-              const channel = yield* library.channel(named);
-              const variants = yield* streamsOf(channel, variant, archive);
-              return yield* playback.open(ownedId(channel), decoders, {
-                variants,
-                archive: archive ?? null,
-                repair: repair ?? false,
-                audio: audio ?? null,
-                audioLanguage: audioLanguage ?? null,
-                preview: preview ?? false,
-                turn,
-              });
-            }),
-          Effect.gen(function* () {
-            // A page's preview never takes the provider's connection from a receiver. Refused
-            // here while one is the output, also one that is gone with nothing open; the playback
-            // service looks again when the open takes its turn, for one that began meanwhile.
-            if (preview && (yield* output.remote)) {
-              return yield* new Failed({
-                error: { kind: "unexpected", detail: t("A receiver has playback.") },
-              });
-            }
-          }),
-        );
-      },
-      "subtitles.settings": () => onlineSubtitles.settings,
-      "subtitles.configure": ({ preferences, credentials }) =>
-        onlineSubtitles.configure(preferences, credentials),
-      "subtitles.search": ({ sessionId, languages }) =>
-        onlineSubtitles.search(sessionId, languages),
-      "subtitles.choose": ({ sessionId, resultId }) => onlineSubtitles.choose(sessionId, resultId),
-      "subtitles.saved": ({ sessionId }) => onlineSubtitles.saved(sessionId),
-      "subtitles.timing": ({ sessionId, timing, selection }) =>
-        onlineSubtitles.timing(sessionId, timing, selection),
-      "subtitles.show": ({ sessionId, selection }) =>
-        Effect.as(onlineSubtitles.show(sessionId, selection), null),
-      "subtitles.hide": ({ sessionId }) => Effect.as(onlineSubtitles.hide(sessionId), null),
-      "subtitles.forget": ({ sessionId }) => Effect.as(onlineSubtitles.forget(sessionId), null),
-      "subtitles.cancel": ({ sessionId }) => Effect.as(onlineSubtitles.cancel(sessionId), null),
-      "playback.openTitle": ({ title, decoders, measurement }, frame) => {
-        const token = analytics.admitPlayback("vod", measurement, frame);
-        return observeOpen(
-          coordination,
-          () => analytics.playbackFailureObserver(token ?? undefined),
-          (turn) =>
-            Effect.gen(function* () {
-              // What plays goes first, whichever subscription it is of, so no provider sees a
-              // connection beside the one about to open.
-              yield* playback.closeAll;
-              const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-              return yield* playback.openTitle(title, url, decoders, {
-                turn,
-                revision,
-                headers,
-                listingKey,
-              });
-            }),
-        );
-      },
-      "playback.openCopy": ({ copy, decoders, measurement }, frame) => {
-        const token = analytics.admitPlayback("vod", measurement, frame);
-        return observeOpen(
-          coordination,
-          () => analytics.playbackFailureObserver(token ?? undefined),
-          (turn) =>
-            Effect.gen(function* () {
-              return yield* playback.openCopy(yield* downloads.copy(copy), decoders, turn);
-            }),
-        );
-      },
-      "playback.close": ({ sessionId }) => Effect.as(playback.close(sessionId), null),
-      "playback.closeAll": () =>
-        Effect.andThen(coordination.begin, Effect.as(playback.closeAll, null)),
-      "playback.diagnostic": ({ sessionId }) => playback.diagnostic(sessionId),
-      "playback.failure": ({ sessionId, selector }) => playback.failure(sessionId, selector),
-      "playback.tracks": ({ sessionId }) => playback.tracks(sessionId),
-      "playback.playing": ({ sessionId }) => playback.playing(sessionId),
-      "output.status": () => output.status,
-      "output.scan": ({ on }) => Effect.as(output.scan(on), null),
-      "output.connect": ({ receiverId }) => output.connect(receiverId),
-      "output.pick": ({ anchor, request }) =>
-        Effect.suspend(() => {
-          const window = mainWindow;
-          const asked = window && listPlace(window, anchor);
-          // No window on screen for the list to open from: nothing changes.
-          if (!window || !asked) return output.status;
-          // The list is this window's from here on, also while it waits for the window to
-          // settle: `followList` ends it with the window, the output service with what the
-          // viewer chooses next, and the page with the view it asked from, by its name.
-          const mine = { window, page: asked.page };
-          listedFrom = mine;
-          return output
-            .pick(async (signal) => {
-              await settledInFullScreen(window, signal);
-              // The window closed or went elsewhere meanwhile, or another took its place, which
-              // leaves the place asked for behind: no list opens.
-              const from = mainWindow === window ? listPlace(window, anchor) : null;
-              if (!from || !samePage(from.page, asked.page)) return null;
-              // Nor when the viewer went to another app while the window settled: the list
-              // would open over that app, and its helper would take the keyboard from it. A
-              // window that had no keyboard when asked isn't held to this: leaving the mini
-              // player takes it away for a moment, and an O can arrive in that. Once the helper
-              // is asked for the list, it follows where the viewer goes itself (see
-              // native/airplay/Picker.swift), and takes the keyboard from this window to do so.
-              return asked.front && !from.front ? null : from.place;
-            }, request)
-            .pipe(
-              Effect.ensuring(
-                Effect.sync(() => {
-                  if (listedFrom === mine) listedFrom = null;
-                }),
-              ),
-            );
-        }),
-      "output.closePicker": ({ request }) => Effect.as(output.closePicker(request), null),
-      "output.disconnect": () => Effect.as(output.disconnect, null),
-      "output.playChannel": (
-        { channel: named, variant, audio, audioLanguage, name, measurement },
-        frame,
-      ) => {
-        const token = analytics.admitPlayback("live", measurement, frame);
-        const control =
-          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
-            ? measurement.control
-            : undefined;
-        return observeOpen(
-          coordination,
-          () => analytics.playbackFailureObserver(token ?? undefined),
-          (turn) =>
-            Effect.gen(function* () {
-              const channel = yield* library.channel(named);
-              const variants = yield* streamsOf(channel, variant);
-              return yield* output.playChannel(ownedId(channel), {
-                variants,
-                audio: audio ?? null,
-                audioLanguage: audioLanguage ?? null,
-                shown: { name },
-                turn,
-                measurement: control,
-              });
-            }),
-        );
-      },
-      "output.openTitle": ({ title, since, measurement }, frame) => {
-        const token = analytics.admitPlayback("vod", measurement, frame);
-        const control =
-          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
-            ? measurement.control
-            : undefined;
-        return observeOpen(
-          coordination,
-          () => analytics.playbackFailureObserver(token ?? undefined),
-          (turn) =>
-            Effect.gen(function* () {
-              const { url, revision, headers, listingKey } = yield* onDemand.file(title);
-              return yield* output.openTitle(title, url, since, {
-                turn,
-                measurement: control,
-                revision,
-                headers,
-                listingKey,
-              });
-            }),
-        );
-      },
-      "output.playTitle": (
-        { sessionId, measurement, position, audio, subtitle, paused, name, detail, artworkUrl },
-        frame,
-      ) => {
-        analytics.admitPlayback("vod", measurement, frame);
-        const control =
-          measurement && analytics.isPlaybackControlCurrent(measurement.control, frame)
-            ? measurement.control
-            : undefined;
-        const failedBeforeLoad = analytics.receiverLoadFailureObserver(control, frame);
-        return output.playTitle(sessionId, {
-          measurement: control,
-          onPreloadFailure: failedBeforeLoad,
-          position,
-          audio,
-          subtitle,
-          paused,
-          shown: { name, detail, artworkUrl },
-        });
-      },
-      "output.command": ({ generation, ...command }) =>
-        Effect.as(output.command(generation, command), null),
-      "output.volume": (volume) => Effect.as(output.setVolume(volume), null),
-      "output.playingTitle": () => output.playingTitle,
+      ...subscriptionHandlers({ subscriptions, roster, settings }),
+      ...libraryHandlers({ library, subscriptions, roster, settings }),
+      ...guideHandlers({ guide, library }),
+      ...titleHandlers({ onDemand, watchlist, viewing, subscriptions, roster }),
+      ...playbackHandlers({
+        playback,
+        coordination,
+        library,
+        onDemand,
+        downloads,
+        output,
+        settings,
+        analytics,
+      }),
+      ...subtitleHandlers({ onlineSubtitles }),
+      ...outputHandlers({ output, coordination, library, onDemand, settings, analytics, pickList }),
+      ...viewingHandlers({ viewing, settings }),
+      ...downloadHandlers({ downloads }),
+      ...analyticsHandlers({ analytics, playback }),
+      ...preferenceHandlers({ preferences }),
+      ...updateHandlers({
+        updates,
+        storeReview: storeCopy ? () => shell.openExternal(STORE_REVIEW) : null,
+      }),
+      ...aboutHandlers({ licences, exporter, window: () => mainWindow }),
       "language.get": () => Effect.succeed(language),
       "language.set": ({ choice }) =>
         Effect.gen(function* () {
@@ -970,155 +710,6 @@ async function start(): Promise<void> {
           applyLanguage(language);
           return language;
         }),
-      "analytics.action": (action) =>
-        Effect.sync(() => {
-          analytics.noteAction(action);
-          return null;
-        }),
-      // Registration happens at invocation, never when an optional reply later settles.
-      "analytics.playbackBegin": ({ kind, measurement }, frame) =>
-        Effect.succeed(analytics.admitPlayback(kind, measurement, frame)),
-      "analytics.playbackResume": ({ kind, measurement }, frame) =>
-        Effect.succeed(analytics.admitPlayback(kind, measurement, frame)),
-      "analytics.playbackBind": ({ kind, measurement, sessionId }, frame) => {
-        const token = analytics.admitPlayback(kind, measurement, frame);
-        return Effect.gen(function* () {
-          const session = yield* playback.measurement(sessionId);
-          if (
-            !token ||
-            !session ||
-            session.kind !== kind ||
-            session.closed.aborted ||
-            analytics.controlledPlayback(measurement.control, frame) !== token
-          )
-            return null;
-          return analytics.bindPlayback(token, "local", session.kind, session.closed);
-        });
-      },
-      "analytics.playbackState": ({ token: control, binding, sequence, state }, frame) => {
-        const token = analytics.controlledPlayback(control, frame);
-        return Effect.sync(() => {
-          if (token) analytics.notePlaybackState(token, binding, sequence, state);
-          return null;
-        });
-      },
-      "analytics.playbackFailure": ({ token: control, binding, failure, diagnostic }, frame) => {
-        const token = analytics.controlledPlayback(control, frame);
-        return Effect.sync(() => {
-          if (token) analytics.notePlaybackFailure(token, binding, failure, diagnostic);
-          return null;
-        });
-      },
-      "analytics.playbackEligible": ({ token: control, eligible }, frame) => {
-        const token = analytics.controlledPlayback(control, frame);
-        return Effect.sync(() => {
-          if (token) analytics.setPlaybackEligible(token, eligible);
-          return null;
-        });
-      },
-      "analytics.playbackEnd": ({ token: control }, frame) => {
-        analytics.endControlledPlayback(control, frame);
-        return Effect.succeed(null);
-      },
-      "analytics.feature": (feature) =>
-        Effect.sync(() => {
-          analytics.noteFeature(feature);
-          return null;
-        }),
-      "preferences.get": () => preferences.get,
-      "preferences.update": (patch) => preferences.update(patch),
-      "viewing.get": () => viewing.state,
-      "viewing.setFavourite": ({ commandId, channel, favourite }) =>
-        viewing.setFavourite(commandId, channel, favourite),
-      "viewing.reorderFavourites": ({ commandId, original, order }) =>
-        viewing.reorderFavourites(commandId, { original, order }),
-      "viewing.recordWatch": ({ commandId, channel }) =>
-        Effect.andThen(
-          settings.updateSubscription(channel.subscriptionId, { lastChannelId: channel.id }),
-          viewing.recordWatch(commandId, channel),
-        ),
-      "viewing.recordProgress": ({ commandId, title, position, duration, since }) =>
-        viewing.recordProgress(commandId, title, position, duration, since),
-      "viewing.removeFromContinue": ({ commandId, titles }) =>
-        viewing.removeFromContinue(commandId, titles),
-      "viewing.finishSeries": ({ commandId, series, since }) =>
-        viewing.finishSeries(commandId, series, since),
-      "viewing.progress": (titles) => viewing.progress(titles),
-      "viewing.episodes": ({ series }) => viewing.episodes(series),
-      "viewing.markEpisode": ({ commandId, episode, watched }) =>
-        viewing.markEpisode(commandId, episode, watched),
-      "viewing.undoMark": ({ commandId, series, revision }) =>
-        Effect.as(viewing.undoMark(commandId, series, revision), null),
-      "watchlist.list": (query) => watchlist.list(query),
-      "watchlist.saved": ({ kind, version }) => watchlist.saved(kind, version),
-      "watchlist.save": ({ kind, version }) => watchlist.save(kind, version),
-      "watchlist.remove": ({ entry }) => Effect.as(watchlist.remove(entry), null),
-      "downloads.list": () => downloads.list,
-      "downloads.add": ({ title }) => downloads.add(title),
-      "downloads.remove": ({ id }) => Effect.as(downloads.remove(id), null),
-      "downloads.retry": ({ id }) => Effect.as(downloads.retry(id), null),
-      "downloads.recordProgress": ({ id, position, duration }) =>
-        Effect.as(downloads.recordProgress(id, position, duration), null),
-      "updates.status": () => updates.status,
-      "updates.setChannel": ({ channel }) => updates.setChannel(channel),
-      "updates.check": () => updates.check,
-      "updates.download": () => updates.download,
-      "updates.cancel": () => Effect.as(updates.cancel, null),
-      "updates.restart": () => Effect.as(updates.restart, null),
-      "updates.dismiss": ({ version }) => updates.dismiss(version),
-      "updates.openStore": () => Effect.as(updates.openStore, null),
-      "updates.rateStore": () =>
-        storeCopy
-          ? Effect.as(
-              Effect.tryPromise({
-                try: () => shell.openExternal(STORE_REVIEW),
-                catch: () =>
-                  new Failed({
-                    error: {
-                      kind: "unexpected",
-                      detail: t("The Microsoft Store could not be opened."),
-                    },
-                  }),
-              }),
-              null,
-            )
-          : Effect.succeed(null),
-      "diagnostics.preview": () =>
-        Effect.tryPromise({
-          try: () => exporter.preview(),
-          catch: () =>
-            new Failed({
-              error: { kind: "unexpected", detail: t("Diagnostics could not be read.") },
-            }),
-        }),
-      "diagnostics.save": ({ id }) =>
-        Effect.tryPromise({
-          try: async () => {
-            const text = exporter.textOf(id);
-            if (text === null) throw new Error("The preview has expired.");
-            if (!mainWindow) return false;
-            // In the interface language: what the system draws around it follows the system's.
-            const selected = await dialog.showSaveDialog(mainWindow, {
-              title: t("Save diagnostics"),
-              buttonLabel: t("Save"),
-              defaultPath: `diagnostics-${app.getVersion()}-${new Date().toISOString().slice(0, 10)}.txt`,
-              filters: [{ name: t("Text"), extensions: ["txt"] }],
-              properties: ["showOverwriteConfirmation"],
-            });
-            if (selected.canceled || !selected.filePath) return false;
-            await writeFile(selected.filePath, text, "utf8");
-            return true;
-          },
-          catch: () =>
-            new Failed({
-              error: {
-                kind: "unexpected",
-                detail: t("Diagnostics could not be saved. Try again."),
-              },
-            }),
-        }),
-      "licences.list": () => licences.list,
-      "licences.text": ({ id }) => licences.text(id),
       "window.miniPlayerAvailable": () => Effect.succeed(miniPlayerAvailable()),
       "window.setMiniPlayer": ({ on }) =>
         Effect.promise(async () => {

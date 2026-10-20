@@ -47,6 +47,22 @@
           }
         ]
       }
+    },
+    {
+      "files": ["apps/desktop/src/main/services/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/ipc.ts", "**/handlers/**"],
+                "message": "Services are independent of IPC transport and request adapters."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
