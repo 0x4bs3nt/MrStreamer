@@ -43,8 +43,8 @@ const MOVIES = 20;
  * Continue watching, the watchlist and Movies for you. On now lists the channels watched lately,
  * or the first of the country last chosen in Live until there are any; their programmes join
  * when iOS reads a guide, favourites when iOS has them. Downloads join Home as they come to iOS.
- * Until channels and movies first come, still shapes hold On now and Movies for you; what loads,
- * updates or failed by provider is the status line at the bottom.
+ * Until channels and movies first come, still shapes hold On now and Movies for you; what loads
+ * or failed by provider is the status line at the bottom.
  */
 export default function Home() {
   const catalogue = useCatalogue();

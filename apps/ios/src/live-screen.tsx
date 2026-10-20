@@ -39,8 +39,8 @@ import { ChannelLogo, ChannelRow, colors, Message, Notice, useRowHeight } from "
 // plays until a tile, a row or Play is pressed, and each plays in Watch. A "country" is the
 // provider's group, which can be a language or a label. Rows and tiles show the channel's category
 // or quality until iOS reads a guide, which brings now and next. While channels first load, still
-// rows hold the list's place; what loads, updates or failed by provider is the status line at the
-// bottom, with Retry and Settings, over the channels already there.
+// rows hold the list's place; what loads or failed by provider is the status line at the bottom,
+// with Retry and Settings, over the channels already there.
 
 type Tab = "for-you" | "categories" | "all";
 

@@ -289,16 +289,33 @@ describe("Live while its channels load", () => {
     expect(line()).toBeNull();
   });
 
-  it("keeps the channels usable while their list updates, then drops the line", () => {
+  it("says nothing while a list loads again over the last one, as at launch and on Retry", () => {
     const last = catalogueOf;
     scenario.members = [member("a", "Northwind", { live: { kind: "loading", last } })];
     scenario.catalogue = { kind: "ready", library, failing: [] };
     open(React.createElement(Live));
-    expect(line()).toBe("Updating channels from Northwind.");
+    expect(line()).toBeNull();
     expect(has("placeholder-rows")).toBe(false);
     expect(text()).toContain("NPO 1");
 
-    scenario.members = [member("a", "Northwind")];
+    // Another provider loading for the first time is still named.
+    scenario.members = [
+      member("a", "Northwind", { live: { kind: "loading", last } }),
+      member("b", "Harbor", { live: { kind: "loading", last: null } }),
+    ];
+    draw(React.createElement(Live));
+    expect(line()).toBe("Loading channels from Harbor.");
+
+    // The load fails: the last list stays, said so, with Retry; Retry's load says nothing again.
+    const failed = { kind: "failed", error: failure, last, since: 0 } as const;
+    scenario.members = [member("a", "Northwind", { live: failed })];
+    scenario.catalogue = { kind: "ready", library, failing: scenario.members };
+    draw(React.createElement(Live));
+    expect(line()).toBe("Couldn't update channels from Northwind. Showing the last list.Retry");
+    press("Retry");
+    expect(scenario.did).toEqual(["retry a"]);
+    scenario.members = [member("a", "Northwind", { live: { kind: "loading", last } })];
+    scenario.catalogue = { kind: "ready", library, failing: [] };
     draw(React.createElement(Live));
     expect(line()).toBeNull();
     expect(text()).toContain("NPO 1");

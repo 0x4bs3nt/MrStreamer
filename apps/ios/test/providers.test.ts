@@ -893,7 +893,11 @@ describe("removing a subscription", () => {
     expect(stateOf().titleVersions[b]).toBeDefined();
 
     await app.remove(b, { keepHistory: true });
-    await until(() => !both(now(shared)), "the film from the first alone");
+    // The removed provider's titles go at once; the film shows again once listed from the first.
+    await until(() => {
+      const found = titlesOf(app).find((each) => each.tmdbId === shared.tmdbId);
+      return found !== undefined && !both(found);
+    }, "the film from the first alone");
     expect(app.pickedVersion(now(shared), app.readState())).toBeNull();
     expect(stateOf().titleVersions[b]).toBeDefined();
     expect(await app.add({ server: two.url, ...TWO })).toBe(b);

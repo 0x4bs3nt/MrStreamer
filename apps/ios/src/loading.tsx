@@ -28,13 +28,13 @@ import { usePlayback } from "./playback.ts";
 import { store, useStore } from "./store.ts";
 import { colors, TextButton } from "./ui.tsx";
 
-// How screens show that something loads, updates or failed to, all from the subscriptions'
+// How screens show that something loads or failed to, all from the subscriptions'
 // lists as account.ts and titles.ts keep them: nothing here reads, retries or times anything.
 //
 // Content that is missing gets still shapes where it will go, a few, never a count of results.
 // While the viewer sees them (the screen in front, Watch closed, the app active) and iOS has said
 // Reduce Motion is off, a soft band crosses each shape about once every 2.7 seconds, one clock per
-// group of shapes on the native driver. What loads, updates or failed is a line of text in glass
+// group of shapes on the native driver. What loads or failed is a line of text in glass
 // at the bottom of the screen (`Docked`), over content that stays usable and scrolls clear of it;
 // the whole line takes at most 40% of the height its host measures and scrolls beyond that.
 // Search leads its results with the line instead where that share can't show a whole line.
@@ -55,10 +55,10 @@ export interface Status {
   readonly announce?: boolean;
 }
 
-type Verb = "stale" | "failed" | "loading" | "updating";
+type Verb = "stale" | "failed" | "loading";
 
 /** Failures first, so Retry sits beside what it retries. */
-const VERBS: readonly Verb[] = ["stale", "failed", "loading", "updating"];
+const VERBS: readonly Verb[] = ["stale", "failed", "loading"];
 
 const sentence = (verb: Verb, what: string, from: readonly string[], several: boolean) => {
   const providers = new Intl.ListFormat("en", { type: "conjunction" }).format(from);
@@ -69,18 +69,19 @@ const sentence = (verb: Verb, what: string, from: readonly string[], several: bo
       return `Couldn't load ${what} from ${providers}.`;
     case "loading":
       return `Loading ${what} from ${providers}.`;
-    case "updating":
-      return `Updating ${what} from ${providers}.`;
   }
 };
 
-/** A list's state in words: nothing before it, or the last one kept while it loads or failed. */
+/**
+ * A list's state in words: nothing before it, or the last one kept after it failed. A list that
+ * loads again while its last one shows, at launch or on Retry, says nothing: what shows is usable.
+ */
 function verbOf(list: Loadable<unknown>): Verb | null {
   switch (list.kind) {
     case "idle":
       return "loading";
     case "loading":
-      return list.last ? "updating" : "loading";
+      return list.last ? null : "loading";
     case "failed":
       return list.last ? "stale" : "failed";
     case "ready":
@@ -89,9 +90,9 @@ function verbOf(list: Loadable<unknown>): Verb | null {
 }
 
 /**
- * The status line for the lists a screen shows, or null when every provider's are in: what
- * loads for the first time, updates while the last list shows, or failed, by provider, providers
- * in the same state named together. Retry asks each provider that failed again through `retry`;
+ * The status line for the lists a screen shows, or null when every provider's are in or show
+ * their last list while they load again: what loads for the first time or failed, by provider,
+ * providers in the same state named together. Retry asks each provider that failed again through `retry`;
  * Settings opens where a password the iPhone lost is entered.
  */
 export function libraryStatus(
