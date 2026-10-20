@@ -99,3 +99,10 @@ it("keeps the acknowledged update channel after a failed save and retries that c
   expect(select.value).toBe("stable");
   expect(rows.textContent).not.toContain("channel write failed");
 });
+
+it("shows the AUR update route without direct actions, even with stale direct offer state", async () => {
+  const rows = await buttonsFor({ kind: "ready", version: "0.0.18" }, "pacman");
+  expect(rows.textContent).toContain("Updates come from the AUR. Use an AUR helper or makepkg.");
+  expect(rows.querySelector("select")).toBeNull();
+  expect(rows.querySelector("button")).toBeNull();
+});

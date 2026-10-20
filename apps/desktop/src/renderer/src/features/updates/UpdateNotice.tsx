@@ -4,7 +4,7 @@
 import { RotateCw } from "lucide-react";
 import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { Popover } from "@base-ui/react/popover";
-import type { UpdateStatus } from "@mrstreamer/contracts/updates";
+import { updatesInApp, type UpdateStatus } from "@mrstreamer/contracts/updates";
 import { formatPercent, t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
@@ -35,7 +35,8 @@ export function updateNoticeLabel(
   status: UpdateStatus | undefined,
   open: boolean,
 ): string | undefined {
-  if (!status || (!noticed(status) && !open)) return undefined;
+  if (!status || !updatesInApp(status.distribution) || (!noticed(status) && !open))
+    return undefined;
   const { update } = status;
   return update.kind === "downloading"
     ? `${t("Updating")} · ${formatPercent(update.percent / 100)}`

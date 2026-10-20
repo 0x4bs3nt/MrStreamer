@@ -101,11 +101,16 @@ export interface StoreUpdates {
   readonly openStore: () => Promise<void>;
 }
 
+/** Pacman owns an Arch installation. No direct updater capability enters this branch. */
+export interface PacmanUpdates {
+  readonly managed: "pacman";
+}
+
 /** What the app passes in: its version, and who updates this copy. */
 export type UpdatesConfig = {
   /** The running build's version. */
   readonly installed: string;
-} & (DirectUpdates | StoreUpdates);
+} & (DirectUpdates | StoreUpdates | PacmanUpdates);
 
 export type UpdatesDeps = UpdatesConfig & {
   readonly dataDir: string;
@@ -139,14 +144,14 @@ export class Updates extends Context.Service<
     readonly restart: Effect.Effect<void>;
     /** Closes the notice for `version`. Settings keeps offering it; a newer version notifies. */
     dismiss(version: string): Effect.Effect<UpdateStatus>;
-    /** Opens the app's page in the Microsoft Store, for a Store copy. Does nothing for a direct one. */
+    /** Opens the app's page in the Microsoft Store, for a Store copy. Does nothing for other copies. */
     readonly openStore: Effect.Effect<void, Failed>;
     /** The status after every change, such as a download's progress. */
     readonly changes: Stream.Stream<UpdateStatus>;
   }
 >()("mrstreamer/Updates") {
   static readonly layer = (deps: UpdatesDeps) =>
-    Layer.effect(Updates, "openStore" in deps ? storeManaged(deps) : make(deps));
+    Layer.effect(Updates, "managed" in deps || "openStore" in deps ? managed(deps) : make(deps));
 }
 
 const SETTINGS_FILE = "updates.json";
@@ -471,13 +476,13 @@ function make(deps: UpdatesDeps & DirectUpdates) {
 }
 
 /**
- * Updates for a Store copy, which the Store delivers: nothing here checks, downloads, installs or
- * changes, and nothing reads or writes updates.json. The one action opens the Store.
+ * Externally managed copies never check, download, install or read/write updates.json.
+ * Only the Store variant has an action, which opens its Store page.
  */
-function storeManaged(deps: UpdatesDeps & StoreUpdates) {
+function managed(deps: UpdatesDeps & (StoreUpdates | PacmanUpdates)) {
   const status: UpdateStatus = {
     version: deps.installed,
-    distribution: "store",
+    distribution: "managed" in deps ? deps.managed : "store",
     channel: "stable",
     update: { kind: "idle" },
     offer: null,
@@ -494,7 +499,10 @@ function storeManaged(deps: UpdatesDeps & StoreUpdates) {
     cancel: Effect.void,
     restart: Effect.void,
     dismiss: () => unchanged,
-    openStore: Effect.tryPromise({ try: () => deps.openStore(), catch: failedWith }),
+    openStore:
+      "managed" in deps
+        ? Effect.void
+        : Effect.tryPromise({ try: () => deps.openStore(), catch: failedWith }),
     changes: Stream.empty,
   });
 }

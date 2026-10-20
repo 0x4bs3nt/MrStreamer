@@ -314,6 +314,7 @@ describe("the interface language", () => {
       subtitleLanguage: "en",
     });
     await settings.setInterfaceLanguage("de-DE");
+    expect(await Settings.readInterfaceLanguage(dataDir)).toBe("de-DE");
 
     const returned = await settingsIn(dataDir);
     expect(await returned.interfaceLanguage()).toBe("de-DE");

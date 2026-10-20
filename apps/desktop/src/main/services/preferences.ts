@@ -97,6 +97,12 @@ export class Settings extends Context.Service<
     readonly dropLegacyLists: Effect.Effect<void>;
   }
 >()("mrstreamer/Settings") {
+  /** Reads the saved choice before the runtime exists, so startup errors use its language. */
+  static async readInterfaceLanguage(dataDir: string): Promise<string | undefined> {
+    const saved = await readJsonFile(join(dataDir, "preferences.json"), Stored());
+    return saved?.interfaceLanguage;
+  }
+
   /** Settings in `dataDir`. */
   static readonly layer = (dataDir: string, usage?: UsageObservers) =>
     Layer.effect(Settings, make(dataDir, usage));

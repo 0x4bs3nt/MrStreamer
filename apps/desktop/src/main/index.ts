@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   app,
+  dialog,
   powerMonitor,
   autoUpdater,
   BrowserWindow,
@@ -19,7 +20,9 @@ import { ARTWORK_SCHEME, DOWNLOAD_ARTWORK } from "@mrstreamer/contracts/download
 import type { IpcEvent, IpcEvents, IpcInput } from "@mrstreamer/contracts/ipc";
 import { Diagnostics } from "@mrstreamer/core/diagnostics";
 import { Failed } from "@mrstreamer/core/failure";
+import { t } from "@mrstreamer/core/i18n";
 import { Guide } from "@mrstreamer/core/guide/service";
+import { updatesInApp } from "@mrstreamer/contracts/updates";
 import { discovery, metadataFileFor } from "@mrstreamer/core/updates/feed";
 import { ViewingRecord } from "@mrstreamer/core/viewing/service";
 import * as Effect from "effect/Effect";
@@ -46,6 +49,7 @@ import { aboutHandlers } from "./handlers/about.ts";
 import { emit, registerIpc, type IpcHandlers } from "./ipc.ts";
 import { applyLanguage, languageFor } from "./language.ts";
 import { miniPlayer, miniPlayerAvailable } from "./mini-player.ts";
+import { installedDistribution } from "./platform/installation.ts";
 import { electronInstaller } from "./platform/installer.ts";
 import { diagnosticsExporter } from "./platform/diagnostics-export.ts";
 import { removeUnfinishedWrites } from "./platform/json-file.ts";
@@ -74,7 +78,7 @@ import { Settings } from "./services/preferences.ts";
 import { preferencePublication } from "./preference-publication.ts";
 import { Roster } from "./services/roster.ts";
 import { Subscriptions } from "./services/subscription.ts";
-import { DEFAULT_SCHEDULE, Updates } from "./services/updates.ts";
+import { DEFAULT_SCHEDULE, Updates, type UpdatesConfig } from "./services/updates.ts";
 import { Watchlist } from "./services/watchlist.ts";
 
 // Matches `appId` in electron-builder.yml: Windows groups taskbar entries and notifications by it.
@@ -370,6 +374,15 @@ async function start(): Promise<void> {
     safeStorage.setUsePlainTextEncryption(true);
   }
   const dataDir = app.getPath("userData");
+  // Installation validation can fail before the runtime loads Settings.
+  applyLanguage(languageFor(await Settings.readInterfaceLanguage(dataDir).catch(() => undefined)));
+  const distribution = await installedDistribution({
+    platform: process.platform,
+    packaged: app.isPackaged,
+    store: storeCopy,
+    resources: process.resourcesPath,
+  });
+  const appUpdates = updatesInApp(distribution);
   await removeUnfinishedWrites(dataDir);
   // And in the folder of the guides of Settings > Guides.
   await removeUnfinishedWrites(join(dataDir, "guides"));
@@ -399,7 +412,7 @@ async function start(): Promise<void> {
     origin: initialProfileOrigin,
     properties: {
       ...buildProperties,
-      update_channel: storeCopy ? "none" : "stable",
+      update_channel: appUpdates ? "stable" : "none",
     },
     transport: analyticsTransport({
       production: __ANALYTICS_CAPTURE__,
@@ -421,9 +434,42 @@ async function start(): Promise<void> {
   powerMonitor.on("suspend", () => analytics.suspendPlayback());
   powerMonitor.on("resume", () => analytics.suspendPlayback());
   // Outcomes of work begun before the update channel is read would carry a guessed dimension.
-  let dimensionsReady = storeCopy;
+  let dimensionsReady = !appUpdates;
   const observeOperation = (event: "download_ended" | "update_check_ended") => () =>
     dimensionsReady ? analytics.observeOperation(event) : () => {};
+
+  const updatesConfig = (): UpdatesConfig => {
+    switch (distribution) {
+      case "store":
+        return { installed: app.getVersion(), openStore: () => shell.openExternal(STORE_PAGE) };
+      case "pacman":
+        return { installed: app.getVersion(), managed: "pacman" };
+      case "direct":
+        return {
+          installed: app.getVersion(),
+          onChannelChanged: (channel) => {
+            analytics.setUpdateChannel(channel);
+            analytics.noteSetting("update_channel");
+          },
+          observeCheck: (channel) => {
+            analytics.setUpdateChannel(channel);
+            dimensionsReady = true;
+            return observeOperation("update_check_ended")();
+          },
+          discover: discovery({
+            feedUrl: UPDATE_FEED,
+            api: UPDATE_API,
+            repository: REPOSITORY,
+            metadataFile: metadataFileFor(process.platform),
+            userAgent,
+            // A test feed serves its own files.
+            ...(process.env["MR_STREAMER_UPDATE_FEED"] ? { filesFrom: "" } : {}),
+          }),
+          installer: electronInstaller(),
+          schedule: process.env["MR_STREAMER_UPDATE_CHECKS"] === "off" ? null : DEFAULT_SCHEDULE,
+        };
+    }
+  };
 
   const runtime = ManagedRuntime.make(
     mainLayer({
@@ -450,32 +496,7 @@ async function start(): Promise<void> {
       ...(process.env["MR_STREAMER_TMDB_API"]
         ? { tmdbApi: process.env["MR_STREAMER_TMDB_API"] }
         : {}),
-      // A Store copy never creates electron-updater's updater.
-      updates: storeCopy
-        ? { installed: app.getVersion(), openStore: () => shell.openExternal(STORE_PAGE) }
-        : {
-            installed: app.getVersion(),
-            onChannelChanged: (channel) => {
-              analytics.setUpdateChannel(channel);
-              analytics.noteSetting("update_channel");
-            },
-            observeCheck: (channel) => {
-              analytics.setUpdateChannel(channel);
-              dimensionsReady = true;
-              return observeOperation("update_check_ended")();
-            },
-            discover: discovery({
-              feedUrl: UPDATE_FEED,
-              api: UPDATE_API,
-              repository: REPOSITORY,
-              metadataFile: metadataFileFor(process.platform),
-              userAgent,
-              // A test feed serves its own files.
-              ...(process.env["MR_STREAMER_UPDATE_FEED"] ? { filesFrom: "" } : {}),
-            }),
-            installer: electronInstaller(),
-            schedule: process.env["MR_STREAMER_UPDATE_CHECKS"] === "off" ? null : DEFAULT_SCHEDULE,
-          },
+      updates: updatesConfig(),
     }),
   );
   const {
@@ -536,7 +557,9 @@ async function start(): Promise<void> {
       : new Response(null, { status: 404 });
   });
   const updateStatus = await runtime.runPromise(updates.status);
-  analytics.setUpdateChannel(storeCopy ? "none" : updateStatus.channel);
+  analytics.setUpdateChannel(
+    updatesInApp(updateStatus.distribution) ? updateStatus.channel : "none",
+  );
   dimensionsReady = true;
   const preferences = await runtime.runPromise(
     preferencePublication({
@@ -612,7 +635,7 @@ async function start(): Promise<void> {
   forward(viewing.changes, "viewing.changed", (sequence) => ({ sequence }));
   forward(watchlist.changes, "watchlist.changed", () => null);
   forward(updates.changes, "updates.changed", (status) => {
-    analytics.setUpdateChannel(status.distribution === "store" ? "none" : status.channel);
+    analytics.setUpdateChannel(updatesInApp(status.distribution) ? status.channel : "none");
     return status;
   });
   forward(downloads.changes, "downloads.changed", (list) => list);
@@ -891,7 +914,14 @@ if (app.requestSingleInstanceLock()) {
   // Quitting hands the profile on at once: an update's AppImage starts its new copy just before
   // this one quits.
   app.on("before-quit", () => app.releaseSingleInstanceLock());
-  void start();
+  void start().catch((error: unknown) => {
+    console.error("[startup]", error);
+    dialog.showErrorBox(
+      t("Mr. Streamer could not start"),
+      error instanceof Error ? error.message : String(error),
+    );
+    app.exit(1);
+  });
 } else {
   app.quit();
 }

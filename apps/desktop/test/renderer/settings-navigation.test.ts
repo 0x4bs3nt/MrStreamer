@@ -115,6 +115,30 @@ it("search focuses the real control, preserves an independent draft and recovers
   expect(document.activeElement).toBe(search);
 });
 
+it("focuses the AUR guidance after choosing its informational search result", async () => {
+  ipc.always("updates.status", {
+    version: "0.0.17",
+    distribution: "pacman",
+    channel: "stable",
+    update: { kind: "idle" },
+    offer: null,
+    checked: null,
+    nextCheckAt: null,
+    dismissed: null,
+  });
+  const { view } = await render();
+  const search = view.querySelector<HTMLInputElement>('[aria-label="Find a setting"]')!;
+  await type(search, "pacman");
+  await act(async () =>
+    search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+  );
+  await settle();
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "0.0.17: Updates come from the AUR. Use an AUR helper or makepkg.",
+  );
+  expect(document.activeElement?.textContent).toContain("Updates come from the AUR.");
+});
+
 it("keeps the online subtitles opener as a focused destination", async () => {
   ipc.always("subtitles.settings", {
     enabled: false,
@@ -442,3 +466,15 @@ it("keeps the acknowledged interface language and update channel while rejecting
   await settle();
   expect(view.querySelector<HTMLSelectElement>('[aria-label="Channel"]')?.value).toBe("nightly");
 });
+
+it.each(["en-US", "nl-NL", "fr-FR", "de-DE", "es-ES"] as const)(
+  "finds the Arch upgrade route without offering direct channels in %s",
+  (locale) => {
+    setLanguage({ locale, formats: locale });
+    expect(findSettings("pacman", "pacman").map((control) => control.id)).toEqual(["update-check"]);
+    expect(findSettings("nightly", "pacman")).toEqual([]);
+    expect(findSettings("makepkg", "pacman").map((control) => control.id)).toEqual([
+      "update-check",
+    ]);
+  },
+);

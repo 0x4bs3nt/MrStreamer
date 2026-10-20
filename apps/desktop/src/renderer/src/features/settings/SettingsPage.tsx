@@ -1,3 +1,5 @@
+import { updatesInApp } from "@mrstreamer/contracts/updates";
+import { distributionLabel } from "../updates/distribution.ts";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { t } from "@mrstreamer/core/i18n";
@@ -38,7 +40,7 @@ import { useUpdates } from "../updates/use-updates.ts";
 const REPOSITORY_URL = "https://github.com/Mr-Streamer-OSS/MrStreamer";
 const PRIVACY_URL = "https://mrstreamer.app/privacy";
 const CONTROL_SELECTOR =
-  "button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]";
+  "button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [data-setting-focus]";
 
 /**
  * Settings, a page over the current view, so a channel keeps playing underneath. Opens with ⌘,
@@ -103,7 +105,7 @@ export function SettingsPage() {
       });
   }, [legacyOnline]);
 
-  // Wait for a real enabled control, including a section whose query is still loading.
+  // Wait for an enabled control or informational destination, including a section still loading.
   useEffect(() => {
     if (!target || !tab) return;
     const focus = () => {
@@ -154,11 +156,7 @@ export function SettingsPage() {
       settingsTarget: control ?? null,
     });
   };
-  const results = query.trim()
-    ? findSettings(query).filter(
-        (control) => control.id !== "update-channel" || updates.data?.distribution !== "store",
-      )
-    : null;
+  const results = query.trim() ? findSettings(query, updates.data?.distribution) : null;
   const panels = {
     general: <GeneralSection />,
     playback: <PlaybackSection />,
@@ -318,7 +316,7 @@ function About() {
         ? [
             status.version,
             status.channel === "nightly" ? t("Nightly") : t("Stable"),
-            ...(status.distribution === "store" ? ["Microsoft Store"] : []),
+            ...(!updatesInApp(status.distribution) ? [distributionLabel(status.distribution)] : []),
           ].join(" · ")
         : "",
     ],

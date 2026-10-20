@@ -134,6 +134,16 @@ export const nl: Translation = {
   "The update server sent something unexpected.": "De updateserver stuurde iets onverwachts.",
   Updates: "Updates",
   "updated by the Microsoft Store": "bijgewerkt door de Microsoft Store",
+  "Mr. Streamer could not start": "Mr. Streamer kon niet starten",
+  "Cannot inspect {path}. Reinstall Mr. Streamer with your package manager.":
+    "Kan {path} niet controleren. Installeer Mr. Streamer opnieuw met je pakketbeheerder.",
+  "Cannot read {path}. Reinstall Mr. Streamer with your package manager.":
+    "Kan {path} niet lezen. Installeer Mr. Streamer opnieuw met je pakketbeheerder.",
+  "Invalid {path}. Reinstall Mr. Streamer with your package manager.":
+    "{path} is ongeldig. Installeer Mr. Streamer opnieuw met je pakketbeheerder.",
+  "Updates come from the AUR. Use an AUR helper or makepkg.":
+    "Updates komen uit de AUR. Gebruik een AUR-helper of makepkg.",
+  "settings.search.pacman": "AUR pacman pakket makepkg helper installatie bijwerken versie",
   "Open Store": "Store openen",
   Channel: "Kanaal",
   "newest builds": "nieuwste builds",

@@ -132,3 +132,11 @@ describe("a local diagnostics export", () => {
     expect(report.text).not.toContain("old.removedMethod");
   });
 });
+
+it("names pacman as the owner in an Arch diagnostics export", async () => {
+  const { exporter } = await setup({ ...context, distribution: "pacman" });
+  const preview = await exporter.preview();
+  expect(preview.distribution).toBe("pacman");
+  expect(preview.text).toContain("AUR (pacman)");
+  expect(preview.text).not.toContain("Direct install");
+});

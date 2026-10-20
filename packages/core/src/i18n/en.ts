@@ -133,6 +133,16 @@ export const en = {
   "The update server sent something unexpected.": "The update server sent something unexpected.",
   Updates: "Updates",
   "updated by the Microsoft Store": "updated by the Microsoft Store",
+  "Mr. Streamer could not start": "Mr. Streamer could not start",
+  "Cannot inspect {path}. Reinstall Mr. Streamer with your package manager.":
+    "Cannot inspect {path}. Reinstall Mr. Streamer with your package manager.",
+  "Cannot read {path}. Reinstall Mr. Streamer with your package manager.":
+    "Cannot read {path}. Reinstall Mr. Streamer with your package manager.",
+  "Invalid {path}. Reinstall Mr. Streamer with your package manager.":
+    "Invalid {path}. Reinstall Mr. Streamer with your package manager.",
+  "Updates come from the AUR. Use an AUR helper or makepkg.":
+    "Updates come from the AUR. Use an AUR helper or makepkg.",
+  "settings.search.pacman": "AUR pacman package makepkg helper install update version",
   "Open Store": "Open Store",
   Channel: "Channel",
   "newest builds": "newest builds",

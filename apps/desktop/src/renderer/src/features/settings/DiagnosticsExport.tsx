@@ -1,3 +1,4 @@
+import { distributionLabel } from "../updates/distribution.ts";
 import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { formatNumber, t } from "@mrstreamer/core/i18n";
@@ -47,7 +48,7 @@ export function DiagnosticsExport() {
                 report.channel === "nightly" ? t("Nightly") : t("Stable"),
                 report.commit.slice(0, 7),
                 report.platform,
-                report.distribution === "store" ? "Microsoft Store" : t("Direct install"),
+                distributionLabel(report.distribution),
               ].join(" · ")}
             </dd>
             <dt className="text-muted-foreground">{t("Operations")}</dt>

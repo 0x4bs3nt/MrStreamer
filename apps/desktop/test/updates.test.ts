@@ -434,6 +434,39 @@ describe("a copy the Microsoft Store installed", () => {
   });
 });
 
+describe("a copy managed by pacman", () => {
+  it("ignores stale direct update state and leaves every update action inert", async () => {
+    const dataDir = await tempDir();
+    const path = join(dataDir, "updates.json");
+    const stored = JSON.stringify({ channel: "nightly", dismissed: "0.0.18", future: "keep" });
+    await writeFile(path, stored);
+    const service = await startUpdates({ dataDir, installed: "0.0.17", managed: "pacman" });
+    const initial = await service.status();
+    expect(initial).toEqual({
+      version: "0.0.17",
+      distribution: "pacman",
+      channel: "stable",
+      update: { kind: "idle" },
+      offer: null,
+      checked: null,
+      nextCheckAt: null,
+      dismissed: null,
+    });
+    expect(await service.check()).toEqual(initial);
+    expect(await service.download()).toEqual(initial);
+    expect(await service.setChannel("nightly")).toEqual(initial);
+    expect(await service.dismiss("0.0.18")).toEqual(initial);
+    await service.cancel();
+    await service.restart();
+    await service.openStore();
+    expect(await readdir(dataDir)).toEqual(["updates.json"]);
+    expect(await readFile(path, "utf8")).toBe(stored);
+    const direct = await updates("0.0.17", [], { dataDir });
+    expect((await direct.service.status()).distribution).toBe("direct");
+    expect((await direct.service.status()).channel).toBe("nightly");
+  });
+});
+
 describe("overlapping checks", () => {
   /** Discoveries answered one at a time, in whatever order the test chooses. */
   function heldDiscovery() {

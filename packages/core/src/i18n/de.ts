@@ -135,6 +135,16 @@ export const de: Translation = {
     "Der Update-Server hat etwas Unerwartetes gesendet.",
   Updates: "Updates",
   "updated by the Microsoft Store": "aktualisiert vom Microsoft Store",
+  "Mr. Streamer could not start": "Mr. Streamer konnte nicht gestartet werden",
+  "Cannot inspect {path}. Reinstall Mr. Streamer with your package manager.":
+    "Prüfen von {path} nicht möglich. Installiere Mr. Streamer mit deinem Paketmanager neu.",
+  "Cannot read {path}. Reinstall Mr. Streamer with your package manager.":
+    "Lesen von {path} nicht möglich. Installiere Mr. Streamer mit deinem Paketmanager neu.",
+  "Invalid {path}. Reinstall Mr. Streamer with your package manager.":
+    "{path} ist ungültig. Installiere Mr. Streamer mit deinem Paketmanager neu.",
+  "Updates come from the AUR. Use an AUR helper or makepkg.":
+    "Updates kommen aus dem AUR. Verwende einen AUR-Helfer oder makepkg.",
+  "settings.search.pacman": "AUR pacman Paket makepkg Helfer Installation Update Version",
   "Open Store": "Store öffnen",
   Channel: "Kanal",
   "newest builds": "neueste Builds",

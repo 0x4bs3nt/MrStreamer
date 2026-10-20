@@ -1,3 +1,4 @@
+import { updatesInApp, type Distribution } from "@mrstreamer/contracts/updates";
 import { t, type PlainKey } from "@mrstreamer/core/i18n";
 
 export const SETTINGS_SECTIONS = [
@@ -174,11 +175,16 @@ export const settingSection = (id: SettingsControl): SettingsSection =>
 const normalize = (text: string) =>
   text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
 /** Every word must match a translated label, section or synonym. Nothing leaves the window. */
-export function findSettings(query: string) {
+export function findSettings(query: string, distribution: Distribution = "direct") {
   const words = normalize(query).trim().split(/\s+/).filter(Boolean);
   return SETTINGS_CONTROLS.filter((control) => {
+    if (control.id === "update-channel" && !updatesInApp(distribution)) return false;
     const section = SETTINGS_SECTIONS.find((section) => section.id === control.section)!;
-    const text = normalize(`${t(control.label)} ${t(section.label)} ${t(control.synonyms)}`);
+    const synonyms =
+      control.id === "update-check" && distribution === "pacman"
+        ? t("settings.search.pacman")
+        : t(control.synonyms);
+    const text = normalize(`${t(control.label)} ${t(section.label)} ${synonyms}`);
     return words.every((word) => text.includes(word));
   });
 }

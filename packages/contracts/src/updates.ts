@@ -35,9 +35,25 @@ export type UpdatePhase =
  * How this copy was installed, which decides who updates it. A direct copy came from the app's own
  * download, and the app updates it. A Store copy is an MSIX package, as the Microsoft Store
  * installs it: only the Store updates it, so the app never checks, downloads or installs, and
- * offers no channel.
+ * offers no channel. Pacman owns the files of an Arch package; upgrades use makepkg or an AUR
+ * helper, and the app never updates that copy.
  */
-export type Distribution = "direct" | "store";
+export type Distribution = "direct" | "store" | "pacman";
+
+/** An Arch package adds this file beside app.asar; signed direct/Homebrew apps have none. */
+export const INSTALLATION_MARKER = "mrstreamer-installation.json";
+export const PACMAN_INSTALLATION = { schema: 1, updates: "pacman" } as const;
+
+/** Only direct copies use the in-app feed, channel and installer. */
+export function updatesInApp(distribution: Distribution): boolean {
+  switch (distribution) {
+    case "direct":
+      return true;
+    case "store":
+    case "pacman":
+      return false;
+  }
+}
 
 /** The release a check found for the chosen channel. */
 export interface UpdateOffer {

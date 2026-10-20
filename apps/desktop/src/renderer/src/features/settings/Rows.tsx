@@ -30,19 +30,29 @@ export function Row({
   id,
   label,
   note,
+  focusLabel,
   wrap = false,
   children,
 }: {
   id?: SettingsControl;
   label: ReactNode;
   note?: ReactNode;
+  /** Makes an informational destination reachable from Settings search without adding a Tab stop. */
+  focusLabel?: string;
   wrap?: boolean;
   children?: ReactNode;
 }) {
   return (
     <div
       data-setting={id}
-      className="flex min-h-13 flex-wrap items-center gap-x-6 gap-y-2 border-b border-white/8 py-2"
+      data-setting-focus={focusLabel ? "" : undefined}
+      role={focusLabel ? "group" : undefined}
+      aria-label={focusLabel}
+      tabIndex={focusLabel ? -1 : undefined}
+      className={cn(
+        "flex min-h-13 flex-wrap items-center gap-x-6 gap-y-2 border-b border-white/8 py-2",
+        focusLabel && "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
     >
       <div className="min-w-32 flex-1 break-words">
         {label}

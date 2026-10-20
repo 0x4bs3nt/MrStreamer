@@ -170,7 +170,7 @@ export interface DiagnosticsContext {
   readonly channel: "stable" | "nightly";
   readonly platform: string;
   readonly arch: string;
-  readonly distribution: "direct" | "store";
+  readonly distribution: DiagnosticsPreview["distribution"];
   readonly subscriptions: DiagnosticsPreview["subscriptions"];
   readonly acceleratedVideoDecodeDisabled: boolean;
   readonly checked: { readonly at: number; readonly failure: string | null } | null;
@@ -227,7 +227,7 @@ export function diagnosticsExporter(dataDir: string, context: () => Promise<Diag
         checked,
         text: [
           `Mr. Streamer ${version} · ${build.channel} · commit ${commit}`,
-          `${platform} ${arch} · ${build.distribution === "store" ? "Microsoft Store" : "Direct install"}`,
+          `${platform} ${arch} · ${distributionLabel(build.distribution)}`,
           `Subscriptions: ${build.subscriptions.xtream} Xtream, ${build.subscriptions.m3u} M3U`,
           `Accelerated video decode disabled: ${build.acceleratedVideoDecodeDisabled}`,
           `Last update check: ${checked}`,
@@ -249,3 +249,15 @@ export function diagnosticsExporter(dataDir: string, context: () => Promise<Diag
 }
 
 export type DiagnosticsExporter = ReturnType<typeof diagnosticsExporter>;
+
+/** Technical export labels name the updater without changing analytics packaging vocabulary. */
+function distributionLabel(distribution: DiagnosticsPreview["distribution"]): string {
+  switch (distribution) {
+    case "direct":
+      return "Direct install";
+    case "store":
+      return "Microsoft Store";
+    case "pacman":
+      return "AUR (pacman)";
+  }
+}
