@@ -88,119 +88,81 @@
           </p>
         </section>
 
-        <div class="window" data-tilt>
-          <picture class="frame">
-            <source
-              media="(max-width: 43.74em)"
-              srcset="
-                /generated/home-stage-cut-574.webp   574w,
-                /generated/home-stage-cut-1148.webp 1148w
-              "
-              sizes="95vw"
-              width="1148"
-              height="1080"
+        <figure class="showcase">
+          <div class="stack" aria-label="Home, Live TV and the TV Guide" data-reveal>
+            <picture class="layer">
+              <source
+                media="(max-width: 43.74em)"
+                srcset="
+                  /generated/home-stage-cut-574.webp   574w,
+                  /generated/home-stage-cut-1148.webp 1148w
+                "
+                sizes="84vw"
+                width="1148"
+                height="1080"
+              />
+              <img
+                src="/generated/home-1440.webp"
+                srcset="
+                  /generated/home-960.webp   960w,
+                  /generated/home-1440.webp 1440w,
+                  /generated/home-1920.webp 1920w
+                "
+                sizes="(min-width: 80em) 850px, (min-width: 70em) 66vw, 84vw"
+                width="2560"
+                height="1600"
+                alt="Home with a live preview and Continue watching"
+                fetchpriority="high"
+                decoding="async"
+              />
+            </picture>
+            <img
+              class="layer"
+              src="/generated/live-tv-cut-600.webp"
+              srcset="/generated/live-tv-cut-600.webp 600w, /generated/live-tv-cut-1200.webp 1200w"
+              sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 48vw"
+              width="1200"
+              height="1000"
+              alt="Live TV with a playing preview and the channel list, in front"
+              loading="lazy"
+              decoding="async"
             />
             <img
-              src="/generated/home-1920.webp"
+              class="layer"
+              src="/generated/tv-guide-cut-600.webp"
               srcset="
-                /generated/home-960.webp   960w,
-                /generated/home-1440.webp 1440w,
-                /generated/home-1920.webp 1920w,
-                /generated/home-2560.webp 2560w
+                /generated/tv-guide-cut-600.webp   600w,
+                /generated/tv-guide-cut-1200.webp 1200w
               "
-              sizes="(min-width: 80em) 1088px, (min-width: 70em) 85vw, 95vw"
-              width="2560"
-              height="1600"
-              alt="Home with Watchlist and Customize, a muted live preview, Continue watching and a recommendation based on Canyon Hours"
-              fetchpriority="high"
+              sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 48vw"
+              width="1200"
+              height="1000"
+              alt="The TV Guide grid with an aired programme open, in front"
+              loading="lazy"
+              decoding="async"
             />
-          </picture>
-        </div>
+          </div>
 
-        <!-- Three windows fanned out from one spot: the whole of Home, and the Live TV and TV Guide cuts. -->
-        <section class="stack" aria-label="Home, Live TV and the TV Guide" data-reveal>
-          <img
-            class="layer"
-            src="/generated/home-1440.webp"
-            srcset="
-              /generated/home-960.webp   960w,
-              /generated/home-1440.webp 1440w,
-              /generated/home-1920.webp 1920w
-            "
-            sizes="(min-width: 80em) 850px, (min-width: 70em) 66vw, 74vw"
-            width="2560"
-            height="1600"
-            alt="Home, behind"
-            loading="lazy"
-            decoding="async"
-          />
-          <img
-            class="layer"
-            src="/generated/live-tv-cut-600.webp"
-            srcset="/generated/live-tv-cut-600.webp 600w, /generated/live-tv-cut-1200.webp 1200w"
-            sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 32vw"
-            width="1200"
-            height="1000"
-            alt="Live TV with a playing preview and the channel list, in front"
-            loading="lazy"
-            decoding="async"
-          />
-          <img
-            class="layer"
-            src="/generated/tv-guide-cut-600.webp"
-            srcset="/generated/tv-guide-cut-600.webp 600w, /generated/tv-guide-cut-1200.webp 1200w"
-            sizes="(min-width: 80em) 370px, (min-width: 70em) 29vw, 32vw"
-            width="1200"
-            height="1000"
-            alt="The TV Guide grid with an aired programme open, in front"
-            loading="lazy"
-            decoding="async"
-          />
-        </section>
+          <figcaption class="legend">
+            <div>
+              <b>Home</b>
+              <p>Continue watching, a muted live preview and what to watch next.</p>
+            </div>
+            <div>
+              <b>Live TV</b>
+              <p>See what's on, keep favourites and switch channels.</p>
+            </div>
+            <div>
+              <b>TV Guide</b>
+              <p>
+                Browse the schedule and watch earlier programmes when your provider supports
+                catch-up.
+              </p>
+            </div>
+          </figcaption>
+        </figure>
 
         <div class="gallery">
-          <section class="feature" id="live-tv" data-reveal>
-            <picture class="frame">
-              <img
-                src="/generated/live-tv-cut-600.webp"
-                srcset="
-                  /generated/live-tv-cut-600.webp   600w,
-                  /generated/live-tv-cut-1200.webp 1200w
-                "
-                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
-                width="1200"
-                height="1000"
-                alt="Live TV with a playing preview and a channel list showing current programmes"
-                loading="lazy"
-                decoding="async"
-              />
-            </picture>
-            <h2>Live TV</h2>
-            <p>See what's on, keep favourites and switch channels.</p>
-          </section>
-
-          <section class="feature" id="tv-guide" data-reveal>
-            <picture class="frame">
-              <img
-                src="/generated/tv-guide-cut-600.webp"
-                srcset="
-                  /generated/tv-guide-cut-600.webp   600w,
-                  /generated/tv-guide-cut-1200.webp 1200w
-                "
-                sizes="(min-width: 80em) 540px, (min-width: 43.75em) 45vw, 95vw"
-                width="1200"
-                height="1000"
-                alt="The TV Guide grid of channels by time, an aired programme open with Play from start and Watch live, and catch-up signs beside the channels that keep recordings"
-                loading="lazy"
-                decoding="async"
-              />
-            </picture>
-            <h2>TV Guide</h2>
-            <p>
-              Browse the schedule and watch earlier programmes when your provider supports catch-up.
-            </p>
-          </section>
-
           <section class="feature" id="movies-and-series" data-reveal>
             <picture class="frame">
               <img

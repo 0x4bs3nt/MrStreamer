@@ -1,16 +1,16 @@
 /*
  * mrstreamer.app: true black, white text. Sizes are in em of the body's font size, which follows
  * the window's width, so the home page keeps its proportions:
- * - Up to 700 px wide everything is one column: the hero, the Home window, the stack of windows,
- *   the four features, the subscription and Download.
+ * - Up to 700 px wide everything is one column: the hero, the fan of windows,
+ *   the two features, the subscription and Download.
  * - From 700 px the features are two across.
- * - From 1120 px the hero's window, the stack, the features and the subscription share one width.
+ * - From 1120 px the fan, the features and the subscription share one width.
  * - From 1600 px the page stops growing and stays centred.
  * Every download action on the home page is a link to /download. There, the visitor's own system
  * comes first (src/system.ts) above the rows for every system.
  * Nothing moves by itself, and every animation runs once and ends. The home page's motion is at
  * the end of its rules. With reduced motion nothing moves. Without JavaScript the hero still comes
- * in, and the rest is in place with the window upright and the stack fanned out.
+ * in, and the rest is in place with the fan open.
  * Document pages and 404 share the bar and footer. Their own rules come last.
  */
 :root {
@@ -258,7 +258,7 @@ h1 {
   height: auto;
 }
 
-.window {
+.showcase {
   margin: 2.2em var(--inset) 0;
 }
 
@@ -268,12 +268,13 @@ h1 {
  */
 .stack {
   position: relative;
-  margin: 3.5em var(--inset) 0;
-  aspect-ratio: 16 / 10.4;
+  margin: 0;
+  aspect-ratio: 1 / 1.1;
 }
 
 .stack .layer {
   position: absolute;
+  overflow: hidden;
   height: auto;
   border: 1px solid #3a3a3a;
   border-radius: 0.6em;
@@ -284,22 +285,61 @@ h1 {
 .stack .layer:nth-child(1) {
   left: 0;
   top: 0;
-  width: 78%;
+  width: 88%;
 }
 
 .stack .layer:nth-child(2) {
-  left: 44%;
+  left: 0;
   top: 46%;
-  width: 34%;
+  width: 50%;
 }
 
 .stack .layer:nth-child(3) {
-  left: 66%;
+  left: 50%;
   top: 56%;
-  width: 34%;
+  width: 50%;
 }
 
-/* The four features: a cut of the window, its name and one sentence. */
+.stack picture img {
+  width: 100%;
+  height: auto;
+}
+
+.legend {
+  display: grid;
+  gap: 1em;
+  margin-top: 1em;
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.legend p {
+  margin-top: 0.2em;
+  color: var(--soft);
+}
+
+@media (min-width: 43.75em) {
+  .stack {
+    aspect-ratio: 16 / 10.4;
+  }
+  .stack .layer:nth-child(1) {
+    width: 78%;
+  }
+  .stack .layer:nth-child(2) {
+    left: 44%;
+    width: 34%;
+  }
+  .stack .layer:nth-child(3) {
+    left: 66%;
+    width: 34%;
+  }
+  .legend {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 2em;
+  }
+}
+
+/* Two features: details and subtitles, the screens not already in the fan. */
 .gallery {
   display: grid;
   gap: 2.4em;
@@ -462,6 +502,19 @@ h1 {
   line-height: 1.45;
 }
 
+.package-route {
+  margin-top: 1em;
+}
+
+.package-route pre {
+  margin: 0.4em 0 0;
+  white-space: pre-wrap;
+}
+
+.policy .package-route pre code {
+  overflow-wrap: anywhere;
+}
+
 footer {
   display: flex;
   flex-wrap: wrap;
@@ -550,21 +603,15 @@ footer p {
     font-size: 1.1em;
   }
 
-  .window,
-  .stack,
+  .showcase,
   .gallery,
   .need {
     width: 68em;
     margin-inline: auto;
   }
 
-  .window {
+  .showcase {
     margin-top: 3em;
-    transform-origin: 50% 0;
-  }
-
-  .stack {
-    margin-top: 5.5em;
   }
 
   .gallery {
@@ -606,13 +653,10 @@ footer p {
  * moves and fades from where its keyframes start to where the element already is, once, and
  * holds nothing afterwards.
  * - As the page opens, without JavaScript: the bar drops in, the mark pops, the headline and its
- *   lines rise, the button pops and the hero's window stands up, or rises while stacked.
+ *   lines rise and the button pops.
  * - As a part scrolls into view, main.ts adds `revealed` to it and takes it off once every
  *   animation under it has finished: a feature, the subscription and Download rise, and the
  *   stack's three windows fan out from one spot, one after another, 1.4 seconds in all.
- * - As the page scrolls, main.ts sets --tilt on the hero's window and marks it `tipped`: 0 tips
- *   it back 20 degrees, and at 1 it loses both and stands upright with no transform, which is
- *   also how it stands without the script. The stand-up ends on that tilt, so the two never jump.
  */
 @keyframes drop {
   from {
@@ -632,13 +676,6 @@ footer p {
   from {
     opacity: 0;
     transform: scale(0.85);
-  }
-}
-
-@keyframes stand {
-  from {
-    opacity: 0;
-    transform: perspective(90em) translateY(5em) rotateX(22deg) scale(0.9);
   }
 }
 
@@ -671,14 +708,6 @@ footer p {
 /* The features come in one after another. */
 .gallery .feature:nth-child(2) {
   --nth: 1;
-}
-
-.gallery .feature:nth-child(3) {
-  --nth: 2;
-}
-
-.gallery .feature:nth-child(4) {
-  --nth: 3;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -717,14 +746,6 @@ footer p {
     transform: none;
   }
 
-  /*
-   * Out of sight until it starts, so the script has set the tilt before the window shows. Stacked,
-   * the window only rises. The full layout stands it up, below.
-   */
-  .window {
-    animation: rise 1.2s cubic-bezier(0.2, 0.7, 0.15, 1) 0.45s backwards;
-  }
-
   [data-reveal].revealed {
     animation: rise 0.5s var(--ease) calc(var(--nth, 0) * 0.08s) backwards;
   }
@@ -740,18 +761,6 @@ footer p {
   .stack.revealed .layer {
     animation: fan 0.95s var(--ease) var(--wait) backwards;
     will-change: transform, opacity;
-  }
-}
-
-@media (min-width: 70em) and (prefers-reduced-motion: no-preference) {
-  .window {
-    animation-name: stand;
-  }
-
-  /* The same steps as the stand-up's first frame, so one runs into the other step by step. */
-  .window.tipped {
-    transform: perspective(90em) translateY(0) rotateX(calc((1 - var(--tilt)) * 20deg))
-      scale(calc(0.88 + var(--tilt) * 0.12));
   }
 }
 

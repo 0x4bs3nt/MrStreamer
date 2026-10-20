@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { Marked } from "marked";
 import type { Downloads } from "../src/downloads.ts";
+import { PACKAGE_ROUTES, type PackageRoutes } from "../src/packages.ts";
 import { RELEASES, type Release } from "./releases.ts";
 
 export const SITE = "https://mrstreamer.app";
@@ -139,6 +140,24 @@ function escapeHtml(text: string): string {
   );
 }
 
+/** Writes only independently verified package routes, never inferred from the release feed. */
+export function writePackages(html: string, routes: PackageRoutes = PACKAGE_ROUTES): string {
+  return html.replaceAll(
+    /<!-- package:(homebrew|aur):(link|details) -->/g,
+    (_mark, name: "homebrew" | "aur", part: "link" | "details") => {
+      const route = routes[name];
+      if (
+        route.publication.state !== "published" ||
+        !/^\d+\.\d+\.\d+$/.test(route.publication.lastVerifiedVersion)
+      )
+        return "";
+      const link = `<a data-package="${name}" href="${escapeHtml(route.url)}">${escapeHtml(route.name)} · ${escapeHtml(route.platform)}, ${escapeHtml(route.architecture)}</a>`;
+      if (part === "link") return link;
+      return `<div class="package-route">${link}<small>${escapeHtml(route.updates)} Package ${escapeHtml(route.publication.lastVerifiedVersion)}.</small><pre><code>${escapeHtml(route.install)}</code></pre></div>`;
+    },
+  );
+}
+
 /** Relative documentation links keep their public address and section, or go to GitHub. */
 function linkTo(href: string, source: string): string | null {
   if (href.startsWith("#")) {
@@ -269,7 +288,8 @@ export function renderPage(
   if (page.address === "/privacy") content = withAnalyticsSwitch(content);
   if (page.address === "/docs") content = guideIndex();
   if (page.address === "/faq") content = readFileSync(join(root, "src/faq.html"), "utf8");
-  if (page.address === "/download") content = readFileSync(join(root, "src/download.html"), "utf8");
+  if (page.address === "/download")
+    content = writePackages(readFileSync(join(root, "src/download.html"), "utf8"));
   if (page.address === "/releases") content = releaseHistory(releases);
   const guide = GUIDES.find((guide) => page.address === `/docs/${guide.slug}`);
   const crumb = guide ? `<p class="crumb"><a href="/docs">Guides</a> / ${guide.title}</p>` : "";

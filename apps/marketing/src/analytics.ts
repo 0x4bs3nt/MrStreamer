@@ -48,8 +48,6 @@ type Status = Choice | "refused" | "unavailable";
 
 /** The home page's parts, by the ids index.html gives its sections. */
 const HOME_SECTIONS = [
-  "live-tv",
-  "tv-guide",
   "movies-and-series",
   "sound-and-subtitles",
   "what-you-need",

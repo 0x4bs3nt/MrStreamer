@@ -487,11 +487,29 @@ app.on('window-all-closed', () => app.quit());
     const os = await evaluate<string>("document.documentElement.dataset.os ?? 'any'");
     observed["detectedSystem"] = os;
     await scrollToEnd();
-    await wait(
-      () => captures.filter((c) => c.raw.includes('"feature_section_viewed"')).length >= 6,
-      "home sections",
-      50,
-    );
+    const homeSections = ["movies-and-series", "sound-and-subtitles", "what-you-need", "downloads"];
+    const reachedSections = () =>
+      captures
+        .filter((c) => c.raw.includes('"feature_section_viewed"'))
+        .map((c) => {
+          const body: unknown = JSON.parse(c.raw);
+          if (typeof body !== "object" || body === null || !("properties" in body))
+            return undefined;
+          const properties = body.properties;
+          return typeof properties === "object" &&
+            properties !== null &&
+            "feature_name" in properties
+            ? properties.feature_name
+            : undefined;
+        });
+    await wait(() => reachedSections().length >= homeSections.length, "home sections", 50);
+    const reached = reachedSections();
+    if (
+      reached.length !== homeSections.length ||
+      homeSections.some((name) => !reached.includes(name))
+    )
+      throw new Error(`Unexpected home sections: ${reached.join(", ")}`);
+    observed["homeSections"] = reached;
     await shot("home-footer-on-1280");
     await click('footer a[href="https://github.com/Mr-Streamer-OSS/MrStreamer"]');
     await wait(() => captures.some((c) => c.raw.includes('"github_link_clicked"')), "GitHub click");

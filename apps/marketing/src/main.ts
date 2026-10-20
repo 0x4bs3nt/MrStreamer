@@ -1,10 +1,8 @@
 // Every page runs website analytics (analytics.ts). Home moves; download and about keep release
 // links current:
-// - Each part comes in once as it scrolls into view, the stack of windows fans out once, and the
-//   hero's window tips upright as the page scrolls. The reader starts all of it, nothing runs
-//   while the page sits still, and nothing is hidden waiting for this script:
-//   without it the page is whole, the window upright and the stack fanned out. styles.css holds
-//   the keyframes and switches them off for reduced motion.
+// - Each part comes in once as it scrolls into view, and the hero fan opens once. Nothing runs
+//   while the page sits still. Without scripts the page is whole and the fan rests open.
+//   styles.css holds the keyframes and switches them off for reduced motion.
 // - One request for the update feed points the download and about pages' links at a stable
 //   release published since the site was built (downloads.ts). Home links /download and holds no
 //   installer, so it doesn't ask. Without an answer the built links stand.
@@ -16,42 +14,7 @@ declare const __SITE_ANALYTICS__: SiteCapture | null;
 
 startSiteAnalytics(__SITE_ANALYTICS__);
 
-/** The full layout, for someone who hasn't asked for less motion. Either can change while open. */
-const tilting = matchMedia("(min-width: 70em) and (prefers-reduced-motion: no-preference)");
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
-
-// Only the home page has the window. The other pages listen for nothing.
-const hero = document.querySelector<HTMLElement>("[data-tilt]");
-if (hero) {
-  let queued = false;
-
-  /**
-   * Sets how upright the hero's window stands, from 0 as its top enters at the foot of the screen
-   * to 1 once it is a fifth of the way from the top. Upright, it keeps no trace of the tilt.
-   */
-  const tilt = (): void => {
-    queued = false;
-    const { top } = hero.getBoundingClientRect();
-    const upright = tilting.matches
-      ? Math.min(Math.max((innerHeight - top) / (innerHeight * 0.8), 0), 1)
-      : 1;
-    hero.classList.toggle("tipped", upright < 1);
-    if (upright < 1) hero.style.setProperty("--tilt", upright.toFixed(3));
-    else hero.style.removeProperty("--tilt");
-  };
-
-  /** One update per frame, and only after the reader scrolled, resized or changed a preference. */
-  const queue = (): void => {
-    if (queued) return;
-    queued = true;
-    requestAnimationFrame(tilt);
-  };
-
-  addEventListener("scroll", queue, { passive: true });
-  addEventListener("resize", queue);
-  tilting.addEventListener("change", queue);
-  tilt();
-}
 
 /**
  * The parts that are `revealed` right now, each with the run that revealed it. A part carries

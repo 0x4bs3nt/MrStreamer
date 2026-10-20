@@ -2,28 +2,28 @@
 
 Static pages for `https://mrstreamer.app`, built with Vite from HTML, CSS, TypeScript and the repository's Markdown. The homepage's pictures are captures of the real app and cuts of them, kept in `docs/assets` and described in [marketing artwork](../../docs/contributing/marketing-artwork.md).
 
-| File                                                                         | Holds                                                                             |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `index.html`                                                                 | The homepage: hero, Home window, the stack, four features, subscription, Download |
-| `src/page.html`                                                              | The shared FAQ, privacy, guides, about, security, download and releases layout    |
-| `src/faq.html`                                                               | Grouped questions and answers, readable without scripts                           |
-| `src/download.html`                                                          | The visitor's system first, installer rows, checksum and source links             |
-| `faq/`, `privacy/`, `docs/`, `about/`, `security/`, `download/`, `releases/` | HTML entry points, expanded by the build                                          |
-| `404.html`                                                                   | The page for a missing address                                                    |
-| `src/styles.css`                                                             | Layout, the download page's system block and finite homepage motion               |
-| `src/main.ts`                                                                | Starts website analytics, homepage motion and one download-feed refresh           |
-| `src/analytics.ts`                                                           | Website analytics: the footer and policy switch and the fixed events              |
-| `src/referrals.ts`                                                           | Where a visit entered, as fixed codes for page views and download clicks          |
-| `scripts/site-analytics.ts`                                                  | Which PostHog endpoint, if any, a build compiles in                               |
-| `src/system.ts`                                                              | Which system a visitor is on, for the download page's first block                 |
-| `src/downloads.ts`                                                           | Verified installer links, version metadata and the release's auxiliary links      |
-| `scripts/pages.ts`                                                           | Page registry, metadata and Markdown rendering with public documentation links    |
-| `scripts/releases.ts`                                                        | Paginated stable release history from GitHub, with a bounded fallback             |
-| `vite.config.ts`                                                             | Build inputs, HTML expansion and local routing                                    |
-| `scripts/prepare-assets.ts`                                                  | Pictures, cuts, icons and the social picture; with `--readme`, the README's       |
-| `scripts/package-vercel.ts`                                                  | Vercel's static package, routes and public page/link checks                       |
-| `public/`                                                                    | `robots.txt` and the Store, Apple and Linux marks                                 |
-| `test/`                                                                      | Download, system detection, static document and release-history contracts         |
+| File                                                                         | Holds                                                                          |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `index.html`                                                                 | The homepage: hero fan, two features, subscription, Download                   |
+| `src/page.html`                                                              | The shared FAQ, privacy, guides, about, security, download and releases layout |
+| `src/faq.html`                                                               | Grouped questions and answers, readable without scripts                        |
+| `src/download.html`                                                          | The visitor's system first, installer rows, checksum and source links          |
+| `faq/`, `privacy/`, `docs/`, `about/`, `security/`, `download/`, `releases/` | HTML entry points, expanded by the build                                       |
+| `404.html`                                                                   | The page for a missing address                                                 |
+| `src/styles.css`                                                             | Layout, the download page's system block and finite homepage motion            |
+| `src/main.ts`                                                                | Starts website analytics, homepage motion and one download-feed refresh        |
+| `src/analytics.ts`                                                           | Website analytics: the footer and policy switch and the fixed events           |
+| `src/referrals.ts`                                                           | Where a visit entered, as fixed codes for page views and download clicks       |
+| `scripts/site-analytics.ts`                                                  | Which PostHog endpoint, if any, a build compiles in                            |
+| `src/system.ts`                                                              | Which system a visitor is on, for the download page's first block              |
+| `src/downloads.ts`                                                           | Verified installer links, version metadata and the release's auxiliary links   |
+| `scripts/pages.ts`                                                           | Page registry, metadata and Markdown rendering with public documentation links |
+| `scripts/releases.ts`                                                        | Paginated stable release history from GitHub, with a bounded fallback          |
+| `vite.config.ts`                                                             | Build inputs, HTML expansion and local routing                                 |
+| `scripts/prepare-assets.ts`                                                  | Pictures, cuts, icons and the social picture; with `--readme`, the README's    |
+| `scripts/package-vercel.ts`                                                  | Vercel's static package, routes and public page/link checks                    |
+| `public/`                                                                    | `robots.txt` and the Store, Apple and Linux marks                              |
+| `test/`                                                                      | Download, system detection, static document and release-history contracts      |
 
 `public/generated/`, `dist/` and `.vercel/` are built and stay out of git.
 
@@ -65,16 +65,10 @@ Every document address also accepts a trailing slash. `scripts/pages.ts` is the 
 
 - Keep the words true and few. Every claim on the page comes from the README or the docs. The app's limits are in [what plays](../../docs/user/playback.md).
 - True black, white text, minimal copy. Screenshots describe the app, so a feature is its name and one sentence beside its window.
-- The page order is the bar, the hero, the Home window, the stack of three windows, the four features, Bring your subscription, Download, the footer. There is one header, with Guides, FAQ and Download. Every download action on the page is a link to `/download`; the page holds no installer link and no Store badge, so a click on it is never a download.
+- The page order is the bar, the hero, its fan of Home/Live TV/TV Guide with a legend, two features, Bring your subscription, Download and the footer. Every app screen appears once. Header Guides, FAQ and Download stay visible on phones, and every Home download link goes to `/download`. The old `/#downloads` destination remains.
+- The fan uses the Home stage crop on phones and the full Home window on wider screens. Details and subtitles are the two remaining gallery entries. The removed standalone Home window has no stand-up animation or scroll-driven tilt listener.
+- Motion changes only transform and opacity, once. The bar, mark, headline, lines and button have a CSS opening animation, including without JavaScript. Other content visible at open, including the fan, starts at rest. A feature or fan entering later can reveal; `main.ts` removes its animation class and will-change when finished, out of view, hidden or reduced motion is requested. The button lifts 2 px under the pointer or keyboard focus. Reduced motion skips the opening and reveals. No animation runs at idle.
 - The homepage title and description name the product and systems. Its single h1 names Mr. Streamer above one line that says what it is and one that names the systems. Structured data describes `SoftwareApplication` and `SoftwareSourceCode`, with the alternate product name, publisher, repository and five screenshots. `softwareVersion` comes only from a stable release with a verified installer. There are no invented ratings or reviews. Every document has its own metadata, canonical address and sitemap entry. Add no page for a single system or search phrase.
-- Nothing moves by itself, and every animation runs once and ends:
-  - As the page opens, the bar drops in, the mark pops, the headline and its two lines rise, the button pops and the Home window stands up, or only rises while the layout is stacked. This is CSS alone, so it runs without JavaScript.
-  - As a part scrolls into view, it rises in: each feature, one after another, Bring your subscription and Download. The stack's three windows fan out from one spot, Home first and the Live TV and TV Guide cuts after it, 1.4 seconds in all, once. What is on screen when the page opens stays as it is.
-  - As the page scrolls, the Home window tips upright. Upright, it has no transform left.
-  - The button lifts 2 px under the pointer or the keyboard's focus.
-
-  Only `transform` and `opacity` change. `main.ts` adds `revealed` to a part and takes it off once every animation under it has finished, which it waits for through `getAnimations()` and their `finished` promises, or was dropped. The stack's windows carry `will-change` only with that class. A part that leaves the screen or a page that is hidden mid-run settles where it stands, and the resting layout is where every animation ends, so no class, panel or layer stays behind and nothing runs while the page sits still. Once the page is open, the script works only after a scroll, a resize or a changed preference. With reduced motion nothing moves, also when the preference changes while the page is open. Nothing waits hidden for the script. An animation only starts from hidden, and a part that never animates is in place.
-
 - New pictures come from new captures. Follow the [artwork recipe](../../docs/contributing/marketing-artwork.md). The features, the stack and a phone's hero show cuts of the windows, set in `prepare-assets.ts`, with their sizes repeated in `index.html`.
 - Markdown remains the source for privacy, the seven guides, about and security. The site builds the checked-out `main`, rather than copying guides from a stable tag. Coordinate new feature documentation with its release. Relative guide links become public page links, retaining fragments. Documents that are not public pages link to GitHub, never to a nonexistent site route. Scripts are not needed to read any document. Merging a change to any rendered Markdown source starts the marketing publication workflow.
 
@@ -152,7 +146,7 @@ Keep the badge as Microsoft publishes it: no new colour, crop or redrawing, and 
 | `docs_link_clicked`      | `doc_section`: `index` for `/docs` or a guide's slug. `route`. `location`: `header`, `footer` or `page`                                                                                                                                                                                                                       | A click on a link to `/docs` or a guide. Its fragment is never read                                                                                               |
 | `github_link_clicked`    | `route`, `link_location`: `footer_source`, `footer_bug`, `footer_license` or `page`                                                                                                                                                                                                                                           | A click on another link to this repository                                                                                                                        |
 | `guide_section_viewed`   | `guide`: the guide's slug. `section`: a heading id the build wrote                                                                                                                                                                                                                                                            | The heading enters view, once per page                                                                                                                            |
-| `feature_section_viewed` | `feature_name`: `live-tv`, `tv-guide`, `movies-and-series`, `sound-and-subtitles`, `what-you-need` or `downloads`. `questions` is kept for events from before the homepage's FAQ line went                                                                                                                                    | A home section enters view, once per page                                                                                                                         |
+| `feature_section_viewed` | `feature_name`: `movies-and-series`, `sound-and-subtitles`, `what-you-need` or `downloads`. `live-tv`, `tv-guide` and `questions` remain historical reporting values; new page views no longer emit them                                                                                                                      | A home section enters view, once per page                                                                                                                         |
 | `faq_question_viewed`    | `faq_question`: a row id in `src/faq.html`. `via`: `anchor` when the page opened on that id, else `scroll`                                                                                                                                                                                                                    | The row enters view, once per page. FAQ rows are plain, so nothing is expanded                                                                                    |
 | `changelog_viewed`       | `version`: a stable version on `/releases`                                                                                                                                                                                                                                                                                    | The release enters view, once per page                                                                                                                            |
 
@@ -372,3 +366,11 @@ Only then connect the repository in the project's Settings > Git, and give the p
 | Output Directory                         | `dist`                                                                              |
 
 Never run both. Two publishers on one project overwrite each other.
+
+## Package availability
+
+`src/packages.ts` owns approved package destinations, exact commands, supported systems/architectures and independent publication receipts. Both routes start unpublished. `scripts/pages.ts` omits their links and commands from built HTML until a published stable package has been checked; withdrawing a route keeps its last verified version but hides the route. The direct release feed never activates or changes package metadata.
+
+The selected download A layout keeps the visitor's direct installer first and adds checked package alternatives to the matching system rows. OS detection selects neither an architecture nor an Arch distribution. Package links name their actual platform and architecture. Package links add no analytics collection; existing installer and Store events retain their vocabulary. Public FAQ/install/update package instructions land with the checked activation PR, alongside the registry receipt. Never activate a route from a candidate recipe or an unpublished tap/AUR entry.
+
+The activation PR also adds Home B's package availability line beside Download, naming only the routes whose public stable install has been verified. Keep that line absent while both routes are unpublished, and remove each withdrawn route from it.
