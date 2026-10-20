@@ -250,8 +250,9 @@ gives each its place among what plays now as its `id`, and selects by it.
 Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
 `titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them
 while the screen is in front, the app active and Reduce Motion off, and a status line in glass at
-the bottom of the screen naming what loads, updates or failed by provider, with Retry and
-Settings, over content that stays usable.
+the bottom of the screen naming what loads for the first time or failed by provider, with Retry
+and Settings, over content that stays usable. A list that loads again while its last one shows
+says nothing.
 
 Live channels are asked for as HLS, which AVPlayer plays and panels serve beside MPEG-TS. On the
 simulator the fixture channels showed what that covers: H.264 with AAC or AC-3 plays; MPEG-2 fails
