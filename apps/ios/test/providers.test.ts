@@ -1,5 +1,6 @@
-import type { Season, TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { Episode, Season, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
+import { nextUnwatched } from "@mrstreamer/core/viewing/episodes";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Several subscriptions, saved and shown together, and the upgrade from private beta 2's one. The
@@ -799,6 +800,65 @@ describe("removing a subscription", () => {
     expect(app.titleLists().kind).toBe("loading");
     expect(await urlsOf(app, refs)).toEqual(before);
     expect(app.titleLists().kind).toBe("ready");
+  });
+
+  /** A series of the first provider's that TMDB knows, which its marks are kept by, with its details. */
+  async function markedSeries(app: App, a: string, episodes: number) {
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No lists");
+    for (const show of kindOf(lists.index, "series").titles) {
+      const version = show.versions.find((each) => each.subscriptionId === a);
+      if (!show.tmdbId || !version) continue;
+      const details = await app.detailsOf({ ...show, subscriptionId: a, id: version.id });
+      if (details.kind !== "series") continue;
+      const numbered = details.seasons
+        .filter((season) => season.number > 0)
+        .flatMap((season) => season.episodes);
+      if (numbered.length < episodes) continue;
+      return { details, numbered, series: { subscriptionId: a, id: version.id } };
+    }
+    throw new Error(`No series of the first provider's with ${episodes} episodes`);
+  }
+  const refOf = (episode: Episode) => ({
+    kind: "episode" as const,
+    subscriptionId: episode.subscriptionId,
+    id: episode.id,
+    seriesId: episode.seriesId,
+    season: episode.season,
+    episode: episode.number,
+  });
+
+  it("keeps a remaining provider's watched episodes for Next while the lists are made again", async () => {
+    const { app, a, b } = await twoProviders();
+    const { details, numbered, series } = await markedSeries(app, a, 2);
+    const [first, watched] = numbered;
+    if (!first || !watched) throw new Error("Too few episodes");
+    const at = { id: first.id, season: first.season, episode: first.number };
+    await app.markEpisode(refOf(watched), true);
+    const before = await app.seriesViewing(series);
+    const next = (read: typeof before) => nextUnwatched(details, at, read.progress, read.marks);
+    expect(next(before)?.id).not.toBe(watched.id);
+
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    // Next, as a play of the first episode asks the record now, passes over the one watched.
+    const during = await app.seriesViewing(series);
+    expect(during.marks).toEqual(before.marks);
+    expect(next(during)?.id).toBe(next(before)?.id);
+  });
+
+  it("marks a remaining provider's episode while the lists are made again, and none once it goes", async () => {
+    const { app, a, b } = await twoProviders();
+    const { numbered, series } = await markedSeries(app, a, 1);
+    const [episode] = numbered;
+    if (!episode) throw new Error("No episode");
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    const mark = await app.markEpisode(refOf(episode), true);
+    expect(mark).toMatchObject({ season: episode.season, episode: episode.number, watched: true });
+    expect((await app.seriesViewing(series)).marks).toEqual([mark]);
+    await app.remove(a, { keepHistory: true });
+    expect(await app.seriesViewing(series)).toMatchObject({ marks: [], progress: [] });
   });
 
   it("asks nothing for a provider removed while its request waited", async () => {

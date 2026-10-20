@@ -135,10 +135,11 @@ export function onTitleLists(listener: () => void): () => void {
 
 /**
  * The index of the lists that show, for a request about subscription `id`'s titles that doesn't
- * draw, such as a title's file or a download's details: at once while lists show, and while they
- * are made again with `id`'s in them, as after another subscription's removal, once they show.
- * Rejects at once with `signal`'s reason once it aborts, and when `id` can't have its titles
- * listed: no longer saved, not signed in, or with no lists, its failure when they failed.
+ * draw, such as a title's file, a download's details or the viewing record's series: at once
+ * while lists show, and while they are made again with `id`'s in them, as after another
+ * subscription's removal, once they show. Rejects at once with `signal`'s reason once it aborts,
+ * and when `id` can't have its titles listed: no longer saved, not signed in, or with no lists,
+ * its failure when they failed.
  */
 export function listedIndex(id: string, signal: AbortSignal): Promise<IndexedCatalogue> {
   return new Promise((resolve, reject) => {
@@ -817,9 +818,15 @@ onRoster(relist);
 relist();
 
 serveViewing({
-  series: (version) => {
-    const now = titleLists();
-    return now.kind === "ready" ? titleOf(now.index, "series", version) : undefined;
-  },
+  // As a title's file is looked up: once the lists show, waiting while its subscription's are
+  // made again, and none when its subscription's titles aren't listed.
+  series: (version) =>
+    listedIndex(version.subscriptionId, AbortSignal.timeout(20_000)).then(
+      (index) => titleOf(index, "series", version),
+      (cause: unknown) => {
+        if (cause instanceof AppFailure) return undefined;
+        throw cause;
+      },
+    ),
   details: detailsOf,
 });

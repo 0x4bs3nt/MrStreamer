@@ -43,12 +43,15 @@ let owners: readonly string[] = [];
 
 /** What the lists hold of a series, for which episodes it has; set by titles.ts. */
 export interface ViewingCatalogue {
-  /** The series a version belongs to in the lists now, if they are read. */
-  readonly series: (version: OwnedId) => Title | undefined;
+  /**
+   * The series a version belongs to in the lists, once they show for its subscription; none when
+   * its subscription's titles aren't listed. Rejects when the lists don't come in time.
+   */
+  readonly series: (version: OwnedId) => Promise<Title | undefined>;
   readonly details: (title: Title) => Promise<TitleDetails>;
 }
 let catalogue: ViewingCatalogue = {
-  series: () => undefined,
+  series: async () => undefined,
   details: () => Promise.reject(new AppFailure({ kind: "no-subscription" })),
 };
 
@@ -83,11 +86,15 @@ const layer = ViewingRecord.layer.pipe(
       // Channels watched lately are kept apart, in storage.ts.
       Layer.succeed(ViewingChannels, { lookup: () => Effect.succeed(() => undefined) }),
       Layer.succeed(ViewingSeries, {
-        identity: (series) => Effect.sync(() => seriesIdentity(series, catalogue.series(series))),
+        identity: (series) =>
+          Effect.tryPromise({
+            try: async () => seriesIdentity(series, await catalogue.series(series)),
+            catch: failedWith,
+          }),
         seasons: (series) =>
           Effect.tryPromise({
             try: async () => {
-              const title = catalogue.series(series);
+              const title = await catalogue.series(series);
               if (!title) throw new AppFailure({ kind: "title-not-found", titleId: series.id });
               const found = await catalogue.details({ ...title, ...series });
               return found.kind === "series" ? seriesEpisodeSeasons(found) : [];
