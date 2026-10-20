@@ -38,6 +38,8 @@ const edges = vi.hoisted(() => ({
       | { kind: "failed"; error: unknown; last: OnDemandCatalogue | null; since: number };
   }>,
   roster: new Set<() => void>(),
+  /** Each subscription's login, as sources.ts keeps it while it is signed in. */
+  sources: new Map<string, { provider: { titleFile: (kind: string, id: string) => unknown } }>(),
   /** What the metadata store answers: TMDB's metadata of each title, by kind and TMDB id. */
   known: null as ((kind: string, id: string) => TitleMetadata) | null,
   services: [] as ServiceTitles[],
@@ -63,7 +65,14 @@ vi.mock("../src/account.ts", () => ({
   reloadTitles: () => undefined,
   useRoster: () => ({ kind: "ready", members: [] }),
 }));
-vi.mock("../src/sources.ts", () => ({ currentSource: () => undefined, sourceOf: () => null }));
+vi.mock("../src/sources.ts", () => ({
+  currentSource: (id: string) => edges.sources.get(id),
+  sourceOf: (id: string) => {
+    const found = edges.sources.get(id);
+    if (!found) throw new Error(`${id} isn't signed in`);
+    return found;
+  },
+}));
 vi.mock("../src/viewing.ts", async () => {
   const { useSyncExternalStore } = await import("react");
   const subscribe = (listener: () => void) => {
@@ -330,6 +339,7 @@ describe("the collections Movies, Series, Home and details show", () => {
     vi.resetModules();
     edges.members = [];
     edges.roster.clear();
+    edges.sources.clear();
     edges.known = null;
     edges.services = [];
     edges.expiry = null;
@@ -579,6 +589,58 @@ describe("the collections Movies, Series, Home and details show", () => {
     const index = indexed();
     expect(madeOf(titles.collectionsOf("movie"), "movie", index)).toBe(true);
     expect(madeOf(titles.collectionsOf("series"), "series", index)).toBe(true);
+  });
+
+  describe("a title's file asked for while the lists are made again without a removed subscription", () => {
+    /** A login whose provider names each file by it. */
+    const loginOf = (login: string) => ({
+      provider: {
+        titleFile: async (kind: string, id: string) => ({ url: `${login}/${kind}/${id}` }),
+      },
+    });
+    /** Both subscriptions' lists showing, then b removed: a film of a's, and how many listen. */
+    async function removedB() {
+      edges.sources.set("a", loginOf("first"));
+      edges.sources.set("b", loginOf("other"));
+      subscribe("a", "b");
+      await until(() => titles.collectionsOf("movie") !== null, "the first collections");
+      const index = indexed();
+      const film =
+        index &&
+        kindOf(index, "movie")
+          .titles.flatMap((title) => title.versions)
+          .find((version) => version.subscriptionId === "a" && version.container);
+      if (!film) throw new Error("No film of a's");
+      const listening = edges.roster.size;
+      edges.sources.delete("b");
+      subscribe("a");
+      expect(titles.titleLists().kind).toBe("loading");
+      return { ref: { kind: "movie", subscriptionId: "a", id: film.id } as const, listening };
+    }
+
+    it("answers once they show, under the login that stands then", async () => {
+      const { ref, listening } = await removedB();
+      const asked = titles.titleFile(ref, new AbortController().signal);
+      // a signs in again, with a new password, while the request waits.
+      edges.sources.set("a", loginOf("second"));
+      for (const listener of edges.roster) listener();
+      expect(await asked).toMatchObject({ url: `second/movie/${ref.id}` });
+      expect(edges.roster.size).toBe(listening);
+    });
+
+    it("settles at once when it stops waiting or its subscription goes, leaving nothing behind", async () => {
+      const { ref, listening } = await removedB();
+      const controller = new AbortController();
+      const stopped = titles.titleFile(ref, controller.signal);
+      const removed = titles.titleFile(ref, new AbortController().signal);
+      controller.abort(new Error("Another title was chosen"));
+      await expect(stopped).rejects.toThrow("Another title was chosen");
+      edges.sources.delete("a");
+      edges.members = [];
+      for (const listener of edges.roster) listener();
+      await expect(removed).rejects.toMatchObject({ error: { kind: "no-subscription" } });
+      expect(edges.roster.size).toBe(listening);
+    });
   });
 
   it("never show lists replaced before they were indexed and made", async () => {

@@ -759,6 +759,80 @@ describe("everything together", () => {
 });
 
 describe("removing a subscription", () => {
+  /** A film and an episode of the first provider, as a play or a download names them. */
+  async function filesOf(app: App, a: string) {
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No lists");
+    const film = kindOf(lists.index, "movie")
+      .titles.flatMap((title) => title.versions)
+      .find((version) => version.subscriptionId === a && version.container);
+    const show = kindOf(lists.index, "series").titles.find((title) =>
+      title.versions.some((version) => version.subscriptionId === a),
+    );
+    const version = show?.versions.find((each) => each.subscriptionId === a);
+    if (!film || !show || !version) throw new Error("The first provider lists no film or series");
+    const details = await app.detailsOf({ ...show, subscriptionId: a, id: version.id });
+    const episode = details.kind === "series" ? details.seasons[0]?.episodes[0] : undefined;
+    if (!episode) throw new Error("The series lists no episode");
+    const refs: readonly TitleRef[] = [
+      { kind: "movie", subscriptionId: a, id: film.id },
+      {
+        kind: "episode",
+        subscriptionId: a,
+        id: episode.id,
+        seriesId: episode.seriesId,
+        season: episode.season,
+        episode: episode.number,
+      },
+    ];
+    return refs;
+  }
+  const urlsOf = (app: App, refs: readonly TitleRef[], signal = new AbortController().signal) =>
+    Promise.all(refs.map((ref) => app.titleFile(ref, signal).then((file) => file.url)));
+
+  it("finds the remaining provider's film and episode files while the lists are made again", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    const before = await urlsOf(app, refs);
+    await app.remove(b, { keepHistory: true });
+    // The lists are made again without the removed provider's titles: nothing shows meanwhile.
+    expect(app.titleLists().kind).toBe("loading");
+    expect(await urlsOf(app, refs)).toEqual(before);
+    expect(app.titleLists().kind).toBe("ready");
+  });
+
+  it("asks nothing for a provider removed while its request waited", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    await app.remove(b, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    const asked = urlsOf(app, refs);
+    await app.remove(a, { keepHistory: true });
+    await expect(asked).rejects.toMatchObject({ error: { kind: "no-subscription" } });
+  });
+
+  it("settles a request that stops waiting at once, with why it stopped", async () => {
+    const { app, a, b } = await twoProviders();
+    const refs = await filesOf(app, a);
+    await app.remove(b, { keepHistory: true });
+    const controller = new AbortController();
+    const asked = urlsOf(app, refs, controller.signal);
+    controller.abort(new Error("Another title was chosen"));
+    await expect(asked).rejects.toThrow("Another title was chosen");
+    expect(app.titleLists().kind).toBe("loading");
+  });
+
+  it("says why a provider's lists failed rather than waiting or blaming the subscription", async () => {
+    one.failTitles(503);
+    const app = await launch();
+    const a = await app.add({ server: one.url, ...ONE });
+    if (!a) throw new Error("The add was cancelled");
+    await until(() => member(app, a)?.titles.kind === "failed", "the failure");
+    const asked = app.titleFile(firstMovie(one, a), new AbortController().signal);
+    await expect(asked).rejects.toMatchObject({ error: { kind: "provider-error", status: 503 } });
+    one.failTitles(null);
+  });
+
   it("stops what plays from it, and only that", async () => {
     const { app, a, b } = await twoProviders();
     const [first] = channels(app).filter((each) => each.subscriptionId === a);

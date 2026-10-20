@@ -37,6 +37,8 @@ const memory = vi.hoisted(() => ({
   },
   appState: "active" as string,
   appListeners: [] as Array<(state: string) => void>,
+  /** While set, a series' details reach the app only once `released` settles. */
+  details: null as null | { arrived: () => void; released: Promise<void> },
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -131,6 +133,19 @@ vi.mock("expo-video", () => ({
   },
 }));
 
+const passThrough = globalThis.fetch;
+vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+  const response = await passThrough(input, init);
+  const held = memory.details;
+  if (!held || typeof input !== "string" || !input.includes("action=get_series_info")) {
+    return response;
+  }
+  const body = await response.text();
+  held.arrived();
+  await held.released;
+  return new Response(body, { status: response.status, headers: response.headers });
+});
+
 const { native, File: DiskFile, Directory: Folder } = await import("./native-files.ts");
 const { background } = await import("./native-downloads.ts");
 
@@ -194,6 +209,7 @@ const episode = () => {
 };
 
 afterEach(async () => {
+  memory.details = null;
   one.stallMovieFile(movie().id, 0, 0);
   one.stallMovieFile(otherMovie().id, 0, 0);
   memory.appState = "active";
@@ -336,6 +352,37 @@ function appGoes(state: "background" | "active") {
 }
 
 describe("downloads", { timeout: 30_000 }, () => {
+  it("adds the remaining provider's downloads asked for before or while a removed one's titles go", async () => {
+    await install();
+    const app = await launch();
+    const { a, b } = await withProviders(app, true);
+    const { series, first } = episode();
+    const arrived = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    memory.details = { arrived: arrived.resolve, released: released.promise };
+    // The episode's lookup is under way as the second provider goes.
+    const asked = app.addDownload({
+      kind: "episode",
+      subscriptionId: a,
+      id: String(first.id),
+      seriesId: String(series.id),
+      season: 1,
+      episode: first.number ?? 1,
+    });
+    await arrived.promise;
+    await app.remove(b!, { keepHistory: true });
+    expect(app.titleLists().kind).toBe("loading");
+    // A film asked for while the lists are made again, then the episode's lookup lands.
+    const film = app.addDownload(movieRef(a));
+    memory.details = null;
+    released.resolve();
+    const [show, movieCopy] = await Promise.all([asked, film]);
+    expect(show).toMatchObject({ subscription: { id: a } });
+    expect(show.episodeName).not.toBeNull();
+    expect(movieCopy).toMatchObject({ subscription: { id: a } });
+    await until(() => isComplete(app, show.id) && isComplete(app, movieCopy.id), "both copies");
+  });
+
   it("transfers one at a time, a movie then an episode, and keeps no login with them", async () => {
     await install();
     const app = await launch();

@@ -132,6 +132,41 @@ export function onTitleLists(listener: () => void): () => void {
     listener();
   });
 }
+
+/**
+ * The index of the lists that show, for a request about subscription `id`'s titles that doesn't
+ * draw, such as a title's file or a download's details: at once while lists show, and while they
+ * are made again with `id`'s in them, as after another subscription's removal, once they show.
+ * Rejects at once with `signal`'s reason once it aborts, and when `id` can't have its titles
+ * listed: no longer saved, not signed in, or with no lists, its failure when they failed.
+ */
+export function listedIndex(id: string, signal: AbortSignal): Promise<IndexedCatalogue> {
+  return new Promise((resolve, reject) => {
+    const done = (answer: () => void) => {
+      for (const stop of stops.splice(0)) stop();
+      signal.removeEventListener("abort", settle);
+      answer();
+    };
+    const settle = () => {
+      if (signal.aborted) return done(() => reject(signal.reason));
+      const now = titleLists();
+      if (now.kind === "ready") return done(() => resolve(now.index));
+      const member = members().find((each) => each.entry.id === id);
+      if (!member) return done(() => reject(new AppFailure({ kind: "no-subscription" })));
+      if (!currentSource(id)) {
+        return done(() => reject(new AppFailure({ kind: "needs-secret", subscriptionId: id })));
+      }
+      if (shownOf(member.titles)) return;
+      const error: AppError =
+        member.titles.kind === "failed" ? member.titles.error : { kind: "no-subscription" };
+      done(() => reject(new AppFailure(error)));
+    };
+    const stops = [shown.subscribe(settle), onRoster(settle)];
+    signal.addEventListener("abort", settle);
+    settle();
+  });
+}
+
 export const useMetadataVersion = () => useStore(metadataVersion);
 export const useMetadataStatus = () => useStore(metadataStatus);
 export const useTitleTimings = () => useStore(timings);
@@ -740,12 +775,13 @@ export async function episodesOf(
  * Where a movie or an episode streams from, by the file type its provider lists: a movie's in the
  * lists or this run's answer for its details, an episode's in this run's answer for its series'.
  * Asks the subscription that lists it, under its current login, which the address carries; never
- * a saved record.
+ * a saved record. While the lists are made again with its subscription's in them, it waits for
+ * them (`listedIndex`).
  */
 export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<ProviderFile> {
+  const index = await listedIndex(ref.subscriptionId, signal);
+  // The login that stands now, whichever was signed in while the lists were made again.
   const reading = sourceOf(ref.subscriptionId).provider;
-  const ready = titleLists();
-  if (ready.kind !== "ready") throw new AppFailure({ kind: "no-subscription" });
   const missing = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   const answered = (title: Title) =>
     underLogin(ref.subscriptionId, async (source) => ({
@@ -753,7 +789,7 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
       source,
     }));
   if (ref.kind === "movie") {
-    const title = titleOf(ready.index, "movie", ref);
+    const title = titleOf(index, "movie", ref);
     if (!title) throw missing;
     const listed = title.versions.find((version) => sameOwned(version, ref))?.container;
     if (listed) return reading.titleFile("movie", ref.id, listed, signal);
@@ -761,7 +797,7 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
     return source.provider.titleFile("movie", ref.id, raw.container ?? "mp4", signal);
   }
   const series = { subscriptionId: ref.subscriptionId, id: ref.seriesId };
-  const title = titleOf(ready.index, "series", series);
+  const title = titleOf(index, "series", series);
   if (!title) throw missing;
   const { raw, source } = await answered({ ...title, ...series });
   const episode = raw.episodes.find((each) => each.id === ref.id);
