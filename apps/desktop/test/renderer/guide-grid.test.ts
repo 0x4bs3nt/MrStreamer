@@ -1,8 +1,10 @@
+import { acceptPreferences } from "../../src/renderer/src/lib/preferences.ts";
 // @vitest-environment happy-dom
 // Live TV's guide grid: the switch from the list and back, kept as a preference, the keys and
 // clicks that move between programmes and channels and open a programme's details, what Enter,
 // Watch live and Play from start play on channels with and without catch-up, how far back and
 // ahead it reaches, and the pages of the guide it reads, only those around what is in view.
+import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -128,7 +130,7 @@ async function gridPage(
         all(channel.id).find((programme) => programme.start === start)) ||
       null,
   );
-  ipc.answer("preferences.update", (patch) => ({ ...defaultPreferences, ...patch }));
+  ipc.answer("preferences.update", (patch) => ipc.snapshot({ ...defaultPreferences, ...patch }));
   ipc.always("guide.status", [
     {
       subscriptionId: SUBSCRIPTION,
@@ -168,7 +170,7 @@ async function gridPage(
       channelCount: channels.length,
     },
   ]);
-  client.setQueryData(queries.channels(null).queryKey, channels);
+  client.setQueryData(browseChannels(null).queryKey, browseResult(channels));
   client.setQueryData(
     ["library", "status"],
     [
@@ -294,6 +296,42 @@ describe("the guide grid", () => {
     await page.press("G");
     await ready(() => expect(page.grid()).toBeNull());
     expect(ipc.argsOf("preferences.update").at(-1)).toEqual({ liveView: "list" });
+  });
+
+  it("retains a pending view through unrelated snapshots and lets only its own failed save resolve it", async () => {
+    const page = await gridPage(THREE, "list");
+    await ready(() => expect(page.grid()).toBeNull());
+    const first = ipc.hold("preferences.update");
+    await page.click("Guide");
+    await ready(() => expect(page.grid()).not.toBeNull());
+    await act(async () =>
+      acceptPreferences(
+        page.client,
+        ipc.snapshot({ ...defaultPreferences, liveView: "list", audioLanguage: "nl" }),
+      ),
+    );
+    await ready(() => expect(page.grid()).not.toBeNull());
+    const second = ipc.hold("preferences.update");
+    await page.click("List");
+    await act(async () => first.reject({ kind: "unexpected", detail: "first view save failed" }));
+    await ready(() => expect(page.grid()).toBeNull());
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    await act(async () =>
+      second.resolve(
+        ipc.snapshot({ ...defaultPreferences, liveView: "list", audioLanguage: "nl" }),
+      ),
+    );
+    const third = ipc.hold("preferences.update");
+    await page.click("Guide");
+    await ready(() => expect(page.grid()).not.toBeNull());
+    await act(async () => third.reject({ kind: "unexpected", detail: "latest view save failed" }));
+    await ready(() => expect(page.grid()).toBeNull());
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      "latest view save failed",
+    );
+    expect(
+      page.client.getQueryData(queries.preferences().queryKey)?.preferences.audioLanguage,
+    ).toBe("nl");
   });
 
   it("opens in the grid when that is the view kept, and Escape goes to the list before Home", async () => {
@@ -632,7 +670,10 @@ describe("the guide grid", () => {
     const two = titleAt("2", Date.now())!;
     expect(page.details()).toContain(two);
     await act(async () =>
-      page.client.setQueryData(queries.channels(null).queryKey, [THREE[2]!, THREE[1]!, THREE[0]!]),
+      page.client.setQueryData(
+        browseChannels(null).queryKey,
+        browseResult([THREE[2]!, THREE[1]!, THREE[0]!]),
+      ),
     );
     await ready(() => expect(page.rows()).toEqual(["Three", "Two", "One"]));
     expect(page.details()).toContain(two);
@@ -725,4 +766,53 @@ describe("the guide grid", () => {
     const pages = reads().map((read) => `${read.rows[0]} ${read.from}`);
     expect(new Set(pages).size).toBe(pages.length);
   });
+});
+
+it("keeps an exact grid channel through a pending filter and selects the first when that channel is filtered out", async () => {
+  const page = await gridPage(THREE);
+  await ready(() => expect(page.rows()).toEqual(["One", "Two", "Three"]));
+  await page.press("ArrowDown");
+  expect(page.active()).toContain("Two");
+  const first = ipc.hold("library.browse", (query) => query.filters.countries.includes("Belgium"));
+  await act(async () =>
+    useUi.setState({
+      list: { kind: "all", filters: { countries: ["Belgium"], languages: [], subscriptions: [] } },
+    }),
+  );
+  await ready(() => expect(page.rows()).toEqual([]));
+  first.resolve(browseResult([THREE[1]!, THREE[2]!]));
+  await ready(() => expect(page.rows()).toEqual(["Two", "Three"]));
+  expect(page.active()).toContain("Two");
+  const next = ipc.hold("library.browse", (query) => query.filters.countries.includes("France"));
+  await act(async () =>
+    useUi.setState({
+      list: { kind: "all", filters: { countries: ["France"], languages: [], subscriptions: [] } },
+    }),
+  );
+  next.resolve(browseResult([THREE[2]!, THREE[0]!]));
+  await ready(() => expect(page.rows()).toEqual(["Three", "One"]));
+  await page.press("Enter");
+  expect(player.state().channel?.id).toBe("3");
+});
+
+it("opens a newly read list on the playing channel", async () => {
+  const page = await gridPage(THREE);
+  await ready(() => expect(page.rows()).toEqual(["One", "Two", "Three"]));
+  await page.press("ArrowDown");
+  await page.press("Enter");
+  expect(player.state().channel?.id).toBe("2");
+  await act(async () => useUi.setState({ watching: false }));
+  const held = ipc.hold("library.browse", (query) => query.filters.browseTopics.includes("news"));
+  await act(async () => useUi.setState({ list: { kind: "topic", topic: "news" } }));
+  await ready(() => expect(page.rows()).toEqual([]));
+  held.resolve(
+    browseResult([
+      { ...THREE[1]!, subscriptionId: "other", name: "Other Two", title: "Other Two" },
+      ...THREE,
+    ]),
+  );
+  await ready(() => expect(page.rows()).toEqual(["Other Two", "One", "Two", "Three"]));
+  expect(page.active()).toContain("Two");
+  await page.press("Enter");
+  expect(player.state().channel).toMatchObject({ subscriptionId: SUBSCRIPTION, id: "2" });
 });

@@ -908,7 +908,7 @@ const handlers: {
     return null;
   },
   flush: async () => {
-    await Promise.all([save(), metadata.flush()]);
+    await Promise.all([save(), metadata.close()]);
     return null;
   },
 };

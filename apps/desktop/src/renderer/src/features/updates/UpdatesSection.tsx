@@ -1,4 +1,4 @@
-// Updates, in Settings > General: the version and where its update stands, with the one action
+// Updates, in Settings > Updates: the version and where its update stands, with the one action
 // it needs, then the channel, and the offered release's notes. The top bar's notice and these
 // rows share the updates service's state, so an action in either shows in both. A copy the
 // Microsoft Store installed gets one row instead, which opens the Store.
@@ -6,6 +6,7 @@ import type { CheckFailure, UpdateStatus } from "@mrstreamer/contracts/updates";
 import type { Channel } from "@mrstreamer/contracts/version";
 import { formatDate, formatPercent, t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { SaveFeedback } from "../settings/SaveFeedback.tsx";
 import { Row, Section, Select } from "../settings/Rows.tsx";
 import { noteItems } from "./notes.ts";
 import { useUpdates } from "./use-updates.ts";
@@ -31,8 +32,18 @@ function describeCheckFailure(failure: CheckFailure): string {
 }
 
 export function UpdatesSection() {
-  const { status, setChannel, openStore } = useUpdates();
-  if (!status) return null;
+  const { status, statusRead, setChannel, channelChange, openStore } = useUpdates();
+  if (!status)
+    return (
+      <Section title={t("Updates")}>
+        <p>{statusRead.isPending ? t("Loading…") : t("Settings could not be read.")}</p>
+        <SaveFeedback
+          pending={false}
+          error={statusRead.error}
+          retry={() => void statusRead.refetch()}
+        />
+      </Section>
+    );
   const channels: readonly { value: Channel; label: string }[] = [
     { value: "stable", label: t("Stable") },
     { value: "nightly", label: t("Nightly") },
@@ -41,7 +52,7 @@ export function UpdatesSection() {
   if (status.distribution === "store") {
     return (
       <Section title={t("Updates")}>
-        <Row label={status.version} note={t("updated by the Microsoft Store")}>
+        <Row id="update-check" label={status.version} note={t("updated by the Microsoft Store")}>
           <Button size="sm" onClick={openStore}>
             {t("Open Store")}
           </Button>
@@ -53,16 +64,23 @@ export function UpdatesSection() {
     <Section title={t("Updates")}>
       <State status={status} />
       <Row
+        id="update-channel"
         label={t("Channel")}
         note={status.channel === "nightly" ? t("newest builds") : t("tested releases")}
       >
         <Select
           label={t("Channel")}
+          busy={channelChange.isPending}
           value={status.channel}
           options={channels}
           onChange={setChannel}
         />
       </Row>
+      <SaveFeedback
+        pending={channelChange.isPending}
+        error={channelChange.error}
+        retry={() => setChannel(channelChange.variables!)}
+      />
       <Notes status={status} />
     </Section>
   );
@@ -70,7 +88,7 @@ export function UpdatesSection() {
 
 /** The version, where its update stands, and the one action that needs. */
 function State({ status }: { status: UpdateStatus }) {
-  const { check, download, cancel, restart } = useUpdates();
+  const { check, download, cancel, restart, actionState } = useUpdates();
   const { update, version, checked, nextCheckAt, offer } = status;
   let note: string;
   switch (update.kind) {
@@ -131,7 +149,7 @@ function State({ status }: { status: UpdateStatus }) {
   const offered = update.kind === "available" || update.kind === "failed" || busy;
   return (
     <>
-      <Row label={version} note={note}>
+      <Row id="update-check" label={version} note={note}>
         {offered && (
           <Button
             variant="ghost"
@@ -178,6 +196,11 @@ function State({ status }: { status: UpdateStatus }) {
           <div className="h-full bg-white" style={{ width: `${update.percent}%` }} />
         </div>
       )}
+      <SaveFeedback
+        pending={false}
+        error={actionState.error}
+        retry={() => actionState.mutate(actionState.variables!)}
+      />
       {failure && <p className="mt-2 text-sm text-destructive">{failure}</p>}
       {quietFailure && (
         <p className="mt-2 text-[0.8125rem] text-muted-foreground">{quietFailure}</p>

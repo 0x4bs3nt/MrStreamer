@@ -79,6 +79,10 @@ export async function airedProgramme(d: Driver, category: string, channel: strin
     "[...document.querySelectorAll('header button')].find(b => b.textContent.trim() === 'Live TV')",
   );
   await d.click(
+    "Open Provider lists",
+    "[...document.querySelectorAll('[role=navigation] button')].find(b=>b.title === 'Provider lists')",
+  );
+  await d.click(
     `Open the ${category} category`,
     `[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(${JSON.stringify(category)}))`,
   );

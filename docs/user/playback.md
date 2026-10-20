@@ -43,7 +43,7 @@ A movie starts about a second after you choose it. Skipping into what's already 
 
 ## Online subtitles, from 0.0.9
 
-Online search starts off. In Settings > General > Online subtitles, set up SubDL with your own API key, or OpenSubtitles with your API key, username and password, or both. Choose saved languages and enable search. Saving these settings makes no service request.
+Online search starts off. In Settings > Subtitles > Online search, set up SubDL with your own API key, or OpenSubtitles with your API key, username and password, or both. Choose saved languages and enable search. Saving these settings makes no service request.
 
 For a movie or episode playing on this computer, open **CC** and choose **Search subtitles**. Opening CC alone does not search. You can pick another search language in the panel, and **Settings** there opens the online subtitle settings. File tracks stay above the results, which show the release, service, language, hearing-impaired flag and download count when provided. If one service fails, the other service's results remain usable. Choose a result to download it and show it while the picture continues. The panel stays open to try another result. **Escape** or CC closes it; closing while a request runs cancels that request.
 

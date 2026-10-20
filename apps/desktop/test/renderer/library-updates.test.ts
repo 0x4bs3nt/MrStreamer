@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { browseChannels, browseChannelsOf, browseResult } from "./browse-support.ts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IpcOutput } from "@mrstreamer/contracts/ipc";
@@ -57,7 +58,7 @@ afterEach(() => {
  * before its read answers. A catalogue update comes, then the answer, from the catalogue before.
  * No other update follows; back on the list, it shows the new catalogue's.
  */
-async function readsAgainWhenShown<M extends "library.channels" | "viewing.get">(
+async function readsAgainWhenShown<M extends "library.browse" | "viewing.get">(
   page: Pick<QueryObserver<IpcOutput<M>>, "subscribe" | "getCurrentResult">,
   method: M,
   before: IpcOutput<M>,
@@ -81,10 +82,10 @@ async function readsAgainWhenShown<M extends "library.channels" | "viewing.get">
 describe("a catalogue update during a read", () => {
   it("reads All channels again when shown after a read under way answered from the catalogue before", () =>
     readsAgainWhenShown(
-      new QueryObserver(client, queries.channels(null)),
-      "library.channels",
-      [channel("1")],
-      [channel("2")],
+      new QueryObserver(client, browseChannels(null)),
+      "library.browse",
+      browseResult([channel("1")]),
+      browseResult([channel("2")]),
     ));
 
   it("reads favourites and history again when shown after a read under way answered from the catalogue before", () =>
@@ -96,48 +97,48 @@ describe("a catalogue update during a read", () => {
     ));
 
   it("reads a shown list again once its first read answered from the catalogue before", async () => {
-    const old = ipc.hold("library.channels");
-    const page = new QueryObserver(client, queries.channels(null));
+    const old = ipc.hold("library.browse");
+    const page = new QueryObserver(client, browseChannels(null));
     const stop = page.subscribe(() => {});
     await settled();
     ipc.emit("library.updated", status);
-    ipc.always("library.channels", [channel("2")]);
-    old.resolve([channel("1")]);
+    ipc.always("library.browse", browseResult([channel("2")]));
+    old.resolve(browseResult([channel("1")]));
     await settled();
-    expect(ipc.argsOf("library.channels")).toHaveLength(2);
-    expect(page.getCurrentResult().data).toEqual([channel("2")]);
+    expect(ipc.argsOf("library.browse")).toHaveLength(2);
+    expect(page.getCurrentResult().data).toEqual(browseResult([channel("2")]));
     stop();
   });
 
   it("gives a caller awaiting that read its answer, and reads the list again once it shows", async () => {
-    const favourites = queries.channelsOf([channel("1")]);
-    const old = ipc.hold("library.channels");
+    const favourites = browseChannelsOf([channel("1")]);
+    const old = ipc.hold("library.browse");
     const asked = client.fetchQuery(favourites);
     await settled();
     ipc.emit("library.updated", status);
-    old.resolve([channel("1")]);
-    await expect(asked).resolves.toEqual([channel("1")]);
+    old.resolve(browseResult([channel("1")]));
+    await expect(asked).resolves.toEqual(browseResult([channel("1")]));
     await settled();
-    expect(ipc.argsOf("library.channels")).toHaveLength(1);
-    ipc.always("library.channels", [channel("2")]);
+    expect(ipc.argsOf("library.browse")).toHaveLength(1);
+    ipc.always("library.browse", browseResult([channel("2")]));
     const page = new QueryObserver(client, favourites);
     const stop = page.subscribe(() => {});
     await settled();
-    expect(ipc.argsOf("library.channels")).toHaveLength(2);
-    expect(page.getCurrentResult().data).toEqual([channel("2")]);
+    expect(ipc.argsOf("library.browse")).toHaveLength(2);
+    expect(page.getCurrentResult().data).toEqual(browseResult([channel("2")]));
     stop();
   });
 
   it("reads a shown list once for an update after its last read", async () => {
-    ipc.always("library.channels", [channel("1")]);
-    const page = new QueryObserver(client, queries.channels(null));
+    ipc.always("library.browse", browseResult([channel("1")]));
+    const page = new QueryObserver(client, browseChannels(null));
     const stop = page.subscribe(() => {});
     await settled();
-    ipc.always("library.channels", [channel("2")]);
+    ipc.always("library.browse", browseResult([channel("2")]));
     ipc.emit("library.updated", status);
     await settled();
-    expect(ipc.argsOf("library.channels")).toHaveLength(2);
-    expect(page.getCurrentResult().data).toEqual([channel("2")]);
+    expect(ipc.argsOf("library.browse")).toHaveLength(2);
+    expect(page.getCurrentResult().data).toEqual(browseResult([channel("2")]));
     stop();
   });
 });

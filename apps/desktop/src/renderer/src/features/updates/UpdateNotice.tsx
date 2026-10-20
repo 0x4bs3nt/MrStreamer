@@ -164,7 +164,13 @@ function UpdatePanel({ status }: { status: UpdateStatus }) {
         )}
         <button
           onMouseDown={(event) => event.preventDefault()}
-          onClick={() => useUi.setState({ settings: "general", updateDialog: null })}
+          onClick={() =>
+            useUi.setState({
+              settings: "updates",
+              settingsTarget: "update-check",
+              updateDialog: null,
+            })
+          }
           className="ml-auto text-[0.8125rem] text-muted-foreground hover:text-white"
         >
           {t("Release notes")} ›

@@ -2,6 +2,7 @@
 // Live TV's search of the list it shows: the channels found by a name or by a programme the main
 // process finds, in the list's order, the keys between the field and the channels, and what
 // another list does to a search.
+import { browseChannels, browseChannelsOf, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -9,7 +10,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListingMatch, Programme } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
-import { ownedKey } from "@mrstreamer/contracts/subscription";
+import { ownedId, ownedKey } from "@mrstreamer/contracts/subscription";
 import { useUi, type ChannelList } from "../../src/renderer/src/app/ui-store.ts";
 import { GuidePage } from "../../src/renderer/src/features/live/GuidePage.tsx";
 import { queries } from "../../src/renderer/src/lib/queries.ts";
@@ -95,12 +96,12 @@ async function guidePage(list: ChannelList = { kind: "all" }, channels = CHANNEL
       channelCount: channels.length,
     },
   ]);
-  client.setQueryData(queries.channels(null).queryKey, channels);
+  client.setQueryData(browseChannels(null).queryKey, browseResult(channels));
   ipc.always("library.searchGroups", []);
-  client.setQueryData(queries.channels(own("uk")).queryKey, channels);
+  client.setQueryData(browseChannels(own("uk")).queryKey, browseResult(channels));
   client.setQueryData(
-    queries.channelsOf(FAVOURITES).queryKey,
-    FAVOURITES.flatMap(({ id }) => byId.get(id) ?? []),
+    browseChannelsOf(FAVOURITES).queryKey,
+    browseResult(FAVOURITES.flatMap(({ id }) => byId.get(id) ?? [])),
   );
   client.setQueryData(
     ["library", "status"],
@@ -249,6 +250,7 @@ describe("searching the list Live TV shows", () => {
     expect(ipc.argsOf("guide.searchList")).toEqual([
       {
         query: "News",
+        channels: CHANNELS.map(ownedId),
         until: expect.any(Number),
         request: { view: "live", id: expect.any(String) },
       },
@@ -365,6 +367,7 @@ describe("searching the list Live TV shows", () => {
     expect(page.rows()).toEqual(["Dave"]);
     expect(ipc.argsOf("guide.searchList").at(-1)).toEqual({
       query: "dave",
+      channels: CHANNELS.map(ownedId),
       request: { view: "live", id: expect.any(String) },
       until: expect.any(Number),
     });

@@ -467,7 +467,15 @@ export function GuideGrid({
 
   // The grid opens on the playing channel, once its channels are in.
   useEffect(() => {
-    if (index > 0) virtualizer.scrollToIndex(index, { align: "center" });
+    let initial = index;
+    if (channels.length && cursor.channel === null && cursor.asked === 0) {
+      initial = Math.max(
+        channels.findIndex((channel) => ownedKey(channel) === playingKey),
+        0,
+      );
+      setCursor({ ...cursor, index: initial, channel: channels[initial] ?? null });
+    }
+    if (initial > 0) virtualizer.scrollToIndex(initial, { align: "center" });
   }, [channels.length > 0]);
 
   // A key that moved the cursor brings it into view, the row and then the programme.
@@ -827,17 +835,20 @@ const GridRow = memo(function GridRow({
                 onClick={(event) => onPick(index, pointed(event, block))}
                 onDoubleClick={() => onPlay(channel, block)}
                 className={cn(
-                  "absolute inset-y-0 flex flex-col justify-center overflow-clip border-l border-white/12 px-2.5 whitespace-nowrap hover:bg-white/5",
+                  "absolute inset-y-0 flex flex-col justify-center overflow-clip whitespace-nowrap before:pointer-events-none before:absolute before:inset-y-0 before:left-0 before:w-px before:bg-white/12 hover:bg-white/5",
                   ended && !replay && "text-foreground/38",
                   replay && "bg-white/[0.035]",
                   !ended && !on && "text-foreground/85",
                   chosen &&
-                    "z-[1] rounded-lg border-l-transparent bg-white/10 text-white ring-2 ring-white/70 ring-inset hover:bg-white/10",
+                    "z-[1] rounded-lg bg-white/10 text-white ring-2 ring-white/70 ring-inset before:bg-transparent hover:bg-white/10",
                 )}
                 style={box}
               >
-                {/* Moved into view by the grid while the programme's start is scrolled past. */}
-                <span className={cn("truncate text-sm", on && "font-semibold")}>{slot.title}</span>
+                {/* Padding stays inside the clipped cell, so tiny slots keep their timeline width.
+                    The grid moves this title into view when the programme's start is scrolled past. */}
+                <span className={cn("truncate px-2.5 text-sm", on && "font-semibold")}>
+                  {slot.title}
+                </span>
               </div>
             );
           })}

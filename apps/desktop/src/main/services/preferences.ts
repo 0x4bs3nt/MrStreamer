@@ -1,7 +1,14 @@
+import { type } from "arktype";
+import { LiveDiscovery, RememberedLiveBrowse } from "@mrstreamer/contracts/live-browse";
+import { ownedId, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { homeRows } from "@mrstreamer/core/home/rows";
 import { isDeepStrictEqual } from "node:util";
 import type { UsageObservers } from "../analytics/observers.ts";
-import { DEFAULT_LIVE_QUALITY, DEFAULT_SUBTITLE_LOOK } from "@mrstreamer/contracts/preferences";
+import {
+  DEFAULT_LIVE_QUALITY,
+  DEFAULT_NEXT_EPISODE_DELAY,
+  DEFAULT_SUBTITLE_LOOK,
+} from "@mrstreamer/contracts/preferences";
 // Viewing settings in preferences.json. Two kinds share the file, as they always have, so the
 // newest stable release reads and writes it too. Preferences hold whichever subscription plays:
 // volume, mute, languages, the quality live channels start in. What the viewer left a subscription
@@ -37,6 +44,8 @@ import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
  */
 const Stored = lazy(() =>
   Preferences().merge(SubscriptionPreferences()).merge({
+    /** Preserve malformed and future values until the viewer explicitly replaces this leaf. */
+    "nextEpisodeDelaySeconds?": "unknown",
     "favouriteChannelIds?": "string[]",
     "recentChannelIds?": "string[]",
     /**
@@ -44,6 +53,7 @@ const Stored = lazy(() =>
      * a later release adds doesn't make this one drop the file. System default when absent.
      */
     "interfaceLanguage?": "string",
+    "rememberedLiveBrowse?": "unknown",
   }),
 );
 type Stored = Infer<typeof Stored>;
@@ -52,6 +62,9 @@ export class Settings extends Context.Service<
   Settings,
   {
     readonly get: Effect.Effect<Preferences>;
+    /** Discovery only. Personal lists and session filters never reach this file. */
+    readonly liveBrowse: Effect.Effect<LiveDiscovery>;
+    rememberLiveBrowse(selection: LiveDiscovery): Effect.Effect<LiveDiscovery, Failed>;
     update(patch: Partial<Preferences>): Effect.Effect<Preferences>;
     /** The interface language as saved, which may be one this release doesn't know. */
     readonly interfaceLanguage: Effect.Effect<string | undefined>;
@@ -68,9 +81,13 @@ export class Settings extends Context.Service<
     /**
      * Forgets what the viewer left `subscription` at, for when it goes: what was watched last and
      * the versions and channel streams picked. For the original, lists not yet imported go too:
-     * they belong to its account.
+     * they belong to its account. Snapshot effective discovery before the folder is removed, so
+     * a prior stable category edit keeps precedence while the surviving baseline changes. The
+     * returned effect settles admitted writes after logical removal and before folder deletion.
+     * A newer explicit choice wins over the captured one.
      */
-    forget(subscription: SavedSubscription): Effect.Effect<void>;
+    prepareForget(subscription: SavedSubscription): Effect.Effect<Effect.Effect<void>>;
+
     /** The favourites and recent channels of a file from before the viewing record, or null. */
     readonly legacyLists: Effect.Effect<{
       readonly favourites: readonly string[];
@@ -103,7 +120,10 @@ function make(dataDir: string, usage?: UsageObservers) {
       return current;
     });
 
-    /** Applies a change to the file and writes it. Only runs while holding `one`. */
+    /**
+     * Applies a change while holding `one`. The native write and in-memory publication finish
+     * in that same turn even if the caller cancels.
+     */
     const applied = (apply: (previous: Stored) => Stored) =>
       Effect.gen(function* () {
         const previous = yield* stored;
@@ -113,7 +133,7 @@ function make(dataDir: string, usage?: UsageObservers) {
         current = next;
         for (const note of changed) note?.();
         return next;
-      });
+      }).pipe(Effect.uninterruptible);
 
     const change = (apply: (previous: Stored) => Stored) => one.withPermits(1)(applied(apply));
 
@@ -139,6 +159,14 @@ function make(dataDir: string, usage?: UsageObservers) {
     const addedPath = (subscription: SavedSubscription) =>
       join(subscription.dir, "preferences.json");
 
+    /** Commits the added source's file and cached value together while holding `one`. */
+    const saveAdded = (subscription: SavedSubscription, next: SubscriptionPreferences) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => writeJsonFile(addedPath(subscription), next));
+        added.set(subscription.id, next);
+        return next;
+      }).pipe(Effect.uninterruptible);
+
     /** What the viewer left an added subscription at. Only runs while holding `one`. */
     const ofAdded = (subscription: SavedSubscription) =>
       Effect.promise(async () => {
@@ -150,12 +178,84 @@ function make(dataDir: string, usage?: UsageObservers) {
         return kept;
       });
 
+    const leftAt = (subscription: SavedSubscription) =>
+      subscription.original ? Effect.map(stored, ofOriginal) : ofAdded(subscription);
+
+    /** The one pair startup in prior stable would restore, not every subscription's history. */
+    const legacy = (saved: readonly SavedSubscription[]) =>
+      Effect.gen(function* () {
+        for (const subscription of saved) {
+          const { lastCategoryId } = yield* leftAt(subscription);
+          if (lastCategoryId !== null)
+            return { subscriptionId: subscription.id, id: lastCategoryId };
+        }
+        return null;
+      });
+    const readBrowse = Effect.gen(function* () {
+      const saved = yield* subscriptions.saved;
+      const baseline = yield* legacy(saved);
+      const raw = RememberedLiveBrowse()((yield* stored).rememberedLiveBrowse);
+      if (!(raw instanceof type.errors) && sameBaseline(raw.legacy, baseline)) {
+        if (raw.selection.kind === "topic" && saved.length > 0)
+          return discoverySelection(raw.selection);
+        const selection = raw.selection;
+        if (
+          selection.kind === "category" &&
+          saved.some((each) => each.id === selection.category.subscriptionId)
+        )
+          return discoverySelection(selection);
+      }
+      return baseline
+        ? { kind: "category" as const, category: baseline }
+        : { kind: "all" as const };
+    });
+    const writeLeft = (subscription: SavedSubscription, lastCategoryId: string | null) =>
+      Effect.gen(function* () {
+        const previous = yield* leftAt(subscription);
+        if (previous.lastCategoryId === lastCategoryId) return;
+        if (subscription.original) yield* applied((file) => ({ ...file, lastCategoryId }));
+        else {
+          yield* saveAdded(subscription, { ...previous, lastCategoryId });
+        }
+      });
+
     return {
-      get: one.withPermits(1)(Effect.map(stored, general)),
+      get: one.withPermits(1)(Effect.map(stored, effective)),
+      liveBrowse: one.withPermits(1)(readBrowse),
+      rememberLiveBrowse: (input: LiveDiscovery) =>
+        one.withPermits(1)(
+          Effect.gen(function* () {
+            const selection = discoverySelection(input);
+            const all = yield* subscriptions.saved;
+            if (all.length === 0 && selection.kind !== "all")
+              return yield* new Failed({ error: { kind: "no-subscription" } });
+            if (selection.kind === "category") yield* saved(selection.category.subscriptionId);
+            if (selection.kind !== "topic") {
+              for (const subscription of all)
+                yield* writeLeft(
+                  subscription,
+                  selection.kind === "category" &&
+                    selection.category.subscriptionId === subscription.id
+                    ? selection.category.id
+                    : null,
+                );
+            }
+            const baseline = yield* legacy(all);
+            yield* applied(({ rememberedLiveBrowse: _old, ...file }) =>
+              selection.kind === "all"
+                ? file
+                : {
+                    ...file,
+                    rememberedLiveBrowse: { version: 1, selection, legacy: baseline },
+                  },
+            );
+            return discoverySelection(selection);
+          }),
+        ),
       update: (patch: Partial<Preferences>) =>
         Effect.map(
           change((previous) => ({ ...previous, ...patch })),
-          general,
+          effective,
         ),
       interfaceLanguage: one.withPermits(1)(Effect.map(stored, (file) => file.interfaceLanguage)),
       setInterfaceLanguage: (choice: LanguageChoice) =>
@@ -173,23 +273,60 @@ function make(dataDir: string, usage?: UsageObservers) {
               )
             : Effect.gen(function* () {
                 const next = { ...(yield* ofAdded(subscription)), ...patch };
-                yield* Effect.promise(() => writeJsonFile(addedPath(subscription), next));
-                added.set(subscription.id, next);
-                return next;
+                return yield* saveAdded(subscription, next);
               }),
         ),
-      forget: (subscription: SavedSubscription) =>
-        subscription.original
-          ? Effect.asVoid(
-              // The interface language is the viewer's, not the subscription's: it stays.
-              change(({ interfaceLanguage, ...previous }) => ({
-                ...general(previous),
-                ...defaultSubscriptionPreferences,
-                ...(interfaceLanguage === undefined ? {} : { interfaceLanguage }),
-              })),
-            )
-          : // Its folder went with it: only what was read of it is left to forget.
-            one.withPermits(1)(Effect.sync(() => void added.delete(subscription.id))),
+      prepareForget: (subscription: SavedSubscription) =>
+        one.withPermits(1)(
+          Effect.gen(function* () {
+            const before = (yield* stored).rememberedLiveBrowse;
+            const selectionBeforeRemoval = yield* readBrowse;
+            return one.withPermits(1)(
+              Effect.gen(function* () {
+                const previous = yield* stored;
+                const raw = previous.rememberedLiveBrowse;
+                const record = RememberedLiveBrowse()(raw);
+                const remaining = (yield* subscriptions.saved).filter(
+                  (each) => each.id !== subscription.id,
+                );
+                // Unknown future records survive both removal paths verbatim.
+                let rememberedLiveBrowse = raw;
+                if (!(record instanceof type.errors)) {
+                  const selection = raw === before ? selectionBeforeRemoval : record.selection;
+                  const valid =
+                    remaining.length > 0 &&
+                    (selection.kind === "topic" ||
+                      remaining.some(
+                        (each) =>
+                          selection.kind === "category" &&
+                          each.id === selection.category.subscriptionId,
+                      ));
+                  rememberedLiveBrowse = valid
+                    ? { ...record, selection, legacy: yield* legacy(remaining) }
+                    : undefined;
+                }
+                if (subscription.original || !(record instanceof type.errors)) {
+                  yield* applied((file) => {
+                    const { rememberedLiveBrowse: _remembered, ...kept } = subscription.original
+                      ? {
+                          ...general(file),
+                          ...defaultSubscriptionPreferences,
+                          ...(file.interfaceLanguage === undefined
+                            ? {}
+                            : { interfaceLanguage: file.interfaceLanguage }),
+                        }
+                      : file;
+                    return {
+                      ...kept,
+                      ...(rememberedLiveBrowse === undefined ? {} : { rememberedLiveBrowse }),
+                    };
+                  });
+                }
+                added.delete(subscription.id);
+              }),
+            );
+          }),
+        ),
       legacyLists: one.withPermits(1)(
         Effect.map(stored, ({ favouriteChannelIds, recentChannelIds }) =>
           favouriteChannelIds || recentChannelIds
@@ -209,7 +346,7 @@ function make(dataDir: string, usage?: UsageObservers) {
 
 /**
  * The file's preferences, without what belongs to its subscription or to the viewing record, or
- * the interface language.
+ * the interface language or remembered discovery.
  */
 function general({
   lastChannelId: _channel,
@@ -219,9 +356,25 @@ function general({
   favouriteChannelIds: _favourites,
   recentChannelIds: _recent,
   interfaceLanguage: _language,
+  rememberedLiveBrowse: _browse,
   ...preferences
-}: Stored): Preferences {
+}: Stored) {
   return preferences;
+}
+
+/** Normalize replies only. File reconstruction must keep unsupported raw values intact. */
+function effective(file: Stored): Preferences {
+  const { nextEpisodeDelaySeconds, ...preferences } = general(file);
+  return {
+    ...preferences,
+    nextEpisodeDelaySeconds:
+      typeof nextEpisodeDelaySeconds === "number" &&
+      Number.isInteger(nextEpisodeDelaySeconds) &&
+      nextEpisodeDelaySeconds >= 0 &&
+      nextEpisodeDelaySeconds <= 60
+        ? nextEpisodeDelaySeconds
+        : DEFAULT_NEXT_EPISODE_DELAY,
+  };
 }
 
 /** What the file keeps for the original subscription. */
@@ -266,4 +419,17 @@ function preferenceChanges(before: Stored, after: Stored) {
   return keys
     .filter(([, previous, next]) => !isDeepStrictEqual(previous, next))
     .map(([key]) => key);
+}
+
+function sameBaseline(a: OwnedId | null, b: OwnedId | null): boolean {
+  return a === null ? b === null : b !== null && sameOwned(a, b);
+}
+
+/** Only supported discovery fields are effective; raw future extras stay in the stored leaf. */
+function discoverySelection(selection: LiveDiscovery): LiveDiscovery {
+  return selection.kind === "topic"
+    ? { kind: "topic", topic: selection.topic }
+    : selection.kind === "category"
+      ? { kind: "category", category: ownedId(selection.category) }
+      : { kind: "all" };
 }

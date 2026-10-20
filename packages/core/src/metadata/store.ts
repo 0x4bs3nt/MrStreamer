@@ -152,6 +152,9 @@ export function metadataStore(deps: MetadataDeps) {
   const searchNames = new Map<string, string>();
   let refused = false;
   let running: Promise<void> | null = null;
+  let controller: AbortController | null = null;
+  let closing: Promise<void> | null = null;
+  let closed = false;
   let dirty = false;
   let saving: Promise<void> = Promise.resolve();
   let lastSave = now();
@@ -164,6 +167,8 @@ export function metadataStore(deps: MetadataDeps) {
   let untold = false;
   /** When TMDB asked to wait until, for every request. */
   let pausedUntil = 0;
+  /** Reserved title starts survive replacement, so churn cannot reset the request rate. */
+  let slot = now();
   /** Requests in a row that got no answer; the next run tries again. */
   let unanswered = 0;
   const unreachable = () => unanswered >= GIVE_UP_AFTER;
@@ -218,6 +223,7 @@ export function metadataStore(deps: MetadataDeps) {
   /** Writes what changed, one write at a time, leaving out what is past TMDB's limit. */
   function save(): Promise<void> {
     saving = saving.then(async () => {
+      await loading;
       if (!dirty) return;
       dirty = false;
       lastSave = now();
@@ -234,21 +240,21 @@ export function metadataStore(deps: MetadataDeps) {
 
   /**
    * Runs `task` for each item, PARALLEL at a time, at most PER_SECOND starts a second, until
-   * `stop` says to.
+   * the run is cancelled.
    */
   async function paced<T>(
     items: readonly T[],
-    stop: () => boolean,
+    signal: AbortSignal,
     task: (item: T) => Promise<void>,
   ): Promise<void> {
     let next = 0;
-    let slot = now();
     const lane = async () => {
-      while (next < items.length && !refused && !unreachable() && !stop()) {
+      while (next < items.length && !refused && !unreachable() && !signal.aborted) {
         const item = items[next++] as T;
         const wait = Math.max(0, slot - now(), pausedUntil - now());
         slot = Math.max(slot, now()) + 1000 / PER_SECOND;
-        if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+        if (wait > 0 && !(await delay(wait, signal))) return;
+        if (signal.aborted || refused) return;
         await task(item);
         if (now() - lastSave > SAVE_EVERY_MS) await save();
       }
@@ -260,13 +266,19 @@ export function metadataStore(deps: MetadataDeps) {
    * Calls TMDB, waiting when it asks to and trying again after a failure; null when it can't
    * answer now.
    */
-  async function ask<A>(call: () => Promise<A>): Promise<A | "missing" | null> {
-    for (let tries = 0; tries < 3; tries++) {
+  async function ask<A>(
+    signal: AbortSignal,
+    call: () => Promise<A>,
+  ): Promise<A | "missing" | null> {
+    for (let tries = 0; tries < 3 && !signal.aborted && !refused; tries++) {
       try {
         const answer = await call();
+        if (signal.aborted) return null;
         unanswered = 0;
         return answer;
       } catch (cause) {
+        // A cancelled request may still settle as an HTTP failure or a late answer.
+        if (signal.aborted) return null;
         if (!(cause instanceof TmdbError)) return null;
         const failure = cause.failure;
         if (failure.kind === "missing") {
@@ -281,31 +293,34 @@ export function metadataStore(deps: MetadataDeps) {
         const wait = failure.kind === "busy" ? failure.retryAfter * 1000 : 1000 * 2 ** tries;
         // Every request waits when TMDB asks to, not only this one.
         if (failure.kind === "busy") pausedUntil = Math.max(pausedUntil, now() + wait);
-        if (tries < 2) await new Promise((done) => setTimeout(done, wait));
+        if (tries < 2 && !(await delay(wait, signal))) return null;
       }
     }
-    unanswered++;
+    if (!signal.aborted && !refused) unanswered++;
     return null;
   }
 
-  /** Fetches what `list` lacks or holds too old, until `replaced` says a newer list came. */
+  /** Fetches what `list` lacks or holds too old, while this run owns its answers. */
   async function fetchTitles(
     client: Tmdb,
     list: readonly Wanted[],
     asked: string,
-    replaced: () => boolean,
+    signal: AbortSignal,
   ): Promise<void> {
+    const needsEnglish = (entry: Entry) =>
+      asked !== "en" &&
+      entry.language !== "en" &&
+      entry.names?.[asked] === null &&
+      entry.names.en === undefined;
     const due = list
       .filter((title) => {
         const entry = file.entries[keyOf(title.kind, title.tmdbId)];
         if (!entry || !fresh(entry.at, KEEP_MS)) return true;
-        return !entry.missing && entry.names?.[asked] === undefined;
+        return !entry.missing && (entry.names?.[asked] === undefined || needsEnglish(entry));
       })
       .toSorted((a, b) => b.addedAt - a.addedAt);
-    await paced(due, replaced, async (title) => {
+    await paced(due, signal, async (title) => {
       const key = keyOf(title.kind, title.tmdbId);
-      const found = await ask(() => client.details(title.kind, title.tmdbId, asked));
-      if (found === null) return;
       /** What the entry's arrival changes: only its time, only the status, or what lists show. */
       const arrived = (entry: Entry): "content" | "status" | "same" => {
         const kept = file.entries[key];
@@ -321,73 +336,94 @@ export function metadataStore(deps: MetadataDeps) {
         }
         return entry.missing && (!kept || kept.missing) ? "status" : "content";
       };
-      if (found === "missing") {
-        changed(arrived({ at: now(), missing: true }));
-        return;
+      let entry = file.entries[key];
+      if (!entry || !fresh(entry.at, KEEP_MS) || entry.names?.[asked] === undefined) {
+        const found = await ask(signal, () =>
+          client.details(title.kind, title.tmdbId, asked, signal),
+        );
+        if (found === null || signal.aborted) return;
+        if (found === "missing") {
+          changed(arrived({ at: now(), missing: true }));
+          return;
+        }
+        const { name, original, ...metadata } = found;
+        // Keep a completed translation even when replacement cancels its optional fallback.
+        entry = {
+          at: now(),
+          ...metadata,
+          genres: [...metadata.genres],
+          names: { ...entry?.names, [asked]: name },
+          original,
+        };
+        changed(arrived(entry));
       }
-      const { name, original, ...metadata } = found;
-      const names = { ...file.entries[key]?.names, [asked]: name };
-      // Without a translation, the English name stands in, unless the title is English anyway.
-      if (name === null && asked !== "en" && found.language !== "en" && names.en === undefined) {
-        const english = await ask(() => client.details(title.kind, title.tmdbId, "en"));
-        if (english !== null && english !== "missing") names.en = english.name;
+      // Resume an interrupted English lookup without refetching the completed primary answer.
+      if (needsEnglish(entry)) {
+        const english = await ask(signal, () =>
+          client.details(title.kind, title.tmdbId, "en", signal),
+        );
+        if (english !== null && !signal.aborted) {
+          changed(
+            arrived({
+              ...entry,
+              names: { ...entry.names, en: english === "missing" ? null : english.name },
+            }),
+          );
+        }
       }
-      const change = arrived({
-        at: now(),
-        ...metadata,
-        genres: [...metadata.genres],
-        names,
-        original,
-      });
-      changed(change);
     });
   }
 
-  async function fetchServices(client: Tmdb, replaced: () => boolean): Promise<void> {
+  async function fetchServices(client: Tmdb, signal: AbortSignal): Promise<void> {
     if (file.services?.region === deps.region && fresh(file.services.at, SERVICES_KEEP_MS)) {
       return;
     }
     const lists: Record<TmdbKind, (StreamingService & { ids: string[] })[]> = { movie: [], tv: [] };
     for (const kind of ["movie", "tv"] as const) {
-      const services = await ask(() => client.services(kind, deps.region));
-      if (!services || services === "missing") return;
+      const services = await ask(signal, () => client.services(kind, deps.region, signal));
+      if (!services || services === "missing" || signal.aborted) return;
       for (const service of services.slice(0, SERVICES)) {
         const ids: string[] = [];
         for (let page = 1, pages = 1; page <= Math.min(pages, SERVICE_PAGES); page++) {
-          if (replaced() || unreachable()) return;
-          const found = await ask(() => client.onService(kind, service.id, deps.region, page));
+          if (signal.aborted || refused || unreachable()) return;
+          const found = await ask(signal, () =>
+            client.onService(kind, service.id, deps.region, page, signal),
+          );
           // An exhausted transient failure abandons this crawl: partial membership must not
           // replace a complete snapshot or receive another week of freshness. A missing page
           // is terminal for this service only, as before.
-          if (!found) return;
+          if (!found || signal.aborted) return;
           if (found === "missing") break;
           ids.push(...found.ids);
           pages = found.pages;
-          await new Promise((done) => setTimeout(done, 1000 / PER_SECOND));
+          if (!(await delay(1000 / PER_SECOND, signal))) return;
         }
         lists[kind].push({ ...service, ids });
       }
     }
     // Even the final request can settle after a new wanted list or language takes over.
-    if (replaced() || refused) return;
+    if (signal.aborted || refused) return;
     file.services = { region: deps.region, at: now(), ...lists };
     changed("content", true);
   }
 
-  async function run(client: Tmdb): Promise<void> {
+  async function run(
+    client: Tmdb,
+    list: readonly Wanted[],
+    asked: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     await loading;
+    if (signal.aborted) return;
     unanswered = 0;
     // A new list or language is told of quickly again, however long the last run went on.
     contentGap = CONTENT_FIRST_MS;
-    // A newer list, as after a refresh or for another account, takes over at once, ahead of
+    // A changed list or language takes over at once, ahead of
     // the services, a crawl of minutes.
-    const list = wanted;
-    const asked = language;
-    const replaced = () => wanted !== list || language !== asked;
-    await fetchTitles(client, list, asked, replaced);
+    await fetchTitles(client, list, asked, signal);
     // The services take minutes to crawl; the titles' names needn't wait for them.
     if (untold) changed("status", true);
-    if (!refused && !replaced()) await fetchServices(client, replaced);
+    if (!refused && !signal.aborted && !unreachable()) await fetchServices(client, signal);
     changed("status", true);
     await save();
   }
@@ -409,10 +445,19 @@ export function metadataStore(deps: MetadataDeps) {
     },
 
     /**
-     * The titles the catalogue lists; fetches what is missing or old, in the background. A list
-     * given while fetching is fetched next.
+     * Fetches what the listed titles lack or hold too old. Equal titles in the same order and
+     * language keep running requests intact and recheck missing answers afterwards; an idle
+     * run can restart after an offline failure.
+     * Changed demand or language cancels the old run and is fetched next. Cached answers remain
+     * reusable across temporary wants and source changes until TMDB's hard expiry.
      */
     want(titles: readonly Wanted[], viewerLanguage: string = language): void {
+      if (closed) return;
+      if (running && language === viewerLanguage && sameWanted(wanted, titles)) {
+        wanted = titles;
+        return;
+      }
+      if (wanted !== titles || language !== viewerLanguage) controller?.abort();
       language = viewerLanguage;
       wanted = titles;
       const client = deps.client;
@@ -422,14 +467,20 @@ export function metadataStore(deps: MetadataDeps) {
         // Again for a list or a language that came while fetching.
         let doneList: readonly Wanted[] | null = null;
         let doneLanguage: string | null = null;
-        while ((doneList !== wanted || doneLanguage !== language) && wanted.length > 0) {
+        while (
+          !closed &&
+          wanted.length > 0 &&
+          (doneList !== wanted || doneLanguage !== language || controller?.signal.aborted)
+        ) {
           if (refused) break;
           doneList = wanted;
           doneLanguage = language;
-          await run(client);
+          controller = new AbortController();
+          await run(client, doneList, doneLanguage, controller.signal);
         }
       })().finally(() => {
         running = null;
+        controller = null;
         // The run ended, and with it the fetching the status reported.
         notify(untold);
       });
@@ -510,9 +561,56 @@ export function metadataStore(deps: MetadataDeps) {
       return { known, wanted: wanted.length, refused, fetching: running !== null };
     },
 
-    /** Writes what changed, after any write in progress, for stopping. */
-    flush: () => save(),
+    /** Writes completed answers after loading and any write in progress; fetching may continue. */
+    flush: async () => {
+      await loading;
+      await save();
+    },
+
+    /** Stops owned requests and waits for their closure and completed answers to be written. */
+    close(): Promise<void> {
+      if (closing) return closing;
+      closed = true;
+      controller?.abort();
+      closing = (async () => {
+        await loading;
+        await running;
+        await save();
+      })();
+      return closing;
+    },
   };
+}
+
+/** Equal ordered demand keeps an active run, including requests whose answers have not arrived. */
+function sameWanted(a: readonly Wanted[], b: readonly Wanted[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((title, index) => {
+      const other = b[index];
+      return (
+        other !== undefined &&
+        title.kind === other.kind &&
+        title.tmdbId === other.tmdbId &&
+        title.addedAt === other.addedAt
+      );
+    })
+  );
+}
+
+/** A run's pacing and retry waits end immediately on cancellation, releasing their timers. */
+function delay(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve(!signal.aborted);
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** Whether two JSON values are equal, whatever order their keys are in. */

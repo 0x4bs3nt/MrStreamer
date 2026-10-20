@@ -47,7 +47,7 @@ The Windows installer isn't code-signed yet, so SmartScreen shows "Windows prote
 - **No Movies, Series or Watchlist in the top bar:** an unmapped playlist brings live TV only. From 0.0.9, they also show once you [map a playlist's groups](subscriptions.md#mapping-mixed-playlists), or when one of your subscriptions has an Xtream login.
 - **One subscription's channels or titles are missing:** its provider didn't answer, or its password is needed again. The others show as usual. Settings > Subscriptions says which under its row, with **Retry** or **Enter password**; see [Subscriptions](subscriptions.md#looking-after-them).
 - **Movies or Series stay empty:** the first load of a large list takes a few seconds. If the provider offers no movies or series, the pages say so. A failed refresh keeps the last lists; Settings > Subscriptions says why under that subscription and refreshes them on their own.
-- **No genres or streaming services:** they come from TMDB, which takes about a quarter of an hour the first time on a large subscription. Settings > General shows how far it got beside TMDB, or that TMDB refused the key; **Own key…** takes your own. Titles your provider lists without a TMDB id never get them.
+- **No genres or streaming services:** they come from TMDB, which takes about a quarter of an hour the first time on a large subscription. Settings > Movies and series shows how far it got beside TMDB, or that TMDB refused the key; **Own key…** takes your own. Titles your provider lists without a TMDB id never get them.
 
 ## Playing on a TV
 

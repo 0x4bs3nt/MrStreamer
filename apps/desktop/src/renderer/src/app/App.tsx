@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { hasTitles, ownedKey } from "@mrstreamer/contracts/subscription";
 import { ConnectScreen } from "../features/connect/ConnectScreen.tsx";
 import { DownloadsPage } from "../features/downloads/DownloadsPage.tsx";
@@ -16,7 +16,7 @@ import { ReceiverBar, useReceiverBar } from "../features/watch/ReceiverBar.tsx";
 import { WatchScreen } from "../features/watch/WatchScreen.tsx";
 import { downloadsQuery } from "../lib/downloads.ts";
 import { appError, describeError } from "../lib/errors.ts";
-import { queries, useLastChannel, useSubscriptionPreferences } from "../lib/queries.ts";
+import { queries, useLastChannel } from "../lib/queries.ts";
 import { cn } from "../lib/utils.ts";
 import { PresentationVisible } from "../lib/presentation.ts";
 import { outputs, useOutput } from "../player/output.ts";
@@ -31,35 +31,19 @@ export function App() {
   const subscriptions = useQuery(queries.subscriptions());
   const preferences = useQuery(queries.preferences());
   const updateOffer = !!useQuery(queries.updates()).data?.offer;
-  const left = useSubscriptionPreferences();
+  const remembered = useQuery(queries.rememberedLiveBrowse());
 
-  // Restore the volume once, before anything plays.
-  const hydrated = useRef(false);
+  // Main resolves supported remembered discovery and legacy downgrade writes once per startup.
+  const [restored, setRestored] = useState(false);
   useEffect(() => {
-    if (!preferences.data || hydrated.current) return;
-    hydrated.current = true;
-    player.hydrate(preferences.data);
-  }, [preferences.data]);
-
-  // Live TV opens on the category the viewer left it at, once per start with subscriptions:
-  // reading their preferences again later changes no list. A category is kept by one of them.
-  const restored = useRef(false);
-  useEffect(() => {
-    if (!left) return;
-    if (left.size === 0) {
-      restored.current = false;
+    if (!subscriptions.data?.length) {
+      setRestored(false);
       return;
     }
-    if (restored.current) return;
-    restored.current = true;
-    for (const [subscriptionId, { lastCategoryId }] of left) {
-      if (lastCategoryId === null) continue;
-      useUi.setState({
-        list: { kind: "category", category: { subscriptionId, id: lastCategoryId } },
-      });
-      return;
-    }
-  }, [left]);
+    if (restored || remembered.isPending) return;
+    useUi.setState({ list: remembered.data ?? { kind: "all" } });
+    setRestored(true);
+  }, [subscriptions.data, remembered.data, remembered.isPending, restored]);
 
   // Connect shows only with no subscription saved. One whose password or link can't be read
   // stays in the lists with what it loaded, and Settings is where it is entered again.
@@ -91,6 +75,8 @@ export function App() {
     );
   }
   if (connect) return offline ? <Offline /> : <ConnectScreen />;
+  // The first Home read belongs to restored discovery, not the temporary default All list.
+  if (!restored) return null;
   return <Shell liveOnly={!subscriptions.data.some(hasTitles)} />;
 }
 

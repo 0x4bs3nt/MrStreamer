@@ -24,7 +24,7 @@ let unmount = () => {};
 afterEach(() => {
   unmount();
   player.reset();
-  useUi.setState({ subscription: null });
+  useUi.setState({ subscription: null, settings: null });
 });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -122,6 +122,7 @@ async function section(
   } = {},
 ) {
   ipc.reset();
+  useUi.setState({ settings: "subscriptions" });
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], subscriptions);
   client.setQueryData(["guide", "status"], loaded.guides ?? []);

@@ -2,6 +2,7 @@
 // Catch-up in Live TV's rest of the day: the programmes that aired today, where the provider
 // keeps them, play from their start in Watch, and choosing the channel again plays it live. A
 // recording that plays opens again where it got to, and stops at the programme's end.
+import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -70,8 +71,8 @@ async function scheduleOf(channels: readonly LiveChannel[], programmes: readonly
       channelCount: channels.length,
     },
   ]);
-  client.setQueryData(queries.channels(null).queryKey, channels);
-  client.setQueryData(queries.channels(own("uk")).queryKey, channels);
+  client.setQueryData(browseChannels(null).queryKey, browseResult(channels));
+  client.setQueryData(browseChannels(own("uk")).queryKey, browseResult(channels));
   ipc.always("library.searchGroups", []);
   client.setQueryData(
     ["library", "status"],

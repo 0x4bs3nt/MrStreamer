@@ -686,3 +686,90 @@ describe("the channels of several subscriptions", () => {
     });
   });
 });
+
+it("browses exact ordered scope with OR/AND facets, uncertain facts and main-enforced adult policy", async () => {
+  const provider = await fakeProvider({ channels: 60 });
+  const dataDir = await tempDir();
+  const services = await started(dataDir, async (input, init) => {
+    const action = new URL(String(input)).searchParams.get("action");
+    if (action === "get_live_categories")
+      return Response.json([
+        { category_id: "1", category_name: "BE - FR | SPORT NEWS" },
+        { category_id: "2", category_name: "UK - EN | SPORTS" },
+        { category_id: "3", category_name: "BE | VLAANDEREN" },
+        { category_id: "4", category_name: "Mystery" },
+      ]);
+    if (action === "get_live_streams")
+      return Response.json([
+        { stream_id: 10, name: "Studio", category_id: 1 },
+        { stream_id: 11, name: "Match", category_id: 2 },
+        { stream_id: 12, name: "Local", category_id: 3 },
+        { stream_id: 13, name: "Unknown", category_id: 4 },
+        { stream_id: 14, name: "Conflicting", category_ids: [1, 2] },
+        { stream_id: 15, name: "Adult", category_id: 1, is_adult: "1" },
+      ]);
+    return fetch(input, init);
+  });
+  const first = await services.subscriptions.add(login(provider));
+  const otherProvider = await fakeProvider({ channels: 60 });
+  const second = await services.subscriptions.add(login(otherProvider));
+  await services.library.refresh(first.id);
+  await services.library.refresh(second.id);
+  const scope = { kind: "all" as const };
+  const filters = {
+    browseTopics: ["sport" as const],
+    countries: [],
+    languages: [],
+    subscriptions: [],
+  };
+  const result = await services.library.browse({
+    scope,
+    filters: { ...filters, countries: ["Belgium", "United Kingdom"], languages: ["fr"] },
+    visibility: "viewer",
+  });
+  expect(result.channels.map((channel) => [channel.subscriptionId, channel.id])).toEqual([
+    [first.id, "10"],
+    [second.id, "10"],
+  ]);
+  expect(result.facets.languages).toEqual([
+    { value: "fr", count: 2 },
+    { value: "en", count: 2 },
+  ]);
+  expect(result.facets.countries).toEqual([{ value: "Belgium", count: 2 }]);
+  expect(result.counts.languages).toBe(4);
+  expect(result.counts.countries).toBe(2);
+  expect(
+    (await services.library.browse({ scope, filters, visibility: "viewer" })).channels,
+  ).toHaveLength(6);
+  const ordered = [
+    { subscriptionId: second.id, id: "11" },
+    { subscriptionId: first.id, id: "10" },
+  ];
+  expect(
+    (
+      await services.library.browse({
+        scope: { kind: "channels", channels: ordered },
+        filters: { ...filters, browseTopics: [] },
+        visibility: "viewer",
+      })
+    ).channels.map((channel) => [channel.subscriptionId, channel.id]),
+  ).toEqual(ordered.map((id) => [id.subscriptionId, id.id]));
+  await services.settings.update({ adultTitles: true });
+  const allFilters = { ...filters, browseTopics: [] };
+  expect(
+    (await services.library.browse({ scope, filters: allFilters, visibility: "viewer" })).channels,
+  ).toHaveLength(12);
+  expect(
+    (await services.library.browse({ scope, filters, visibility: "viewer" })).channels,
+  ).toHaveLength(6);
+  expect(
+    (await services.library.browse({ scope, filters: allFilters, visibility: "ordinary" }))
+      .channels,
+  ).toHaveLength(10);
+  const other = await services.library.browse({
+    scope,
+    filters: { ...filters, browseTopics: ["other"] },
+    visibility: "viewer",
+  });
+  expect(other.channels.map((channel) => channel.id)).toEqual(["13", "15", "13", "15"]);
+});

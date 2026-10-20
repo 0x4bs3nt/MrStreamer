@@ -28,7 +28,7 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   const prefs = () =>
     d.evaluate<{ id: string; visible: boolean }[]>(`(async () => {
     const read = await window.mrStreamer.invoke('preferences.get');
-    return read.ok ? read.value.homeRows ?? [] : [];
+    return read.ok ? read.value.preferences.homeRows ?? [] : [];
   })()`);
   const titles = () =>
     d.evaluate<string[]>(
@@ -227,13 +227,14 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "Open Settings for adult safety",
     "document.querySelector('button[aria-label=\"Settings\"]')",
   );
+  await d.click("Open Movies and series settings", byText("nav button", "Movies and series"));
   await d.click(
     "Enable adult titles",
     "document.querySelector('[role=checkbox][aria-label=\"For adults\"]')",
   );
   await d.wait(() =>
     d.evaluate<boolean>(
-      "(async () => { const p = await window.mrStreamer.invoke('preferences.get'); return p.ok && p.value.adultTitles === true; })()",
+      "(async () => { const p = await window.mrStreamer.invoke('preferences.get'); return p.ok && p.value.preferences.adultTitles === true; })()",
     ),
   );
   await d.key("Escape", 27);

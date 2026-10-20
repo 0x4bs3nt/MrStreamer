@@ -284,6 +284,13 @@ export function subtitleDelay(): number {
 
 /** Applies a look to every subtitle, shown now or later; kept until the viewer picks another. */
 export function setSubtitleLook(look: SubtitleLook): void {
+  const current = settings.getState().look;
+  if (
+    current.size === look.size &&
+    current.background === look.background &&
+    current.position === look.position
+  )
+    return;
   settings.setState({ look });
   const root = document.documentElement;
   root.style.setProperty("--subtitle-scale", String(SCALES[look.size]));

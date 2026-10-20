@@ -429,7 +429,7 @@ function ChannelRow({
               },
             })}
         className={cn(
-          "group flex h-[3.5rem] items-center gap-4 rounded-xl px-3 outline-none hover:bg-white/8",
+          "group flex h-[3.5rem] items-center gap-4 px-3 outline-none hover:bg-white/8",
           expanded && "rounded-b-none bg-white/8",
           searchRow && "rounded-none text-white",
           searchRow?.copy && "ml-8",
@@ -462,9 +462,9 @@ function ChannelRow({
             {grouped ? groupSummary : searchRow?.copy ? copySummary : qualitiesLine(channel)}
           </span>
           {/* Plain text in the name's cell, which gives way before the name does. */}
-          {!grouped && !searchRow?.copy && source && (
+          {!grouped && !searchRow?.copy && (source || channel.browse?.country) && (
             <span className="min-w-0 flex-shrink-[3] truncate text-xs text-muted-foreground">
-              · {source}
+              · {[channel.browse?.country, source].filter(Boolean).join(" · ")}
             </span>
           )}
         </span>

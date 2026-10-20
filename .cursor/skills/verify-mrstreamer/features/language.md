@@ -2,11 +2,11 @@
 
 ## Sub-features
 
-The app's own text in English, Dutch, French, German or Spanish, picked in **Settings > General > App > Interface language** or followed from the system (System default). It changes the window, the macOS menu and the save dialog at once, survives a restart, and leaves Titles in, Audio in and Subtitles as they are. Dates, numbers and plurals follow the language.
+The app's own text in English, Dutch, French, German or Spanish, picked in **Settings > General > Interface language** or followed from the system (System default). It changes the window, the macOS menu and the save dialog at once, survives a restart, and leaves Titles in, Audio in and Subtitles as they are. Dates, numbers and plurals follow the language.
 
 ## How to get to it (user POV)
 
-Open **Settings** (⌘, or Ctrl ,), stay on **General**, and pick a language in the first select, under **App**. System default names the language it follows. Every page, the player, its menus and messages, then read in that language.
+Open **Settings** (⌘, or Ctrl ,), stay on **General**, and pick a language in its select. System default names the language it follows. Every page, the player, its menus and messages, then read in that language.
 
 ## Driving it with Electron CDP
 

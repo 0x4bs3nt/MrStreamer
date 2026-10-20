@@ -532,6 +532,7 @@ describe("a saved title the provider no longer lists", () => {
     // A series for adults the provider dropped, saved while Settings shows such titles.
     const afterDark = entry("e4", "series", "After Dark", 2022, null);
     ipc.reset();
+    ipc.always("liveBrowse.get", { kind: "all" });
     ipc.prefer({ adultTitles: true });
     useUi.setState({ ...useUi.getInitialState(), view: "watchlist" }, true);
     const subscribed = ipc.hold("subscription.list");
@@ -555,6 +556,12 @@ describe("a saved title the provider no longer lists", () => {
     // Settings opens over the sheet with its shortcut, and the viewer unticks For adults.
     await key(",", { ctrlKey: true, metaKey: true });
     await settle();
+    await act(async () =>
+      [...document.querySelectorAll<HTMLButtonElement>('[data-view="settings"] nav button')]
+        .find((button) => button.textContent === "Movies and series")!
+        .click(),
+    );
+    await settle();
     const stored = ipc.hold("preferences.update");
     await act(async () =>
       document.body
@@ -573,7 +580,9 @@ describe("a saved title the provider no longer lists", () => {
     ipc.prefer({ adultTitles: false });
     ipc.hold("ondemand.status").resolve(status());
     for (let asked = 0; asked < 3; asked++) ipc.hold("watchlist.list").resolve(page([harbour]));
-    await act(async () => stored.resolve({ ...defaultPreferences, adultTitles: false }));
+    await act(async () =>
+      stored.resolve(ipc.snapshot({ ...defaultPreferences, adultTitles: false })),
+    );
     await settle();
 
     expect(document.body.textContent).not.toContain("After Dark");

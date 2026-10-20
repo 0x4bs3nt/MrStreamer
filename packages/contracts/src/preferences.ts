@@ -33,11 +33,10 @@ export const Preferences = lazy(() =>
     "tmdbKey?": "string",
     /** Titles the provider marks for adults show, in their own tab. Off when absent. */
     "adultTitles?": "boolean",
-    /**
-     * A series' next episode plays after a ten-second countdown at the end of one. On when
-     * absent.
-     */
+    /** A series' next episode plays automatically at the end of one. On when absent. */
     "autoplayNext?": "boolean",
+    /** Whole seconds before the next episode, zero for Instant. Ten when absent. */
+    "nextEpisodeDelaySeconds?": "0 <= number.integer <= 60",
     /**
      * Product-use and reliability statistics. On when absent; saved by the analytics
      * owner.
@@ -102,6 +101,8 @@ export const ORIGINAL_SOUND = "original";
 
 /** The quality live channels start in until the viewer picks another: Full HD. */
 export const DEFAULT_LIVE_QUALITY: Quality = "fhd";
+
+export const DEFAULT_NEXT_EPISODE_DELAY = 10;
 
 export const defaultPreferences: Preferences = { volume: 1, muted: false };
 

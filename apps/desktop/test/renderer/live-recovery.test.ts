@@ -7,6 +7,7 @@
 // channel and leaving Watch end a wait, so nothing opens behind the viewer, and no stream is asked
 // for while another is open.
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { browseResult } from "./browse-support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -658,7 +659,7 @@ describe("a quality chosen for the channel", () => {
 describe("what a failed channel offers", () => {
   /** Watch on a channel whose three qualities the provider has no stream for. */
   async function failed(): Promise<void> {
-    ipc.hold("library.channels").resolve([vrt, een]);
+    ipc.hold("library.browse").resolve(browseResult([vrt, een]));
     const starts = nextStream();
     await watching();
     await starts();

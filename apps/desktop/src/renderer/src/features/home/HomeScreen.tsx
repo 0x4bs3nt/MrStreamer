@@ -4,15 +4,9 @@ import { useMemo, type ReactNode } from "react";
 import type { Listing } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { seriesOf, type Title, type TitleKind } from "@mrstreamer/contracts/ondemand";
-import {
-  hasTitles,
-  ownedId,
-  ownedKey,
-  sameOwned,
-  type OwnedId,
-} from "@mrstreamer/contracts/subscription";
+import { hasTitles, ownedId, ownedKey, sameOwned } from "@mrstreamer/contracts/subscription";
 import { formatNumber, t } from "@mrstreamer/core/i18n";
-import { openDetails, openView, useUi, type ChannelList } from "../../app/ui-store.ts";
+import { openDetails, openView, type ChannelList } from "../../app/ui-store.ts";
 import { CatalogueNotice, catalogueState } from "../../components/CatalogueNotice.tsx";
 import { ChannelLogo, hueOf } from "../../components/ChannelLogo.tsx";
 import { Progress } from "../../components/Progress.tsx";
@@ -53,14 +47,13 @@ import { player, usePlayer } from "../../player/player.ts";
 import { call } from "../../lib/ipc.ts";
 import { homeRows, type HomeRowId } from "./rows.ts";
 import { watchChannel } from "../live/GuidePage.tsx";
-import { useShowList } from "../live/lists.ts";
+import { listTitle, useHomeDiscovery, useListChannels, useShowList } from "../live/lists.ts";
 import { PAGE } from "../titles/CollectionGrid.tsx";
 import { openCollection } from "../titles/TitlesPage.tsx";
 import { HomeTitle } from "./HomeTitle.tsx";
 import { kindLabel } from "../../lib/watchlist.ts";
 import { SavedTile, openSaved } from "../watchlist/SavedTile.tsx";
 
-const NO_IDS: readonly OwnedId[] = [];
 const NO_CHANNELS: readonly LiveChannel[] = [];
 const NO_TITLES: readonly Title[] = [];
 /** Tile widths: channels and stills at 16:9, posters at 2:3. */
@@ -68,9 +61,6 @@ const TILE_REM = 13;
 const POSTER_REM = 8.5;
 
 /** Channels without those for adults, which show only in Live TV. */
-function ordinary(channels: readonly LiveChannel[] | undefined): readonly LiveChannel[] {
-  return channels?.filter((channel) => !channel.adult) ?? NO_CHANNELS;
-}
 
 function notForAdults(channel: LiveChannel | null): LiveChannel | null {
   return channel?.adult ? null : channel;
@@ -97,28 +87,12 @@ export function HomeScreen({ active }: { active: boolean }) {
   const left = useSubscriptionPreferences();
   const categories = useQuery(queries.categories());
   const categoryMap = useCategoryMap();
-  const list = useUi((state) => state.list);
   const viewing = useQuery(queries.viewing());
-  const favouriteIds = viewing.data?.favourites ?? NO_IDS;
-  const recentIds = viewing.data?.recent ?? NO_IDS;
-  const favourites = ordinary(useQuery(queries.channelsOf(favouriteIds)).data);
-  const recent = ordinary(useQuery(queries.channelsOf(recentIds)).data);
-  // The category Live TV shows, or the one the viewer left it at, which one subscription keeps.
-  const lastCategory: OwnedId | null =
-    list.kind === "category"
-      ? list.category
-      : ([...(left ?? [])].flatMap(([subscriptionId, { lastCategoryId }]) =>
-          lastCategoryId === null ? [] : [{ subscriptionId, id: lastCategoryId }],
-        )[0] ?? null);
-  const category = lastCategory ? categoryMap.get(ownedKey(lastCategory)) : undefined;
-  // Your category, or every channel before you have one.
-  const categoryList: ChannelList = category
-    ? { kind: "category", category: ownedId(category) }
-    : { kind: "all" };
-  const inCategory = ordinary(
-    useQuery({ ...queries.channels(category ?? null), enabled: categories.isSuccess }).data,
-  );
-  const status = useQuery(queries.libraryStatus());
+  const favourites = useListChannels({ kind: "favourites" }, "ordinary").channels ?? NO_CHANNELS;
+  const recent = useListChannels({ kind: "recent" }, "ordinary").channels ?? NO_CHANNELS;
+  const categoryList = useHomeDiscovery();
+  const discovery = useListChannels(categoryList, "ordinary");
+  const inCategory = discovery.channels ?? NO_CHANNELS;
 
   const [grid, fit] = useFit();
   const columns = fit(TILE_REM);
@@ -250,11 +224,8 @@ export function HomeScreen({ active }: { active: boolean }) {
       list: { kind: "recent" } as const,
     },
     category: {
-      title: category?.title ?? t("All channels"),
-      count:
-        category?.channelCount ??
-        status.data?.reduce((sum, each) => sum + each.channelCount, 0) ??
-        inCategory.length,
+      title: listTitle(categoryList, categoryMap),
+      count: inCategory.length,
       list: categoryList,
     },
   };

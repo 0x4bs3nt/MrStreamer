@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Locale } from "@mrstreamer/contracts/language";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
 import { setLanguage, t } from "@mrstreamer/core/i18n";
-import { GeneralSection } from "../../src/renderer/src/features/settings/GeneralSection.tsx";
+import { PrivacySection } from "../../src/renderer/src/features/settings/GeneralSection.tsx";
 
 let unmount = () => {};
 beforeEach(() => {
@@ -30,7 +30,7 @@ async function render(locale: Locale = "en-US", enabled = true) {
   const container = document.createElement("div");
   const root = createRoot(container);
   await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(GeneralSection))),
+    root.render(createElement(QueryClientProvider, { client }, createElement(PrivacySection))),
   );
   await settle();
   unmount = () =>
@@ -66,7 +66,9 @@ describe("Settings statistics preference", () => {
     await settle();
     await act(() => checkbox.click());
     expect(ipc.argsOf("preferences.update")).toEqual([{ analyticsEnabled: false }]);
-    await act(async () => changed.resolve({ ...defaultPreferences, analyticsEnabled: false }));
+    await act(async () =>
+      changed.resolve(ipc.snapshot({ ...defaultPreferences, analyticsEnabled: false })),
+    );
     await settle();
     expect(checkbox.getAttribute("aria-checked")).toBe("false");
   });

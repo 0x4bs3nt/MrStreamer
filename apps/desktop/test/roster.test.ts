@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Codec } from "@mrstreamer/contracts/playback";
@@ -290,6 +290,41 @@ describe("the saved subscriptions", { timeout: 30_000 }, () => {
       lastChannelId: null,
       lastCategoryId: null,
     });
+  });
+
+  it("lets owned guide work settle before deleting the removed subscription's folder", async () => {
+    const { runtime, subscriptions, dataDir, a, b } = await withTwo();
+    const services = await runtime.context();
+    const guide = Context.get(services, Guide);
+    const arrived = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const slowed = Context.add(services, Guide, {
+      ...guide,
+      forget: (subscription) =>
+        Effect.andThen(
+          Effect.promise(() => {
+            arrived.resolve();
+            return released.promise;
+          }),
+          guide.forget(subscription),
+        ),
+    });
+    const roster = await promised(
+      runtimeFor(Roster.layer.pipe(Layer.provide(Layer.succeedContext(slowed)))),
+      Roster,
+    );
+    const folder = join(dataDir, "subscriptions", b);
+    const removing = roster.remove(b, false);
+    try {
+      await arrived.promise;
+      // It admits no new work, while already admitted writes still have their folder.
+      expect((await subscriptions.list()).map((each) => each.id)).toEqual([a]);
+      expect(await stat(folder).catch(() => null)).not.toBeNull();
+    } finally {
+      released.resolve();
+      await removing;
+    }
+    expect(await stat(folder).catch(() => null)).toBeNull();
   });
 
   it("stops what plays from the one removed, and deletes its record when asked", async () => {

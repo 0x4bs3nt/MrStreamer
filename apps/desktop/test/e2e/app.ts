@@ -253,6 +253,27 @@ export async function press(page: Page, label: string): Promise<void> {
   await page.evaluate(`${button}.click()`);
 }
 
+/** Reveal the same benchmark list in stable's rail or the topic rail's Provider lists branch. */
+export async function revealFixtureList(
+  page: Page,
+  label: "All channels" | "TEST | Formats and failures",
+): Promise<boolean> {
+  const picker = `document.querySelector('[role="navigation"][aria-label="Channel categories"]')`;
+  const target = `[...(${picker}?.querySelectorAll('button') ?? [])].find(b => b.title === ${JSON.stringify(label)} || b.textContent.trim().startsWith(${JSON.stringify(label)}))`;
+  if (await page.evaluate<boolean>(`!!${target}`)) return false;
+  const navigation =
+    label === "All channels"
+      ? `${picker}?.querySelector('button[aria-label="Back to topics"]')`
+      : `${picker}?.querySelector('button[title="Provider lists"]')`;
+  await page.evaluate(`(() => {
+    const button = ${navigation};
+    if (!button) throw new Error('No navigation to fixture list ' + ${JSON.stringify(label)});
+    button.click();
+  })()`);
+  await waitFor(() => page.evaluate<boolean>(`!!${target}`));
+  return true;
+}
+
 export async function waitFor(check: () => Promise<boolean>, timeoutMs = 60_000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (Date.now() < until) {

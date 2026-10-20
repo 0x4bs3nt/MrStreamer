@@ -12,7 +12,7 @@ Tabs under the top bar:
 - **New** has what your provider added this week and this month, and recent releases.
 - **Genres** and **Services** show a tile for each genre and streaming service. Open one for its titles.
 - **4K** lists titles with a 4K version, when your provider has any, and plays that version.
-- **Adults** lists the titles your provider marks for adults, once you turn on **For adults** in Settings > General.
+- **Adults** lists the titles your provider marks for adults, once you turn on **For adults** in Settings > Movies and series.
 - **All movies** and **All series** list everything, sorted by date added, popularity, rating or name.
 
 A row's **All**, a genre or a service opens the whole list; **Back**, or Escape, returns to the tab. In a list, the arrow keys move through the posters, Enter opens one, and the pointer only hovers.
@@ -37,11 +37,11 @@ Opening a filtered poster picks the matching version. The arrow beside **Play** 
 
 ## Language
 
-Settings > General has three languages for movies and series:
+Settings separates the three languages for movies and series by task:
 
-- **Titles in**, English unless you change it, decides the names titles show, which version of a film shows and plays, and what the tabs show.
-- **Audio in** is the sound a title starts with: a language, or **Original language**, the one it was made in. Until you set it, it follows Titles in.
-- **Subtitles** are **Off**, **Only when forced**, which shows only subtitles a file marks as forced for its sound, such as translations of signs, or a language.
+- **Movies and series > Titles in**, English unless you change it, decides the names titles show, which version of a film shows and plays, and what the tabs show.
+- **Playback > Audio in** is the sound a title starts with: a language, or **Original language**, the one it was made in. Until you set it, it follows Titles in.
+- **Subtitles > Subtitles** are **Off**, **Only when forced**, which shows only subtitles a file marks as forced for its sound, such as translations of signs, or a language.
 
 Picking a sound track or subtitles in the player sets Audio in or Subtitles to its language, so the next title starts the same way. Captions have no language, so picking them leaves Subtitles as it was.
 
@@ -51,7 +51,7 @@ Picking a sound track or subtitles in the player sets Audio in or Subtitles to i
 
 Your provider's lists don't say a film's genre or where else it streams, and name films their own way, so Mr. Streamer asks [TMDB](https://www.themoviedb.org), using the TMDB ids providers list. It asks about each title once, newest first, and fills in names, genres, popularity and services as answers come in: on a large subscription that takes about a quarter of an hour the first time, and again once after you choose another language. Titles take their usual name in your language from Settings, or the English one where TMDB has no translation, and their details show the original name. Search finds a title by any of these names and by your provider's. Meanwhile a ring beside search in the top bar fills up, and goes when the asking stops; hover it for how far it got, or click it for Settings. Which titles each service streams comes from [JustWatch](https://www.justwatch.com), for the country your computer is set to.
 
-Mr. Streamer has its own TMDB key. If TMDB stops accepting it, Settings > General says so beside TMDB, and **Own key…** takes a key of your own; a free TMDB account gets one.
+Mr. Streamer has its own TMDB key. If TMDB stops accepting it, Settings > Movies and series says so beside TMDB, and **Own key…** takes a key of your own; a free TMDB account gets one.
 
 ## Details
 
@@ -99,7 +99,7 @@ With [several subscriptions](subscriptions.md), a film or series that two of the
 
 When no provider lists a saved title any more, it stays on the watchlist, dimmed and marked **Unavailable**. Open it to remove it, or leave it: it plays again once a provider lists it again. With several subscriptions, it says which ones it was saved from. If a subscription's movie and series lists couldn't be refreshed, the page says so and shows what you saved from the lists it has.
 
-Saved titles for adults show, and count, only while **For adults** is on in Settings > General. They stay saved while it is off.
+Saved titles for adults show, and count, only while **For adults** is on in Settings > Movies and series. They stay saved while it is off.
 
 The watchlist is kept on your computer, with the subscription each title was saved from, like favourites. **Remove**, on a subscription in Settings > Subscriptions, keeps what it saved for when you add the same account again, unless you tick the box that deletes it. A title you saved from another subscription as well stays on the list.
 
@@ -108,7 +108,7 @@ The watchlist is kept on your computer, with the subscription each title was sav
 The picture fills the window below the top bar, with the title, a timeline and the controls along the bottom; they fade while you watch and come back when you move the pointer.
 
 - Drag the timeline, or skip back and forward 10 seconds. A skip into what's already loaded is instant; further away, the picture takes a second to catch up.
-- **Sound** lists the sound tracks the file carries, and **CC** its subtitles. From 0.0.9, CC opens a panel with everything about subtitles: the tracks, their timing and look, and [online search](playback.md#online-subtitles-from-009). C turns the last ones you picked on and off, and a paused title stays paused while it changes. Your choice of language is remembered, and the next title or channel that has it starts with it, as **Audio in** and **Subtitles** in Settings > General describe. When the file has no sound in that language, its own default plays.
+- **Sound** lists the sound tracks the file carries, and **CC** its subtitles. From 0.0.9, CC opens a panel with everything about subtitles: the tracks, their timing and look, and [online search](playback.md#online-subtitles-from-009). C turns the last ones you picked on and off, and a paused title stays paused while it changes. Your choice of language is remembered, and the next title or channel that has it starts with it, as **Audio in** and **Subtitles** under Settings > Playback and Settings > Subtitles describe. When the file has no sound in that language, its own default plays.
 - **Speed**, beside them, plays from 0.5× to 2×. Voices keep their pitch. The speed lasts for the title, and carries on when **Next episode** plays the one after. In 0.0.8 it is the first row of the sliders button's **Playback** menu.
 - **Timing**, in CC from 0.0.9, moves subtitles earlier or later in tenths of a second, for this title only. **Look** sets their size, a box or a shadow behind the text, low or higher up, and stays for every title and channel. Subtitles drawn as pictures, as on Blu-rays and DVDs, take only size and position. In 0.0.8 both are under **Playback > Subtitle timing** and **Subtitle look**.
 - Menus follow the arrow keys. Escape or a click outside closes them without pausing or skipping.
@@ -121,7 +121,9 @@ How far you got is saved as you go: every minute, and whenever you pause, skip, 
 
 ## The next episode
 
-When an episode ends, the next one plays after ten seconds. The end screen names it, and says when a new season starts, as in "Finished S1 E3 · Season 2 is next". **Play now**, or N, starts it straight away. **Cancel** keeps the end on screen, with **Next episode** and **Episodes**, which opens the series. Leaving, starting something else or switching subscriptions stops the countdown too. While Settings is open it waits, and it carries on from where it was when you close Settings. To decide each time, turn off **Next episode** in Settings > General.
+When an episode ends, the next one plays after the delay in **Settings > Playback > Next episode delay**. Choose any whole number from 0 to 60 seconds. The default is ten seconds; 0 is **Instant**. Autoplay stays a separate **Next episode** switch.
+
+The end screen names the next episode, and says when a new season starts, as in "Finished S1 E3 · Season 2 is next". **Play now**, or N, starts it straight away. **Cancel** keeps the end on screen, with **Next episode** and **Episodes**, which opens the series. Leaving, starting something else or removing its subscription stops the countdown too. Settings holds the remaining seconds, even Instant. Closing Settings resumes that remainder if autoplay is on, including after an off/on edit while Settings was open. Final Off cancels it. Enabling autoplay later does not restart a cancelled countdown, and changing the delay applies to the next countdown. A failed settings read leaves manual **Next episode** available.
 
 The next episode is the next one you haven't watched, in your provider's order and across seasons, in the version of the series you're watching and with your sound and subtitle languages. Episodes you watched or [marked watched](#marking-episodes) are passed over, also when you marked them while this one played. It never goes back to an earlier episode, and specials only lead to other specials. Mr. Streamer checks what you watched once more before the next episode opens. If it can't, nothing starts on its own: **Next episode** checks again. If the episode doesn't start, the screen says why: **Try again** asks your provider once more, and **Episodes** opens the series.
 

@@ -1,14 +1,15 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import { ArrowDown, ArrowUp, Check } from "lucide-react";
 import { t, type PlainKey } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
-import { call } from "../../lib/ipc.ts";
+import { updatePreferences } from "../../lib/preferences.ts";
 import { cn } from "../../lib/utils.ts";
 import { queries } from "../../lib/queries.ts";
 import { homeRows, type HomeRowId, type HomeRow } from "./rows.ts";
+import { focusSettingControl } from "../settings/SaveFeedback.tsx";
 
 const LABELS = {
   continue: "Continue watching",
@@ -27,28 +28,34 @@ const HOME_ROW_WRITE = ["preferences", "home-rows"] as const;
 export function CustomizeHome() {
   const preferences = useQuery(queries.preferences());
   const client = useQueryClient();
-  const rows = homeRows(preferences.data?.homeRows);
+  const [pendingHomeRows, setPendingHomeRows] = useState<Preferences["homeRows"]>();
+  const rows = homeRows(pendingHomeRows ?? preferences.data?.homeRows);
   const writing = useRef(false);
   const save = useMutation({
     mutationKey: HOME_ROW_WRITE,
     mutationFn: (homeRows: NonNullable<Preferences["homeRows"]>) =>
-      call("preferences.update", { homeRows }),
-    onSuccess: (saved) => client.setQueryData(queries.preferences().queryKey, saved),
+      updatePreferences({ homeRows }, client),
     onSettled: () => {
       writing.current = false;
+      setPendingHomeRows(undefined);
     },
   });
   // Switching Settings tabs or closing Settings does not release an outstanding preference write.
   const latest = useMutationState({
     filters: { mutationKey: HOME_ROW_WRITE, exact: true },
-    select: (mutation) => ({ status: mutation.state.status, error: mutation.state.error }),
+    select: (mutation) => ({
+      status: mutation.state.status,
+      error: mutation.state.error,
+      // HOME_ROW_WRITE belongs to the save above, whose variables are always these rows.
+      rows: mutation.state.variables as NonNullable<Preferences["homeRows"]> | undefined,
+    }),
   }).at(-1);
   const busy = save.isPending || latest?.status === "pending";
   const persist = (change: ((rows: HomeRow[]) => HomeRow[]) | null) => {
     // The ref covers repeated presses; rendered pending state covers the completion/render gap.
     if (writing.current || busy || client.isMutating({ mutationKey: HOME_ROW_WRITE, exact: true }))
       return;
-    const saved = client.getQueryData(queries.preferences().queryKey);
+    const saved = client.getQueryData(queries.preferences().queryKey)?.preferences;
     if (!saved) return;
     const settledRows = homeRows(saved.homeRows);
     const changed = change === null ? homeRows(undefined) : change(settledRows);
@@ -57,6 +64,7 @@ export function CustomizeHome() {
       ...changed,
       ...(saved.homeRows ?? []).filter((row) => !settledRows.some((known) => known.id === row.id)),
     ];
+    setPendingHomeRows(next);
     writing.current = true;
     save.mutate(next);
   };
@@ -77,6 +85,7 @@ export function CustomizeHome() {
           return (
             <li
               key={row.id}
+              data-setting={`home-${row.id}`}
               className={cn(
                 "flex min-h-13 items-center gap-3 border-b border-white/8 py-2 text-[0.9375rem]",
                 busy && "opacity-60",
@@ -94,7 +103,8 @@ export function CustomizeHome() {
                     type="checkbox"
                     className="peer size-4 appearance-none rounded-[0.25rem] shadow-[inset_0_0_0_1.5px_rgb(255_255_255/45%)] outline-none checked:bg-white checked:shadow-none focus-visible:ring-2 focus-visible:ring-ring"
                     checked={row.visible}
-                    disabled={!preferences.data || busy}
+                    disabled={!preferences.data}
+                    aria-disabled={busy}
                     onChange={(event) =>
                       persist((rows) =>
                         rows.map((each) =>
@@ -140,13 +150,34 @@ export function CustomizeHome() {
       {latest?.error && (
         <p role="alert" className="mt-2 text-sm text-destructive">
           {describeError(appError(latest.error))}
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-disabled={busy || !latest.rows}
+            onClick={(event) => {
+              if (
+                !latest.rows ||
+                busy ||
+                writing.current ||
+                client.isMutating({ mutationKey: HOME_ROW_WRITE, exact: true })
+              )
+                return;
+              focusSettingControl(event.currentTarget);
+              writing.current = true;
+              save.mutate(latest.rows);
+            }}
+          >
+            {t("Try again")}
+          </Button>
         </p>
       )}
       <div className="mt-3 flex items-center gap-3">
         <Button
+          data-setting="home-reset"
           className="pl-0 aria-disabled:opacity-40"
           variant="ghost"
-          disabled={!preferences.data || busy}
+          disabled={!preferences.data}
+          aria-disabled={busy}
           onClick={() => persist(null)}
         >
           {t("Reset to defaults")}

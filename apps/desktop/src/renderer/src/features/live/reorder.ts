@@ -19,7 +19,9 @@ import type { Viewing } from "@mrstreamer/contracts/viewing";
 import { t } from "@mrstreamer/core/i18n";
 import { appError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
-import { keepViewing, queries, useSubscriptions } from "../../lib/queries.ts";
+import { browseQuery } from "./lists.ts";
+import { useUi } from "../../app/ui-store.ts";
+import { keepViewing, queries, rosterOf, savedAs, useSubscriptions } from "../../lib/queries.ts";
 
 /** What of a row holds the focus: the row itself, or one of its two buttons. */
 export type RowPart = "row" | "up" | "down";
@@ -108,10 +110,6 @@ export function orderKey(event: KeyboardEvent, order: OrderEditor): void {
 const sameChannels = (a: readonly OwnedId[], b: readonly OwnedId[]) =>
   a === b || (a.length === b.length && a.every((channel, at) => sameOwned(channel, b[at])));
 
-/** The saved subscriptions as one word, which another one added or removed changes. */
-const savedAs = (subscriptions: readonly { readonly id: string }[] | undefined) =>
-  (subscriptions ?? []).map(({ id }) => id).join("\n");
-
 /** Whether a draft waits for the main process: nothing moves meanwhile, and nothing leaves it. */
 export const waits = (draft: Draft | null): boolean =>
   draft?.status === "saving" || draft?.status === "reading";
@@ -195,18 +193,16 @@ export function useFavouriteOrder(
     );
 
   /** Whether the subscriptions an answer is for are still the ones saved. */
-  const connected = (from: string) =>
-    savedAs(client.getQueryData(queries.subscriptions().queryKey)) === from;
+  const connected = (from: string) => rosterOf(client) === from;
 
   /**
    * Reads `channels` from the main process, as it lists them now, into the lists' cache, and
    * gives the array the list gets for them from then on.
    */
-  const read = async (channels: readonly OwnedId[]) => {
-    if (channels.length === 0) return undefined;
-    const listed = queries.channelsOf(channels);
+  const read = async (viewing: Viewing) => {
+    const listed = queries.browse(browseQuery(useUi.getState().list, viewing, "viewer"));
     await client.fetchQuery({ ...listed, staleTime: 0 });
-    return client.getQueryData(listed.queryKey);
+    return client.getQueryData(listed.queryKey)?.channels;
   };
 
   /**
@@ -220,8 +216,8 @@ export function useFavouriteOrder(
     const later = client.getQueryData(queries.viewing().queryKey)?.sequence ?? 0;
     if (!connected(from) || later > viewing.sequence) return;
     // A list that can't be read says so itself, once it shows.
-    await read(viewing.favourites).catch(() => {});
-    if (connected(from)) keepViewing(client, viewing);
+    await read(viewing).catch(() => {});
+    keepViewing(client, viewing, from);
   };
 
   const select = (channel: OwnedId, part: RowPart = "row") => {
@@ -234,13 +230,15 @@ export function useFavouriteOrder(
     const commandId = from.commandId ?? crypto.randomUUID();
     setDraft({ ...from, status: "saving", commandId });
     const { saved, original, order } = from;
+    const roster = rosterOf(client);
+    if (roster !== saved) return setDraft(null);
     void call("viewing.reorderFavourites", {
       commandId,
       original: original.map(ownedId),
       order: order.map(ownedId),
     }).then(
       async (viewing) => {
-        await takeIn(saved, viewing);
+        await takeIn(roster, viewing);
         answer(commandId, () => null);
       },
       (cause: unknown) => {
@@ -259,7 +257,7 @@ export function useFavouriteOrder(
     setDraft({ ...from, status: "reading", commandId: token });
     void (async () => {
       const viewing = await client.fetchQuery({ ...queries.viewing(), staleTime: 0 });
-      const listed = await read(viewing.favourites);
+      const listed = await read(viewing);
       if (!listed || !connected(from.saved)) return null;
       const { channel, asked } = from.focus;
       return drafted(from.saved, viewing.favourites, listed, channel, asked + 1);

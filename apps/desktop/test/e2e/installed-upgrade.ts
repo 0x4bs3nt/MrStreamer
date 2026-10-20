@@ -1,3 +1,4 @@
+import { preferenceValues } from "./preference-reply.ts";
 // The Windows installed upgrade check, which a stable release run makes before publishing and
 // `.github/workflows/upgrade-check.yml` makes by hand from main, on a disposable GitHub-hosted
 // runner. It installs the newest published stable release, then the published candidate nightly
@@ -466,7 +467,7 @@ async function state(d: Driver, titles: Fixtures) {
   const subscriptionId = subscriptions[0]!.id;
   const watchlist = await d.read("watchlist.list", { sort: "saved", offset: 0, limit: 100 });
   return {
-    preferences: await d.read("preferences.get"),
+    preferences: preferenceValues(await d.read("preferences.get")),
     favourites: (await d.read("viewing.get")).favourites,
     watchlist: {
       total: watchlist.total,

@@ -123,6 +123,48 @@ describe("TMDB metadata", { timeout: 30_000 }, () => {
     expect(app.tmdb.detailRequests()).toBe(ordinary + forAdults.length);
   });
 
+  it("keeps the viewer's adult policy when details read the current catalogue stamp", async () => {
+    const provider = await fakeProvider({ titles: 5 });
+    const config = testConfig(await tempDir());
+    const adults: boolean[] = [];
+    const runtime = runtimeFor(
+      mainLayer({
+        ...config,
+        catalogueWorker: (setup) => {
+          const worker = config.catalogueWorker(setup);
+          const postMessage = worker.postMessage.bind(worker);
+          worker.postMessage = (request: WorkerRequest) => {
+            if (request.method === "status") adults.push(request.args.adults);
+            postMessage(request);
+          };
+          return worker;
+        },
+      }),
+    );
+    try {
+      await (
+        await promised(runtime, Subscriptions)
+      ).add({
+        server: provider.url,
+        username: "demo",
+        password: "demo",
+      });
+      const onDemand = await promised(runtime, OnDemand);
+      const movie = await knownMovie(onDemand);
+      const settings = await promised(runtime, Settings);
+      for (const shown of [true, false]) {
+        await settings.update({ adultTitles: shown });
+        adults.length = 0;
+        await onDemand.details("movie", movie);
+        expect(adults.length).toBeGreaterThan(0);
+        expect(adults.every((value) => value === shown)).toBe(true);
+      }
+    } finally {
+      await runtime.dispose();
+      await provider.close();
+    }
+  });
+
   it("stops asking when TMDB refuses the key, and says so", async () => {
     const app = await metadataApp();
     app.tmdb.refuse(true);

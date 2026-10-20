@@ -97,7 +97,7 @@ export async function guidesScenario(
   /** Each row of Settings > Guides as drawn: its host, its state line, and whether it is red. */
   const rows = () =>
     d.evaluate<{ host: string; state: string; failing: boolean }[]>(
-      `[...document.querySelectorAll('main li')].map(row => {
+      `[...document.querySelectorAll('[data-settings-section=guides] li')].map(row => {
         const [host, state] = row.firstElementChild?.children ?? [];
         return { host: host?.textContent ?? '', state: state?.textContent ?? '',
           failing: state?.className.includes('text-destructive') ?? false };
@@ -296,11 +296,11 @@ export async function guidesScenario(
   await d.click("Open Subscriptions", byText("nav button", "Subscriptions"));
   await d.wait(() =>
     d.evaluate<boolean>(
-      `[...document.querySelectorAll('main')].at(-1).innerText.includes(${JSON.stringify(`1 ${hostName(hosts.north)}`)})`,
+      `[...document.querySelectorAll('main:not([hidden])')].at(-1).innerText.includes(${JSON.stringify(`1 ${hostName(hosts.north)}`)})`,
     ),
   );
   d.observed["guideRow"] = await d.evaluate<string>(
-    "[...document.querySelectorAll('main')].at(-1).innerText",
+    "[...document.querySelectorAll('main:not([hidden])')].at(-1).innerText",
   );
   await d.capture("subscriptions-guide-900");
   await width(1280);

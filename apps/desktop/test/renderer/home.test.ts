@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import { ipc } from "./support.ts";
+import { browseResult } from "./browse-support.ts";
+import { acceptPreferences } from "../../src/renderer/src/lib/preferences.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
@@ -84,17 +86,35 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
   expect(ipc.argsOf("preferences.update")).toHaveLength(1);
   expect(document.querySelector("section[aria-busy=true]")).not.toBeNull();
   expect(document.querySelector('[role="status"]')?.textContent).toBe("Saving…");
-  expect(labels()[0]).toBe("Watchlist");
+  expect(labels()[0]).toBe("Continue watching");
+  await act(async () =>
+    acceptPreferences(
+      client,
+      ipc.snapshot({
+        volume: 0.6,
+        muted: false,
+        audioLanguage: "nl",
+        homeRows: [
+          { id: "watchlist", visible: false },
+          { id: "future", visible: false },
+        ],
+      }),
+    ),
+  );
+  await settle();
+  expect(labels().slice(0, 2)).toEqual(["Continue watching", "Watchlist"]);
   const patch = ipc.argsOf("preferences.update")[0]!;
   expect(patch.homeRows?.at(-1)).toEqual({ id: "future", visible: false });
-  await act(async () => held.resolve({ volume: 1, muted: false, ...patch }));
+  await act(async () => held.resolve(ipc.snapshot({ volume: 1, muted: false, ...patch })));
   await settle();
   expect(labels().slice(0, 2)).toEqual(["Continue watching", "Watchlist"]);
   expect(document.activeElement).toBe(move);
   const visible = ipc.hold("preferences.update");
   await act(async () => document.querySelectorAll<HTMLInputElement>("li input")[1]!.click());
   await act(async () =>
-    visible.resolve({ volume: 1, muted: false, ...ipc.argsOf("preferences.update").at(-1)! }),
+    visible.resolve(
+      ipc.snapshot({ volume: 1, muted: false, ...ipc.argsOf("preferences.update").at(-1)! }),
+    ),
   );
   await settle();
   expect(document.querySelectorAll<HTMLInputElement>("li input")[1]!.checked).toBe(true);
@@ -105,7 +125,9 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
     visible: false,
   });
   await act(async () =>
-    reset.resolve({ volume: 1, muted: false, ...ipc.argsOf("preferences.update").at(-1)! }),
+    reset.resolve(
+      ipc.snapshot({ volume: 1, muted: false, ...ipc.argsOf("preferences.update").at(-1)! }),
+    ),
   );
   await settle();
   expect(labels().slice(0, 3)).toEqual(["Continue watching", "Recommendations", "Watchlist"]);
@@ -166,7 +188,7 @@ it("blocks a move during save notification and preserves the settled visibility 
   await act(async () => checkbox("Watchlist").click());
   await settle();
   const hidden = ipc.argsOf("preferences.update")[0]!;
-  hide.resolve({ volume: 1, muted: false, ...hidden });
+  hide.resolve(ipc.snapshot({ volume: 1, muted: false, ...hidden }));
   // Let the IPC promise finish before React receives the scheduled observer notification.
   for (let i = 0; i < 20; i++) await Promise.resolve();
   expect(button("Move Watchlist up").getAttribute("aria-disabled")).toBe("true");
@@ -177,7 +199,7 @@ it("blocks a move during save notification and preserves the settled visibility 
   await act(async () => button("Move Watchlist up").click());
   const moved = ipc.argsOf("preferences.update")[1]!;
   expect(moved.homeRows?.[1]).toEqual({ id: "watchlist", visible: false });
-  await act(async () => move.resolve({ volume: 1, muted: false, ...moved }));
+  await act(async () => move.resolve(ipc.snapshot({ volume: 1, muted: false, ...moved })));
   await settle();
   expect(labels().slice(0, 3)).toEqual(["Continue watching", "Watchlist", "Recommendations"]);
   expect(checkbox("Watchlist").checked).toBe(false);
@@ -190,7 +212,7 @@ it("blocks reopened controls until a held save settles, then retains both edits"
   const reordered = ipc.argsOf("preferences.update")[0]!;
   await act(async () => button("General").click());
   await act(async () => button("Home").click());
-  expect(checkbox("Watchlist").disabled).toBe(true);
+  expect(checkbox("Watchlist").getAttribute("aria-disabled")).toBe("true");
   expect(button("Move Watchlist down").getAttribute("aria-disabled")).toBe("true");
   await act(async () => {
     button("Move Watchlist down").click();
@@ -198,7 +220,7 @@ it("blocks reopened controls until a held save settles, then retains both edits"
     checkbox("Watchlist").click();
   });
   expect(ipc.argsOf("preferences.update")).toHaveLength(1);
-  await act(async () => first.resolve({ volume: 1, muted: false, ...reordered }));
+  await act(async () => first.resolve(ipc.snapshot({ volume: 1, muted: false, ...reordered })));
   await settle();
   expect(labels().slice(0, 2)).toEqual(["Recommendations", "Continue watching"]);
   const second = ipc.hold("preferences.update");
@@ -209,7 +231,7 @@ it("blocks reopened controls until a held save settles, then retains both edits"
     "continue",
   ]);
   expect(hidden.homeRows?.[2]).toEqual({ id: "watchlist", visible: false });
-  await act(async () => second.resolve({ volume: 1, muted: false, ...hidden }));
+  await act(async () => second.resolve(ipc.snapshot({ volume: 1, muted: false, ...hidden })));
   await settle();
   expect(labels().slice(0, 2)).toEqual(["Recommendations", "Continue watching"]);
   expect(checkbox("Watchlist").checked).toBe(false);
@@ -232,13 +254,13 @@ it("shows a failed save after reopening, retains saved rows and allows retry the
   const retry = ipc.hold("preferences.update");
   await act(async () => checkbox("Watchlist").click());
   const hidden = ipc.argsOf("preferences.update")[1]!;
-  await act(async () => retry.resolve({ volume: 1, muted: false, ...hidden }));
+  await act(async () => retry.resolve(ipc.snapshot({ volume: 1, muted: false, ...hidden })));
   await settle();
   expect(document.querySelector('[role="alert"]')).toBeNull();
   const next = ipc.hold("preferences.update");
   await act(async () => button("Move Watchlist up").click());
   const moved = ipc.argsOf("preferences.update")[2]!;
-  await act(async () => next.resolve({ volume: 1, muted: false, ...moved }));
+  await act(async () => next.resolve(ipc.snapshot({ volume: 1, muted: false, ...moved })));
   await settle();
   expect(labels()[1]).toBe("Watchlist");
   expect(checkbox("Watchlist").checked).toBe(false);
@@ -295,7 +317,7 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
       members: [{ subscriptionId: SUBSCRIPTION, id: "all" }],
     },
   ]);
-  ipc.always("library.channels", [channel]);
+  ipc.always("library.browse", browseResult([channel]));
   ipc.always("library.status", []);
   ipc.always("guide.listings", {});
   ipc.always("viewing.get", {
@@ -374,7 +396,9 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
     const held = ipc.hold("preferences.update");
     await act(async () => action());
     await act(async () =>
-      held.resolve({ ...defaultPreferences, ...ipc.argsOf("preferences.update").at(-1)! }),
+      held.resolve(
+        ipc.snapshot({ ...defaultPreferences, ...ipc.argsOf("preferences.update").at(-1)! }),
+      ),
     );
     await settle();
   };
@@ -435,7 +459,7 @@ it("sparse saved titles keep their resolved owner and unavailable-entry action w
   useUi.setState(useUi.getInitialState(), true);
   ipc.always("subscription.list", [SAVED]);
   ipc.always("library.categories", []);
-  ipc.always("library.channels", []);
+  ipc.always("library.browse", browseResult([]));
   ipc.always("library.status", []);
   ipc.always("viewing.get", {
     favourites: [],

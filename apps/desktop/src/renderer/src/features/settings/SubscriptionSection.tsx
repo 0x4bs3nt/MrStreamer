@@ -50,16 +50,18 @@ type Form = { readonly kind: "add" } | { readonly kind: RowFormKind; readonly id
 export function SubscriptionSection() {
   const client = useQueryClient();
   const subscriptions = useSubscriptions();
+  const active = useUi((state) => state.settings === "subscriptions");
   // The connections in use change all the time: ask when the tab opens. Offline, the last
   // answer stays.
   useEffect(() => {
+    if (!active) return;
     for (const { id } of client.getQueryData(queries.subscriptions().queryKey) ?? []) {
       void call("subscription.recheck", { subscriptionId: id }).then(
         (fresh) => keep(client, fresh),
         () => {},
       );
     }
-  }, [client]);
+  }, [client, active]);
 
   /** The row whose details show; undefined until the viewer opened or closed one. */
   const [opened, setOpened] = useState<string | null | undefined>(undefined);
@@ -722,11 +724,26 @@ function Remove({
         savedEntry: state.savedEntry?.sources.includes(id) ? null : state.savedEntry,
       }));
       client.setQueryData(queries.subscriptions().queryKey, others);
+      await client.resetQueries({ queryKey: ["library", "browse"] });
       onKeep();
       await client.invalidateQueries();
       // The page under Settings may have tried its channel again meanwhile, as the one watched
       // last by a record that still named it. The record read again names one that stays.
       if (player.current()?.subscriptionId === id) player.reset();
+    },
+    onError: () => {
+      // A first read during logical removal can outlive the refusal. Invalidation reuses it
+      // without cached data, so mark it stale again after settlement for the restored source.
+      const underWay = client
+        .getQueryCache()
+        .findAll({ fetchStatus: "fetching" })
+        .flatMap(({ queryKey, promise }) => (promise ? [{ queryKey, promise }] : []));
+      void client.invalidateQueries();
+      for (const { queryKey, promise } of underWay)
+        void promise.then(
+          () => client.invalidateQueries({ queryKey, exact: true }, { cancelRefetch: false }),
+          () => {},
+        );
     },
   });
   const stays = others.map(subscriptionName);

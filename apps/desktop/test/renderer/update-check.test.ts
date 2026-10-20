@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Settings > General's Updates: a newer release can come out after the one on offer, so Check now
+// Settings > Updates: a newer release can come out after the one on offer, so Check now
 // stays beside Download. While an update downloads or waits for its restart, there is nothing to
 // check. A copy the Microsoft Store installed leaves updates to the Store.
 import { ipc } from "./support.ts";
@@ -71,4 +71,31 @@ describe("updates for a copy the Microsoft Store installed", () => {
     await act(async () => named(rows, "Open Store")?.click());
     expect(ipc.argsOf("updates.openStore")).toHaveLength(1);
   });
+});
+
+it("keeps the acknowledged update channel after a failed save and retries that choice", async () => {
+  const rows = await buttonsFor({ kind: "idle" });
+  ipc.refuse("updates.setChannel", { kind: "unexpected", detail: "channel write failed" });
+  const select = rows.querySelector<HTMLSelectElement>("select[aria-label=Channel]")!;
+  await act(async () => {
+    select.value = "stable";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
+  expect(select.value).toBe("nightly");
+  expect(rows.textContent).toContain("channel write failed");
+  ipc.always("updates.setChannel", {
+    version: "0.0.15",
+    distribution: "direct",
+    channel: "stable",
+    update: { kind: "idle" },
+    offer: null,
+    checked: null,
+    nextCheckAt: null,
+    dismissed: null,
+  });
+  await act(async () => named(rows, "Try again")!.click());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
+  expect(select.value).toBe("stable");
+  expect(rows.textContent).not.toContain("channel write failed");
 });

@@ -55,9 +55,7 @@ async function render() {
   await settle();
   unmount = () => act(() => root.unmount());
   const select = () => container.querySelector<HTMLSelectElement>("section select");
-  const values = () =>
-    [...container.querySelectorAll<HTMLSelectElement>("select")].map((each) => each.value);
-  return { container, select, values };
+  return { container, select };
 }
 
 describe("Interface language", () => {
@@ -84,8 +82,7 @@ describe("Interface language", () => {
   });
 
   it("shows the window in the language picked, and changes no other language", async () => {
-    const { container, select, values } = await render();
-    const before = values().slice(1);
+    const { container, select } = await render();
     const saving = ipc.hold("language.set");
     await act(async () => {
       const field = select();
@@ -99,10 +96,9 @@ describe("Interface language", () => {
 
     expect(document.documentElement.lang).toBe("de-DE");
     expect(select()?.getAttribute("aria-label")).toBe("Sprache der Oberfläche");
-    expect([...container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual(
-      expect.arrayContaining(["App", "Live-TV", "Filme und Serien"]),
-    );
-    expect(values().slice(1)).toEqual(before);
+    expect([...container.querySelectorAll("h2")].map((heading) => heading.textContent)).toEqual([
+      "Allgemein",
+    ]);
     expect(ipc.methods()).not.toContain("preferences.update");
   });
 });

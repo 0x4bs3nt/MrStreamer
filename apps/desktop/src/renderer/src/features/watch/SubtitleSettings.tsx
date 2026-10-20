@@ -4,42 +4,28 @@
 // position. The player keeps both, so they hold after a seek or another track, and changing them
 // never turns subtitles on or picks another track.
 //   On the look's rows, Left and Right pick.
-import type { KeyboardEvent, ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode } from "react";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import type { SubtitleLook } from "@mrstreamer/contracts/preferences";
-import { formatDecimal, type PlainKey, t } from "@mrstreamer/core/i18n";
-import { call } from "../../lib/ipc.ts";
+import { formatDecimal, t } from "@mrstreamer/core/i18n";
+import { updateSubtitleLook } from "../../player/subtitle-look.ts";
+import { appError, describeError } from "../../lib/errors.ts";
 import { cn } from "../../lib/utils.ts";
 import { player } from "../../player/player.ts";
 import {
   setSubtitleDelay,
-  setSubtitleLook,
   subtitleDelay,
   TIMING_STEP_S,
   useSubtitleSettings,
 } from "../../player/subtitles.ts";
-import { flash } from "./Flash.tsx";
+import { flash, flashNote } from "./Flash.tsx";
 
-/** Each choice's word on its button, and its whole name for assistive technology. */
-const SIZES = [
-  { value: "small", short: "S", label: "Small" },
-  { value: "medium", short: "M", label: "Medium" },
-  { value: "large", short: "L", label: "Large" },
-] as const satisfies readonly Segment<SubtitleLook["size"]>[];
-const BACKGROUNDS = [
-  { value: "box", short: "Box", label: "Box" },
-  { value: "shadow", short: "Shadow", label: "Shadow" },
-] as const satisfies readonly Segment<SubtitleLook["background"]>[];
-const POSITIONS = [
-  { value: "low", short: "Low", label: "Low" },
-  { value: "high", short: "Higher", label: "Higher" },
-] as const satisfies readonly Segment<SubtitleLook["position"]>[];
-
-interface Segment<V extends string> {
-  readonly value: V;
-  readonly short: PlainKey;
-  readonly label: PlainKey;
-}
+import {
+  SUBTITLE_SIZES,
+  SUBTITLE_BACKGROUNDS,
+  SUBTITLE_POSITIONS,
+  type Segment,
+} from "./subtitle-choices.ts";
 
 /** Subtitles drawn as text, which take timing and every look setting. */
 const isText = (track: SubtitleTrack) => track.format !== "picture";
@@ -129,31 +115,33 @@ export function TrackTiming() {
 /** Size, background and position, saved for every title and channel. */
 export function LookRows({ text }: { text: boolean }) {
   const look = useSubtitleSettings((state) => state.look);
-  const pick = (next: SubtitleLook) => {
-    setSubtitleLook(next);
-    void call("preferences.update", { subtitleLook: next }).catch(() => {});
+  const pick = (patch: Partial<SubtitleLook>) => {
+    void updateSubtitleLook(patch, {
+      onError: (error) =>
+        flashNote(`${t("Subtitle look")}: ${describeError(appError(error))}`, true),
+    }).catch(() => {});
   };
   return (
     <>
       <Segments
         label={t("Size")}
-        options={SIZES}
+        options={SUBTITLE_SIZES}
         value={look.size}
-        onPick={(size) => pick({ ...look, size })}
+        onPick={(size) => pick({ size })}
       />
       {text && (
         <Segments
           label={t("Background")}
-          options={BACKGROUNDS}
+          options={SUBTITLE_BACKGROUNDS}
           value={look.background}
-          onPick={(background) => pick({ ...look, background })}
+          onPick={(background) => pick({ background })}
         />
       )}
       <Segments
         label={t("Position")}
-        options={POSITIONS}
+        options={SUBTITLE_POSITIONS}
         value={look.position}
-        onPick={(position) => pick({ ...look, position })}
+        onPick={(position) => pick({ position })}
       />
     </>
   );

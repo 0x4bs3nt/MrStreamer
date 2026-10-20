@@ -1,7 +1,17 @@
-// The channel lists the guide and Watch's channel list show: favourites, recently watched, every
-// channel, or one category. Categories group under their country, as the provider names them.
+// Shared semantic selections for Live TV, Watch and Home. Topics lead discovery; the provider
+// hierarchy stays available behind Provider lists. Library owns membership and facet policy.
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  BROWSE_TOPICS,
+  EMPTY_LIVE_FILTERS,
+  type BrowseTopic,
+  type LiveBrowseQuery,
+  type LiveBrowseResult,
+  type LiveDiscovery,
+} from "@mrstreamer/contracts/live-browse";
+import type { Viewing } from "@mrstreamer/contracts/viewing";
+import { call } from "../../lib/ipc.ts";
 import type { Listing, ListingMatch } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
@@ -10,47 +20,93 @@ import { indexNames, nameQuery, scoreNames, type SearchNames } from "@mrstreamer
 import { searchResultGroups, type LiveSearchGroup } from "@mrstreamer/core/catalogue/search";
 import { t } from "@mrstreamer/core/i18n";
 import { useLocale } from "../../app/language.ts";
-import { useUi, type ChannelList } from "../../app/ui-store.ts";
+import { sameList, useUi, type ChannelList } from "../../app/ui-store.ts";
 import { useNow } from "../../lib/clock.ts";
 import { usePresentationVisible } from "../../lib/presentation.ts";
 import { endOfDay } from "../../lib/format.ts";
-import {
-  queries,
-  rememberCategory,
-  subscriptionName,
-  useSubscriptions,
-} from "../../lib/queries.ts";
+import { queries, subscriptionName, useSubscriptions } from "../../lib/queries.ts";
 
+export const PROVIDER_LISTS = "provider-lists";
+const EMPTY_BROWSE: LiveBrowseResult = {
+  channels: [],
+  total: 0,
+  counts: { browseTopics: 0, countries: 0, languages: 0, subscriptions: 0 },
+  facets: { browseTopics: [], countries: [], languages: [], subscriptions: [] },
+};
 const NO_IDS: readonly OwnedId[] = [];
 /** Channels whose listings are asked for together. */
 const LISTINGS_PAGE = 40;
-const NO_CHANNELS: readonly LiveChannel[] = [];
 /** A search waits this long for typing to pause, as the other searches do. */
 const SEARCH_DELAY_MS = 120;
 const NO_WORDS: readonly string[] = [];
 const NO_MATCHES: Readonly<Record<string, ListingMatch>> = {};
 
-/** The channels of a list, in its order; undefined while they load. */
-export function useListChannels(list: ChannelList): {
-  readonly channels: readonly LiveChannel[] | undefined;
-  readonly error: unknown;
-} {
+/** The single renderer adapter from semantic discovery/personal choices to exact IPC scopes. */
+export function browseQuery(
+  list: ChannelList,
+  viewing: Viewing | undefined,
+  visibility: "viewer" | "ordinary",
+): LiveBrowseQuery {
+  const filters = list.filters ?? EMPTY_LIVE_FILTERS;
+  return {
+    scope:
+      list.kind === "category"
+        ? { kind: "category", category: ownedId(list.category) }
+        : list.kind === "favourites" || list.kind === "recent"
+          ? {
+              kind: "channels",
+              channels: (
+                viewing?.[list.kind === "favourites" ? "favourites" : "recent"] ?? NO_IDS
+              ).map(ownedId),
+            }
+          : { kind: "all" },
+    filters: {
+      browseTopics: list.kind === "topic" ? [list.topic] : [],
+      countries: [...filters.countries],
+      languages: [...filters.languages],
+      subscriptions: [...filters.subscriptions],
+    },
+    visibility,
+  };
+}
+
+/** Membership and facets always belong to the current descriptor, including personal order. */
+export function useListChannels(list: ChannelList, visibility: "viewer" | "ordinary" = "viewer") {
   const viewing = useQuery(queries.viewing());
-  const ids =
-    list.kind === "favourites"
-      ? (viewing.data?.favourites ?? NO_IDS)
-      : list.kind === "recent"
-        ? (viewing.data?.recent ?? NO_IDS)
-        : NO_IDS;
-  const byIds = useQuery(queries.channelsOf(ids));
-  const listed = list.kind === "favourites" || list.kind === "recent";
-  const byCategory = useQuery({
-    ...queries.channels(list.kind === "category" ? list.category : null),
-    enabled: !listed,
+  const personal = list.kind === "favourites" || list.kind === "recent";
+  const request = browseQuery(list, viewing.data, visibility);
+  const empty = request.scope.kind === "channels" && request.scope.channels.length === 0;
+  const result = useQuery({
+    ...queries.browse(request),
+    enabled: !empty && (!personal || viewing.isSuccess),
   });
-  if (!listed) return { channels: byCategory.data, error: byCategory.error };
-  if (!viewing.data) return { channels: undefined, error: viewing.error };
-  return { channels: ids.length === 0 ? NO_CHANNELS : byIds.data, error: byIds.error };
+  const data = empty && viewing.isSuccess ? EMPTY_BROWSE : result.data;
+  return {
+    channels: personal && !viewing.isSuccess ? undefined : data?.channels,
+    data,
+    error: personal && !viewing.isSuccess ? viewing.error : result.error,
+  };
+}
+
+/** Resolve native aliases and missing categories identically for discovery consumers. */
+export function resolveDiscovery(list: ChannelList, categories: readonly Category[]): ChannelList {
+  if (list.kind !== "category") return list;
+  const category = categories.find((each) =>
+    each.members.some((member) => sameOwned(member, list.category)),
+  );
+  return category ? { ...list, category: ownedId(category) } : { kind: "all" };
+}
+
+/** Home's existing category row follows discovery, without duplicating personal rows. */
+export function useHomeDiscovery(): ChannelList {
+  const list = useUi((state) => state.list);
+  const remembered = useQuery(queries.rememberedLiveBrowse());
+  const categories = useQuery(queries.categories());
+  const discovery =
+    list.kind === "favourites" || list.kind === "recent"
+      ? (remembered.data ?? { kind: "all" as const })
+      : list;
+  return categories.data ? resolveDiscovery(discovery, categories.data) : discovery;
 }
 
 /**
@@ -64,7 +120,6 @@ export function useListChannels(list: ChannelList): {
  * inert during typing. A pending, stale or failed grouping decision keeps current copies apart.
  */
 export function useListSearch(
-  list: ChannelList,
   channels: readonly LiveChannel[],
   text: string,
 ): {
@@ -94,16 +149,12 @@ export function useListSearch(
   }, [text]);
   const query = text.trim() === "" ? "" : settled.trim();
   const until = endOfDay(useNow());
-  const scope = useMemo(
-    () =>
-      list.kind === "category"
-        ? { category: ownedId(list.category) }
-        : list.kind === "all"
-          ? {}
-          : { channels: channels.map(ownedId) },
-    [list, channels],
-  );
   const searching = text.trim() !== "";
+  // Disabled queries still hash their keys on render. Empty search needs no channel scope.
+  const scope = useMemo(
+    () => ({ channels: searching ? channels.map(ownedId) : [] }),
+    [channels, searching],
+  );
   const grouped = useQuery({
     ...queries.searchGroups(),
     // Start the one catalogue decision during the typing delay, before programme search waits.
@@ -196,26 +247,66 @@ export function listTitle(list: ChannelList, categories: ReadonlyMap<string, Cat
       return t("Recently watched");
     case "all":
       return t("All channels");
+    case "topic":
+      return topicTitle(list.topic);
     case "category":
       return categories.get(ownedKey(list.category))?.title ?? t("Channels");
   }
 }
 
-/**
- * Shows a list in the guide. A category, or all channels, is where Live TV opens next time: a
- * category is kept for its own subscription, and all channels by none of them keeping one.
- */
+const TOPIC_LABELS = {
+  news: "News",
+  sport: "Sports",
+  kids: "Kids",
+  movies: "Movies",
+  entertainment: "Entertainment",
+  music: "Music",
+  documentary: "Documentary",
+  regional: "Regional",
+  other: "Other",
+} as const;
+function topicTitle(topic: BrowseTopic): string {
+  return t(TOPIC_LABELS[topic]);
+}
+
+// Serialize discovery writes so rapid topic/native/All changes settle in the viewer's order.
+let remembering = Promise.resolve();
+let rememberTurn = 0;
 export function useShowList(): (list: ChannelList) => void {
   const client = useQueryClient();
-  const subscriptions = useSubscriptions();
   return useCallback(
     (list) => {
-      useUi.setState({ list });
-      if (list.kind !== "category" && list.kind !== "all") return;
-      const category = list.kind === "category" ? list.category : null;
-      void rememberCategory(client, subscriptions, category).catch(() => {});
+      const current = useUi.getState().list;
+      const filters = list.filters ?? (sameList(current, list) ? current.filters : undefined);
+      const next = filters ? { ...list, filters } : list;
+      useUi.setState({ list: next });
+      if (list.kind === "favourites" || list.kind === "recent") return;
+      const selection: LiveDiscovery =
+        list.kind === "topic"
+          ? { kind: "topic", topic: list.topic }
+          : list.kind === "category"
+            ? { kind: "category", category: ownedId(list.category) }
+            : { kind: "all" };
+      const turn = ++rememberTurn;
+      const account = useUi.getState().account;
+      void client.cancelQueries({ queryKey: queries.rememberedLiveBrowse().queryKey });
+      client.setQueryData(queries.rememberedLiveBrowse().queryKey, selection);
+      remembering = remembering
+        .catch(() => {})
+        .then(async () => {
+          if (useUi.getState().account !== account) return;
+          try {
+            const saved = await call("liveBrowse.remember", selection);
+            if (turn === rememberTurn && useUi.getState().account === account)
+              client.setQueryData(queries.rememberedLiveBrowse().queryKey, saved);
+            await client.invalidateQueries({ queryKey: ["subscription-preferences"] });
+          } catch {
+            if (turn === rememberTurn && useUi.getState().account === account)
+              await client.invalidateQueries({ queryKey: queries.rememberedLiveBrowse().queryKey });
+          }
+        });
     },
-    [client, subscriptions],
+    [client],
   );
 }
 
@@ -234,14 +325,20 @@ export type ListEntry =
       readonly count: number;
     };
 
-/** One country at a time, or Find across the whole catalogue. Only the chosen list is saved. */
+/** Fixed topics first; Provider lists keeps native countries/categories and catalogue-wide Find. */
 export function useListPicker(selected: ChannelList) {
   const categories = useQuery(queries.categories()).data;
-  const viewing = useQuery(queries.viewing()).data;
-  const status = useQuery(queries.libraryStatus()).data;
+  const catalogue = useListChannels({ kind: "all" });
+  const favourites = useListChannels({ kind: "favourites" });
+  const recent = useListChannels({ kind: "recent" });
   const subscriptions = useSubscriptions();
   const locale = useLocale();
-  const selectedKey = selected.kind === "category" ? ownedKey(selected.category) : selected.kind;
+  const selectedKey =
+    selected.kind === "category"
+      ? ownedKey(selected.category)
+      : selected.kind === "topic"
+        ? selected.topic
+        : selected.kind;
   const selectedGroup =
     selected.kind === "category"
       ? (categories?.find((category) =>
@@ -249,11 +346,13 @@ export function useListPicker(selected: ChannelList) {
         )?.group ?? null)
       : null;
   const [group, setGroup] = useState<string | null>(selectedGroup);
+  const [providers, setProviders] = useState(selected.kind === "category");
   const [query, search] = useState("");
   const [entry, setEntry] = useState(0);
   // Remembered lists arrive asynchronously; refresh can also move a category to another country.
   useEffect(() => {
     setGroup(selectedGroup);
+    setProviders(selected.kind === "category");
     search("");
     setEntry(0);
   }, [selectedKey, selectedGroup]);
@@ -302,21 +401,37 @@ export function useListPicker(selected: ChannelList) {
         kind: "list",
         list: { kind: "favourites" },
         title: t("Favourites"),
-        count: viewing?.favourites.length ?? 0,
+        count: favourites.channels?.length ?? 0,
       },
       {
         kind: "list",
         list: { kind: "recent" },
         title: t("Recently watched"),
-        count: viewing?.recent.length ?? 0,
+        count: recent.channels?.length ?? 0,
       },
       {
         kind: "list",
         list: { kind: "all" },
         title: t("All channels"),
-        count: (status ?? []).reduce((sum, each) => sum + each.channelCount, 0),
+        count: catalogue.data?.total ?? 0,
       },
     ];
+    if (!providers) {
+      const counts = new Map(
+        catalogue.data?.facets.browseTopics.map((each) => [each.value, each.count]),
+      );
+      result.push(
+        ...BROWSE_TOPICS.map((topic): ListEntry => ({
+          kind: "list",
+          list: { kind: "topic", topic },
+          title: topicTitle(topic),
+          count: counts.get(topic) ?? 0,
+        })),
+        { kind: "group", group: PROVIDER_LISTS, count: catalogue.data?.total ?? 0 },
+      );
+      return result;
+    }
+    result.length = 0;
     const groups = new Map<string, number>();
     for (const category of all)
       if (category.group !== null)
@@ -334,9 +449,20 @@ export function useListPicker(selected: ChannelList) {
       }
     }
     return result;
-  }, [categories, viewing, status, subscriptions, locale, group, query]);
+  }, [
+    categories,
+    catalogue.data,
+    favourites.channels,
+    recent.channels,
+    subscriptions,
+    locale,
+    group,
+    query,
+    providers,
+  ]);
   const openGroup = (group: string) => {
-    setGroup(group);
+    if (group === PROVIDER_LISTS) setProviders(true);
+    else setGroup(group);
     search("");
     setEntry(0);
   };
@@ -349,9 +475,14 @@ export function useListPicker(selected: ChannelList) {
       setQuery("");
       return true;
     }
-    if (group === null) return false;
+    if (group === null) {
+      if (!providers) return false;
+      setProviders(false);
+      setEntry(12);
+      return true;
+    }
     // Restore the country's position in the provider-ordered root, including ungrouped rows.
-    const root: string[] = ["favourites", "recent", "all"];
+    const root: string[] = [];
     for (const category of categories ?? []) {
       if (category.group === null) root.push(ownedKey(category));
       else if (!root.includes(category.group)) root.push(category.group);
@@ -360,10 +491,13 @@ export function useListPicker(selected: ChannelList) {
     setGroup(null);
     return true;
   };
-  const count = (categories ?? []).reduce(
-    (sum, category) => sum + (category.group === group ? category.channelCount : 0),
-    0,
-  );
+  const count =
+    providers && group === null
+      ? (catalogue.data?.total ?? 0)
+      : (categories ?? []).reduce(
+          (sum, category) => sum + (category.group === group ? category.channelCount : 0),
+          0,
+        );
   // A country removed by refresh never leaves an empty, unreachable branch.
   useEffect(() => {
     if (categories && group !== null && !categories.some((category) => category.group === group))
@@ -371,7 +505,7 @@ export function useListPicker(selected: ChannelList) {
   }, [categories, group]);
   return {
     entries,
-    group,
+    group: group ?? (providers ? PROVIDER_LISTS : null),
     count,
     query,
     setQuery,

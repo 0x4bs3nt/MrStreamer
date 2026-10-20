@@ -1,6 +1,6 @@
 import { useSearchUsage } from "../../app/analytics.ts";
 import { Dialog } from "@base-ui/react/dialog";
-import { useQuery } from "@tanstack/react-query";
+import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Search, Star } from "lucide-react";
 import {
   useEffect,
@@ -82,30 +82,45 @@ function Palette() {
   const visible = useUi((state) => state.searchOpen);
   // Mounted each time it opens.
   const [query, setQuery] = useState(() => useUi.getState().searchFrom);
-  const debounced = useDebounced(query, 120);
-  useSearchUsage("global", debounced, true);
+  const client = useQueryClient();
+  // Complete fresh answers need no typing delay. Other searches keep the existing debounce.
+  const fresh =
+    query.trim() !== "" &&
+    [queries.search(query), queries.programmes(query), queries.titleSearch(query)].every(
+      (options) => {
+        const cached = client.getQueryCache().get(hashKey(options.queryKey));
+        return (
+          cached?.state.status === "success" &&
+          cached.state.fetchStatus === "idle" &&
+          typeof options.staleTime === "number" &&
+          !cached.isStaleByTime(options.staleTime)
+        );
+      },
+    );
+  const searched = useDebounced(query, fresh ? 0 : 120);
+  useSearchUsage("global", searched, true);
   // Share the Guide's catalogue read so the first name search builds during the typing delay.
   useQuery({ ...queries.searchGroups(), enabled: visible && query.trim() !== "" });
   const raw = useRef(query);
-  const current = visible && query === debounced && query.trim() !== "";
-  const asked = current ? debounced : "";
+  const current = visible && query === searched && query.trim() !== "";
+  const asked = current ? searched : "";
   const channels = useQuery({
     ...queries.search(asked),
-    queryKey: current ? queries.search(asked).queryKey : ["library", "search", "paused", debounced],
+    queryKey: current ? queries.search(asked).queryKey : ["library", "search", "paused", searched],
     placeholderData: (previous) => (current ? undefined : previous),
   });
   const programmes = useQuery({
     ...queries.programmes(asked),
     queryKey: current
       ? queries.programmes(asked).queryKey
-      : ["guide", "search", "paused", debounced],
+      : ["guide", "search", "paused", searched],
     placeholderData: (previous) => (current ? undefined : previous),
   });
   const titles = useQuery({
     ...queries.titleSearch(asked),
     queryKey: current
       ? queries.titleSearch(asked).queryKey
-      : ["ondemand", "search", "paused", debounced],
+      : ["ondemand", "search", "paused", searched],
     placeholderData: (previous) => (current ? undefined : previous),
   });
   const pending =
@@ -131,7 +146,7 @@ function Palette() {
   const [open, setOpen] = useState<string | null>(null);
   const [selected, select] = useState<string | null>(null);
   const results = useMemo((): Result[] => {
-    if (!query.trim() || !debounced.trim()) return [];
+    if (!query.trim() || !searched.trim()) return [];
     return [
       ...groups.flatMap((group): Result[] => {
         const channel = group.copies[0]!;
@@ -158,7 +173,7 @@ function Palette() {
         key: `${ownedKey(match.channel)}:${match.programme.start}`,
       })),
     ];
-  }, [query, debounced, groups, expanded, titles.data, programmes.data]);
+  }, [query, searched, groups, expanded, titles.data, programmes.data]);
 
   const identity = (result: Result) =>
     result.kind === "title" ? `title/${result.title.key}` : `${result.kind}/${result.key}`;
@@ -178,7 +193,7 @@ function Palette() {
   /** Group rows use Automatic; expanded copies keep their real subscription and quality choices. */
   const choose = (index: number) => {
     const result = results[index];
-    if (!result || !current || raw.current !== debounced || !useUi.getState().searchOpen) return;
+    if (!result || !current || raw.current !== searched || !useUi.getState().searchOpen) return;
     setActive(index);
     if (result.kind === "channel")
       watchChannel(
@@ -204,7 +219,7 @@ function Palette() {
       event.altKey
     )
       return;
-    if (!current || raw.current !== debounced) return;
+    if (!current || raw.current !== searched) return;
     if (event.key === "Enter" && event.target instanceof HTMLButtonElement) return;
     if (event.key === "ArrowDown") setActive(Math.min(active + 1, results.length - 1));
     else if (event.key === "ArrowUp") setActive(Math.max(active - 1, 0));
@@ -253,7 +268,7 @@ function Palette() {
           className="h-16 flex-1 bg-transparent text-lg text-foreground outline-none placeholder:text-muted-foreground/70"
         />
       </div>
-      {debounced.trim() && groups.length > 0 && (
+      {searched.trim() && groups.length > 0 && (
         <div role="status" className="px-5 py-2 text-xs">
           {t("{count} channels", { count: groups.length })} ·{" "}
           {t("{count} streams", {
@@ -267,7 +282,7 @@ function Palette() {
           inert={!current}
           aria-disabled={!current}
           onClickCapture={(event) => {
-            if (current && raw.current === debounced) return;
+            if (current && raw.current === searched) return;
             event.preventDefault();
             event.stopPropagation();
           }}

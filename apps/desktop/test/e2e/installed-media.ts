@@ -1087,6 +1087,7 @@ async function runCase(
     proof.facts["windows"] = windows;
     if (variant === "av1") {
       await d.click("Settings", labelled("Settings"));
+      await d.click("Subtitles settings", button("nav button", "Subtitles"));
       await configureSubtitleUi(d);
       await d.key("Escape", 27);
       await openMovie(d, "Long subtitles");

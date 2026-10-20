@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
+import { browseChannels, browseResult } from "./browse-support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -67,6 +68,7 @@ async function picker(
       failedAt: null,
     },
   ]);
+  client.setQueryData(browseChannels(null).queryKey, { ...browseResult([]), total: 63412 });
   const onPick = vi.fn();
   const onChannels = vi.fn();
   const container = document.createElement("div");
@@ -117,18 +119,30 @@ async function picker(
   return { container, client, rows, field, click, type, key, onPick, onChannels };
 }
 
-describe("countries then categories", () => {
+describe("fixed topics and Provider lists", () => {
   it("keeps shortcuts and ungrouped categories in provider order, opens one country and returns focus to it", async () => {
     const p = await picker();
     expect(p.rows().map((row) => row.title)).toEqual([
       "Favourites",
       "Recently watched",
       "All channels",
-      "Belgium",
-      "Ungrouped",
-      "United Kingdom",
+      "News",
+      "Sports",
+      "Kids",
+      "Movies",
+      "Entertainment",
+      "Music",
+      "Documentary",
+      "Regional",
+      "Other",
+      "Provider lists",
     ]);
-    expect(p.rows()[3]?.textContent).toContain("188");
+    await p.click("Provider lists");
+    expect(document.querySelector('button[aria-label="Back to topics"]')?.textContent).toContain(
+      "63,412",
+    );
+    expect(p.rows().map((row) => row.title)).toEqual(["Belgium", "Ungrouped", "United Kingdom"]);
+    expect(p.rows()[0]?.textContent).toContain("188");
     await p.click("Belgium");
     expect(p.rows().map((row) => row.title)).toEqual(["Sport · Main", "Nieuws", "Sport · Backup"]);
     expect(document.activeElement).toBe(p.rows()[0]);
@@ -142,6 +156,7 @@ describe("countries then categories", () => {
       kind: "category",
       category: { subscriptionId: SUBSCRIPTION, id: "odd" },
     });
+    await p.click("Back to topics");
     await p.click("Favourites");
     await p.click("Recently watched");
     await p.click("All channels");
@@ -176,7 +191,7 @@ describe("countries then categories", () => {
     await act(async () => p.field().focus());
     await p.key("Escape");
     expect(p.field().value).toBe("");
-    expect(p.rows()).toHaveLength(6);
+    expect(p.rows()).toHaveLength(13);
   });
 
   it("opens a remembered member inside its country when data arrives and recovers when that country disappears", async () => {
@@ -188,14 +203,7 @@ describe("countries then categories", () => {
     await vi.waitFor(() => expect(p.rows()[1]?.getAttribute("aria-current")).toBe("true"));
     expect(p.rows()[1]?.getAttribute("aria-current")).toBe("true");
     await act(async () => p.client.setQueryData(queries.categories().queryKey, [CATEGORIES[3]!]));
-    await vi.waitFor(() =>
-      expect(p.rows().map((row) => row.title)).toEqual([
-        "Favourites",
-        "Recently watched",
-        "All channels",
-        "United Kingdom",
-      ]),
-    );
+    await vi.waitFor(() => expect(p.rows().map((row) => row.title)).toEqual(["United Kingdom"]));
   });
 
   it.each<Locale>(["en-US", "nl-NL"])(
@@ -206,7 +214,9 @@ describe("countries then categories", () => {
         category(String(i), `Country ${Math.floor(i / 30)}`, `Category ${i}`, 14),
       );
       const p = await picker(large);
-      expect(p.rows()).toHaveLength(153);
+      expect(p.rows()).toHaveLength(13);
+      await p.click(t("Provider lists"));
+      expect(p.rows()).toHaveLength(150);
       expect(p.field().placeholder).toBe(t("Find"));
       await p.type("country 149 category 4499");
       expect(p.rows()).toHaveLength(1);

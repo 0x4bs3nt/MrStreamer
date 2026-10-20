@@ -43,8 +43,8 @@ export async function languageScenario(d: Driver): Promise<void> {
   const contentLanguages = async () =>
     d.evaluate<{ titles?: string; audio?: string; subtitles?: string }>(`(async () => {
       const read = await window.mrStreamer.invoke('preferences.get');
-      return read.ok ? { titles: read.value.titleLanguage, audio: read.value.audioLanguage,
-        subtitles: read.value.subtitleLanguage } : {};
+      return read.ok ? { titles: read.value.preferences.titleLanguage, audio: read.value.preferences.audioLanguage,
+        subtitles: read.value.preferences.subtitleLanguage } : {};
     })()`);
   const openSettings = async () => {
     await d.click("Open Settings", SETTINGS);
@@ -129,9 +129,15 @@ export async function languageScenario(d: Driver): Promise<void> {
         settings.tabs.join() ===
           [
             translate(locale, "General"),
+            translate(locale, "Playback"),
+            translate(locale, "Live TV"),
+            translate(locale, "Movies and series"),
+            translate(locale, "Subtitles"),
             translate(locale, "Home"),
             translate(locale, "Subscriptions"),
             translate(locale, "Guides"),
+            translate(locale, "Updates"),
+            translate(locale, "Privacy"),
             translate(locale, "About"),
           ].join(),
       `Settings in ${locale}`,

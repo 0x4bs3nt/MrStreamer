@@ -397,11 +397,12 @@ export function WatchScreen() {
     return (
       <div
         data-view="watch"
+        tabIndex={-1}
         data-mini=""
         data-controls={controlsVisible ? "" : undefined}
         onMouseMove={wake}
         className={cn(
-          "fixed inset-0 z-30 overflow-hidden bg-black",
+          "fixed inset-0 z-30 overflow-hidden bg-black outline-none",
           !awake && phase.kind === "playing" && "cursor-none",
         )}
       >
@@ -457,10 +458,11 @@ export function WatchScreen() {
   return (
     <div
       data-view="watch"
+      tabIndex={-1}
       data-controls={controlsVisible && !channelsOpen ? "" : undefined}
       onMouseMove={wake}
       className={cn(
-        "fixed inset-0 z-30 overflow-hidden bg-black",
+        "fixed inset-0 z-30 overflow-hidden bg-black outline-none",
         !controlsVisible && !channelsOpen && "cursor-none",
       )}
     >

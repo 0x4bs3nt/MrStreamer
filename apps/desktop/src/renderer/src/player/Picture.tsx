@@ -1,5 +1,5 @@
-// Where the picture shows. There is one video element (see player.ts); each place that shows the
-// picture renders a <Picture>, and the active one holds the element. Moving it uses moveBefore,
+// Where the picture shows. One video element comes from shared-media.ts; each place renders a
+// <Picture>, and the active one holds the element. Moving it uses moveBefore,
 // which keeps a playing element playing, so changing views never interrupts the stream.
 import { useLayoutEffect, useRef, type HTMLAttributes } from "react";
 import { player } from "./player.ts";

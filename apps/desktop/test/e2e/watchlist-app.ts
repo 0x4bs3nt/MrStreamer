@@ -323,7 +323,7 @@ try {
     const pages = await page.evaluate<string[]>(
       `[...document.querySelectorAll("header button")].map((each) => each.textContent.trim()).filter(Boolean)`,
     );
-    if (pages.join() !== "Home,Live TV,Movies,Series,Downloads") {
+    if (pages.join() !== "Home,Live TV,Movies,Series,Watchlist,Downloads") {
       problems.push(`the top bar has ${pages.join(", ")}`);
     }
     if (await exists(page, withText("h2", "Watchlist"))) problems.push("Home has a Watchlist row");
@@ -331,7 +331,7 @@ try {
     if (!(await says(page, "Nothing saved yet. Save a movie or series from its details."))) {
       problems.push("the empty page doesn't say how to save");
     }
-    report("Home opens the full Watchlist and its empty saving instructions", problems);
+    report("The top bar opens the full Watchlist and its empty saving instructions", problems);
   }
 
   {
@@ -707,12 +707,14 @@ try {
   const FOR_ADULTS = 'document.querySelector(\'[role="checkbox"][aria-label="For adults"]\')';
   /** Ticks or unticks For adults in Settings, which is open, and waits until it is stored. */
   const tickAdults = async (shown: boolean) => {
+    await click(page, withText("nav button", "Movies and series"));
     await waitFor(() => exists(page, FOR_ADULTS), 10_000);
     const ticked = await page.evaluate<string>(`${FOR_ADULTS}.getAttribute("aria-checked")`);
     if (ticked !== String(shown)) await click(page, FOR_ADULTS);
     await waitFor(
       async () =>
-        (await invoke<{ adultTitles?: boolean }>(page, "preferences.get")).adultTitles === shown,
+        (await invoke<{ preferences: { adultTitles?: boolean } }>(page, "preferences.get"))
+          .preferences.adultTitles === shown,
       10_000,
     );
   };

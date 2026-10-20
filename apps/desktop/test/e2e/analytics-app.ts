@@ -1,3 +1,5 @@
+import { preferenceValues } from "./preference-reply.ts";
+import type { PreferenceSnapshot } from "@mrstreamer/contracts/ipc";
 // Built-app proof through the actual Settings control, with an isolated profile and loopback only.
 import { watch } from "node:fs";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -666,6 +668,8 @@ async function click(selector: string, index = 0, match?: { name: string; title:
 async function settings() {
   await waitFor(() => live().evaluate<boolean>("!!document.querySelector('header')"));
   await click('button[aria-label="Settings"]');
+  if (await live().evaluate<boolean>("!!document.querySelector('[data-view=settings]')"))
+    await namedButton("nav button", "Privacy");
   await waitFor(() =>
     live().evaluate<boolean>(
       "!!document.querySelector('[role=checkbox][aria-label=\"Share basic usage statistics\"]')",
@@ -688,11 +692,11 @@ async function verifyAbout() {
 
 const checkbox = '[role="checkbox"][aria-label="Share basic usage statistics"]';
 async function preference() {
-  const result = await live().evaluate<Result<Preferences>>(
+  const result = await live().evaluate<Result<Preferences | PreferenceSnapshot>>(
     "window.mrStreamer.invoke('preferences.get')",
   );
   if (!result.ok) throw new Error("Preferences unavailable.");
-  return result.value;
+  return preferenceValues(result.value);
 }
 
 async function snapshot(name: string) {
@@ -1158,8 +1162,12 @@ async function productPaths() {
   await snapshot("search-entry");
   await keyEscape();
   await settings();
+  if (await live().evaluate<boolean>("!!document.querySelector('[data-view=settings]')"))
+    await namedButton("nav button", "Playback");
   await click('[role="checkbox"][aria-label="Next episode"]');
   await waitFor(async () => (await usageCount("setting_autoplay_next")) === 1);
+  if (await live().evaluate<boolean>("!!document.querySelector('[data-view=settings]')"))
+    await namedButton("nav button", "Updates");
   const updateStatus = await live().evaluate<Result<UpdateStatus>>(
     "window.mrStreamer.invoke('updates.status')",
   );
@@ -1191,6 +1199,8 @@ async function productPaths() {
     await waitFor(async () => (await usageCount("action_update_dismissed")) === 1);
     await snapshot("update-panel-dismissed");
     await settings();
+    if (await live().evaluate<boolean>("!!document.querySelector('[data-view=settings]')"))
+      await namedButton("nav button", "Updates");
     rejectUpdate = true;
     await namedButton("button", "Check now");
     await waitFor(

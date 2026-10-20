@@ -98,6 +98,15 @@ export function normalizeCatalogue(catalogue: LiveCatalogue): NormalizedCatalogu
   return finish(normalizeSteps(catalogue));
 }
 
+/** Category content without its region prefix or quality markers, shared with discovery labels. */
+export function categorySubject(raw: string): string {
+  return subjectOf(parse(raw));
+}
+
+function subjectOf(name: ParsedName): string {
+  return fold((name.region === null ? name.text : name.rest).replace(QUALITY, " "));
+}
+
 /** `normalizeCatalogue`, pausing between slices of its channels (../steps.ts). */
 export function* normalizeSteps(catalogue: LiveCatalogue): Steps<NormalizedCatalogue> {
   const due = pacer();
@@ -111,7 +120,7 @@ export function* normalizeSteps(catalogue: LiveCatalogue): Steps<NormalizedCatal
   const regionUse = countBy(named.map(({ name }) => name.region));
 
   const show = ({ category, name }: (typeof named)[number]): ShownCategory => {
-    const subject = fold((name.region === null ? name.text : name.rest).replace(QUALITY, " "));
+    const subject = subjectOf(name);
     const base = {
       id: category.id,
       name: category.name,

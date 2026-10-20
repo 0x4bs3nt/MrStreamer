@@ -68,6 +68,7 @@ import { PlaybackCoordination } from "./services/playback-coordination.ts";
 import { Playback } from "./services/playback.ts";
 import { OnlineSubtitles } from "./services/online-subtitles.ts";
 import { Settings } from "./services/preferences.ts";
+import { preferencePublication } from "./preference-publication.ts";
 import { Roster } from "./services/roster.ts";
 import { Subscriptions } from "./services/subscription.ts";
 import { DEFAULT_SCHEDULE, Updates } from "./services/updates.ts";
@@ -534,13 +535,31 @@ async function start(): Promise<void> {
   const updateStatus = await runtime.runPromise(updates.status);
   analytics.setUpdateChannel(storeCopy ? "none" : updateStatus.channel);
   dimensionsReady = true;
-  // The ordinary preferences query/mutation owns the renderer cache. Analytics alone persists
-  // consent; viewing settings never receive a second copy that could race or reset that choice.
-  const generalPreferences = Effect.gen(function* () {
-    const preferences = yield* settings.get;
-    const collection = yield* Effect.promise(() => analytics.settings());
-    return { ...preferences, analyticsEnabled: collection.enabled };
-  });
+  const preferences = await runtime.runPromise(
+    preferencePublication({
+      read: Effect.gen(function* () {
+        const viewing = yield* settings.get;
+        const collection = yield* Effect.promise(() => analytics.settings());
+        return { ...viewing, analyticsEnabled: collection.enabled };
+      }),
+      write: (patch) => settings.update(patch),
+      consent: (enabled) =>
+        Effect.tryPromise({
+          try: () => analytics.configure(enabled),
+          catch: () =>
+            new Failed({
+              error: { kind: "unexpected", detail: "Analytics preference could not be saved." },
+            }),
+        }),
+      reconfigure: onDemand.reconfigure,
+      publish: (snapshot) => {
+        if (mainWindow) emit(mainWindow.webContents, "preferences.changed", snapshot);
+      },
+      stale: () => {
+        if (mainWindow) emit(mainWindow.webContents, "preferences.stale", null);
+      },
+    }),
+  );
   // The interface language, before the window asks for it.
   let language = languageFor(await runtime.runPromise(settings.interfaceLanguage));
   applyLanguage(language);
@@ -662,6 +681,9 @@ async function start(): Promise<void> {
       "subscription.preferences": ({ subscriptionId }) => settings.ofSubscription(subscriptionId),
       "subscription.updatePreferences": ({ subscriptionId, patch }) =>
         settings.updateSubscription(subscriptionId, patch),
+      "liveBrowse.get": () => settings.liveBrowse,
+      "liveBrowse.remember": (selection) => settings.rememberLiveBrowse(selection),
+      "library.browse": (query) => library.browse(query),
       "library.status": () => library.status,
       "library.categories": () => library.categories,
       "library.channels": (filter) => library.channels(filter),
@@ -1003,23 +1025,8 @@ async function start(): Promise<void> {
           analytics.noteFeature(feature);
           return null;
         }),
-      "preferences.get": () => generalPreferences,
-      "preferences.update": (patch) =>
-        Effect.gen(function* () {
-          const { analyticsEnabled, ...viewing } = patch;
-          if (analyticsEnabled !== undefined) {
-            yield* Effect.tryPromise({
-              try: () => analytics.configure(analyticsEnabled),
-              catch: () =>
-                new Failed({
-                  error: { kind: "unexpected", detail: "Analytics preference could not be saved." },
-                }),
-            });
-          }
-          if (Object.keys(viewing).length > 0) yield* settings.update(viewing);
-          if ("tmdbKey" in patch) yield* onDemand.reconfigure;
-          return yield* generalPreferences;
-        }),
+      "preferences.get": () => preferences.get,
+      "preferences.update": (patch) => preferences.update(patch),
       "viewing.get": () => viewing.state,
       "viewing.setFavourite": ({ commandId, channel, favourite }) =>
         viewing.setFavourite(commandId, channel, favourite),

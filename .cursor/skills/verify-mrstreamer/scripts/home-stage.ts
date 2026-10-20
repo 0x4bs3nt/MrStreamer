@@ -96,7 +96,7 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
     );
   const preferences = () =>
     d.evaluate<{ id: string; visible: boolean }[]>(
-      "(async () => { const read = await window.mrStreamer.invoke('preferences.get'); return read.ok ? read.value.homeRows ?? [] : []; })()",
+      "(async () => { const read = await window.mrStreamer.invoke('preferences.get'); return read.ok ? read.value.preferences.homeRows ?? [] : []; })()",
     );
   const customize = async () => {
     await d.click(
@@ -542,13 +542,14 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
     "Settings for adult channel exclusion",
     "document.querySelector('button[aria-label=Settings]')",
   );
+  await d.click("Open Movies and series settings", text("nav button", "Movies and series"));
   await d.click(
     "Enable adult titles",
     "document.querySelector('[role=checkbox][aria-label=\"For adults\"]')",
   );
   await d.wait(() =>
     d.evaluate<boolean>(
-      "(async () => { const p=await window.mrStreamer.invoke('preferences.get'); return p.ok && p.value.adultTitles; })()",
+      "(async () => { const p=await window.mrStreamer.invoke('preferences.get'); return p.ok && p.value.preferences.adultTitles; })()",
     ),
   );
   await d.capture("adult-setting-settled");

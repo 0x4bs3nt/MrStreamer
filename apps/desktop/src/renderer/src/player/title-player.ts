@@ -1,3 +1,4 @@
+import { readPreferences, updatePreferences } from "../lib/preferences.ts";
 import { appDiagnostic, streamDiagnostic } from "@mrstreamer/contracts/analytics";
 import {
   PlaybackObservation,
@@ -6,9 +7,8 @@ import {
   engineDiagnostic,
 } from "./analytics.ts";
 // The controller for movies and episodes: which title is open, where it is, its tracks, and
-// what the viewer does with it. It plays in the same element as live TV (see player.ts): opening a
-// title stops the live stream, and starting a live channel closes the title, so the provider sees
-// one connection.
+// what the viewer does with it. A claim on the shared media element ends the previous controller's
+// playback before this one starts, while main owns closing and admitting provider connections.
 //
 // How far the title got is saved as the viewer goes: every minute while playing, and at each
 // pause, seek, track change, the end, leaving and hiding the window. Never per frame.
@@ -56,17 +56,25 @@ import type {
   SubtitleFormat,
   SubtitleTrack,
 } from "@mrstreamer/contracts/playback";
-import { ORIGINAL_SOUND, type Preferences } from "@mrstreamer/contracts/preferences";
+import {
+  DEFAULT_NEXT_EPISODE_DELAY,
+  ORIGINAL_SOUND,
+  type Preferences,
+} from "@mrstreamer/contracts/preferences";
 import { DEFAULT_TITLE_LANGUAGE } from "@mrstreamer/core/ondemand/languages";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { chooseTracks } from "@mrstreamer/core/ondemand/tracks";
 import { finishes, nextUnwatched } from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
-import { appError } from "../lib/errors.ts";
+import { appError, describeError } from "../lib/errors.ts";
+import { t } from "@mrstreamer/core/i18n";
+import { flashNote } from "../features/watch/flash-state.ts";
 import { call, listen } from "../lib/ipc.ts";
 import { titleDecoders } from "./decoders.ts";
 import type { EngineError } from "./engine.ts";
-import { onLiveStart, player, rememberSubtitles, STABLE_PLAYBACK_MS } from "./player.ts";
+import { mediaClaim, video } from "./shared-media.ts";
+import { RECONNECT_DELAYS_MS, STABLE_PLAYBACK_MS } from "./recovery-policy.ts";
+import { rememberSubtitles } from "./subtitle-preferences.ts";
 import {
   clearSubtitles,
   setSubtitleDelay,
@@ -85,10 +93,6 @@ import {
 const CHECKPOINT_MS = 60_000;
 /** A pause this long ends the run, so the provider's connection isn't held for nothing. */
 const RELEASE_AFTER_PAUSE_MS = 5 * 60_000;
-/** Waits before each new run after the connection broke. Its length is the attempt limit. */
-const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000];
-/** At the end of an episode, the next one plays after this many seconds. */
-const COUNTDOWN_S = 10;
 
 /** The speeds a title plays at, slowest first; 1 is its own. */
 export const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
@@ -218,7 +222,7 @@ export interface TitlePlayerState {
    * doesn't list, and until the record has answered for this one.
    */
   readonly next: Episode | null | undefined;
-  /** At the end of an episode, the seconds until the next one plays; null without a countdown. */
+  /** Seconds until the next episode. Zero is pending Instant; null means no countdown. */
   readonly countdown: number | null;
   /**
    * Started as the next episode, by the countdown or Next, and not played yet: a failure then
@@ -282,7 +286,7 @@ export function onSubtitleChoice(listener: () => void): void {
   subtitleChoices = listener;
 }
 
-const video = player.element;
+const claim = mediaClaim(() => titlePlayer.close());
 /** The open session: its id and the address runs play from. */
 let session: { readonly id: string; readonly url: string } | null = null;
 /**
@@ -319,6 +323,8 @@ let lastSubtitle: SubtitleTrack | null = null;
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 /** The countdown waits, at the seconds it has left, as while Settings is open over the title. */
 let countdownHeld = false;
+/** One ended episode's policy read and saved delay. Cancellation discards this identity. */
+let countdownRun: { generation: number; ready: Promise<void> } | null = null;
 /** Counts the plays the viewer began: the open title is the last of them. */
 let play = 0;
 /** The play that recorded that its series is finished, or is finding out whether it is. */
@@ -372,10 +378,6 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") save();
 });
 window.addEventListener("beforeunload", () => save());
-// Starting a live channel closes the title.
-onLiveStart(() => {
-  if (store.getState().now) titlePlayer.close();
-});
 // What comes after the open episode follows the record: one marked or played since is passed over.
 listen("viewing.changed", () => void refreshNext());
 listen("playback.readingAhead", ({ sessionId }) => {
@@ -501,6 +503,7 @@ async function finishSeries(
 /** Stops the countdown to the next episode, and one asked for that the record hasn't answered. */
 function stopCountdown(): void {
   nextRequest++;
+  countdownRun = null;
   if (countdownTimer) clearInterval(countdownTimer);
   countdownTimer = null;
   if (store.getState().countdown !== null) store.setState({ countdown: null });
@@ -512,24 +515,58 @@ function stopCountdown(): void {
  * marked and a change made while it played count. Nothing counts down while the record doesn't
  * say what comes next.
  */
-async function countDown(mine: number): Promise<void> {
-  const known = await refreshNext();
-  if (mine !== generation || !known || !store.getState().next) return;
-  const preferences = await call("preferences.get").catch((): Preferences | null => null);
-  if (mine !== generation || store.getState().phase.kind !== "ended") return;
-  if (preferences?.autoplayNext === false) return;
-  store.setState({ countdown: COUNTDOWN_S });
-  if (!countdownHeld) tickCountdown();
+function countDown(mine: number): Promise<void> {
+  const pending = { generation: mine, ready: Promise.resolve() };
+  countdownRun = pending;
+  const request = ++nextRequest;
+  pending.ready = (async () => {
+    const known = await refreshNext();
+    if (countdownRun !== pending || mine !== generation) return;
+    if (!known || !store.getState().next) return stopCountdown();
+    const preferences = await readPreferences().catch(() => null);
+    if (countdownRun !== pending || mine !== generation) return;
+    if (!preferences || store.getState().phase.kind !== "ended") return stopCountdown();
+    store.setState({
+      countdown: preferences.nextEpisodeDelaySeconds ?? DEFAULT_NEXT_EPISODE_DELAY,
+    });
+    // Settings may have changed policy during this read. Release reads its final saved value.
+    if (countdownHeld || request !== nextRequest) return;
+    if (preferences.autoplayNext === false) return stopCountdown();
+    tickCountdown();
+  })();
+  return pending.ready;
+}
+
+/** Release rechecks autoplay only; editing the delay never changes this countdown's remainder. */
+async function resumeCountdown(): Promise<void> {
+  const pending = countdownRun;
+  if (!pending) return;
+  const request = ++nextRequest;
+  await pending.ready;
+  if (countdownRun !== pending || request !== nextRequest) return;
+  const preferences = await readPreferences().catch(() => null);
+  if (
+    countdownRun !== pending ||
+    pending.generation !== generation ||
+    request !== nextRequest ||
+    countdownHeld
+  )
+    return;
+  if (!preferences || preferences.autoplayNext === false) return stopCountdown();
+  tickCountdown();
 }
 
 /** Takes a second off the countdown each second, and plays the next episode at zero. */
 function tickCountdown(): void {
+  // Instant and an expired countdown have no artificial tick, including after a Settings hold.
+  if (store.getState().countdown === 0) return titlePlayer.playNext();
   countdownTimer = setInterval(() => {
     const left = (store.getState().countdown ?? 0) - 1;
     if (left > 0) return store.setState({ countdown: left });
     // Counted down once: the next episode is asked for again before it opens.
     if (countdownTimer) clearInterval(countdownTimer);
     countdownTimer = null;
+    store.setState({ countdown: 0 });
     titlePlayer.playNext();
   }, 1000);
 }
@@ -636,7 +673,7 @@ async function run(start: number, attempt = 0, paused = false): Promise<void> {
     if (store.getState().phase.kind === "playing") save();
   }, CHECKPOINT_MS);
   started.onEnded(() => {
-    if (mine !== generation) return;
+    if (mine !== generation || store.getState().phase.kind === "ended") return;
     observation.end();
     const { duration: length } = store.getState();
     store.setState({ phase: { kind: "ended" }, position: length ?? started.position() });
@@ -783,7 +820,7 @@ async function openOnReceiver(
         since: openedAt,
         ...(measurement ? { measurement } : {}),
       }),
-      call("preferences.get").catch((): Preferences | null => null),
+      readPreferences().catch((): Preferences | null => null),
     ]);
     if (mine !== generation || !receiver) return;
     receiver.sessionId = opened.sessionId;
@@ -1176,6 +1213,38 @@ function keepSubtitleChoice(): void {
 
 outputs.subscribe(outputChanged);
 
+/** Synchronous self-cleanup also serves replacement, which keeps the controller's media claim. */
+function closeTitle(keepObservation = false): void {
+  if (!receiver && !keepObservation) observation.end();
+  const { now, phase } = store.getState();
+  if (!now) return;
+  if (receiver) {
+    generation++;
+    stopCountdown();
+    stopTicking();
+    receiver = null;
+    confirmedMedia = null;
+    released = null;
+    store.setState(idle);
+    return;
+  }
+  save();
+  generation++;
+  stopCountdown();
+  // An opening title may not have a session yet; cancel its provider request too.
+  if (phase.kind === "opening") void call("playback.closeAll").catch(() => {});
+  stopEngine();
+  if (releaseTimer) clearTimeout(releaseTimer);
+  releaseTimer = null;
+  released = null;
+  if (session) void call("playback.close", { sessionId: session.id }).catch(() => {});
+  session = null;
+  // Live plays at its own speed and subtitle timing when it next takes the element.
+  playAt(1);
+  setSubtitleDelay(video, 0);
+  store.setState(idle);
+}
+
 export const titlePlayer = {
   /**
    * Opens a title and plays it from `from` seconds: the resume position, or 0 to start at the
@@ -1191,10 +1260,10 @@ export const titlePlayer = {
       before.now.title.kind === "episode" &&
       now.title.kind === "episode" &&
       sameOwned(seriesOf(before.now.title), seriesOf(now.title));
-    titlePlayer.close(retry);
+    if (!claim.take()) return;
+    closeTitle(retry);
     // Subtitle timing belongs to a file; a new title starts on time.
     setSubtitleDelay(video, 0);
-    player.makeWay();
     if (!retry) observation.begin();
     const mine = ++generation;
     openedAt = Date.now();
@@ -1235,7 +1304,7 @@ export const titlePlayer = {
               decoders: [...titleDecoders],
               ...(measurement ? { measurement } : {}),
             }),
-        call("preferences.get").catch((): Preferences | null => null),
+        readPreferences().catch((): Preferences | null => null),
       ]);
       if (mine !== generation) {
         void call("playback.close", { sessionId: opened.sessionId }).catch(() => {});
@@ -1384,6 +1453,8 @@ export const titlePlayer = {
   playNext(): void {
     const { now, continued, phase } = store.getState();
     if (now?.kind !== "provider" || !now.series || (continued && phase.kind !== "failed")) return;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = null;
     const { series } = now;
     const mine = ++nextRequest;
     void refreshNext().then((known) => {
@@ -1402,8 +1473,8 @@ export const titlePlayer = {
 
   /**
    * Holds the countdown to the next episode while `held`, as while Settings is open over the
-   * title, so nothing starts behind it. Let go, it carries on from the seconds it had left; one
-   * that started meanwhile, at an episode's end, starts counting then.
+   * title, so nothing starts behind it. Release rechecks saved autoplay before carrying on from
+   * the seconds it had left, including Instant. Delay edits apply to the next countdown.
    */
   holdNext(held: boolean): void {
     if (held === countdownHeld) return;
@@ -1413,8 +1484,8 @@ export const titlePlayer = {
       nextRequest++;
       if (countdownTimer) clearInterval(countdownTimer);
       countdownTimer = null;
-    } else if (store.getState().countdown !== null) {
-      tickCountdown();
+    } else if (countdownRun) {
+      void resumeCountdown();
     }
   },
 
@@ -1425,7 +1496,9 @@ export const titlePlayer = {
     if (!track || (!session && !receiver)) return;
     store.setState({ audioId: id });
     if (track.language) {
-      void call("preferences.update", { audioLanguage: track.language }).catch(() => {});
+      void updatePreferences({ audioLanguage: track.language }).catch((error: unknown) => {
+        flashNote(`${t("Sound")}: ${describeError(appError(error))}`, true);
+      });
     }
     // Another sound track is another load on a receiver, from where it is.
     if (receiver) return void loadOnReceiver(position, receiver.paused);
@@ -1653,6 +1726,7 @@ export const titlePlayer = {
     media: RemoteMedia,
   ): void {
     if (store.getState().now) return;
+    if (!claim.take()) return;
     observation.adoptRemote();
     generation++;
     play++;
@@ -1682,34 +1756,10 @@ export const titlePlayer = {
    * receiver is only let go of here: the receiver plays on, or what is played next takes its place.
    */
   close(keepObservation = false): void {
-    if (!receiver && !keepObservation) observation.end();
-    const { now, phase } = store.getState();
-    if (!now) return;
-    if (receiver) {
-      generation++;
-      stopCountdown();
-      stopTicking();
-      receiver = null;
-      confirmedMedia = null;
-      released = null;
-      store.setState(idle);
-      return;
+    try {
+      closeTitle(keepObservation);
+    } finally {
+      claim.release();
     }
-    save();
-    generation++;
-    stopCountdown();
-    // Still reading the file, before its session is known: stop that too, so no request to the
-    // provider outlives the title.
-    if (phase.kind === "opening") void call("playback.closeAll").catch(() => {});
-    stopEngine();
-    if (releaseTimer) clearTimeout(releaseTimer);
-    releaseTimer = null;
-    released = null;
-    if (session) void call("playback.close", { sessionId: session.id }).catch(() => {});
-    session = null;
-    // The element plays live channels next, at their own speed and their subtitles on time.
-    playAt(1);
-    setSubtitleDelay(video, 0);
-    store.setState(idle);
   },
 };

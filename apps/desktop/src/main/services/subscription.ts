@@ -192,6 +192,14 @@ interface Saved {
   readonly provider: Provided | null;
 }
 
+/** Optional erasure and owner settlement around durable login removal. */
+export interface RemovalSteps {
+  /** Optional viewing erasure. A refusal keeps the source and its caches usable. */
+  readonly erase?: Effect.Effect<void, Failed>;
+  /** Existing owners settle admitted writes before folder deletion, after the login is gone. */
+  readonly settle?: readonly Effect.Effect<void>[];
+}
+
 export interface SubscriptionDeps {
   readonly usage?: UsageObservers | undefined;
   readonly dataDir: string;
@@ -236,14 +244,13 @@ export class Subscriptions extends Context.Service<
      * Forgets a subscription's login, and for one added beside the original, its folder. A folder
      * that kept the same account without showing it goes too.
      *
-     * `erase` deletes what else the app kept for its account. It runs once the subscription is
-     * saved no more and before its login goes, so nothing is kept for the account while it runs
-     * or after. When it fails the removal fails with it, and the subscription is saved as it was.
+     * Logical removal first refuses new work. An erase refusal or login deletion failure
+     * restores the saved source before any cache teardown. A requested erasure that succeeded
+     * is already committed even if login deletion fails. Spare logins go before the main login.
+     * Once the main login is gone, removal holds across restart: every owner settles, then
+     * folder and registry cleanup run. Cleanup failures are logged and never restore the source.
      */
-    remove(
-      subscriptionId: string,
-      erase?: Effect.Effect<void, Failed>,
-    ): Effect.Effect<void, Failed>;
+    remove(subscriptionId: string, steps?: RemovalSteps): Effect.Effect<void, Failed>;
     playlistGroups(
       subscriptionId: string,
       query: string,
@@ -659,40 +666,62 @@ function make(deps: SubscriptionDeps) {
           );
         }),
 
-      remove: (subscriptionId: string, erase?: Effect.Effect<void, Failed>) =>
+      remove: (subscriptionId: string, steps: RemovalSteps = {}) =>
         writeOne(
           Effect.gen(function* () {
-            // Settled first, so nothing a start still writes comes after the removal.
+            // Startup must finish before a removal can change its files.
             const removed = deps.usage?.action("playlist_removed");
             const roster = yield* load;
             const subscription = roster.find((each) => each.id === subscriptionId);
             if (!subscription) return;
-            // Saved no more before anything of it is deleted: what is asked for it from here on
-            // finds no subscription, and keeps nothing for its account.
-            current = Promise.resolve(roster.filter((each) => each !== subscription));
-            if (erase) {
-              // Nothing of it went yet, so it is saved again as it was. No other change had
-              // its turn meanwhile.
-              yield* Effect.onError(erase, () =>
-                Effect.sync(() => {
-                  current = Promise.resolve(roster);
-                }),
-              );
-            }
-            yield* Effect.promise(async () => {
-              // The sealed password or link first, then the id that named its subscription.
-              if (subscription.original) await removeFile(path);
-              else await rm(folderOf(subscription.id), { recursive: true, force: true });
-              await writeEntry(subscription, null);
-              // A folder that kept the same account would show in its place from the next start.
-              const key = keyOf(subscription.stored);
-              for (const id of spare.get(key) ?? []) {
-                await rm(folderOf(id), { recursive: true, force: true });
-                await writeEntry({ id, original: false }, null);
-              }
-              spare.delete(key);
-            });
-            removed?.();
+            return yield* Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                const key = keyOf(subscription.stored);
+                const spares = spare.get(key) ?? [];
+                current = Promise.resolve(roster.filter((each) => each !== subscription));
+                yield* Effect.onError(
+                  Effect.gen(function* () {
+                    // Only this reversible phase can be interrupted. No cache owner was torn
+                    // down yet; a refusal or cancellation restores source/cache usability.
+                    if (steps.erase) yield* restore(steps.erase);
+                    // Native deletion must settle before rollback is possible. Missing logins
+                    // are startup's durable commit, so hidden copies go before the main one.
+                    yield* Effect.tryPromise({
+                      try: async () => {
+                        for (const id of spares)
+                          await removeFile(loginPath({ id, original: false }));
+                        await removeFile(loginPath(subscription));
+                      },
+                      catch: failedWith,
+                    });
+                  }),
+                  () =>
+                    Effect.sync(() => {
+                      current = Promise.resolve(roster);
+                    }),
+                );
+                spare.delete(key);
+                // Past the commit, cancellation cannot abandon native writers or deletion.
+                // Isolate failures so one owner cannot interrupt siblings still writing.
+                yield* Effect.forEach(steps.settle ?? [], (owner) => logged(owner), {
+                  concurrency: "unbounded",
+                  discard: true,
+                });
+                for (const entry of [
+                  subscription,
+                  ...spares.map((id) => ({ id, original: false })),
+                ]) {
+                  if (!entry.original)
+                    yield* logged(
+                      Effect.promise(() =>
+                        rm(folderOf(entry.id), { recursive: true, force: true }),
+                      ),
+                    );
+                  yield* logged(Effect.promise(() => writeEntry(entry, null)));
+                }
+                removed?.();
+              }),
+            );
           }),
         ),
 
@@ -816,6 +845,12 @@ function make(deps: SubscriptionDeps) {
     };
   });
 }
+
+/** Postcommit cleanup cannot restore a source or interrupt another owner's settlement. */
+const logged = (effect: Effect.Effect<void>) =>
+  effect.pipe(
+    Effect.catchCause((cause) => Effect.logWarning("[storage] removal cleanup failed", cause)),
+  );
 
 function summary({ id, name, stored, provider }: Saved): SubscriptionSummary {
   return {

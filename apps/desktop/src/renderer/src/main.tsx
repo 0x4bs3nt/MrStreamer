@@ -13,11 +13,21 @@ import {
   syncViewing,
   syncWatchlist,
 } from "./lib/queries.ts";
+import { syncPreferences } from "./lib/preferences.ts";
+import { player } from "./player/player.ts";
+import { useUi } from "./app/ui-store.ts";
 import "./styles.css";
 
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
 });
+const stopPreferences = syncPreferences(
+  client,
+  (preferences) => player.hydrate(preferences),
+  () => useUi.setState({ savedEntry: null, details: null }),
+);
+window.addEventListener("beforeunload", stopPreferences, { once: true });
+if (import.meta.hot) import.meta.hot.dispose(stopPreferences);
 syncLibraryUpdates(client);
 syncOnDemand(client);
 syncGuideUpdates(client);

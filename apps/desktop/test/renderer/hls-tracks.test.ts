@@ -394,11 +394,13 @@ describe("an HLS channel's tracks", () => {
     await wait();
 
     const second = await open("b");
-    preferences.resolve({
-      volume: 1,
-      muted: false,
-      subtitleLanguage: "de",
-    });
+    preferences.resolve(
+      ipc.snapshot({
+        volume: 1,
+        muted: false,
+        subtitleLanguage: "de",
+      }),
+    );
     first.variant({ audio: SOUND, subtitles: SUBTITLES });
     first.subtitleLines([{ start: 1, end: 2, text: "From the channel before." }]);
     await wait();

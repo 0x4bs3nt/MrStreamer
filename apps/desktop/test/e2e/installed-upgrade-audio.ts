@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { Result } from "../../../../packages/contracts/src/errors.ts";
-import type { IpcOutput } from "../../../../packages/contracts/src/ipc.ts";
+import type { Preferences } from "../../../../packages/contracts/src/preferences.ts";
 import type { Driver } from "./installed-upgrade.ts";
+
+type AudioPreferences = Pick<Preferences, "audioLanguage">;
+type AudioReply = AudioPreferences | { revision: number; preferences: AudioPreferences };
+const audioOf = (reply: AudioReply) =>
+  "preferences" in reply ? reply.preferences.audioLanguage : reply.audioLanguage;
 
 type AudioDriver = Pick<Driver, "actions" | "wait" | "key"> & {
   page: Pick<Driver["page"], "evaluate" | "send">;
-  read(method: "preferences.get"): Promise<Pick<IpcOutput<"preferences.get">, "audioLanguage">>;
+  read(method: "preferences.get"): Promise<AudioReply>;
 };
 
 interface AudioEvent {
@@ -74,11 +79,12 @@ export async function restoreAudioInput(
   const snapshot = async (phase: string) => {
     let publicAudio: AudioSnapshot["publicAudio"];
     try {
-      const result = await d.page.evaluate<
-        Result<Pick<IpcOutput<"preferences.get">, "audioLanguage">>
-      >("window.mrStreamer.invoke('preferences.get')", 1000);
+      const result = await d.page.evaluate<Result<AudioReply>>(
+        "window.mrStreamer.invoke('preferences.get')",
+        1000,
+      );
       if (!result.ok) throw new Error("Audio snapshot preferences.get failed");
-      publicAudio = result.value.audioLanguage ?? null;
+      publicAudio = audioOf(result.value) ?? null;
     } catch (error) {
       trace.diagnosticErrors.push(`${phase} public read: ${errorText(error)}`);
     }
@@ -144,7 +150,7 @@ export async function restoreAudioInput(
           if (globalThis[${boundary}]?.element !== e) throw new Error('Audio in changed element');
           return e.value;
         })()`);
-        return shown !== "nl" && shown === (await d.read("preferences.get")).audioLanguage;
+        return shown !== "nl" && shown === audioOf(await d.read("preferences.get"));
       },
       10_000,
       "Settings showing the saved Audio in",
@@ -211,7 +217,7 @@ export async function restoreAudioInput(
       "Restore Audio in nl",
     );
     await d.wait(
-      async () => (await d.read("preferences.get")).audioLanguage === "nl",
+      async () => audioOf(await d.read("preferences.get")) === "nl",
       10_000,
       "the original saved audio preference",
     );

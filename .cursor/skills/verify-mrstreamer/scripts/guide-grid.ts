@@ -58,6 +58,112 @@ interface GridFixture {
   archiveRequests(): readonly ArchiveRequest[];
 }
 
+/** One- and two-minute programmes keep their timeline width, including shaded replay cells. */
+export async function guideGridCellsScenario(d: Driver) {
+  await d.click("Open Live TV", named("header button", "Live TV"));
+  await d.key("g", 71);
+  await d.wait(() => d.exists(GRID));
+  await d.wait(async () => (await gridState(d)).programmes > 10);
+
+  const geometry = () =>
+    d.evaluate<{
+      dpr: number;
+      viewport: { width: number; height: number; scale: number };
+      scroll: { left: number; top: number };
+      cells: { label: string; expected: number; width: number; background: string }[];
+    }>(`(() => {
+      const grid = ${GRID};
+      return {
+        dpr: devicePixelRatio,
+        viewport: { width: innerWidth, height: innerHeight, scale: visualViewport?.scale ?? 1 },
+        scroll: { left: grid.scrollLeft, top: grid.scrollTop },
+        cells: [...grid.querySelectorAll('[data-width]')]
+          .filter(e => Number(e.dataset.width) > 0 && Number(e.dataset.width) < 12)
+          .map(e => ({ label: e.getAttribute('aria-label'), expected: Number(e.dataset.width),
+            width: e.getBoundingClientRect().width, background: getComputedStyle(e).backgroundColor })),
+      };
+    })()`);
+
+  for (const scale of [1, 1.25]) {
+    await d.send("Emulation.setDeviceMetricsOverride", {
+      width: scale === 1 ? 1280 : 960,
+      height: scale === 1 ? 800 : 600,
+      deviceScaleFactor: scale,
+      mobile: false,
+    });
+    await d.wait(async () => (await geometry()).cells.length > 0);
+    const before = await geometry();
+    d.observed[`shortCells-${scale}`] = before;
+    // Retain the visible defect before failing a baseline build.
+    await d.capture(`grid-short-cells-${scale}`);
+    expect(before.cells.length > 0, "No short programme cells were drawn", before);
+    expect(
+      before.cells.every((cell) => Math.abs(cell.width - cell.expected) < 0.05),
+      "A short programme paints beyond its timeline width",
+      { ...before, cells: before.cells.slice(0, 8) },
+    );
+
+    const tiny = `(() => {
+      const grid = ${GRID}; const viewport = grid.getBoundingClientRect();
+      const header = grid.querySelector('[role=rowheader]').getBoundingClientRect();
+      return [...grid.querySelectorAll('[data-width]')].find(e => {
+        const b = e.getBoundingClientRect();
+        return e.getAttribute('aria-selected') !== 'true'
+          && e.getAttribute('aria-label').includes('Catch-up')
+          && Number(e.dataset.width) < 12 && b.left > header.right && b.right < viewport.right
+          && b.top > viewport.top + 20 && b.bottom < viewport.bottom;
+      });
+    })()`;
+    await d.click("Select a tiny programme through its actual cell", tiny);
+    await d.wait(() => d.exists(DETAILS));
+    const selected = await d.evaluate<{ label: string; width: number; details: string }>(`(() => {
+      const cell = ${SELECTED};
+      return { label: cell.getAttribute('aria-label'), width: cell.getBoundingClientRect().width,
+        details: ${DETAILS}.innerText };
+    })()`);
+    expect(selected.width < 12, "The pointer missed the tiny programme", selected);
+    expect(
+      selected.details.includes("Watch live"),
+      "Tiny programme details have no live action",
+      selected,
+    );
+    expect(
+      selected.label.includes("Catch-up") && selected.details.includes("Play from start"),
+      "Tiny replay has no catch-up action",
+      selected,
+    );
+    d.observed[`tinySelection-${scale}`] = selected;
+    await d.capture(`grid-tiny-details-${scale}`);
+    await d.key("ArrowRight", 39);
+    expect(
+      await d.evaluate<boolean>(
+        `${SELECTED}.getAttribute('aria-label') !== ${JSON.stringify(selected.label)}`,
+      ),
+      "Right did not leave the tiny programme",
+    );
+
+    const point = await d.evaluate<{ x: number; y: number }>(`(() => {
+      const b = ${GRID}.getBoundingClientRect(); return { x: b.right - 100, y: b.top + 100 };
+    })()`);
+    const beforeWheel = (await geometry()).scroll;
+    await d.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      ...point,
+      deltaX: 17.5,
+      deltaY: 35.5,
+    });
+    await d.wait(async () => (await geometry()).scroll.left > beforeWheel.left);
+    const scrolled = await geometry();
+    expect(
+      scrolled.cells.every((cell) => Math.abs(cell.width - cell.expected) < 0.05),
+      "Fractional scrolling widened a short programme",
+      scrolled,
+    );
+    d.observed[`shortCellsScrolled-${scale}`] = scrolled;
+    await d.capture(`grid-short-cells-scrolled-${scale}`);
+  }
+}
+
 export async function guideGridScenario(d: Driver, fixture: GridFixture) {
   // A channel plays first, so Live TV has its preview strip with Watch, mute and Guide.
   await d.click("Open global Search", "document.querySelector('button[aria-label=Search]')");

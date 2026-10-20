@@ -517,9 +517,13 @@ function make(deps: OnDemandDeps) {
       failure: failures.get(subscriptionId)?.error ?? null,
     });
     const stampOf = (source: SavedSubscription) =>
-      Effect.map(call("status", { owners: [ownerOf(source)], adults: false }), ([status]) =>
-        status?.importRevision === source.importRevision ? status?.catalogueStamp : undefined,
-      );
+      Effect.gen(function* () {
+        const adults = (yield* settings.get).adultTitles ?? false;
+        const [status] = yield* call("status", { owners: [ownerOf(source)], adults });
+        return status?.importRevision === source.importRevision
+          ? status?.catalogueStamp
+          : undefined;
+      });
 
     const status = Effect.gen(function* () {
       const found = yield* held.pipe(

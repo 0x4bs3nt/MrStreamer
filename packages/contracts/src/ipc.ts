@@ -19,6 +19,7 @@ import {
   type SavedSubtitle,
 } from "./online-subtitles.ts";
 import { TitleFilters, type FilterOptions } from "./title-filters.ts";
+import { LiveBrowseQuery, LiveDiscovery, type LiveBrowseResult } from "./live-browse.ts";
 import type { Result } from "./errors.ts";
 import type { DiagnosticsPreview } from "./diagnostics.ts";
 import type { CopySession, Download, DownloadList } from "./downloads.ts";
@@ -68,11 +69,18 @@ import {
 } from "./playback.ts";
 import { LOCALES, type InterfaceLanguage } from "./language.ts";
 import { Preferences, SubscriptionPreferences } from "./preferences.ts";
+
 import { PlaylistMode, type PlaylistGroupPage, type PlaylistOmissionPage } from "./playlist.ts";
 import type { OwnedId, SubscriptionSummary } from "./subscription.ts";
 import type { UpdateStatus } from "./updates.ts";
 import type { EpisodeMark, SeriesViewing, TitleProgress, Viewing } from "./viewing.ts";
 import { WATCHLIST_SORTS, type WatchlistPage } from "./watchlist.ts";
+
+/** Publication metadata is never stored in Preferences or shared with the iOS file schema. */
+export interface PreferenceSnapshot {
+  readonly revision: number;
+  readonly preferences: Preferences;
+}
 
 // Every schema is built on its method's first call: defining them all would add to every start,
 // and most methods aren't called while the app starts.
@@ -142,6 +150,9 @@ export const ipcInputs = {
   "subscription.preferences": () => type({ subscriptionId: "string > 0" }),
   "subscription.updatePreferences": () =>
     type({ subscriptionId: "string > 0", patch: SubscriptionPreferences().partial() }),
+  "library.browse": LiveBrowseQuery,
+  "liveBrowse.get": none,
+  "liveBrowse.remember": LiveDiscovery,
   "library.status": none,
   "library.categories": none,
   /** Display-only full-catalogue joins. Unlisted owned channel keys stand alone. */
@@ -532,6 +543,9 @@ export interface IpcOutputs {
   "subscription.preferences": SubscriptionPreferences;
   "subscription.updatePreferences": SubscriptionPreferences;
   /** Each saved subscription's catalogue, in the subscriptions' order. */
+  "library.browse": LiveBrowseResult;
+  "liveBrowse.get": LiveDiscovery;
+  "liveBrowse.remember": LiveDiscovery;
   "library.status": readonly CatalogueStatus[];
   /** The categories of every subscription, those that show as one joined. */
   "library.categories": readonly Category[];
@@ -688,8 +702,8 @@ export interface IpcOutputs {
   "analytics.playbackEligible": null;
   "analytics.playbackEnd": null;
   "analytics.feature": null;
-  "preferences.get": Preferences;
-  "preferences.update": Preferences;
+  "preferences.get": PreferenceSnapshot;
+  "preferences.update": PreferenceSnapshot;
   /** The interface language in effect, and how it was chosen. */
   "language.get": InterfaceLanguage;
   /**
@@ -807,6 +821,10 @@ export type IpcArgs<M extends IpcMethod> =
 
 /** Events the main process pushes to the UI. */
 export interface IpcEvents {
+  /** Committed private preferences, ordered within this main-process lifetime only. */
+  "preferences.changed": PreferenceSnapshot;
+  /** A save could not read back composed state. Keep the last snapshot stale until a read succeeds. */
+  "preferences.stale": null;
   "analytics.reset": null;
   /** A subscription's catalogue refresh finished, or failed and kept the previous channels. */
   "library.updated": CatalogueStatus;

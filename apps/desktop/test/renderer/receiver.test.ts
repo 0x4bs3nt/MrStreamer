@@ -767,6 +767,39 @@ describe("a movie whose TV another takes the place of", () => {
 });
 
 describe("an episode on a receiver", () => {
+  it.each([0, 37, 60])(
+    "uses %i seconds on the receiver and never opens local playback",
+    async (nextEpisodeDelaySeconds) => {
+      ipc.prefer({ nextEpisodeDelaySeconds });
+      await show(TitleWatch);
+      const item = await onReceiver(episodeNow(series, firstLight), 0, 1);
+      await emit(connected(said(1, item, "ended", 3600, 3600)));
+      if (nextEpisodeDelaySeconds > 0) {
+        expect(text()).toContain(`Plays in ${nextEpisodeDelaySeconds} on Living Room TV`);
+        await wait(nextEpisodeDelaySeconds * 1000 - 1);
+        expect(ipc.argsOf("output.openTitle")).toHaveLength(1);
+        await wait(1);
+      }
+      expect(ipc.argsOf("output.openTitle")).toHaveLength(2);
+      expect(ipc.argsOf("output.openTitle").at(-1)?.title.id).toBe("e2");
+      expect(ipc.argsOf("playback.openTitle")).toHaveLength(0);
+    },
+  );
+
+  it("never resurrects a held Instant episode after Stop on the receiver", async () => {
+    ipc.prefer({ nextEpisodeDelaySeconds: 0 });
+    await show(TitleWatch);
+    const item = await onReceiver(episodeNow(series, firstLight), 0, 1);
+    await act(async () => useUi.setState({ settings: "general" }));
+    await emit(connected(said(1, item, "ended", 3600, 3600)));
+    expect(titlePlayer.state().countdown).toBe(0);
+    await act(async () => titlePlayer.stop());
+    await act(async () => useUi.setState({ settings: null }));
+    await wait(65_000);
+    expect(ipc.argsOf("output.openTitle")).toHaveLength(1);
+    expect(titlePlayer.state().now).toBeNull();
+  });
+
   it("counts down to the next one there once the receiver played to the end", async () => {
     await show(TitleWatch);
     const item = await onReceiver(episodeNow(series, firstLight), 0, 1);
@@ -1328,12 +1361,11 @@ describe("a channel that plays here", () => {
 describe("a preview", () => {
   it("says it is one, so a receiver that connects as it opens keeps the connection", async () => {
     await emit(HERE);
-    // The receiver connects while the preview is still about to open.
-    const preferences = ipc.hold("preferences.get");
+    // The receiver connects after the preview request was sent but before main answers it.
     const opened = ipc.hold("playback.open");
     player.preview(channel("a"));
+    await wait(0);
     await emit(connected());
-    await act(async () => preferences.resolve(defaultPreferences));
 
     expect(ipc.argsOf("playback.open")).toMatchObject([
       { channel: { subscriptionId: SUBSCRIPTION, id: "a" }, preview: true },
@@ -1343,6 +1375,17 @@ describe("a preview", () => {
     await act(async () =>
       opened.reject({ kind: "unexpected", detail: "A receiver has playback." }),
     );
+    expect(player.state().phase).toEqual({ kind: "idle" });
+    expect(ipc.methods()).not.toContain("output.playChannel");
+  });
+
+  it("opens nothing when a receiver connects before its preferences answer", async () => {
+    await emit(HERE);
+    const preferences = ipc.hold("preferences.get");
+    player.preview(channel("a"));
+    await emit(connected());
+    await act(async () => preferences.resolve(ipc.snapshot(defaultPreferences)));
+    expect(ipc.argsOf("playback.open")).toEqual([]);
     expect(player.state().phase).toEqual({ kind: "idle" });
     expect(ipc.methods()).not.toContain("output.playChannel");
   });

@@ -1,11 +1,11 @@
-// Shared by the guide sidebar and Watch's channel overlay. Countries open one level at a time.
+// Shared topic rail and Provider lists picker for the guide sidebar and Watch overlay.
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { Fragment, useEffect, useRef } from "react";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { formatNumber, t } from "@mrstreamer/core/i18n";
 import { sameList, type ChannelList } from "../../app/ui-store.ts";
 import { cn } from "../../lib/utils.ts";
-import type { ListPickerState } from "./lists.ts";
+import { PROVIDER_LISTS, type ListPickerState } from "./lists.ts";
 
 export function ListPicker({
   picker,
@@ -135,13 +135,13 @@ export function ListPicker({
       </div>
       {group !== null && query.trim() === "" && (
         <button
-          aria-label={t("Back to countries")}
+          aria-label={group === PROVIDER_LISTS ? t("Back to topics") : t("Back to countries")}
           onClick={back}
           className="mb-1 flex h-9 flex-none items-center gap-2 px-3 text-left text-sm font-semibold hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70"
         >
           <ChevronLeft className="size-3.5 flex-none" />
           <span className="min-w-0 flex-1 truncate" title={group}>
-            {group}
+            {group === PROVIDER_LISTS ? t("Provider lists") : group}
           </span>
           <span className="text-xs text-muted-foreground tabular-nums">
             {formatNumber(picker.count)}
@@ -158,7 +158,9 @@ export function ListPicker({
           const current = item.kind === "list" && sameList(item.list, selected);
           const title =
             item.kind === "group"
-              ? item.group
+              ? item.group === PROVIDER_LISTS
+                ? t("Provider lists")
+                : item.group
               : [item.title, item.context].filter(Boolean).join(" · ");
           return (
             <Fragment key={item.kind === "group" ? `g:${item.group}` : listKey(item.list)}>
@@ -176,7 +178,11 @@ export function ListPicker({
                 )}
               >
                 <span className="min-w-0 flex-1 truncate">
-                  {item.kind === "group" ? item.group : item.title}
+                  {item.kind === "group"
+                    ? item.group === PROVIDER_LISTS
+                      ? t("Provider lists")
+                      : item.group
+                    : item.title}
                   {item.kind === "list" && item.context && (
                     <span className="text-muted-foreground"> · {item.context}</span>
                   )}
@@ -203,5 +209,9 @@ export function ListPicker({
 
 /** A stable key for a list. */
 export function listKey(list: ChannelList): string {
-  return list.kind === "category" ? `c:${ownedKey(list.category)}` : list.kind;
+  return list.kind === "category"
+    ? `c:${ownedKey(list.category)}`
+    : list.kind === "topic"
+      ? `t:${list.topic}`
+      : list.kind;
 }

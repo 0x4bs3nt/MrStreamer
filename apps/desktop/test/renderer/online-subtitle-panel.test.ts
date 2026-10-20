@@ -438,7 +438,11 @@ describe("subtitle choices while the picture plays", () => {
     expect(container?.querySelector("select")).toBeNull();
     await act(async () => button("Settings").click());
     expect(closed).toHaveBeenCalledTimes(1);
-    expect(useUi.getState()).toMatchObject({ settings: "general", onlineSubtitles: true });
+    expect(useUi.getState()).toMatchObject({
+      settings: "subtitles",
+      settingsTarget: "online-subtitles",
+      onlineSubtitles: true,
+    });
   });
 
   it("names the region of a result's language, and takes a replaced file's saved result away", async () => {

@@ -21,6 +21,7 @@ import {
 } from "../../lib/queries.ts";
 import { useRem } from "../../lib/use-rem.ts";
 import { cn } from "../../lib/utils.ts";
+import { BrowseFilters } from "../live/BrowseFilters.tsx";
 import { ListPicker } from "../live/ListPicker.tsx";
 import { listTitle, useVisibleListings, type ListPickerState } from "../live/lists.ts";
 
@@ -63,7 +64,7 @@ export function ChannelOverlay({
           <button
             onMouseDown={(event) => event.preventDefault()}
             onClick={onTogglePicking}
-            className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xl font-semibold tracking-tight hover:bg-white/8"
+            className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-xl font-semibold tracking-tight hover:bg-white/8"
           >
             <span className="truncate">{listTitle(list, categories)}</span>
             <ChevronDown className={cn("size-4 flex-none", picking && "rotate-180")} />
@@ -73,6 +74,7 @@ export function ChannelOverlay({
             <X />
           </Button>
         </header>
+        <BrowseFilters list={list} summaryOnly />
         {picking ? (
           <ListPicker
             picker={picker}
@@ -210,7 +212,7 @@ function Row({
       onMouseDown={(event) => event.preventDefault()}
       onClick={onPlay}
       className={cn(
-        "group absolute inset-x-0 flex items-center gap-3.5 rounded-2xl px-3 hover:bg-white/8",
+        "group absolute inset-x-0 flex items-center gap-3.5 px-3 hover:bg-white/8",
         playing && "bg-white/6",
         selected && "ring-2 ring-white/70 ring-inset",
       )}

@@ -3,6 +3,7 @@
 // both: a provider's ids mean nothing without their subscription.
 import {
   queryOptions,
+  replaceEqualDeep,
   useQueries,
   useQuery,
   useQueryClient,
@@ -12,6 +13,7 @@ import {
 import { useCallback, useMemo } from "react";
 import type { GuideSlot, GuideStatus, MapFilter } from "@mrstreamer/contracts/guide";
 import type { IpcInput } from "@mrstreamer/contracts/ipc";
+import type { LiveBrowseQuery } from "@mrstreamer/contracts/live-browse";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import type {
   CollectionId,
@@ -33,11 +35,27 @@ import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
 import { player } from "../player/player.ts";
 import { hostOf } from "./format.ts";
 import { call, listen, searchCall } from "./ipc.ts";
+import { preferenceQuery } from "./preferences.ts";
 
 /** Listings move on as programmes end; asking again each minute is enough for progress. */
 const LISTINGS_REFRESH_MS = 60_000;
 
 const NO_SUBSCRIPTIONS: readonly SubscriptionSummary[] = [];
+
+// Acceptance context belongs to an in-flight reply, never to the saved viewing state. A read
+// can reach React Query's commit after a command acknowledgement.
+const viewingReads = new WeakMap<
+  object,
+  { client: QueryClient; before: Viewing | undefined; sequence: number; roster: string }
+>();
+
+/** Ordered saved ids identify the sources for a read or command within this session. */
+export const savedAs = (subscriptions: readonly { readonly id: string }[] | undefined) =>
+  (subscriptions ?? []).map(({ id }) => id).join("\n");
+
+/** The saved sources known to this renderer, empty until the subscription query has data. */
+export const rosterOf = (client: QueryClient) =>
+  savedAs(client.getQueryData(queries.subscriptions().queryKey));
 
 export const queries = {
   /** Every saved subscription, in the order added. Changed only by what Settings does to them. */
@@ -60,12 +78,7 @@ export const queries = {
       queryFn: () => call("language.get"),
       staleTime: Infinity,
     }),
-  preferences: () =>
-    queryOptions({
-      queryKey: ["preferences"],
-      queryFn: () => call("preferences.get"),
-      staleTime: Infinity,
-    }),
+  preferences: preferenceQuery,
   /**
    * What the viewer left a subscription at: the last channel and category, and the versions and
    * streams picked in it.
@@ -80,7 +93,46 @@ export const queries = {
   viewing: () =>
     queryOptions({
       queryKey: ["viewing"],
-      queryFn: () => call("viewing.get"),
+      queryFn: async ({ client }) => {
+        for (;;) {
+          const before = client.getQueryData<Viewing>(["viewing"]);
+          const roster = rosterOf(client);
+          const viewing = await call("viewing.get");
+          // Invalidation can join a first read. Keep its promise pending until it answers for
+          // the same saved sources, including a legitimate lower combined sequence.
+          if (rosterOf(client) !== roster) continue;
+          viewingReads.set(viewing, { client, before, sequence: viewing.sequence, roster });
+          return viewing;
+        }
+      },
+      structuralSharing: (previous, next) => {
+        if (typeof next === "object" && next !== null) {
+          const read = viewingReads.get(next);
+          if (read) {
+            viewingReads.delete(next);
+            const cached = read.client.getQueryData<Viewing>(["viewing"]);
+            if (rosterOf(read.client) !== read.roster) {
+              // The sources changed after queryFn returned. Keep existing data and re-read
+              // after this commit, including inactive queries. With no cache, this reply is
+              // temporary until that re-read: structural sharing cannot return undefined.
+              queueMicrotask(() => {
+                void read.client
+                  .invalidateQueries(
+                    { queryKey: ["viewing"], exact: true, refetchType: "all" },
+                    { cancelRefetch: false },
+                  )
+                  .catch(() => {});
+              });
+              return cached ?? next;
+            }
+            // Removing an account can lower the combined sequence. Only a concurrent cache write
+            // can supersede this read, not the record it started with. Equal sequences may carry
+            // refreshed canonical channel IDs after a catalogue update.
+            if (cached !== read.before && cached && cached.sequence > read.sequence) return cached;
+          }
+        }
+        return replaceEqualDeep(previous, next);
+      },
       staleTime: Infinity,
     }),
   /**
@@ -96,20 +148,28 @@ export const queries = {
    */
   guideSources: () =>
     queryOptions({ queryKey: ["guide", "sources"], queryFn: () => call("guide.sources") }),
+  rememberedLiveBrowse: () =>
+    queryOptions({
+      queryKey: ["live-browse"],
+      queryFn: () => call("liveBrowse.get"),
+      staleTime: Infinity,
+    }),
+  browse: (request: LiveBrowseQuery) =>
+    queryOptions({
+      queryKey: ["library", "browse", request],
+      queryFn: async ({ signal }) => {
+        const result = await call("library.browse", request);
+        signal.throwIfAborted();
+        return result;
+      },
+      staleTime: Infinity,
+    }),
   libraryStatus: () =>
     queryOptions({ queryKey: ["library", "status"], queryFn: () => call("library.status") }),
   categories: () =>
     queryOptions({
       queryKey: ["library", "categories"],
       queryFn: () => call("library.categories"),
-      staleTime: Infinity,
-    }),
-  /** All channels when `category` is null. */
-  channels: (category: OwnedId | null) =>
-    queryOptions({
-      queryKey: ["library", "channels", category && ownedKey(category)],
-      queryFn: () =>
-        call("library.channels", category === null ? {} : { category: ownedId(category) }),
       staleTime: Infinity,
     }),
   channel: (channel: OwnedId) =>
@@ -439,12 +499,13 @@ export function useToggleFavourite(): (channel: OwnedId) => void {
   return useCallback(
     (channel: OwnedId) => {
       const favourites = client.getQueryData(queries.viewing().queryKey)?.favourites ?? [];
+      const roster = rosterOf(client);
       void call("viewing.setFavourite", {
         commandId: crypto.randomUUID(),
         channel: ownedId(channel),
         favourite: !favourites.some((each) => sameOwned(each, channel)),
       }).then(
-        (viewing) => keepViewing(client, viewing),
+        (viewing) => keepViewing(client, viewing, roster),
         () => {},
       );
     },
@@ -499,10 +560,12 @@ export function keepGuideStatus(client: QueryClient, status: GuideStatus): void 
 }
 
 /** Keeps the latest viewing state: an answer can arrive after a later change's event. */
-export function keepViewing(client: QueryClient, viewing: Viewing): void {
-  client.setQueryData(queries.viewing().queryKey, (cached) =>
-    cached && cached.sequence > viewing.sequence ? cached : viewing,
-  );
+export function keepViewing(client: QueryClient, viewing: Viewing, roster: string): void {
+  if (rosterOf(client) !== roster) return;
+  const queryKey = queries.viewing().queryKey;
+  const cached = client.getQueryData(queryKey);
+  if (cached && cached.sequence > viewing.sequence) return;
+  client.setQueryData(queryKey, viewing);
 }
 
 /** The saved subscriptions, in the order added; none until they are known. */
@@ -633,25 +696,6 @@ export function useCategoryMap(): ReadonlyMap<string, Category> {
 }
 
 /**
- * Remembers the category Live TV opens on next time, or every channel with null: kept for the
- * category's own subscription, and taken from any other that had one.
- */
-export async function rememberCategory(
-  client: QueryClient,
-  subscriptions: readonly SubscriptionSummary[],
-  category: OwnedId | null,
-): Promise<void> {
-  await Promise.all(
-    subscriptions.map(async ({ id }) => {
-      const lastCategoryId = category?.subscriptionId === id ? category.id : null;
-      const left = await client.ensureQueryData(queries.subscriptionPreferences(id));
-      if (left.lastCategoryId === lastCategoryId) return;
-      await updateSubscriptionPreferences(client, id, { lastCategoryId });
-    }),
-  );
-}
-
-/**
  * Refetches library data whenever the main process reports a new catalogue. A read already under
  * way may answer from the catalogue before, and settling clears the invalidation: once it settles,
  * its query is marked stale again. Whoever awaits that read still gets its answer.
@@ -738,8 +782,18 @@ export function syncViewing(client: QueryClient): () => void {
   return listen("viewing.changed", ({ sequence }) => {
     const cached = client.getQueryData(queries.viewing().queryKey);
     if (cached && cached.sequence >= sequence) return;
-    // The prefix covers the progress queries too.
+    // The prefix covers progress too. A first read under way can still answer an older sequence.
+    const pending = client
+      .getQueryCache()
+      .find({ queryKey: queries.viewing().queryKey, exact: true })?.promise;
     void client.invalidateQueries({ queryKey: queries.viewing().queryKey });
+    void pending?.then(
+      () => {
+        if ((client.getQueryData(queries.viewing().queryKey)?.sequence ?? -1) < sequence)
+          void client.invalidateQueries({ queryKey: queries.viewing().queryKey });
+      },
+      () => {},
+    );
   });
 }
 

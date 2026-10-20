@@ -2,7 +2,7 @@
 
 ## How to get to it
 
-Open Settings > General > Privacy. Share basic usage statistics is on by default. Turn it off with the checkbox; the helper must match the delivered catalogue in `docs/telemetry.md`, and Privacy policy opens the canonical policy in the system browser. No first-use notice or upgrade prompt is shown. Settings > About retains its Privacy link.
+Open Settings > Privacy. Share basic usage statistics is on by default. Turn it off with the checkbox; the helper must match the delivered catalogue in `docs/telemetry.md`, and Privacy policy opens the canonical policy in the system browser. No first-use notice or upgrade prompt is shown. Settings > About retains its Privacy link.
 
 ## Driving the built app
 

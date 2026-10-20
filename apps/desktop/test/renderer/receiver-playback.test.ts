@@ -234,6 +234,7 @@ async function open(now: OutputStatus): Promise<void> {
 beforeEach(() => {
   vi.useFakeTimers();
   ipc.reset();
+  ipc.always("liveBrowse.get", { kind: "all" });
   client = new QueryClient();
   useUi.setState(useUi.getInitialState(), true);
   container = document.createElement("div");

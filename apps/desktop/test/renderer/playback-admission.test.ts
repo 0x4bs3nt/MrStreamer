@@ -322,7 +322,7 @@ it("ignores obsolete begin replies and preferences without admitting an older ch
   await settle();
   const current = ipc.argsOf("analytics.playbackBegin").at(-1)!.measurement;
   oldReply.resolve("99999999-9999-4999-8999-999999999999");
-  oldPreferences.resolve(defaultPreferences);
+  oldPreferences.resolve(ipc.snapshot(defaultPreferences));
   await settle();
   expect(ipc.argsOf("playback.open")).toHaveLength(1);
   expect(ipc.argsOf("playback.open")[0]).toMatchObject({
@@ -330,4 +330,205 @@ it("ignores obsolete begin replies and preferences without admitting an older ch
     measurement: current,
   });
   expect(ipc.argsOf("analytics.playbackBind").at(-1)?.measurement).toEqual(current);
+});
+
+describe("switching between live and title playback", () => {
+  it("leaves a receiver title playing when catch-up is refused there", async () => {
+    await emit(remote());
+    await titlePlayer.open(now, 0);
+    await settle();
+    player.playArchive(channel, {
+      start: Date.now() - 60_000,
+      stop: Date.now() + 60_000,
+      title: "Earlier programme",
+      description: null,
+    });
+    await settle();
+    expect(titlePlayer.state().now).toEqual(now);
+    expect(titlePlayer.onReceiver()).toBe(true);
+    expect(ipc.argsOf("output.playTitle")).toHaveLength(1);
+    expect(ipc.argsOf("output.playChannel")).toHaveLength(0);
+    expect(ipc.argsOf("output.command")).toHaveLength(0);
+    expect(ipc.argsOf("playback.open")).toHaveLength(0);
+  });
+
+  it.each(["preview", "retry", "reopen"] as const)(
+    "does not let a stale live %s interrupt an open title",
+    async (action) => {
+      player.watch(channel);
+      await settle();
+      await titlePlayer.open(now, 0);
+      await settle();
+      if (action === "preview") player.preview(channel);
+      else player[action]();
+      await settle();
+      expect(ipc.argsOf("playback.open")).toHaveLength(1);
+      expect(titlePlayer.state().phase.kind).toBe("playing");
+      expect(player.state().phase.kind).toBe("idle");
+    },
+  );
+
+  it.each([false, true])(
+    "does not send an obsolete preview after its preferences answer, newer live selection %s",
+    async (returnToLive) => {
+      const pending = ipc.hold("preferences.get");
+      player.preview(channel);
+      await titlePlayer.open(now, 0);
+      await settle();
+      const newer = {
+        ...channel,
+        id: "newer",
+        variants: [{ ...channel.variants[0]!, id: "newer" }],
+      };
+      if (returnToLive) {
+        player.watch(newer);
+        await settle();
+      }
+      pending.resolve(ipc.snapshot(defaultPreferences));
+      await settle();
+      expect(ipc.argsOf("playback.open").map((args) => args.channel.id)).toEqual(
+        returnToLive ? ["newer"] : [],
+      );
+      if (returnToLive) expect(player.state().channel?.id).toBe("newer");
+      else expect(titlePlayer.state().phase.kind).toBe("playing");
+    },
+  );
+
+  it.each(["play", "archive", "zap"] as const)(
+    "%s closes the title before opening a live session",
+    async (action) => {
+      await titlePlayer.open(now, 0);
+      await settle();
+      if (action === "archive")
+        player.playArchive(channel, {
+          start: Date.now() - 60_000,
+          stop: Date.now() + 60_000,
+          title: "Earlier programme",
+          description: null,
+        });
+      else player[action](channel);
+      // Zap relinquishes the title immediately, before its delayed channel open.
+      expect(titlePlayer.state().now).toBeNull();
+      expect(ipc.argsOf("playback.close")).toContainEqual({ sessionId: "local-title" });
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      expect(ipc.argsOf("playback.open")).toHaveLength(1);
+      const methods = ipc.methods();
+      expect(methods.indexOf("playback.close")).toBeLessThan(methods.indexOf("playback.open"));
+    },
+  );
+
+  it("closes the preview before opening a title and allows a preview after the title closes", async () => {
+    player.preview(channel);
+    await settle();
+    await titlePlayer.open(now, 0);
+    await settle();
+    expect(player.state().phase.kind).toBe("idle");
+    expect(ipc.argsOf("playback.close")).toContainEqual({ sessionId: "live" });
+    const methods = ipc.methods();
+    expect(methods.indexOf("playback.close")).toBeLessThan(methods.indexOf("playback.openTitle"));
+    titlePlayer.close();
+    player.preview(channel);
+    await settle();
+    expect(ipc.argsOf("playback.open")).toHaveLength(2);
+    expect(ipc.argsOf("playback.open").at(-1)?.preview).toBe(true);
+  });
+
+  it("promotes the existing preview to Watch without closing or reopening it", async () => {
+    player.preview(channel);
+    await settle();
+    player.watch(channel);
+    await settle();
+    expect(ipc.argsOf("playback.open")).toHaveLength(1);
+    expect(ipc.argsOf("playback.close")).toHaveLength(0);
+  });
+
+  it.each(["live", "title"] as const)(
+    "replaces receiver %s controls without sending a stop for that load",
+    async (first) => {
+      await emit(remote());
+      if (first === "live") {
+        player.watch(channel);
+        await settle();
+        await titlePlayer.open(now, 0);
+        await settle();
+        expect(player.onReceiver()).toBe(false);
+        expect(player.state().phase.kind).toBe("idle");
+        expect(titlePlayer.onReceiver()).toBe(true);
+      } else {
+        await titlePlayer.open(now, 0);
+        await settle();
+        player.watch(channel);
+        await settle();
+        expect(titlePlayer.state().now).toBeNull();
+        expect(titlePlayer.onReceiver()).toBe(false);
+        expect(player.onReceiver()).toBe(true);
+      }
+      expect(ipc.argsOf("output.command").filter((args) => args.command === "stop")).toEqual([]);
+    },
+  );
+
+  it("relinquishes an adopted receiver channel when a title replaces it", async () => {
+    // A prior title has fully closed before adoption, as after returning to an idle window.
+    await titlePlayer.open(now, 0);
+    titlePlayer.close();
+    const media = {
+      ...remoteMedia(),
+      item: { kind: "channel" as const, channel: { subscriptionId: SUBSCRIPTION, id: "fixture" } },
+    };
+    await emit(remote(media));
+    player.adopt(channel, media);
+    await titlePlayer.open(now, 0);
+    await settle();
+    expect(player.onReceiver()).toBe(false);
+    expect(player.state().phase.kind).toBe("idle");
+    expect(titlePlayer.onReceiver()).toBe(true);
+    expect(ipc.argsOf("output.command").filter((args) => args.command === "stop")).toEqual([]);
+  });
+
+  it("closes a live retry started after a title closes before opening the next title", async () => {
+    player.watch(channel);
+    await settle();
+    await titlePlayer.open(now, 0);
+    titlePlayer.close();
+    player.retry();
+    await settle();
+    await titlePlayer.open(now, 0);
+    await settle();
+    expect(ipc.argsOf("playback.open")).toHaveLength(2);
+    expect(ipc.argsOf("playback.close").filter((args) => args.sessionId === "live")).toHaveLength(
+      2,
+    );
+    const methods = ipc.methods();
+    expect(methods.lastIndexOf("playback.close")).toBeLessThan(
+      methods.lastIndexOf("playback.openTitle"),
+    );
+    expect(player.state().phase.kind).toBe("idle");
+  });
+
+  it("closes adopted receiver title controls when a live channel replaces them", async () => {
+    await titlePlayer.open(now, 0);
+    titlePlayer.close();
+    const media = remoteMedia();
+    await emit(remote(media));
+    titlePlayer.adopt(
+      now,
+      {
+        sessionId: media.sessionId,
+        duration: 120,
+        audio: [],
+        subtitles: [],
+        shows: ["text"],
+        audioId: null,
+        subtitleId: null,
+        since: Date.now(),
+      },
+      media,
+    );
+    player.watch(channel);
+    await settle();
+    expect(titlePlayer.state().now).toBeNull();
+    expect(titlePlayer.onReceiver()).toBe(false);
+    expect(player.onReceiver()).toBe(true);
+    expect(ipc.argsOf("output.command").filter((args) => args.command === "stop")).toEqual([]);
+  });
 });

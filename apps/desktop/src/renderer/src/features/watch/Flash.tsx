@@ -4,39 +4,14 @@
 // it for its moment, and then the note is back. A note that says something failed, such as
 // "Subtitles unavailable", closes with its cross (CloseMessage.tsx).
 import { useEffect, useRef } from "react";
-import { create } from "zustand";
 import { t } from "@mrstreamer/core/i18n";
 import { cn } from "../../lib/utils.ts";
 import { usePlayer } from "../../player/player.ts";
 import { CloseMessage, useClosed } from "./CloseMessage.tsx";
+import { flash, useFlash } from "./flash-state.ts";
+export { flash, flashNote } from "./flash-state.ts";
 
 const SHOWN_MS = 1500;
-
-/** A standing note. Each one shown is its own, so closing one leaves the next to show. */
-interface Note {
-  readonly text: string;
-  /** It says something failed, and the viewer can close it. */
-  readonly failed: boolean;
-}
-
-const useFlash = create<{ text: string | null; at: number; note: Note | null }>(() => ({
-  text: null,
-  at: 0,
-  note: null,
-}));
-
-/** Shows `text` for a moment, in place of anything shown before. */
-export function flash(text: string): void {
-  useFlash.setState({ text, at: Date.now() });
-}
-
-/**
- * Shows `note` until another takes its place; null takes it away. One that says something
- * `failed` has a cross that closes it.
- */
-export function flashNote(note: string | null, failed = false): void {
-  useFlash.setState({ note: note === null ? null : { text: note, failed } });
-}
 
 export function Flash() {
   const text = useFlash((state) => state.text);

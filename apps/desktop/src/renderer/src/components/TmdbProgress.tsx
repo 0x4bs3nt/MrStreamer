@@ -1,6 +1,6 @@
 // How far TMDB's metadata has come, as a ring beside search in the top bar. It shows only while
 // titles are being asked about, about a quarter of an hour on a first run, and goes once the
-// asking ends: done, refused or unreachable. Clicking it opens Settings > General, which
+// asking ends: done, refused or unreachable. Clicking it opens Settings > Movies and series, which
 // has the count and the key.
 import { useQuery } from "@tanstack/react-query";
 import { useUi } from "../app/ui-store.ts";
@@ -23,7 +23,7 @@ export function TmdbProgress() {
         variant="ghost"
         size="icon-sm"
         aria-label={label}
-        onClick={() => useUi.setState({ settings: "general" })}
+        onClick={() => useUi.setState({ settings: "movies", settingsTarget: "tmdb" })}
       >
         <svg viewBox="0 0 20 20" className="size-[18px] -rotate-90" fill="none" strokeWidth={2.5}>
           <circle cx={10} cy={10} r={RADIUS} className="stroke-white/18" />

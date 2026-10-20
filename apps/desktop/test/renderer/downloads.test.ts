@@ -556,6 +556,7 @@ describe("the top bar's word on the downloads", () => {
 
   it("opens Downloads from a title playing, which leaves it as Back does", async () => {
     ipc.always("subscription.list", [SAVED]);
+    ipc.always("liveBrowse.get", { kind: "all" });
     ipc.always("downloads.list", list([download({ id: "copy" }), transfer(40, 100)]));
     const opened = ipc.hold("playback.openCopy");
     const app = await show(createElement(App), "header");

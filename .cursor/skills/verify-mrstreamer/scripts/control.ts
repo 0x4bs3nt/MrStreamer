@@ -15,12 +15,23 @@ import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-lab
 import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
 import { homeStageScenario, stageChannel, stageLogo, stageStreams } from "./home-stage.ts";
 import { startFakePlaylist } from "../../../../apps/desktop/test/fake-playlist.ts";
-import { guideGridScenario, guideGridScrollScenario } from "./guide-grid.ts";
+import {
+  guideGridCellsScenario,
+  guideGridScenario,
+  guideGridScrollScenario,
+} from "./guide-grid.ts";
 import { startGuideHost, type GuideHost } from "../../../../apps/desktop/test/fake-guide-host.ts";
 import { homeScenario } from "./home.ts";
-import { liveCategoriesScenario, LONG_CATEGORY } from "./live-categories.ts";
+import {
+  liveCategoriesScenario,
+  LONG_CATEGORY,
+  browseFixtureLanguages,
+} from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
+import { settingsScenario } from "./settings.ts";
+import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
+import { nextEpisodeScenario } from "./next-episode.ts";
 import { removeDuringGuideScenario } from "./remove-during-guide.ts";
 import {
   electronExecutable,
@@ -55,11 +66,15 @@ const scenarios = [
   "hls-compatibility-catchup",
   "live-categories",
   "guide-grid",
+  "guide-grid-cells",
   "guide-grid-scroll",
   "titles",
+  "next-episode",
   "watchlist",
   "downloads",
   "language",
+  "preferences",
+  "settings",
 ] as const;
 type Scenario = (typeof scenarios)[number];
 const [command, selected] = process.argv.slice(2);
@@ -154,9 +169,10 @@ async function run(scenario: Scenario) {
         scenario === "live-categories" ? 64000 : scenario === "guide-grid-scroll" ? 20000 : 60,
       titles: 30,
       live: true,
-      ...(scenario === "guide-grid"
+      ...(scenario === "guide-grid" || scenario === "guide-grid-cells"
         ? {
             guideHours: { past: 6, ahead: 24 },
+            ...(scenario === "guide-grid-cells" ? { guideLengths: [1, 2, 30] } : {}),
             // The playable test channels get guides of their own, but for the third.
             channelOf: (channel) =>
               channel.fixture && channel.streamId !== 1002
@@ -197,6 +213,7 @@ async function run(scenario: Scenario) {
         ? { guideIdOf: (channel) => labelledGuideId(channel.name) ?? channel.guideId }
         : {}),
     });
+    if (scenario === "next-episode") provider.replaceEpisodeFile(81000, "title-h264-aac.mp4");
     if (scenario === "guides") {
       guideHosts = { north: await startGuideHost(), south: await startGuideHost() };
       serveGuides(guideHosts.north, guideHosts.south);
@@ -210,10 +227,11 @@ async function run(scenario: Scenario) {
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
     if (scenario === "live-categories")
       provider.serveCategories((all) =>
-        all.map((category) =>
+        browseFixtureLanguages(all).map((category) =>
           category.id === "1" ? { ...category, name: LONG_CATEGORY } : category,
         ),
       );
+    if (scenario === "live-categories") other!.serveCategories(browseFixtureLanguages);
     if (scenario.startsWith("hls-compatibility")) playlist = await startFakeHls({ realtime: true });
     if (scenario === "home-stage-live-only") playlist = await startFakePlaylist();
     if (scenario === "catch-up-hls") {
@@ -641,8 +659,14 @@ async function run(scenario: Scenario) {
       observed["subscriptionRows"] = await livePage.evaluate<number>(
         "[...document.querySelectorAll('li')].filter(row => row.querySelector('button')?.textContent.includes(' · ')).length",
       );
-    } else if (scenario === "language") {
-      await languageScenario({
+    } else if (scenario === "language" || scenario === "preferences" || scenario === "settings") {
+      await (
+        scenario === "language"
+          ? languageScenario
+          : scenario === "settings"
+            ? settingsScenario
+            : preferencesScenario
+      )({
         profile: ownedProfile,
         observed,
         evaluate: (expression) => livePage.evaluate(expression),
@@ -712,7 +736,7 @@ async function run(scenario: Scenario) {
           otherUrl: other!.url,
           refresh: (kind) => {
             provider!.serveCategories((all) =>
-              all
+              browseFixtureLanguages(all)
                 .filter((category) => kind !== "remove" || category.name !== "BE | Entertainment")
                 .map((category) =>
                   category.id === "1" ? { ...category, name: LONG_CATEGORY } : category,
@@ -720,7 +744,7 @@ async function run(scenario: Scenario) {
                 .toReversed(),
             );
             other!.serveCategories((all) =>
-              all
+              browseFixtureLanguages(all)
                 .filter((category) => kind !== "remove" || category.name !== "BE | Entertainment")
                 .toReversed(),
             );
@@ -774,7 +798,11 @@ async function run(scenario: Scenario) {
         },
         playlist!,
       );
-    } else if (scenario === "guide-grid" || scenario === "guide-grid-scroll") {
+    } else if (
+      scenario === "guide-grid" ||
+      scenario === "guide-grid-cells" ||
+      scenario === "guide-grid-scroll"
+    ) {
       const driver = {
         profile,
         observed,
@@ -797,7 +825,31 @@ async function run(scenario: Scenario) {
           }),
           archiveRequests: () => provider!.archiveRequests(),
         });
+      else if (scenario === "guide-grid-cells") await guideGridCellsScenario(driver);
       else await guideGridScrollScenario(driver);
+    } else if (scenario === "next-episode") {
+      await nextEpisodeScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        () => ({
+          requests: provider!.fileRequests(),
+          mostAtOnce: provider!.mostFilesAtOnce(),
+          streams: provider!.streamRequests(),
+          active: provider!.activeStreams(),
+        }),
+      );
     } else if (scenario === "live-tv") {
       await click("Open global Search", "document.querySelector('button[aria-label=Search]')");
       action("Search TEST | H.264 + AAC");

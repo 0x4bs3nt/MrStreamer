@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { browseResult } from "./browse-support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
@@ -199,7 +200,7 @@ const cast = {
 
 async function watch() {
   ipc.reset();
-  ipc.always("library.channels", [qualityChannel, nextChannel]);
+  ipc.always("library.browse", browseResult([qualityChannel, nextChannel]));
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

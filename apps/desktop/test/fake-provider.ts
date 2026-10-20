@@ -100,6 +100,8 @@ export interface FakeProviderOptions {
    * guide grid scrolls through, past and ahead.
    */
   readonly guideHours?: { readonly past: number; readonly ahead: number };
+  /** Programme lengths, in minutes, for a grid fixture that includes very short slots. */
+  readonly guideLengths?: readonly number[];
   /** About how many movies and series to list, besides the test titles. */
   readonly titles?: number;
   /** Exact series count, independent of movie count, including a requested long series. */
@@ -630,7 +632,7 @@ export async function startFakeProvider(options: FakeProviderOptions = {}): Prom
     const document =
       guideAnswer ??
       (options.guideHours
-        ? gridGuide(catalogue, Date.now(), options.guideHours)
+        ? gridGuide(catalogue, Date.now(), options.guideHours, options.guideLengths)
         : fakeGuide(catalogue, Date.now()));
     response.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
     if (!guidePieceBytes) return void response.end(document);
@@ -932,6 +934,7 @@ function gridGuide(
   catalogue: FakeCatalogue,
   around: number,
   hours: { readonly past: number; readonly ahead: number },
+  lengths: readonly number[] = LENGTHS,
 ): string {
   const hour = 60 * 60 * 1000;
   const first = Math.floor(around / hour) * hour - hours.past * hour;
@@ -944,7 +947,7 @@ function gridGuide(
   for (const [index, id] of ids.entries()) {
     const word = WORDS[index % WORDS.length] ?? "Earth";
     for (let slot = 0, start = first; start < last; slot++) {
-      const minutes = LENGTHS[(index * 7 + slot * 13) % LENGTHS.length] ?? 30;
+      const minutes = lengths[(index * 7 + slot * 13) % lengths.length] ?? 30;
       const stop = start + minutes * 60 * 1000;
       if (index % 5 !== 4 || stop <= missing || start >= missing + 2 * hour) {
         const show = SHOWS[(index + slot) % SHOWS.length] ?? "Journal";

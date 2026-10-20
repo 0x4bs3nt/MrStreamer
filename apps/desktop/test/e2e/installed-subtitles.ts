@@ -280,7 +280,7 @@ async function input(d: Driver, label: string, selector: string, value: string) 
   await d.key("Tab", 9);
 }
 
-/** Called in the already-open General settings, after stable Connect. */
+/** Configures the online-subtitle controls in their already-open Settings section. */
 export async function configureSubtitleUi(d: Driver) {
   const section = `[...document.querySelectorAll('section')].find(s => s.textContent.includes('Online subtitles'))`;
   await d.click("Set up SubDL", `(${section})?.querySelector('button')`);

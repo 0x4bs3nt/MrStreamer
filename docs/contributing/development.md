@@ -19,7 +19,7 @@ The repository is a pnpm workspace: the app is `apps/desktop`, the website is `a
 
 Live TV works without a subscription: on the Connect screen, choose **Use an M3U link** and paste iptv-org's public playlist, `https://iptv-org.github.io/iptv/index.m3u`. [Testing](testing.md#a-real-provider) says what it covers and how to read a channel that fails. Movies and series need a provider that offers them, through an Xtream Codes login. If you use your own subscription, keep its details out of the repository: the gitignored `.local/` folder is the place for private notes and test access.
 
-Genres, streaming services and popularity in Movies and Series come from TMDB. A development build has no key built in: set `MR_STREAMER_TMDB_KEY`, or paste one in Settings > General with **Own key…**. A free TMDB account gets one.
+Genres, streaming services and popularity in Movies and Series come from TMDB. A development build has no key built in: set `MR_STREAMER_TMDB_KEY`, or paste one in Settings > Movies and series with **Own key…**. A free TMDB account gets one.
 
 Streams the player can't decode go through ffmpeg, and every movie and episode goes through ffprobe and ffmpeg (see [architecture](architecture.md#playback)). Development builds use the `ffmpeg` and `ffprobe` on your PATH (`brew install ffmpeg`, `apt install ffmpeg` or `winget install Gyan.FFmpeg`); packaged builds use their bundled copies.
 

@@ -1,6 +1,7 @@
 // The library model: how the app sees content, independent of the provider that supplied it.
 import type { AppError } from "./errors.ts";
 import type { OwnedId } from "./subscription.ts";
+import type { BrowseMetadata } from "./live-browse.ts";
 
 /**
  * A live TV channel: the provider's streams of one channel, one per quality or backup. Most have
@@ -9,6 +10,8 @@ import type { OwnedId } from "./subscription.ts";
  * channel from two providers is two channels.
  */
 export interface LiveChannel {
+  /** Derived discovery facts, attached after exact channel joins have finished. */
+  readonly browse?: BrowseMetadata;
   /** The subscription that lists it. With `id`, it names the channel (`OwnedId`). */
   readonly subscriptionId: string;
   /**

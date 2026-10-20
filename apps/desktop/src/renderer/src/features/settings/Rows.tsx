@@ -1,6 +1,7 @@
 // The pieces Settings is built from: titled lists of rows, each with its name on the left and
 // its control or value on the right, like the system's own settings.
 import type { FormEvent, ReactNode, Ref } from "react";
+import type { SettingsControl } from "./catalogue.ts";
 import { cn } from "../../lib/utils.ts";
 
 /** A titled list of rows. */
@@ -26,19 +27,24 @@ export function Section({
  * on a line of its own under the name, and wraps there rather than be cut off.
  */
 export function Row({
+  id,
   label,
   note,
   wrap = false,
   children,
 }: {
+  id?: SettingsControl;
   label: ReactNode;
   note?: ReactNode;
   wrap?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-13 items-center gap-6 border-b border-white/8 py-2">
-      <div className={cn("min-w-0 flex-1", !wrap && "truncate")}>
+    <div
+      data-setting={id}
+      className="flex min-h-13 flex-wrap items-center gap-x-6 gap-y-2 border-b border-white/8 py-2"
+    >
+      <div className="min-w-32 flex-1 break-words">
         {label}
         {note &&
           (wrap ? (
@@ -47,7 +53,7 @@ export function Row({
             <span className="text-muted-foreground"> · {note}</span>
           ))}
       </div>
-      {children && <div className="flex flex-none items-center gap-2">{children}</div>}
+      {children && <div className="flex max-w-full flex-wrap items-center gap-2">{children}</div>}
     </div>
   );
 }
@@ -74,8 +80,12 @@ export function Select<T extends string>({
   options,
   onChange,
   wide = false,
+  disabled = false,
+  busy = false,
 }: {
   label: string;
+  disabled?: boolean;
+  busy?: boolean;
   value: T;
   /** Each choice, with the language its label is in when that isn't the interface's. */
   options: readonly { readonly value: T; readonly label: string; readonly lang?: string }[];
@@ -86,13 +96,16 @@ export function Select<T extends string>({
   return (
     <select
       aria-label={label}
+      disabled={disabled}
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
       value={value}
       onChange={(event) => {
         const picked = options.find((option) => option.value === event.target.value);
         if (picked) onChange(picked.value);
       }}
       className={cn(
-        "h-9 truncate rounded-lg bg-white/6 px-3 ring-1 ring-input outline-none focus:ring-2 focus:ring-ring",
+        "h-9 max-w-full truncate rounded-none bg-white/6 px-3 ring-1 ring-input outline-none focus:ring-2 focus:ring-ring",
         wide ? "w-64" : "w-56",
       )}
     >

@@ -4,7 +4,8 @@
 // delete them too, and takes only that subscription out of what the app shows. A title that
 // plays from it has how far it got saved before the subscription goes.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { browseChannels, browseResult } from "./browse-support.ts";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -304,6 +305,82 @@ describe("removing a subscription", () => {
     expect(container.textContent).toContain("Something went wrong: The disk is full.");
     expect(player.current()).toEqual(kept);
   });
+
+  it("restores a source read as absent while its removal was later refused", async () => {
+    const { container, client, button, click } = await removing([northline, holiday], northline);
+    const answer = ipc.hold("subscription.remove");
+    await click(button("Remove"));
+    // Main temporarily excludes the source before an erase or login deletion can be refused.
+    ipc.always("subscription.list", [holiday]);
+    await act(async () => client.refetchQueries({ queryKey: ["subscriptions"] }));
+    await settled();
+    expect(container.textContent).not.toContain("Northline");
+    ipc.always("subscription.list", [northline, holiday]);
+    ipc.always("library.status", []);
+    ipc.always("guide.status", []);
+    ipc.always("ondemand.status", { lists: [], metadata: null });
+    await act(async () => answer.reject({ kind: "unexpected", detail: "Login deletion refused." }));
+    await settled();
+    expect(container.textContent).toContain("Northline");
+    expect(container.textContent).toContain("Holiday house");
+  });
+
+  it.each([
+    { cached: false, held: true, inactive: false },
+    { cached: true, held: true, inactive: false },
+    { cached: false, held: false, inactive: false },
+    { cached: false, held: true, inactive: true },
+  ])(
+    "restores browse membership after refused removal, cached=$cached held=$held inactive=$inactive",
+    async ({ cached, held, inactive }) => {
+      const { container, client, button, click } = await removing([northline, holiday], northline);
+      const answer = ipc.hold("subscription.remove");
+      await click(button("Remove"));
+      const options = browseChannels(null);
+      const result = (owners: readonly SubscriptionSummary[]) =>
+        browseResult(owners.map(channelOf));
+      if (cached) client.setQueryData(options.queryKey, result([northline, holiday]));
+      const during = ipc.hold("library.browse");
+      const observer = new QueryObserver(client, { ...options, refetchOnMount: "always" });
+      const asked = inactive ? client.fetchQuery(options) : undefined;
+      let stop = inactive ? () => {} : observer.subscribe(() => {});
+      try {
+        expect(ipc.argsOf("library.browse")).toHaveLength(1);
+        if (!held) {
+          await act(async () => during.resolve(result([holiday])));
+          await settled();
+        }
+        // Main restores the source before refusing. An older first browse read may still finish
+        // afterward, captured while main temporarily excluded it, without a cached answer to replace.
+        ipc.always("library.browse", result([northline, holiday]));
+        ipc.always("subscription.list", [northline, holiday]);
+        ipc.always("library.status", []);
+        ipc.always("guide.status", []);
+        ipc.always("ondemand.status", { lists: [], metadata: null });
+        await act(async () =>
+          answer.reject({ kind: "unexpected", detail: "Login deletion refused." }),
+        );
+        await settled();
+        expect(container.textContent).toContain("Login deletion refused.");
+        if (held) await act(async () => during.resolve(result([holiday])));
+        await settled();
+        await settled();
+        if (inactive) {
+          await expect(asked).resolves.toEqual(result([holiday]));
+          expect(client.getQueryState(options.queryKey)?.isInvalidated).toBe(true);
+          stop = observer.subscribe(() => {});
+          await settled();
+        }
+        expect(
+          observer.getCurrentResult().data?.channels.map(({ subscriptionId }) => subscriptionId),
+        ).toEqual([northline.id, holiday.id]);
+        expect(ipc.argsOf("library.browse")).toHaveLength(2);
+      } finally {
+        stop();
+        client.clear();
+      }
+    },
+  );
 
   it("says the only subscription's removal returns to Connect, and keeps it on Keep", async () => {
     const { container, button, click } = await removing([northline], northline);

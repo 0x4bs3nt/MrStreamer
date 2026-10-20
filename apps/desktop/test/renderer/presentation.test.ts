@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
+import { browseResult } from "./browse-support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
@@ -70,7 +71,7 @@ it("skips disabled Home title rows even before saved preferences answer, then re
   };
   ipc.always("subscription.list", [SAVED]);
   ipc.always("library.categories", []);
-  ipc.always("library.channels", []);
+  ipc.always("library.browse", browseResult([]));
   ipc.always("library.status", []);
   ipc.always("viewing.get", {
     favourites: [],
@@ -98,7 +99,7 @@ it("skips disabled Home title rows even before saved preferences answer, then re
   await act(() => vi.advanceTimersByTimeAsync(50));
   expect(ipc.argsOf("ondemand.collection")).toEqual([]);
   expect(ipc.argsOf("ondemand.titles")).toEqual([]);
-  await act(async () => preferences.resolve(saved));
+  await act(async () => preferences.resolve(ipc.snapshot(saved)));
   await act(() => vi.advanceTimersByTimeAsync(50));
   expect(ipc.argsOf("ondemand.collection")).toEqual([]);
   expect(ipc.argsOf("watchlist.list")).toEqual([]);
@@ -166,10 +167,12 @@ async function showContinuingHome() {
   });
   ipc.always("subscription.list", [SAVED]);
   ipc.always("library.categories", []);
-  ipc.answer("library.channels", (input) =>
-    input.channels
-      ? channels.filter((channel) => input.channels?.some(({ id }) => id === channel.id))
-      : channels,
+  ipc.answer("library.browse", ({ scope }) =>
+    browseResult(
+      scope.kind === "channels"
+        ? channels.filter((channel) => scope.channels.some(({ id }) => id === channel.id))
+        : channels,
+    ),
   );
   ipc.always("library.status", []);
   ipc.always("viewing.get", viewing);

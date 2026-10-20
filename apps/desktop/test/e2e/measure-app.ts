@@ -8,11 +8,20 @@
 // Raw samples default to .local/measurements; --json chooses a path. Needs ffmpeg on PATH
 // (or MR_STREAMER_FFMPEG). On macOS pass --use-mock-keychain.
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { fakeGuide, startFakeProvider } from "../fake-provider.ts";
+import { runAppProbes } from "./app-probes.ts";
 import {
   addSubscription,
   calibrate,
@@ -23,6 +32,7 @@ import {
   login,
   observe,
   observeAcrossLoad,
+  revealFixtureList,
   waitFor,
   type Page,
 } from "./app.ts";
@@ -48,11 +58,22 @@ const { values: options, positionals } = parseArgs({
     "uncached-search": { type: "boolean", default: false },
     "cold-search": { type: "boolean", default: false },
     "covered-idle": { type: "boolean", default: false },
+    "idle-probes": { type: "boolean", default: false },
+    "live-profile": { type: "boolean", default: false },
+    "diagnostics-only": { type: "boolean", default: false },
+    "host-condition": { type: "string", default: "diagnostic" },
     revision: { type: "string" },
   },
   allowPositionals: true,
 });
 const [executable, ...rest] = positionals;
+const probes = options["idle-probes"] || options["live-profile"];
+if (options["diagnostics-only"] && !probes)
+  throw new Error("--diagnostics-only requires --idle-probes or --live-profile");
+if (options["covered-idle"] && probes)
+  throw new Error("Run --covered-idle separately from the CPU/profile probes");
+if (!["diagnostic", "quiet"].includes(options["host-condition"]))
+  throw new Error("--host-condition must be diagnostic or quiet");
 const appDirectory = rest.find((argument) => existsSync(join(argument, "out/main/index.js")));
 if (!executable) {
   throw new Error(
@@ -119,9 +140,11 @@ const observations: { [key: string]: number | string | boolean }[] = [];
 const searchSamples: Record<string, number[]> = {};
 const coldSearchSamples: number[] = [];
 
-const profile = mkdtempSync(join(tmpdir(), "mr-streamer-measure-"));
+// Electron canonicalizes macOS /var paths; use the same actual profile path at launch and proof.
+const profile = realpathSync(mkdtempSync(join(tmpdir(), "mr-streamer-measure-")));
 let app: ChildProcess | null = null;
 let activePage: Page | undefined;
+let probeOwnershipVerified = false;
 let mainInspector: Page | undefined;
 let electron = "unavailable";
 let calibration: Awaited<ReturnType<typeof calibrate>> = [];
@@ -148,10 +171,18 @@ try {
   // First run: log in, let the catalogue and guide arrive, then tune, switch and browse.
   let port = randomPort();
   const inspectPort = randomPort();
-  app = launch(executable, options["covered-idle"] ? [`--inspect=${inspectPort}`, ...rest] : rest, {
-    port,
-    profile,
-  });
+  app = launch(
+    executable,
+    [
+      ...(options["covered-idle"] || probes ? [`--inspect=${inspectPort}`] : []),
+      ...(probes ? ["--enable-automation"] : []),
+      ...rest,
+    ],
+    {
+      port,
+      profile,
+    },
+  );
   let page = await connect(port, "page", { pollMs: 5, app });
   if (options["covered-idle"]) {
     mainInspector = await connect(inspectPort, "node", { app });
@@ -171,6 +202,33 @@ try {
     })()`);
   }
   activePage = page;
+  if (probes && !mainInspector) mainInspector = await connect(inspectPort, "node", { app });
+  if (probes) {
+    // Check the owned main and page before login or any other UI mutation. A reused debug
+    // port must fail without driving another instance, even one with the same renderer URL.
+    const owner = await mainInspector!.evaluate<{ pid: number; profile: string; urls: string[] }>(
+      `(() => { const { app, BrowserWindow } = process.getBuiltinModule('module').createRequire(process.execPath)('electron');
+        return { pid: process.pid, profile: app.getPath('userData'), urls: BrowserWindow.getAllWindows().map(w => w.webContents.getURL()) }; })()`,
+    );
+    const browser = await page.send("Browser.getBrowserCommandLine");
+    const browserArguments = (browser.result as { arguments?: string[] } | undefined)?.arguments;
+    if (
+      browser.error ||
+      !browserArguments?.includes(`--user-data-dir=${profile}`) ||
+      !browserArguments.includes(`--remote-debugging-port=${port}`) ||
+      owner.pid !== app.pid ||
+      owner.profile !== profile ||
+      !owner.urls.includes(await page.evaluate<string>("location.href"))
+    )
+      throw new Error("Probe inspector/page does not belong to the launched profile");
+    observations.push({
+      name: "probe browser ownership",
+      mainPid: owner.pid,
+      profile,
+      browserArguments: JSON.stringify(browserArguments),
+    });
+    probeOwnershipVerified = true;
+  }
   electron = electronVersion(executable);
   await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await login(page, provider);
@@ -197,230 +255,276 @@ try {
   await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[data-view="watch"]')`));
   observations.push({ name: "playback warmup", elapsedMs: performance.now() - warmupStarted });
 
-  for (let run = 0; run < RUNS; run++) {
+  if (probes) {
+    await runAppProbes({
+      page,
+      main: mainInspector!,
+      app,
+      executable,
+      appDirectory,
+      profile,
+      output: `${output}.probes.json`,
+      idle: options["idle-probes"],
+      liveProfile: options["live-profile"],
+      hostCondition: options["host-condition"],
+    });
+  }
+  if (options["diagnostics-only"]) {
+    writeFileSync(
+      output,
+      JSON.stringify(
+        {
+          status: "diagnostic-only",
+          probes: `${output}.probes.json`,
+          environment: environment({
+            executable,
+            electron,
+            ...(appDirectory ? { appDirectory } : {}),
+            ...(options.revision ? { revision: options.revision } : {}),
+          }),
+          calibration,
+          workload: { subscriptions: SUBSCRIPTIONS, channelsPerSubscription: 13000 },
+          observations,
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(`Diagnostic probes: ${output}.probes.json`);
+  } else {
+    for (let run = 0; run < RUNS; run++) {
+      await clickText(page, "Home");
+      await delay(1000);
+      await timed("guide open", page, buttonClick("Live TV"), ROWS_SHOWN);
+      await clickText(page, "TEST | Formats and failures");
+      await delay(1000);
+      // Opening the rail branch is setup; this existing metric starts at the All click.
+      if (await revealFixtureList(page, "All channels"))
+        observations.push({ name: "Reveal fixture list", list: "All channels" });
+      await timed(
+        "guide list of 13,000",
+        page,
+        buttonClick("All channels"),
+        `document.querySelector("main h1")?.textContent === "All channels" && (${ROWS_SHOWN})`,
+      );
+    }
+    await clickText(page, "TEST | Formats and failures");
+    await waitFor(() => rowsShown(page));
+    for (let run = 0; run < RUNS; run++) {
+      const channel = TEST_CHANNELS[run % TEST_CHANNELS.length]!;
+      const requests = streamRequests();
+      await timed("time to picture", page, rowClick(channel), FRESH_PICTURE);
+      await delay(1000);
+      record("streams opened per tune (count)", streamRequests() - requests);
+      await key(page, "Escape", 27);
+      await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[data-view="watch"]')`));
+    }
+    await clickRow(page, TEST_CHANNELS[RUNS % TEST_CHANNELS.length]!);
+    await waitFor(() => freshPicture(page));
+    for (let run = 0; run < RUNS; run++) {
+      const requests = streamRequests();
+      await timed("channel switch", page, () => key(page, "ArrowDown", 40), FRESH_PICTURE);
+      await delay(1000);
+      record("streams opened per switch (count)", streamRequests() - requests);
+    }
+    await key(page, "Escape", 27);
     await clickText(page, "Home");
     await delay(1000);
-    await timed("guide open", page, buttonClick("Live TV"), ROWS_SHOWN);
-    await clickText(page, "TEST | Formats and failures");
-    await delay(1000);
-    await timed(
-      "guide list of 13,000",
-      page,
-      buttonClick("All channels"),
-      `document.querySelector("main h1")?.textContent === "All channels" && (${ROWS_SHOWN})`,
-    );
-  }
-  await clickText(page, "TEST | Formats and failures");
-  await waitFor(() => rowsShown(page));
-  for (let run = 0; run < RUNS; run++) {
-    const channel = TEST_CHANNELS[run % TEST_CHANNELS.length]!;
-    const requests = streamRequests();
-    await timed("time to picture", page, rowClick(channel), FRESH_PICTURE);
-    await delay(1000);
-    record("streams opened per tune (count)", streamRequests() - requests);
-    await key(page, "Escape", 27);
-    await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[data-view="watch"]')`));
-  }
-  await clickRow(page, TEST_CHANNELS[RUNS % TEST_CHANNELS.length]!);
-  await waitFor(() => freshPicture(page));
-  for (let run = 0; run < RUNS; run++) {
-    const requests = streamRequests();
-    await timed("channel switch", page, () => key(page, "ArrowDown", 40), FRESH_PICTURE);
-    await delay(1000);
-    record("streams opened per switch (count)", streamRequests() - requests);
-  }
-  await key(page, "Escape", 27);
-  await clickText(page, "Home");
-  await delay(1000);
-  for (let run = 0; run < RUNS; run++) {
-    await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
-    await delay(500);
-    await timed(
-      "search, typed to programmes shown",
-      page,
-      () => page.send("Input.insertText", { text: "news" }),
-      `document.querySelector('[role="dialog"]')?.innerText.includes("On now") && document.querySelectorAll('[role="dialog"] [data-index]').length > 0`,
-    );
-    await key(page, "Escape", 27);
-    await delay(500);
-  }
-
-  // Each query is typed into an empty, freshly mounted palette. Repeated queries intentionally
-  // measure the warm local cache, including its unchanged typing debounce. Cold process samples
-  // above and below have a different cache condition and are never pooled into these percentiles.
-  for (const query of SEARCH_RUNS ? ["H.264 + AAC", "TEST | Index at the end", "news"] : []) {
-    const samples: number[] = [];
-    searchSamples[query] = samples;
-    for (let run = -1; run < SEARCH_RUNS; run++) {
+    for (let run = 0; run < RUNS; run++) {
       await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
-      await delay(150);
-      const expected =
-        query === "news"
-          ? `document.querySelector('[role="dialog"]')?.innerText.includes("On now")`
-          : `[...document.querySelectorAll('[role="dialog"] [data-index]')].some(row => row.innerText.toLowerCase().includes(${JSON.stringify(query.toLowerCase())}))`;
-      const shown = observe(page, expected);
-      // Unique raw whitespace preserves normalized words while bypassing query-result caching.
-      const typed = options["uncached-search"] ? query + " ".repeat(run + 2) : query;
-      await page.send("Input.insertText", { text: typed });
-      const elapsed = await shown;
-      if (run >= 0) samples.push(elapsed);
-      observations.push({
-        name: "warm palette",
-        query,
-        run,
-        elapsedMs: elapsed,
-        firstResult: await page.evaluate<string>(
-          `document.querySelector('[role="dialog"] [data-index]')?.innerText ?? ""`,
-        ),
-      });
-      await key(page, "Escape", 27);
-      await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
-    }
-  }
-
-  // Home's muted preview plays by now. Watch takes over its stream.
-  await delay(3000);
-  const requests = streamRequests();
-  await clickText(page, "Watch");
-  await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[data-view="watch"]')`));
-  await delay(1000);
-  if (options["covered-idle"]) {
-    const started = Date.now();
-    observations.push({ name: "covered idle begins", at: started });
-    // Cross the existing one-minute listing poll while the underlying Home stays mounted.
-    await delay(42_000);
-    await delay(42_000);
-    await delay(42_000);
-    observations.push({ name: "covered idle ends", at: Date.now() });
-    const calls = await mainInspector!.evaluate<{ method: string; at: number; channels: number }[]>(
-      `globalThis.__maintenanceCalls.filter(call => call.at >= ${started})`,
-    );
-    for (const call of calls) observations.push({ name: "covered IPC", ...call });
-    mainInspector!.close();
-    mainInspector = undefined;
-  }
-  record("streams opened, Home to Watch (count)", streamRequests() - requests);
-  page.close();
-  await quit(app);
-
-  // Cold starts: the same profile, logged in, with the catalogue and guide on disk. Each then
-  // opens the long series, which the app has not asked the provider about since it started.
-  for (let run = 0; run < RUNS; run++) {
-    port = randomPort();
-    const started = performance.now();
-    app = launch(executable, rest, { port, profile });
-    page = await connect(port, "page", { pollMs: 5, app });
-    activePage = page;
-    const loaded = await observeAcrossLoad(
-      page,
-      // Home's Stage names the channel its preview plays once the catalogue is read.
-      `!!document.querySelector("[data-home-preview] h2") && !document.body.innerText.includes("Loading channels")`,
-      started,
-    );
-    observations.push({ name: "cold start", initialNavigationObserved: loaded.navigationObserved });
-    record("cold start to Home", loaded.elapsedMs);
-    if (options["cold-search"]) {
-      await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
-      await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[role="combobox"]')`));
-      const shown = observe(
+      await delay(500);
+      await timed(
+        "search, typed to programmes shown",
         page,
-        `document.querySelector('[role="dialog"]')?.innerText.includes("TEST | Index at the end")`,
+        () => page.send("Input.insertText", { text: "news" }),
+        `document.querySelector('[role="dialog"]')?.innerText.includes("On now") && document.querySelectorAll('[role="dialog"] [data-index]').length > 0`,
       );
-      await page.send("Input.insertText", { text: "TEST | Index at the end" });
-      coldSearchSamples.push(await shown);
       await key(page, "Escape", 27);
-      await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
+      await delay(500);
     }
-    const detailRequests = providers.reduce(
-      (total, provider) => total + provider.detailRequests(),
-      0,
-    );
-    await openLongSeries(page);
-    observations.push({
-      name: "cold series provider details",
-      run,
-      requests:
-        providers.reduce((total, provider) => total + provider.detailRequests(), 0) -
-        detailRequests,
-    });
+
+    // Each query is typed into an empty, freshly mounted palette. Repeated queries intentionally
+    // measure the warm local cache, including its unchanged typing debounce. Cold process samples
+    // above and below have a different cache condition and are never pooled into these percentiles.
+    for (const query of SEARCH_RUNS ? ["H.264 + AAC", "TEST | Index at the end", "news"] : []) {
+      const samples: number[] = [];
+      searchSamples[query] = samples;
+      for (let run = -1; run < SEARCH_RUNS; run++) {
+        await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
+        await delay(150);
+        const expected =
+          query === "news"
+            ? `document.querySelector('[role="dialog"]')?.innerText.includes("On now")`
+            : `[...document.querySelectorAll('[role="dialog"] [data-index]')].some(row => row.innerText.toLowerCase().includes(${JSON.stringify(query.toLowerCase())}))`;
+        const shown = observe(page, expected);
+        // Unique raw whitespace preserves normalized words while bypassing query-result caching.
+        const typed = options["uncached-search"] ? query + " ".repeat(run + 2) : query;
+        await page.send("Input.insertText", { text: typed });
+        const elapsed = await shown;
+        if (run >= 0) samples.push(elapsed);
+        observations.push({
+          name: "warm palette",
+          query,
+          run,
+          elapsedMs: elapsed,
+          firstResult: await page.evaluate<string>(
+            `document.querySelector('[role="dialog"] [data-index]')?.innerText ?? ""`,
+          ),
+        });
+        await key(page, "Escape", 27);
+        await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
+      }
+    }
+
+    // Home's muted preview plays by now. Watch takes over its stream.
+    await delay(3000);
+    const requests = streamRequests();
+    await clickText(page, "Watch");
+    await waitFor(() => page.evaluate<boolean>(`!!document.querySelector('[data-view="watch"]')`));
+    await delay(1000);
+    if (options["covered-idle"]) {
+      const started = Date.now();
+      observations.push({ name: "covered idle begins", at: started });
+      // Cross the existing one-minute listing poll while the underlying Home stays mounted.
+      await delay(42_000);
+      await delay(42_000);
+      await delay(42_000);
+      observations.push({ name: "covered idle ends", at: Date.now() });
+      const calls = await mainInspector!.evaluate<
+        { method: string; at: number; channels: number }[]
+      >(`globalThis.__maintenanceCalls.filter(call => call.at >= ${started})`);
+      for (const call of calls) observations.push({ name: "covered IPC", ...call });
+      mainInspector!.close();
+      mainInspector = undefined;
+    }
+    record("streams opened, Home to Watch (count)", streamRequests() - requests);
     page.close();
     await quit(app);
-  }
-  app = null;
 
-  record("installed size (MB)", installedSize(executable));
-  report();
-  const metrics = Object.fromEntries(
-    Object.entries(APP_METRICS).map(([name, unit]) => {
-      const samples = results.get(name as keyof typeof APP_METRICS) ?? [];
-      const expected =
-        name === "installed size (MB)" || name === "streams opened, Home to Watch (count)"
-          ? 1
-          : RUNS;
-      if (samples.length !== expected) throw new Error(`Incomplete metric: ${name}`);
-      return [name, metric(unit, samples)];
-    }),
-  );
-  saveMeasurement(output, {
-    schemaVersion: 1,
-    tool: "app",
-    environment: environment({
-      ...(options.revision ? { revision: options.revision } : {}),
-      electron,
-      executable,
-      ...(appDirectory ? { appDirectory } : {}),
-    }),
-    workload: {
-      channelsPerSubscription: 13000,
-      subscriptions: SUBSCRIPTIONS,
-      moviesPerSubscription: provider.titles.movies.length,
-      seriesPerSubscription: provider.titles.series.length,
-      seriesSeasons: 20,
-      stream: "720p25-h264-aac",
-      runs: RUNS,
-      warmSearchRunsPerQuery: SEARCH_RUNS,
-      searchResultCache: options["uncached-search"] ? "uncached" : "warm",
-      coldSearch: options["cold-search"],
-    },
-    conditions: {
-      warmup: "login, guide download, one unmeasured tune and switch at measured workload",
-      installedSizeScope: appDirectory
-        ? "electron-runtime-folder only; unpackaged, excludes app output"
-        : "installed app bundle or folder",
-      sizeUnit: "decimal MB; 1000000 bytes",
-      cache: "fresh profile then disk catalogue and guide for cold process starts",
-      timingResolutionMs: 5,
-    },
-    calibration,
-    observations,
-    metrics: {
-      ...metrics,
-      ...Object.fromEntries(
-        Object.entries(searchSamples).map(([query, samples]) => [
-          `${options["uncached-search"] ? "uncached" : "warm"} palette: ${query}`,
-          metric("ms", samples),
-        ]),
-      ),
-      ...(options["cold-search"]
-        ? { "cold process exact title search": metric("ms", coldSearchSamples) }
-        : {}),
-    },
-    checks: {
-      completeMetrics: true,
-      movingPicture: ["time to picture", "channel switch"].every((name) => {
-        const pictures = observations.filter((observation) => observation["name"] === name);
-        return (
-          pictures.length === RUNS &&
-          pictures.every(
-            (picture) =>
-              Number(picture["currentTime"]) > Number(picture["previousTime"]) &&
-              Number(picture["videoWidth"]) > 0,
-          )
+    // Cold starts: the same profile, logged in, with the catalogue and guide on disk. Each then
+    // opens the long series, which the app has not asked the provider about since it started.
+    for (let run = 0; run < RUNS; run++) {
+      port = randomPort();
+      const started = performance.now();
+      app = launch(executable, rest, { port, profile });
+      page = await connect(port, "page", { pollMs: 5, app });
+      activePage = page;
+      const loaded = await observeAcrossLoad(
+        page,
+        // Home's Stage names the channel its preview plays once the catalogue is read.
+        `!!document.querySelector("[data-home-preview] h2") && !document.body.innerText.includes("Loading channels")`,
+        started,
+      );
+      observations.push({
+        name: "cold start",
+        initialNavigationObserved: loaded.navigationObserved,
+      });
+      record("cold start to Home", loaded.elapsedMs);
+      if (options["cold-search"]) {
+        await page.evaluate(`document.querySelector('[aria-label="Search"]').click()`);
+        await waitFor(() =>
+          page.evaluate<boolean>(`!!document.querySelector('[role="combobox"]')`),
         );
+        const shown = observe(
+          page,
+          `document.querySelector('[role="dialog"]')?.innerText.includes("TEST | Index at the end")`,
+        );
+        await page.send("Input.insertText", { text: "TEST | Index at the end" });
+        coldSearchSamples.push(await shown);
+        await key(page, "Escape", 27);
+        await waitFor(() => page.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
+      }
+      const detailRequests = providers.reduce(
+        (total, provider) => total + provider.detailRequests(),
+        0,
+      );
+      await openLongSeries(page);
+      observations.push({
+        name: "cold series provider details",
+        run,
+        requests:
+          providers.reduce((total, provider) => total + provider.detailRequests(), 0) -
+          detailRequests,
+      });
+      page.close();
+      await quit(app);
+    }
+    app = null;
+
+    record("installed size (MB)", installedSize(executable));
+    report();
+    const metrics = Object.fromEntries(
+      Object.entries(APP_METRICS).map(([name, unit]) => {
+        const samples = results.get(name as keyof typeof APP_METRICS) ?? [];
+        const expected =
+          name === "installed size (MB)" || name === "streams opened, Home to Watch (count)"
+            ? 1
+            : RUNS;
+        if (samples.length !== expected) throw new Error(`Incomplete metric: ${name}`);
+        return [name, metric(unit, samples)];
       }),
-    },
-  });
-  console.log(`Raw measurement: ${output}`);
+    );
+    saveMeasurement(output, {
+      schemaVersion: 1,
+      tool: "app",
+      environment: environment({
+        ...(options.revision ? { revision: options.revision } : {}),
+        electron,
+        executable,
+        ...(appDirectory ? { appDirectory } : {}),
+      }),
+      workload: {
+        channelsPerSubscription: 13000,
+        subscriptions: SUBSCRIPTIONS,
+        moviesPerSubscription: provider.titles.movies.length,
+        seriesPerSubscription: provider.titles.series.length,
+        seriesSeasons: 20,
+        stream: "720p25-h264-aac",
+        runs: RUNS,
+        warmSearchRunsPerQuery: SEARCH_RUNS,
+        searchResultCache: options["uncached-search"] ? "uncached" : "warm",
+        coldSearch: options["cold-search"],
+      },
+      conditions: {
+        warmup: "login, guide download, one unmeasured tune and switch at measured workload",
+        installedSizeScope: appDirectory
+          ? "electron-runtime-folder only; unpackaged, excludes app output"
+          : "installed app bundle or folder",
+        sizeUnit: "decimal MB; 1000000 bytes",
+        cache: "fresh profile then disk catalogue and guide for cold process starts",
+        timingResolutionMs: 5,
+      },
+      calibration,
+      observations,
+      metrics: {
+        ...metrics,
+        ...Object.fromEntries(
+          Object.entries(searchSamples).map(([query, samples]) => [
+            `${options["uncached-search"] ? "uncached" : "warm"} palette: ${query}`,
+            metric("ms", samples),
+          ]),
+        ),
+        ...(options["cold-search"]
+          ? { "cold process exact title search": metric("ms", coldSearchSamples) }
+          : {}),
+      },
+      checks: {
+        completeMetrics: true,
+        movingPicture: ["time to picture", "channel switch"].every((name) => {
+          const pictures = observations.filter((observation) => observation["name"] === name);
+          return (
+            pictures.length === RUNS &&
+            pictures.every(
+              (picture) =>
+                Number(picture["currentTime"]) > Number(picture["previousTime"]) &&
+                Number(picture["videoWidth"]) > 0,
+            )
+          );
+        }),
+      },
+    });
+    console.log(`Raw measurement: ${output}`);
+  }
 } catch (error) {
   writeFileSync(
     output,
@@ -462,7 +566,7 @@ try {
       2,
     ),
   );
-  if (activePage) {
+  if (activePage && (!probes || probeOwnershipVerified)) {
     try {
       const capture = await activePage.send("Page.captureScreenshot", { format: "png" });
       writeFileSync(
@@ -612,7 +716,11 @@ function buttonClick(text: string): string {
     target.click();
   })()`;
 }
-function clickText(page: Page, text: string): Promise<unknown> {
+async function clickText(page: Page, text: string): Promise<unknown> {
+  if (text === "All channels" || text === "TEST | Formats and failures") {
+    if (await revealFixtureList(page, text))
+      observations.push({ name: "Reveal fixture list", list: text });
+  }
   return page.evaluate(buttonClick(text));
 }
 

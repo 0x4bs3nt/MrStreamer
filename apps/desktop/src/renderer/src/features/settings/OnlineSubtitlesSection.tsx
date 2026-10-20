@@ -1,6 +1,6 @@
 // Settings reads secret presence only. Saving configuration never searches or downloads.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type {
   OnlineSubtitlePreferences,
   SubtitleCredentials,
@@ -8,10 +8,11 @@ import type {
 } from "@mrstreamer/contracts/online-subtitles";
 import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
 import { t } from "@mrstreamer/core/i18n";
-import { useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { call } from "../../lib/ipc.ts";
+import type { SettingsControl } from "./catalogue.ts";
+import { focusSettingControl, SaveFeedback } from "./SaveFeedback.tsx";
 import { Row, RowForm, Section, Select } from "./Rows.tsx";
 
 export const subtitleSettingsQuery = {
@@ -26,14 +27,6 @@ export function OnlineSubtitlesSection() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const saved = settings.data;
-  // Opened from a title's CC panel: the section comes into view, once.
-  const section = useRef<HTMLElement>(null);
-  const asked = useUi((state) => state.onlineSubtitles);
-  useEffect(() => {
-    if (!asked) return;
-    section.current?.scrollIntoView();
-    useUi.setState({ onlineSubtitles: false });
-  }, [asked]);
   const update = useMutation({
     mutationFn: ({
       preferences,
@@ -41,6 +34,7 @@ export function OnlineSubtitlesSection() {
     }: {
       preferences: OnlineSubtitlePreferences;
       credentials?: SubtitleCredentials;
+      row: SettingsControl;
     }) => call("subtitles.configure", { preferences, ...(credentials ? { credentials } : {}) }),
     onSuccess: (next, input) => {
       client.setQueryData(subtitleSettingsQuery.queryKey, next);
@@ -55,6 +49,15 @@ export function OnlineSubtitlesSection() {
   const change = (patch: Partial<OnlineSubtitlePreferences>, credentials?: SubtitleCredentials) => {
     if (!saved || update.isPending) return;
     update.mutate({
+      row: credentials
+        ? "subdl" in credentials
+          ? "subdl"
+          : "opensubtitles"
+        : "enabled" in patch
+          ? "online-subtitles"
+          : "service" in patch
+            ? "subtitle-services"
+            : "subtitle-languages",
       preferences: {
         enabled: saved.enabled,
         service: saved.service,
@@ -64,25 +67,37 @@ export function OnlineSubtitlesSection() {
       ...(credentials ? { credentials } : {}),
     });
   };
+  const feedback = (row: SettingsControl) =>
+    update.variables?.row === row ? (
+      <SaveFeedback
+        pending={update.isPending}
+        error={update.error}
+        retry={() => update.mutate(update.variables!)}
+      />
+    ) : null;
   return (
-    <Section ref={section} title={t("Online subtitles")}>
+    <Section title={t("Online subtitles")}>
       <p className="py-2 text-sm">
         {t(
           "Search only when you ask. The selected services receive the TMDB identity, or the title and year when no identity is known, plus the episode and languages. Provider links and logins stay on this computer.",
         )}
       </p>
-      <Row label={t("Online search")}>
+      <Row id="online-subtitles" label={t("Online search")}>
         <input
           type="checkbox"
           aria-label={t("Online subtitle search")}
           checked={saved?.enabled ?? false}
-          disabled={!saved || update.isPending}
+          disabled={!saved}
+          aria-disabled={update.isPending}
           onChange={(event) => change({ enabled: event.currentTarget.checked })}
         />
       </Row>
-      <Row label={t("Search services")}>
+      {feedback("online-subtitles")}
+      <Row id="subtitle-services" label={t("Search services")}>
         <Select
           label={t("Subtitle search services")}
+          disabled={!saved}
+          busy={update.isPending}
           value={saved?.service ?? "both"}
           options={[
             { value: "both", label: t("Every service set up") },
@@ -92,7 +107,14 @@ export function OnlineSubtitlesSection() {
           onChange={(service) => change({ service })}
         />
       </Row>
-      <fieldset disabled={!saved || update.isPending} className="border-b border-white/8 py-3">
+      {feedback("subtitle-services")}
+      <fieldset
+        data-setting="subtitle-languages"
+        disabled={!saved}
+        aria-disabled={update.isPending}
+        aria-busy={update.isPending}
+        className="border-b border-white/8 py-3"
+      >
         <legend className="pt-3">{t("Languages")}</legend>
         <div className="grid grid-cols-3 gap-2 pt-2">
           {TITLE_LANGUAGES.map(({ code, name }) => (
@@ -113,17 +135,21 @@ export function OnlineSubtitlesSection() {
           ))}
         </div>
       </fieldset>
+      {feedback("subtitle-languages")}
       {(["subdl", "opensubtitles"] as const).map((service) => (
         <div key={service}>
           <Row
+            id={service}
             label={service === "subdl" ? "SubDL" : "OpenSubtitles"}
             note={saved?.configured[service] ? t("Saved") : t("Not set up")}
           >
             <Button
               size="sm"
               variant="secondary"
-              disabled={!saved || update.isPending}
+              disabled={!saved}
+              aria-disabled={update.isPending}
               onClick={() => {
+                if (update.isPending) return;
                 setEditing(editing === service ? null : service);
                 setApiKey("");
                 setUsername("");
@@ -136,13 +162,14 @@ export function OnlineSubtitlesSection() {
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={update.isPending}
+                aria-disabled={update.isPending}
                 onClick={() => change({}, { [service]: null })}
               >
                 {t("Remove")}
               </Button>
             )}
           </Row>
+          {feedback(service)}
           {editing === service && (
             <RowForm
               onSubmit={() => {
@@ -173,6 +200,8 @@ export function OnlineSubtitlesSection() {
                     )}
               </p>
               <Input
+                readOnly={update.isPending}
+                aria-disabled={update.isPending}
                 type="password"
                 aria-label={t("{service} API key", {
                   service: service === "subdl" ? "SubDL" : "OpenSubtitles",
@@ -185,12 +214,16 @@ export function OnlineSubtitlesSection() {
               {service === "opensubtitles" && (
                 <div className="mt-2 space-y-2">
                   <Input
+                    readOnly={update.isPending}
+                    aria-disabled={update.isPending}
                     aria-label={t("OpenSubtitles username")}
                     placeholder={t("Username")}
                     value={username}
                     onChange={(event) => setUsername(event.currentTarget.value)}
                   />
                   <Input
+                    readOnly={update.isPending}
+                    aria-disabled={update.isPending}
                     type="password"
                     aria-label={t("OpenSubtitles password")}
                     placeholder={t("Password")}
@@ -206,10 +239,9 @@ export function OnlineSubtitlesSection() {
                 variant="primary"
                 className="mt-3"
                 disabled={
-                  update.isPending ||
-                  !apiKey.trim() ||
-                  (service === "opensubtitles" && (!username.trim() || !password))
+                  !apiKey.trim() || (service === "opensubtitles" && (!username.trim() || !password))
                 }
+                aria-disabled={update.isPending}
               >
                 {t("Save")}
               </Button>
@@ -217,10 +249,22 @@ export function OnlineSubtitlesSection() {
           )}
         </div>
       ))}
-      {(settings.isError || update.isError) && (
-        <p role="alert" className="pt-3 text-sm">
-          {t("Subtitle settings could not be saved or read. Your saved keys were not changed.")}
-        </p>
+      {settings.isError && (
+        <div role="alert" className="pt-3 text-sm">
+          <p>
+            {t("Subtitle settings could not be saved or read. Your saved keys were not changed.")}
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => {
+              focusSettingControl(event.currentTarget);
+              void settings.refetch();
+            }}
+          >
+            {t("Try again")}
+          </Button>
+        </div>
       )}
     </Section>
   );

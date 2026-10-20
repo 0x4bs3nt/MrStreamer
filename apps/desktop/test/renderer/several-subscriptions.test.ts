@@ -3,6 +3,7 @@
 // another subscription lists one that reads the same; which subscription's channels couldn't be
 // fetched, with the others showing; and, for a film two of them list, whose each version is,
 // which one's progress resumes, and where a pick is kept.
+import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc } from "./support.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
@@ -98,7 +99,7 @@ async function liveTv(statuses: readonly CatalogueStatus[]) {
       channelCount: CHANNELS.length,
     },
   ]);
-  client.setQueryData(queries.channels(null).queryKey, CHANNELS);
+  client.setQueryData(browseChannels(null).queryKey, browseResult(CHANNELS));
   client.setQueryData(["library", "status"], statuses);
   client.setQueryData(queries.viewing().queryKey, {
     favourites: [],

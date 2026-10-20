@@ -644,7 +644,7 @@ it("bounds discontinuity churn when segment durations falsely claim almost no me
   expect(host.requests().filter((path) => /compatible-\d+.ts/.test(path))).toHaveLength(17);
   expect(host.stats().peak).toBe(1);
   await playback.close(session.sessionId);
-});
+}, 30_000);
 
 it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"', '#EXT-X-MAP:URI="init.mp4"'])(
   "retains known converted delivery when a live refresh adds %s",

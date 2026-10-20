@@ -28,6 +28,12 @@ import {
   matchingSearchGroups,
   type LiveSearchIndex,
 } from "@mrstreamer/core/catalogue/search";
+import { browseCategories, browseMetadata } from "@mrstreamer/core/catalogue/browse";
+import type {
+  LiveBrowseQuery,
+  LiveBrowseResult,
+  BrowseFacet,
+} from "@mrstreamer/contracts/live-browse";
 import { liveChannels } from "@mrstreamer/core/catalogue/variants";
 import { diagnosed } from "@mrstreamer/core/diagnostics";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
@@ -210,6 +216,8 @@ export class Library extends Context.Service<
      * shows once.
      */
     channels(filter: ChannelFilter): Effect.Effect<readonly LiveChannel[], Failed>;
+    /** Exact membership and facets from one visibility-filtered accepted catalogue. */
+    browse(query: LiveBrowseQuery): Effect.Effect<LiveBrowseResult, Failed>;
     /** Lazy, full-catalogue joins shared by every searched list. An absent key stands alone. */
     readonly searchGroups: Effect.Effect<LiveSearchGroups, Failed>;
     /**
@@ -224,7 +232,7 @@ export class Library extends Context.Service<
      * or a removal since shows at once.
      */
     lookup(subscriptionId: string): Effect.Effect<(channelId: string) => LiveChannel | undefined>;
-    /** Forgets a subscription's catalogue, for when it goes. */
+    /** Stops refreshes, waits for an admitted native write, then forgets the catalogue. */
     forget(subscription: SavedSubscription): Effect.Effect<void>;
     /** A subscription's status after each of its refreshes, successful or not. */
     readonly changes: Stream.Stream<CatalogueStatus>;
@@ -364,7 +372,8 @@ function make(options: LibraryOptions) {
           channels: fetched.channels,
         };
         // Written before it is used: the next start must not find an older catalogue on disk.
-        yield* Effect.promise(() => writeJsonFile(cachePath(source), file));
+        // Native writes cannot be cancelled. Keep the refresh alive until this one settles.
+        yield* Effect.uninterruptible(Effect.promise(() => writeJsonFile(cachePath(source), file)));
         // Nor is it shown for a subscription that went while it was written.
         if (!(yield* subscriptions.stands(source))) return yield* switched;
         catalogues.set(source.id, index(file, source.id, false));
@@ -395,7 +404,16 @@ function make(options: LibraryOptions) {
       playlist?: PlaylistRefresh,
     ): Effect.Effect<CatalogueStatus, Failed> =>
       Effect.gen(function* () {
+        if (!(yield* subscriptions.stands(source))) return yield* switched;
         const under = refreshing.get(source.id);
+        if (under && !sameSource(source, under.source)) {
+          // Leave ownership visible while its admitted write settles. Other refreshes must
+          // wait too, then re-read the owner and the saved login before admitting another.
+          yield* Fiber.interrupt(under.fiber);
+          // An owner interrupted before its first run never installed its cleanup.
+          if (refreshing.get(source.id) === under) refreshing.delete(source.id);
+          return yield* refreshOf(source, playlist);
+        }
         // A mapped combined refresh needs its own snapshot after an earlier independent fetch.
         // Unmapped Live has no titles to align and can keep joining the fetch already running.
         if (playlist && source.playlistMapped && under && sameSource(source, under.source)) {
@@ -419,7 +437,10 @@ function make(options: LibraryOptions) {
           running = { source, token, fiber };
           refreshing.set(source.id, running);
         }
-        return yield* Fiber.join(running.fiber);
+        const exit = yield* Fiber.await(running.fiber);
+        if (Exit.isSuccess(exit)) return exit.value;
+        if (Cause.hasInterruptsOnly(exit.cause)) return yield* switched;
+        return yield* Effect.failCause(exit.cause);
       });
 
     /**
@@ -560,6 +581,11 @@ function make(options: LibraryOptions) {
 
       categories: Effect.map(visible, ({ lists }) => lists.categories),
 
+      browse: (query: LiveBrowseQuery) =>
+        Effect.map(visible, ({ lists, search }) =>
+          browse(query.visibility === "ordinary" ? search : lists, query),
+        ),
+
       searchGroups: Effect.map(visible, ({ search }) => searchGroupCache(search.channels).groups),
 
       channels: (filter: ChannelFilter) =>
@@ -607,6 +633,16 @@ function make(options: LibraryOptions) {
 
       forget: (subscription: SavedSubscription) =>
         Effect.gen(function* () {
+          // Logical removal already refuses new writers. Keep each existing owner visible
+          // until it settles, including one being replaced after a login change.
+          for (
+            let refresh = refreshing.get(subscription.id);
+            refresh;
+            refresh = refreshing.get(subscription.id)
+          ) {
+            yield* Fiber.interrupt(refresh.fiber);
+            if (refreshing.get(subscription.id) === refresh) refreshing.delete(subscription.id);
+          }
           const pending = loading.get(subscription.id);
           loading.delete(subscription.id);
           if (pending) yield* Fiber.interrupt(pending.fiber);
@@ -643,11 +679,17 @@ function index(file: CatalogueFile, subscriptionId: string, outdated: boolean): 
   // A channel is for adults when one of its streams is.
   const isAdult = adultIn(file.categories);
   const adultStreams = new Set(file.channels.filter(isAdult).map((channel) => channel.id));
-  const channels = logical.channels.map((channel): LiveChannel =>
+  const joinedChannels = logical.channels.map((channel): LiveChannel =>
     channel.variants.some((variant) => adultStreams.has(variant.id))
       ? { subscriptionId, ...channel, adult: true }
       : { subscriptionId, ...channel },
   );
+  const topics = browseCategories(file.categories);
+  const streamById = new Map(streams.map((stream) => [stream.id, stream]));
+  const channels = joinedChannels.map((channel) => ({
+    ...channel,
+    browse: browseMetadata(channel, topics, streamById),
+  }));
   const byId = new Map<string, LiveChannel>();
   for (const channel of channels) {
     byId.set(channel.id, channel);
@@ -902,4 +944,91 @@ function searchIndex(channels: readonly LiveChannel[]): LiveSearchIndex {
     searchIndexes.set(channels, index);
   }
   return index;
+}
+
+function browse(lists: Combined, query: LiveBrowseQuery): LiveBrowseResult {
+  const { scope, filters } = query;
+  const channels =
+    scope.kind === "all"
+      ? lists.channels
+      : scope.kind === "category"
+        ? (lists.byCategory.get(ownedKey(scope.category)) ?? [])
+        : [
+            ...new Set(
+              scope.channels.flatMap(({ subscriptionId, id }) => {
+                // Personal lists reuse the accepted source's lookup for just the requested ids.
+                const channel = lists.members
+                  .find((member) => member.subscriptionId === subscriptionId)
+                  ?.byId.get(id);
+                return channel ? lists.shown(channel) : [];
+              }),
+            ),
+          ];
+  const facets = {
+    browseTopics: new Map<string, number>(),
+    countries: new Map<string, number>(),
+    languages: new Map<string, number>(),
+    subscriptions: new Map<string, number>(),
+  };
+  const counts = { browseTopics: 0, countries: 0, languages: 0, subscriptions: 0 };
+  const filtered =
+    filters.browseTopics.length > 0 ||
+    filters.countries.length > 0 ||
+    filters.languages.length > 0 ||
+    filters.subscriptions.length > 0;
+  const selected: LiveChannel[] = [];
+  let total = 0;
+  for (const channel of channels) {
+    const topics = channel.browse?.topics ?? ["other"];
+    const country = channel.browse?.country;
+    const language = channel.browse?.language;
+    const topicMatches =
+      filters.browseTopics.length === 0 ||
+      topics.some((id) => filters.browseTopics.some((asked) => asked === id));
+    const countryMatches =
+      filters.countries.length === 0 || (!!country && filters.countries.includes(country));
+    const languageMatches =
+      filters.languages.length === 0 || (!!language && filters.languages.includes(language));
+    const sourceMatches =
+      filters.subscriptions.length === 0 || filters.subscriptions.includes(channel.subscriptionId);
+    if (topicMatches) total++;
+    if (filtered && topicMatches && countryMatches && languageMatches && sourceMatches)
+      selected.push(channel);
+    // Each facet applies the other three filters. Keep the finite dimensions explicit rather
+    // than allocating an object and four entry arrays for every channel.
+    if (countryMatches && languageMatches && sourceMatches) {
+      counts.browseTopics++;
+      for (const topic of topics)
+        facets.browseTopics.set(topic, (facets.browseTopics.get(topic) ?? 0) + 1);
+    }
+    if (topicMatches && languageMatches && sourceMatches) {
+      counts.countries++;
+      if (country) facets.countries.set(country, (facets.countries.get(country) ?? 0) + 1);
+    }
+    if (topicMatches && countryMatches && sourceMatches) {
+      counts.languages++;
+      if (language) facets.languages.set(language, (facets.languages.get(language) ?? 0) + 1);
+    }
+    if (topicMatches && countryMatches && languageMatches) {
+      counts.subscriptions++;
+      facets.subscriptions.set(
+        channel.subscriptionId,
+        (facets.subscriptions.get(channel.subscriptionId) ?? 0) + 1,
+      );
+    }
+  }
+  const counted = (values: ReadonlyMap<string, number>): readonly BrowseFacet[] =>
+    [...values].map(([value, count]) => ({ value, count }));
+  return {
+    // An unfiltered accepted list also reuses its existing plain-response cache.
+    channels: plainChannels(filtered ? selected : channels),
+    total,
+    counts,
+    facets: {
+      browseTopics: counted(facets.browseTopics),
+      countries: counted(facets.countries),
+      languages: counted(facets.languages),
+      subscriptions: counted(facets.subscriptions),
+    },
+  };
 }

@@ -265,22 +265,25 @@ export function TitleWatch() {
 
   if (!now) return null;
   const controlsVisible = awake || phase.kind !== "playing" || menu !== null || remote;
-  // An episode's end, and a next episode that didn't start, take the controls' place.
+  // Keep the end screen while the next episode opens, including an unheld Instant transition.
   const nextUp =
     now.kind === "provider" &&
     now.series &&
-    ((phase.kind === "ended" && next !== undefined) || (failure && continued && !closed))
+    ((phase.kind === "ended" && next !== undefined) ||
+      (continued &&
+        (phase.kind === "opening" || phase.kind === "starting" || (failure && !closed))))
       ? now.series
       : null;
   if (mini) {
     return (
       <div
         data-view="title"
+        tabIndex={-1}
         data-mini=""
         data-controls={controlsVisible ? "" : undefined}
         onMouseMove={wake}
         className={cn(
-          "fixed inset-0 z-30 overflow-hidden bg-black",
+          "fixed inset-0 z-30 overflow-hidden bg-black outline-none",
           !controlsVisible && "cursor-none",
         )}
       >
@@ -322,10 +325,11 @@ export function TitleWatch() {
   return (
     <div
       data-view="title"
+      tabIndex={-1}
       data-controls={controlsVisible ? "" : undefined}
       onMouseMove={wake}
       className={cn(
-        "fixed inset-0 z-30 overflow-hidden bg-black",
+        "fixed inset-0 z-30 overflow-hidden bg-black outline-none",
         !controlsVisible && "cursor-none",
       )}
     >
@@ -728,7 +732,9 @@ function miniStatus(phase: TitlePlayerState["phase"], countdown: number | null):
     case "ended":
       return countdown === null
         ? t("Finished")
-        : t("Next episode plays in {seconds}", { seconds: countdown });
+        : countdown === 0
+          ? t("Next episode")
+          : t("Next episode plays in {seconds}", { seconds: countdown });
     default:
       return null;
   }
@@ -791,6 +797,20 @@ function NextUp({ series }: { series: SeriesDetails }) {
   const receiver =
     remote && (output.kind === "receiver" || output.kind === "lost") ? output.receiver : null;
   if (now?.kind !== "provider" || now.title.kind !== "episode") return null;
+  if (phase.kind === "opening" || phase.kind === "starting") {
+    return (
+      <EndOfEpisode
+        artworkUrl={now.artworkUrl}
+        line={t("Next episode")}
+        title={now.detail ?? now.name}
+        detail={t("Starting")}
+      >
+        <Button variant="secondary" size="lg" onClick={() => toEpisodes(series)}>
+          {t("Episodes")}
+        </Button>
+      </EndOfEpisode>
+    );
+  }
   if (phase.kind === "failed") {
     return (
       <EndOfEpisode
@@ -853,9 +873,11 @@ function NextUp({ series }: { series: SeriesDetails }) {
           <>
             {length && `${length} · `}
             <span className="text-foreground">
-              {receiver
-                ? t("Plays in {seconds} {where}", { seconds: countdown, where: where(receiver) })
-                : t("Plays in {seconds}", { seconds: countdown })}
+              {countdown === 0
+                ? t("Next episode")
+                : receiver
+                  ? t("Plays in {seconds} {where}", { seconds: countdown, where: where(receiver) })
+                  : t("Plays in {seconds}", { seconds: countdown })}
             </span>
           </>
         )
@@ -863,7 +885,7 @@ function NextUp({ series }: { series: SeriesDetails }) {
     >
       <Button variant="primary" size="lg" onClick={() => titlePlayer.playNext()}>
         <Play className="fill-current" />
-        {countdown === null ? t("Next episode") : t("Play now")}
+        {countdown === null || countdown === 0 ? t("Next episode") : t("Play now")}
       </Button>
       {countdown === null ? (
         <Button variant="secondary" size="lg" onClick={() => toEpisodes(series)}>

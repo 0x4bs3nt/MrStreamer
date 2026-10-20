@@ -209,7 +209,7 @@ export interface WorkerCalls {
   };
   /** Forgets a subscription's lists and removes their cache, for when the subscription goes. */
   forget: { args: CatalogueOwner; result: null };
-  /** Writes pending lists and answers once all cache writes finish, for a clean shutdown. */
+  /** Stops metadata requests and writes pending lists and completed answers for shutdown. */
   flush: { args: Record<string, never>; result: null };
 }
 

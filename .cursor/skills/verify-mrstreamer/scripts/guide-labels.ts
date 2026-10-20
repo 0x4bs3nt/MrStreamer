@@ -72,7 +72,7 @@ export async function guideLabelsScenario(d: Driver, host: GuideHost): Promise<v
   /** Each row as drawn: its first line, its second, whether it is red, and its buttons' names. */
   const rows = () =>
     d.evaluate<{ name: string; state: string; failing: boolean; buttons: string[] }[]>(
-      `[...document.querySelectorAll('main li[data-source]')].map(row => {
+      `[...document.querySelectorAll('[data-settings-section=guides] li[data-source]')].map(row => {
         const [name, state] = row.firstElementChild?.children ?? [];
         return { name: name?.textContent ?? '', state: state?.textContent ?? '',
           failing: state?.className.includes('text-destructive') ?? false,
@@ -102,7 +102,7 @@ export async function guideLabelsScenario(d: Driver, host: GuideHost): Promise<v
       d.evaluate<boolean>(`(async () => {
         if (innerWidth !== ${pixels}) return false;
         await document.fonts.ready;
-        const measure = () => [...document.querySelectorAll('main li[data-source]')]
+        const measure = () => [...document.querySelectorAll('[data-settings-section=guides] li[data-source]')]
           .map(row => { const box = row.getBoundingClientRect(); return box.width + 'x' + box.height; }).join();
         const before = measure();
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -162,8 +162,15 @@ export async function guideLabelsScenario(d: Driver, host: GuideHost): Promise<v
     if (shot) await d.capture(shot);
     if (end === "Enter") await d.key("Enter", 13);
     else if (end === "Escape") await d.key("Escape", 27);
-    else await d.click("Leave the name field", "document.querySelector('main h2')");
-    await d.wait(async () => !(await d.exists(`document.querySelector('main li input')`)));
+    else
+      await d.click(
+        "Leave the name field",
+        "document.querySelector('[data-settings-section=guides] h2')",
+      );
+    await d.wait(
+      async () =>
+        !(await d.exists(`document.querySelector('[data-settings-section=guides] li input')`)),
+    );
   };
   /** Neither path nor key in the page's text, attributes or accessibility tree. */
   const private_ = async (where: string) => {
@@ -238,7 +245,7 @@ export async function guideLabelsScenario(d: Driver, host: GuideHost): Promise<v
   // The subscription's Guide row and the mapping sheet say the same names.
   await d.click("Open Subscriptions", byText("nav button", "Subscriptions"));
   const guideRow = () =>
-    d.evaluate<string>("[...document.querySelectorAll('main')].at(-1).innerText");
+    d.evaluate<string>("[...document.querySelectorAll('main:not([hidden])')].at(-1).innerText");
   await d.wait(async () => /1 United Kingdom · 1 Netherlands/.test(await guideRow()));
   d.observed["guideRow"] = (await guideRow())
     .split("\n")

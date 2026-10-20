@@ -659,7 +659,8 @@ function make() {
 
     return {
       state: Effect.gen(function* () {
-        const found = yield* saved;
+        // Catalogue lookups may have waited across a source removal.
+        const found = yield* settled;
         if (found.owners.length === 0) return none;
         const stored = yield* store.read(found.owners.map((owner) => owner.key));
         return shown({ ...found, stored });

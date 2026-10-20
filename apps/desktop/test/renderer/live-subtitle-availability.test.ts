@@ -353,7 +353,7 @@ it("rejects a late preference answer and packet from a cancelled channel", async
   const preference = ipc.hold("preferences.get");
   first.packet(0x300, working, 1);
   await open("second");
-  preference.resolve({ volume: 1, muted: false, subtitleLanguage: "nl" });
+  preference.resolve(ipc.snapshot({ volume: 1, muted: false, subtitleLanguage: "nl" }));
   first.packet(0x300, working, 2);
   await settle();
   expect(player.state().channel?.id).toBe("second");

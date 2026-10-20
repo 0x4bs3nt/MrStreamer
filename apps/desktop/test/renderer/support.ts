@@ -12,6 +12,7 @@ import type { AppError, Result } from "@mrstreamer/contracts/errors";
 import {
   ipcInputs,
   type BridgeApi,
+  type PreferenceSnapshot,
   type IpcEvent,
   type IpcEvents,
   type IpcInput,
@@ -39,24 +40,35 @@ export const SAVED: SubscriptionSummary = {
   needsSecret: false,
 };
 
-const held = new Map<IpcMethod, Promise<Result<unknown>>[]>();
+const held = new Map<
+  IpcMethod,
+  { matches: (args: unknown) => boolean; answer: Promise<Result<unknown>> }[]
+>();
 const standing = new Map<IpcMethod, Result<unknown>>();
 const replies = new Map<IpcMethod, (args: unknown) => unknown>();
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
 const calls: { readonly method: IpcMethod; readonly args: unknown }[] = [];
 let preferences = defaultPreferences;
+let preferenceRevision = 1;
 
 export const ipc = {
+  snapshot(saved: Preferences): PreferenceSnapshot {
+    preferences = saved;
+    return { revision: ++preferenceRevision, preferences: saved };
+  },
   /** The arguments of each call to `method` so far, which its contract allowed. */
   argsOf: <M extends IpcMethod>(method: M): IpcInput<M>[] =>
     calls.filter((each) => each.method === method).map((each) => each.args as IpcInput<M>),
   /** The methods called so far, in order. */
   methods: (): IpcMethod[] => calls.map((each) => each.method),
   /** Holds the next call to `method` until the test answers it. */
-  hold<M extends IpcMethod>(method: M) {
+  hold<M extends IpcMethod>(method: M, matches?: (args: IpcInput<M>) => boolean) {
     let settle: (result: Result<unknown>) => void = () => {};
     const answer = new Promise<Result<unknown>>((resolve) => (settle = resolve));
-    held.set(method, [...(held.get(method) ?? []), answer]);
+    held.set(method, [
+      ...(held.get(method) ?? []),
+      { matches: (args) => !matches || matches(args as IpcInput<M>), answer },
+    ]);
     return {
       resolve: (value: IpcOutput<M>) => settle({ ok: true, value }),
       reject: (error: AppError) => settle({ ok: false, error }),
@@ -87,6 +99,7 @@ export const ipc = {
   /** Answers the preferences with `saved` over the defaults, as after the viewer set them. */
   prefer(saved: Partial<Preferences>): void {
     preferences = { ...defaultPreferences, ...saved };
+    preferenceRevision++;
   },
   /** Forgets the calls, held answers and saved preferences of the test before. */
   reset(): void {
@@ -95,6 +108,7 @@ export const ipc = {
     standing.clear();
     replies.clear();
     preferences = defaultPreferences;
+    preferenceRevision = 1;
   },
 };
 
@@ -119,8 +133,10 @@ const bridge = {
       });
     }
     calls.push({ method, args });
-    const answer = held.get(method)?.shift();
-    if (answer) return answer;
+    const pending = held.get(method);
+    const next = pending?.findIndex((each) => each.matches(args)) ?? -1;
+    const answer = next >= 0 ? pending?.splice(next, 1)[0] : undefined;
+    if (answer) return answer.answer;
     const always = standing.get(method);
     if (always) return Promise.resolve(always);
     const reply = replies.get(method);
@@ -131,7 +147,7 @@ const bridge = {
       return Promise.resolve({ ok: true, value: { progress: [], marks: [], undoable: null } });
     }
     if (method === "preferences.get") {
-      return Promise.resolve({ ok: true, value: preferences });
+      return Promise.resolve({ ok: true, value: { revision: preferenceRevision, preferences } });
     }
     if (method === "subscription.preferences") {
       return Promise.resolve({ ok: true, value: defaultSubscriptionPreferences });
