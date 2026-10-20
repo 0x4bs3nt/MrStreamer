@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { Codec, StreamFailure } from "@mrstreamer/contracts/playback";
@@ -458,6 +460,49 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
     expect(Math.abs(made.from - video.segments[last]!.at)).toBeLessThan(0.21);
   });
 
+  // Like the local-title controlled converter, this executable uses a Unix shebang.
+  it.skipIf(process.platform === "win32").each([true, false])(
+    "settles a completed converter with a late subtitle report: %s",
+    async (sent) => {
+      const directory = await tempDir();
+      const executable = join(directory, "converter.cjs");
+      const report = join(directory, "report.json");
+      await writeFile(
+        executable,
+        `#!${process.execPath}\nconst { writeFileSync } = require("node:fs");\nwriteFileSync(${JSON.stringify(report)}, JSON.stringify({ pid: process.pid, url: process.argv.find(arg => arg.endsWith("/subtitles")) }));\n`,
+        { mode: 0o700 },
+      );
+      const { playback, open } = await receiver({ ffmpeg: executable });
+      const opened = await open(MATROSKA, "title-receiver.mkv");
+      const loaded = await playback.loadReceiverTitle(opened.sessionId, {
+        audio: null,
+        subtitle: opened.subtitles.find((track) => track.language === "en")!.id,
+      });
+      const main = await playlist(loaded!.url);
+      const video = await playlist(main.stream!);
+      const subtitles = await playlist(main.subtitles!);
+      const waiting = fetched(video.segments[0]!.url);
+      let converter: { pid: number; url: string };
+      await vi.waitFor(async () => {
+        converter = JSON.parse(await readFile(report, "utf8"));
+        expect(converter.url).toMatch(/\/report\/[^/]+\/[^/]+\/subtitles$/);
+        expect(() => process.kill(converter.pid, 0)).toThrow();
+      });
+      if (sent) {
+        const response = await fetch(converter!.url, {
+          method: "PUT",
+          body: "WEBVTT\n\n00:00:10.500 --> 00:00:11.500\nLate report\n\n",
+        });
+        expect(response.status).toBe(204);
+      }
+      // The stand-in sends no video. Completion must still release the waiting receiver.
+      expect(await waiting).toBe(503);
+      expect((await cues(subtitles.segments[0]!.url)).lines).toEqual(
+        sent ? [[3, 4, "Late report"]] : [],
+      );
+    },
+  );
+
   it("sends text subtitles as a rendition, a line across a cut in both segments", async () => {
     const { playback, open } = await receiver();
     const opened = await open(MATROSKA, "title-receiver.mkv");
@@ -725,6 +770,9 @@ describe.skipIf(!hasTools)("a movie for a receiver", { timeout: 20_000 }, () => 
       audio: null,
       subtitle: null,
     });
+    const preflight = await fetch(first!.url, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Headers")).toBe("Range");
     const lan = new URL(first!.url);
     const token = lan.pathname.split("/")[2]!;
     const status = async (path: string, method = "GET") =>

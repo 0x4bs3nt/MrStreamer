@@ -58,8 +58,9 @@
 // aborts its upstream requests, which ends their ffmpeg processes; the proxy closes with the
 // service.
 import { execFile, spawn } from "node:child_process";
+import { arrives } from "../playback/signals.ts";
 import type { PlaybackDiagnostic } from "@mrstreamer/contracts/analytics";
-import { liveDiagnostic, titleDiagnostic } from "../playback/diagnostic.ts";
+import { liveDiagnostic, titleDiagnostic, lastLine } from "../playback/diagnostic.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Readable, Transform } from "node:stream";
@@ -105,7 +106,7 @@ import {
 } from "../playback/hls-ts-input.ts";
 import { paced, pacedEpochs } from "../playback/paced.ts";
 import { ffmpegArguments, planConversion, type Conversion } from "../playback/convert.ts";
-import { createInspector, type Inspection, type StreamLayout } from "../playback/inspect.ts";
+import type { StreamLayout } from "../playback/inspect.ts";
 import { CAPTION_PID, createCaptionCopy } from "../playback/caption-stream.ts";
 import {
   hlsAddresses,
@@ -115,37 +116,10 @@ import {
   startsPlaylist,
 } from "../playback/hls.ts";
 import { isPrivateAddress } from "../playback/lan.ts";
-import { mp4Keyframes } from "../playback/mp4-index.ts";
 import { createAudioChoice } from "../playback/program-table.ts";
-import {
-  convertPlan,
-  copyPlan,
-  listedSegments,
-  livePlaylist,
-  liveSegmentArguments,
-  masterPlaylist,
-  pictureSpan,
-  runCuts,
-  SEGMENT_S,
-  segmentSpan,
-  subtitleSegment,
-  titlePlaylist,
-  type LiveSegments,
-  type SegmentPlan,
-} from "../playback/receiver.ts";
-import {
-  SEGMENT_LIMITS,
-  segmentStore,
-  type SegmentLimits,
-  type SegmentStore,
-} from "../playback/segment-store.ts";
-import { captionsInPicture, captionsInTrack } from "@mrstreamer/core/subtitles/captions";
+import type { SegmentLimits } from "../playback/segment-store.ts";
 import { freshStart } from "@mrstreamer/core/subtitles/decoder";
-import { dvbClears } from "@mrstreamer/core/subtitles/dvb";
 import type { SubtitleFeedLine, SubtitlesUnavailable } from "@mrstreamer/core/subtitles/feed";
-import { pgsSegments } from "@mrstreamer/core/subtitles/pgs";
-import { pesReader, type PesPacket } from "@mrstreamer/core/subtitles/transport";
-import { webvttReader, type Cue } from "@mrstreamer/core/subtitles/webvtt";
 import { t } from "@mrstreamer/core/i18n";
 import { fileWindows, type FileWindows } from "../playback/file-windows.ts";
 import { blocks, readLayout, selected, type Layout, type ReadFile } from "../playback/matroska.ts";
@@ -168,12 +142,11 @@ import {
   firstPacketTime,
   PROBE_ARGUMENTS,
   readProbe,
-  receiverPlan,
   selectedPlan,
   subtitleOutput,
   titlePlan,
-  type SubtitleOutput,
   type TitleProbe,
+  type SubtitleOutput,
   type TitleRun,
 } from "../playback/title.ts";
 import {
@@ -185,6 +158,37 @@ import {
   type UpstreamSlot,
 } from "../playback/upstream.ts";
 import { Subscriptions, type Source } from "./subscription.ts";
+import {
+  CLEAN_START_CODECS,
+  INSPECT_LIMIT,
+  cleanStart,
+  filtered,
+  inspectStart,
+  liveAudio,
+  replay,
+  type Opened,
+} from "../playback/live-start.ts";
+import {
+  endOf,
+  interleave,
+  subtitleSink,
+  Unavailable,
+  type Attempt,
+  type Before,
+  type FeedRequest,
+  type Spent,
+} from "../playback/title-reading.ts";
+import {
+  liveReceiverDelivery,
+  titleReceiverDelivery,
+  type LiveReceiverSource,
+  type TitleReceiverSource,
+  type LiveStream,
+  type LiveReceiverDelivery,
+  type TitleReceiverDelivery,
+  type ReceiverLan,
+  type ReceiverTools,
+} from "../playback/receiver-delivery.ts";
 
 /** How long the provider gets to start answering before the stream counts as failed. */
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -200,28 +204,14 @@ const FILE_RETRY_DELAYS_MS = [150, 400, 1000, 2000];
  * stream's player keeps buffered, and some to spare against a slow provider.
  */
 const ARCHIVE_LEAD_S = 30;
-/** Video codecs whose streams start on a keyframe; see ../playback/clean-start.ts. */
-const CLEAN_START_CODECS: ReadonlySet<Codec> = new Set(["h264", "hevc", "hevc-10bit"]);
 /** The longest HLS playlist the proxy reads; live ones are a few kilobytes. */
 const PLAYLIST_LIMIT = 4 * 1024 * 1024;
-/** How much of a stream the proxy reads, at most, before deciding how to deliver it. */
-const INSPECT_LIMIT = { bytes: 2 * 1024 * 1024, ms: 2500 };
 /** How long ffprobe may take to read what a movie's file holds. */
 const PROBE_TIMEOUT_MS = 30_000;
 /** How long a run may take to show where its picture starts, before it counts as failed. */
 const RUN_START_TIMEOUT_MS = 30_000;
 /** Probes kept for files opened again, such as when resuming. */
 const PROBES_KEPT = 32;
-/**
- * How far a subtitle packet may sit in a file from the picture of its own time, in seconds. A
- * file stores its packets in the order of their times, near enough: a reading counts as whole
- * from this long after its first picture to this long before its last, and a run brings the
- * subtitles itself from this long after its position. Matroska and MP4 files keep to a few
- * hundredths of a second. A transport stream sends each picture ahead of its time, by as much as
- * its encoder's buffer, and subtitles when they are due, so those come that much after the
- * pictures of their time.
- */
-const INTERLEAVE_S = { ordered: 1, broadcast: 2.5 } as const;
 /**
  * The readings one position may take. Each reaches further back, the thirteenth from the start of
  * the file at the latest, so more than these means what they read doesn't stay read.
@@ -267,38 +257,12 @@ const PART_BYTES = { least: 512 * 1024, most: 4 * 1024 * 1024, first: 1024 * 102
  * has enough buffered or is paused.
  */
 const REST_MS = 300;
-/** How long the proxy waits for what an ffmpeg that has ended sent it over loopback. */
-const REPORT_WAIT_MS = 2000;
 /** How much of what a run reads of its subtitle track is kept for a feed that becomes ready. */
 const LIVE_BYTES = 2 * 1024 * 1024;
 /** How much of a feed may wait for a player that doesn't read it. */
 const FEED_WAITING_BYTES = 2 * 1024 * 1024;
 /** How long a channel's stream that failed goes after its others when Auto tries them again. */
 const FAILED_STREAM_MS = 2 * 60_000;
-/**
- * What a receiver may ask the address on the local network for: a session's playlists, and the
- * segments, subtitles and HLS addresses those name. Nothing else has a path there.
- */
-const RECEIVER_ROUTE =
-  /^\/r\/([\w-]+)\/(?:(master|video|subs|live)\.m3u8|v(\d{1,6})\.ts|s(\d{1,6})\.vtt|l(\d{1,9})\.ts|h((?:subs-)?[0-9a-z]{1,12}))$/;
-/** What reading where a movie's keyframes are may take of the provider, before any of it plays. */
-const INDEX_LIMITS = { bytes: 24 * 1024 * 1024, requests: 96, ms: 20_000 } as const;
-/** A run for a receiver that hasn't asked for anything this long ends, as a long pause does here. */
-const RECEIVER_IDLE_MS = 5 * 60_000;
-/** How long a receiver's request for a segment's subtitles waits for the run to have read them. */
-const CUES_WAIT_MS = 15_000;
-/**
- * How long a receiver's request for a segment waits for it to be made. A provider or an ffmpeg
- * that takes longer has stopped: the request ends, and so does the run.
- */
-const SEGMENT_WAIT_MS = 30_000;
-/** The lines of a channel's playlist for a receiver, and how many it needs before it is given out. */
-const LIVE_LIST = { kept: 6, least: 2 } as const;
-/** How long a receiver's request for a channel's playlist waits for its first segments. */
-const LIVE_START_MS = 20_000;
-/** The most one segment of a channel may hold; a few megabytes is usual. */
-const LIVE_SEGMENT_BYTES = 48 * 1024 * 1024;
-
 interface SessionBase {
   readonly id: string;
   readonly token: string;
@@ -314,17 +278,7 @@ interface SessionBase {
   failure: StreamFailure | null;
   diagnostic: PlaybackDiagnostic | null;
   /** Where a receiver plays the session from, when one does. */
-  readonly lan: Lan | null;
-}
-
-/** A session's address on the local network, for the receiver that plays it. */
-interface Lan {
-  /** "http://192.168.1.20:49152" */
-  readonly origin: string;
-  /** How often the receiver asked for something of the session: none means it can't reach here. */
-  requests: number;
-  /** Tells whoever opened the session that its stream can't go on; see `ReceiverTarget.failed`. */
-  readonly failed: (failure: StreamFailure) => void;
+  readonly lan: ReceiverLan | null;
 }
 
 /** A receiver on the local network that plays a session, in place of the UI's player. */
@@ -366,70 +320,6 @@ export interface ReceiverTitle {
   readonly offset: number;
 }
 
-/** What a receiver plays of a channel, besides what the session holds for the UI's player. */
-interface LiveReceiver {
-  readonly token: string;
-  /** MPEG-TS: the segments ffmpeg made lately, by number. */
-  readonly made: Map<number, Buffer>;
-  /** The playlist's lines; `fresh` where the provider's stream started again. */
-  list: { readonly index: number; readonly length: number; readonly fresh: boolean }[];
-  /** The ffmpeg whose segments count, by the id in their address, and its first segment. */
-  run: string | null;
-  first: number;
-  /** The stream is over: the provider ended it, or it failed. */
-  over: boolean;
-  /** Heard when the playlist grew or the stream ended. */
-  readonly changed: Set<() => void>;
-  readonly epochs: number[];
-  duration: number;
-}
-
-/** What a receiver plays of a movie or episode. */
-interface TitleReceiver {
-  /** Where its segments start; its picture copied, or converted once copying can't keep to them. */
-  plan: SegmentPlan;
-  /** Where the plan's starts come from, for the diagnostics. */
-  readonly index: "cues" | "samples" | "none";
-  /** What the receiver was last sent: the tracks chosen, under a token of their own. */
-  load: TitleLoad | null;
-}
-
-/** One load of a title on a receiver: a playlist for the chosen tracks, and its segments. */
-interface TitleLoad {
-  readonly token: string;
-  readonly audio: number | null;
-  /** A text subtitle track, or null. */
-  readonly subtitle: number | null;
-  readonly store: SegmentStore;
-  /** Aborts when another load takes its place, or the session closes. */
-  readonly closed: AbortController;
-  run: ReceiverRun | null;
-  /** Ends the run when the receiver asks for nothing for a long time. */
-  idle: ReturnType<typeof setTimeout> | undefined;
-  /** Heard when a segment arrived, a run ended, or subtitles were read. */
-  readonly changed: Set<() => void>;
-}
-
-/** One ffmpeg making a title's segments in order, from one of them on. */
-interface ReceiverRun {
-  readonly id: string;
-  /** Its first segment, and how many it makes that end where the playlist says. */
-  readonly from: number;
-  readonly count: number;
-  /** The segment being taken from it, or the next to come. */
-  next: number;
-  ended: boolean;
-  readonly signal: AbortSignal;
-  /** Ends it: the receiver went elsewhere, or paused for long. */
-  stop(): void;
-  /** The text subtitles it has read, on the file's clock. */
-  readonly cues: SubtitleEntry[];
-  /** What the track holds from before the run's start, or null when that can't be had. */
-  readonly before: Promise<Before | null>;
-  /** Told once its first segment is whole: the provider is no longer the run's alone. */
-  settled?: () => void;
-}
-
 interface LiveSession extends SessionBase {
   readonly kind: "live";
   readonly channel: OwnedId;
@@ -458,10 +348,8 @@ interface LiveSession extends SessionBase {
   readonly hlsRequests: Set<Promise<void>>;
   /** HLS: the upstream addresses its playlists named, by the id in their proxy address. */
   readonly hls: ReturnType<typeof hlsAddresses> | null;
-  /** HLS: the proxy address that stands for an id, for whoever plays the session. */
-  readonly proxied: (id: string) => string;
   /** What a receiver plays of it, when one does. */
-  readonly receiver: LiveReceiver | null;
+  receiver: LiveReceiverDelivery | null;
   /** Re-encode the picture even when the player could decode it; see `open`. */
   readonly repair: boolean;
   /** The sound track chosen by PID, or null for the channel's first. */
@@ -561,7 +449,7 @@ interface TitleSessionState extends SessionBase {
   /** What the run has read of its subtitle track. */
   live: Live | null;
   /** What a receiver plays of it, when one does. */
-  receiver: TitleReceiver | null;
+  receiver: TitleReceiverDelivery | null;
 }
 
 type Session = LiveSession | TitleSessionState;
@@ -607,32 +495,6 @@ interface Live {
   bytes: number;
 }
 
-/** One reading of a subtitle track's past: when it is over, and what it took of the provider. */
-interface Attempt {
-  /** The player left, the session closed, or the reading ran out of time. */
-  readonly signal: AbortSignal;
-  readonly spent: Spent;
-  /**
-   * The stretch being stepped through is more of the file than the reading has left to take, so
-   * each request asks for the least: a block's header and what little follows it.
-   */
-  narrow: boolean;
-}
-
-interface Spent {
-  bytes: number;
-  requests: number;
-}
-
-/** A subtitle track's past couldn't be had for a position; `kind` says why. */
-class Unavailable extends Error {
-  readonly kind: SubtitlesUnavailable;
-  constructor(kind: SubtitlesUnavailable) {
-    super(kind);
-    this.kind = kind;
-  }
-}
-
 /** The subtitles the player is reading: one track, from one position on. */
 interface Feed {
   readonly track: number;
@@ -648,26 +510,6 @@ interface Feed {
   close(): void;
   /** The provider put another file behind the address: what the feed sent is of one that is gone. */
   changed(): void;
-}
-
-/** What the player asked a feed for. */
-interface FeedRequest {
-  readonly track: number;
-  /** The teletext page or caption channel, for a track that holds several. */
-  readonly page: number | null;
-  /** The decoder the player was told for the track's packets; none for text. */
-  readonly codec: string;
-  /** Seconds into the title. */
-  readonly start: number;
-}
-
-/** What a track holds before a position that the player needs to start there. */
-interface Before {
-  readonly entries: readonly SubtitleEntry[];
-  /** Up to this time on the file's clock; the run brings what comes after. */
-  readonly upTo: number;
-  /** The file's clock at the start of the title. */
-  readonly origin: number;
 }
 
 export interface PlaybackDeps {
@@ -862,22 +704,16 @@ export class Playback extends Context.Service<
   static readonly layer = (deps: PlaybackDeps) => Layer.effect(Playback, make(deps));
 }
 
-/** The requested input PID, else the remembered language, else the channel's first sound. */
-function liveAudio(layout: StreamLayout | null, pid: number | null, language: string | null) {
-  return (
-    layout?.audio.find((track) => track.pid === pid) ??
-    (language
-      ? layout?.audio.find((track) => languageCode(track.language) === language)
-      : undefined) ??
-    layout?.audio[0]
-  );
-}
-
 function make(deps: PlaybackDeps) {
   return Effect.gen(function* () {
     const subscriptions = yield* Subscriptions;
     const coordination = yield* PlaybackCoordination;
     const diagnostics = yield* Diagnostics;
+    const receiverTools = {
+      ffmpeg: deps.ffmpeg,
+      record: diagnostics.record,
+      limits: deps.receiver ?? {},
+    } satisfies ReceiverTools;
     // The app provides storage; standalone playback ports can run without a database.
     const verifiedFiles = Option.getOrNull(yield* Effect.serviceOption(VerifiedFiles));
     const savedSubtitles = Option.getOrNull(yield* Effect.serviceOption(SavedSubtitles));
@@ -960,14 +796,14 @@ function make(deps: PlaybackDeps) {
           return;
         }
         const index = made[3] === undefined ? null : Number(made[3]);
-        // A title's segment is told to come only once there is room for it.
-        if (maker.kind === "title" && index !== null) {
-          void receiveSegment(maker, made[2]!, index, request, response);
+        if (!maker.receiver) {
+          if ((maker.kind === "live" || index === null) && request.headers.expect)
+            response.writeContinue();
+          if (maker.kind === "live" || index !== null) request.resume();
+          response.writeHead(410).end();
           return;
         }
-        if (request.headers.expect) response.writeContinue();
-        if (maker.kind === "live") receiveLive(maker, made[2]!, index, request, response);
-        else response.writeHead(410).end();
+        void maker.receiver.receive(made[2]!, index, request, response);
         return;
       }
       if (request.headers.expect) response.writeContinue();
@@ -988,7 +824,15 @@ function make(deps: PlaybackDeps) {
         else if (session.delivery === "mpegts" && session.hls) {
           await serveHlsTs(session, response);
         } else if (session.hls) {
-          await serveHls(session, session.hls, route[3] ?? null, url, request, response);
+          await serveHls(
+            session,
+            session.hls,
+            route[3] ?? null,
+            url,
+            request,
+            response,
+            (id) => `${base}/stream/${session.token}/${id}`,
+          );
         } else await serveLive(session, response);
         return;
       }
@@ -1142,15 +986,7 @@ function make(deps: PlaybackDeps) {
       session: LiveSession,
       signal: AbortSignal,
       failed: (failure: StreamFailure) => void,
-    ): Promise<
-      | {
-          readonly ok: true;
-          readonly contentType: string | null;
-          readonly reader: ReadableStreamDefaultReader<Uint8Array>;
-          readonly start: StreamStart;
-        }
-      | { readonly ok: false; readonly failure: StreamFailure }
-    > {
+    ): Promise<Opened> {
       const noStream: StreamFailure = {
         kind: "network",
         detail: t("The provider sent no stream."),
@@ -1412,7 +1248,7 @@ function make(deps: PlaybackDeps) {
           while (restarts[0] !== undefined && restarts[0] < epoch.startS - 30) restarts.shift();
           if (restarts.length >= 16) throw hlsSubsetFailure();
           restarts.push(epoch.startS);
-          if (session.receiver && epoch.startS > 0) session.receiver.epochs.push(epoch.startS);
+          if (session.receiver && epoch.startS > 0) session.receiver.epoch(epoch.startS);
           const layout = epoch.layout;
           const matching = layout.audio.filter(
             (track) =>
@@ -1604,6 +1440,7 @@ function make(deps: PlaybackDeps) {
       url: URL,
       request: IncomingMessage,
       response: ServerResponse,
+      proxied: (id: string) => string,
     ): Promise<void> {
       // Subtitle playlists and their children share the bounded address registry, but carry a
       // separate proxy route marker. Their HTTP status must never become the video's failure.
@@ -1663,7 +1500,7 @@ function make(deps: PlaybackDeps) {
             outcome(failure);
             response.writeHead("status" in failure ? failure.status : 502).end();
           } else if (opened.playlist) {
-            await sendPlaylist(session, addresses, opened, response, subtitle);
+            await sendPlaylist(session, addresses, opened, response, proxied, subtitle);
             outcome(null);
           } else {
             await passOn(opened, response);
@@ -1688,7 +1525,7 @@ function make(deps: PlaybackDeps) {
           if (opened?.playlist) {
             session.delivered = { ...session.delivered, variantId: variant.id };
             failedAt.delete(variant.url);
-            await sendPlaylist(session, addresses, opened, response);
+            await sendPlaylist(session, addresses, opened, response, proxied);
             outcome(null);
             // Once per session: the player reloads a live playlist every few seconds.
             if (!kept) report("ok");
@@ -1742,6 +1579,7 @@ function make(deps: PlaybackDeps) {
       addresses: ReturnType<typeof hlsAddresses>,
       opened: Started,
       response: ServerResponse,
+      proxied: (id: string) => string,
       subtitle = false,
     ): Promise<void> {
       const parts = [...opened.parts];
@@ -1773,7 +1611,7 @@ function make(deps: PlaybackDeps) {
       );
       const playlist = rewritePlaylist(text, opened.url, (target) => {
         const marker = subtitle || subtitleUrls.has(target) ? "subs-" : "";
-        return session.proxied(`${marker}${addresses.idOf(target, pin)}`);
+        return proxied(`${marker}${addresses.idOf(target, pin)}`);
       });
       if (session.receiver && !subtitle) session.failure = null;
       response.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
@@ -1918,16 +1756,13 @@ function make(deps: PlaybackDeps) {
       // it. What the receiver was sent ends there rather than go on as a mixture of the two, and
       // so does a load made of the session after that. Opening the title again reads the new file.
       const receiver = session.receiver;
-      if (receiver?.load && session.identity.generation !== session.probed) {
+      if (receiver?.loaded && session.identity.generation !== session.probed) {
         const failure: StreamFailure = {
           kind: "network",
           detail: t("The provider put another file behind this title while it played."),
         };
         session.failure = failure;
-        const { load } = receiver;
-        receiver.load = null;
-        load.closed.abort();
-        session.lan?.failed(failure);
+        receiver.fileReplaced(failure);
       }
       return held;
     }
@@ -2237,6 +2072,129 @@ function make(deps: PlaybackDeps) {
       return history;
     }
 
+    /** One title run's slot bookkeeping and loopback report addresses, shared by both players. */
+    function beginRun(session: TitleSessionState, abort: AbortController) {
+      session.starting = abort;
+      session.running = abort;
+      // What the player said of its buffer was of the run before.
+      session.progress = null;
+      // ffmpeg asks for the file in a moment: recovery's request is over by then.
+      session.slot.clear();
+      const id = randomBytes(9).toString("base64url");
+      const settled = () => {
+        if (session.starting !== abort) return;
+        session.starting = null;
+        session.slot.look();
+      };
+      const reportUrl = (what: string) => `${base}/report/${session.token}/${id}/${what}`;
+      return {
+        id,
+        source: `${base}/source/${session.token}`,
+        // A user name makes ffmpeg ask with Expect: 100-continue, so delivery can wait for room.
+        segments: `http://ffmpeg@127.0.0.1:${port}/hls/${session.token}/${id}/%d.ts`,
+        subtitles: reportUrl("subtitles"),
+        start: reportUrl("start"),
+        report: (reports: Reports) => void session.reports.set(id, reports),
+        settled,
+        ended: () => {
+          session.reports.delete(id);
+          if (session.running === abort) session.running = null;
+          settled();
+        },
+      };
+    }
+
+    /** Capture the final mode only after HLS preparation and the last admission guard. */
+    function liveSource(session: LiveSession) {
+      const input = session.hlsInput;
+      const addresses = session.hls;
+      const stream: LiveStream = input
+        ? {
+            kind: "converted-hls",
+            layout: hlsOutputLayout(input.firstLayout),
+            bytes: (signal) => convertedHls(session, input, signal),
+            failure: hlsFailure,
+          }
+        : addresses
+          ? {
+              kind: "hls",
+              passThrough: (id, url, request, response, proxied) =>
+                serveHls(session, addresses, id, url, request, response, proxied),
+            }
+          : { kind: "mpegts", open: (signal, failed) => openVariant(session, signal, failed) };
+      return {
+        kind: "live",
+        closed: session.closed.signal,
+        decoders: session.decoders,
+        failure: () => session.failure,
+        fail: (failure) => (session.failure ??= failure),
+        diagnostic: () => session.diagnostic,
+        noteDiagnostic: (diagnostic) => {
+          session.diagnostic = diagnostic;
+        },
+        stream,
+        audio: session.audio,
+        audioLanguage: session.audioLanguage,
+        repair: session.repair,
+        made: (run) => ({
+          segments: `${base}/hls/${session.token}/${run}/%d.ts`,
+          list: `${base}/hls/${session.token}/${run}/list`,
+        }),
+        begin: (active) => {
+          session.active = active;
+        },
+        started: (layout, playing) => {
+          session.layout = layout;
+          session.playing = playing;
+        },
+        child: (ended) => {
+          session.hlsChildren.add(ended);
+          void ended.finally(() => session.hlsChildren.delete(ended));
+        },
+      } satisfies LiveReceiverSource;
+    }
+
+    /** The receiver can read this file and start a run, without access to the session itself. */
+    function titleSource(session: TitleSessionState, probe: TitleProbe) {
+      return {
+        kind: "title",
+        closed: session.closed.signal,
+        decoders: session.decoders,
+        failure: () => session.failure,
+        fail: (failure) => (session.failure ??= failure),
+        diagnostic: () => session.diagnostic,
+        noteDiagnostic: (diagnostic) => {
+          session.diagnostic = diagnostic;
+        },
+        probe,
+        size: () => session.identity.size,
+        generation: () => session.identity.generation,
+        begin: (abort) => {
+          // A new run starts clean: what went wrong before was dealt with, or happens again.
+          session.failure = null;
+          return beginRun(session, abort);
+        },
+        reader: (attempt, most) => fileReader(session, session.kept, attempt, most),
+        layout: async (read) => (session.kept.layout ??= await readLayout(read)),
+        history: (track) => historyOf(session.kept, track),
+        subtitlesBefore: (wanted, attempt) => subtitlesBefore(session, probe, wanted, attempt),
+        recoveryMs: limits.ms,
+        recovering: (delta) => {
+          session.recovering += delta;
+        },
+        counts: () => ({
+          kept: session.kept.windows.most,
+          heldMs: Math.round(session.slot.counts.recoveryMs),
+          waitedMs: Math.round(session.slot.counts.longestWaitMs),
+          revoked: session.slot.counts.revoked,
+        }),
+        progress: (buffered, paused) => {
+          session.progress = { buffered, paused, at: performance.now() };
+          session.slot.look();
+        },
+      } satisfies TitleReceiverSource;
+    }
+
     /**
      * Plays a movie or episode from `start` with the chosen tracks, as fragmented MP4. A header
      * tells the player where the picture starts (`x-start`, title seconds). The picture doesn't
@@ -2278,27 +2236,14 @@ function make(deps: PlaybackDeps) {
         response.writeHead(415).end();
         return;
       }
-      session.starting = active;
-      session.running = active;
-      // What the player said of its buffer was of the run before.
-      session.progress = null;
-      // ffmpeg asks for the file in a moment: recovery's request is over by then.
-      session.slot.clear();
-      /** The run's picture reached the player, or never will: recovery may read again. */
-      const settled = () => {
-        if (session.starting !== active) return;
-        session.starting = null;
-        session.slot.look();
-      };
+      const lease = beginRun(session, active);
       // The run reads the file as the session knows it now, and keeps what it reads with it.
       const kept = session.kept;
       const generation = session.identity.generation;
-      const id = randomBytes(9).toString("base64url");
-      const reportUrl = (what: string) => `${base}/report/${session.token}/${id}/${what}`;
       const plan = titlePlan(probe, run, session.decoders, {
-        source: `${base}/source/${session.token}`,
-        subtitles: reportUrl("subtitles"),
-        start: reportUrl("start"),
+        source: lease.source,
+        subtitles: lease.subtitles,
+        start: lease.start,
       });
       const report = (outcome: "ok" | StreamFailure["kind"]) =>
         diagnostics.record({
@@ -2324,7 +2269,7 @@ function make(deps: PlaybackDeps) {
         // A player that holds back reading leaves the picture waiting in the pipe, and nobody
         // reads it now: the pipe closes with the run.
         child.stdout.destroy();
-        settled();
+        lease.settled();
       };
       signal.addEventListener("abort", stop, { once: true });
       // Held until the picture's start is known; ffmpeg pauses when too much waits.
@@ -2394,7 +2339,7 @@ function make(deps: PlaybackDeps) {
               }
             })
           : null;
-      session.reports.set(id, { start, ...(subtitles ? { subtitles: subtitles.receive } : {}) });
+      lease.report({ start, ...(subtitles ? { subtitles: subtitles.receive } : {}) });
       // ffmpeg can be gone before the proxy has heard what it sent, as after a run of a file's
       // last seconds: that arrives in a moment.
       const heard = ended.then((code) =>
@@ -2407,9 +2352,7 @@ function make(deps: PlaybackDeps) {
         const whole = (await subtitles?.whole()) === true;
         // ffmpeg exits cleanly after its input broke off too; the source knows better.
         reading?.end(whole && code === 0 && !signal.aborted && !session.failure);
-        session.reports.delete(id);
-        if (session.running === active) session.running = null;
-        settled();
+        lease.ended();
       });
 
       // Converted video starts exactly at `start`; copied video at the keyframe before it,
@@ -2497,7 +2440,7 @@ function make(deps: PlaybackDeps) {
       // with ffmpeg below: a run that broke off must not end like the title.
       if (!outputEnded) child.stdout.pipe(response, { end: false });
       report("ok");
-      settled();
+      lease.settled();
       void exited.then((code) => {
         signal.removeEventListener("abort", stop);
         // ffmpeg exits cleanly after its input broke off too; the source knows better.
@@ -3050,871 +2993,6 @@ function make(deps: PlaybackDeps) {
       }
     }
 
-    /**
-     * What a receiver asks this computer's address on the local network for. Only the session's
-     * own playlists, segments and subtitles answer, under the token of what the receiver was last
-     * sent, and only to an address of a local network. The token is what lets a receiver in; the
-     * address only narrows who may try.
-     */
-    async function serveReceiver(
-      session: Session,
-      lan: Lan,
-      request: IncomingMessage,
-      response: ServerResponse,
-    ): Promise<void> {
-      response.setHeader("Access-Control-Allow-Origin", "*");
-      response.setHeader("Cache-Control", "no-store");
-      if (!isPrivateAddress(request.socket.remoteAddress ?? "")) {
-        response.writeHead(403).end();
-        return;
-      }
-      if (request.method === "OPTIONS") {
-        response.writeHead(204, { "Access-Control-Allow-Headers": "Range" }).end();
-        return;
-      }
-      // A path with ".." in it is resolved before it is matched, so it names nothing here.
-      const url = new URL(request.url ?? "/", lan.origin);
-      const route = RECEIVER_ROUTE.exec(url.pathname);
-      const token =
-        session.kind === "live" ? session.receiver?.token : session.receiver?.load?.token;
-      if (!route || route[1] !== token || (request.method !== "GET" && request.method !== "HEAD")) {
-        response.writeHead(410).end();
-        return;
-      }
-      lan.requests++;
-      const [, , playlist, , , made, address] = route;
-      if (session.kind === "title") {
-        const receiver = session.receiver;
-        if (receiver?.load)
-          await serveReceiverTitle(session, receiver, receiver.load, route, response);
-        else response.writeHead(410).end();
-        return;
-      }
-      const receiver = session.receiver;
-      if (
-        receiver &&
-        session.hls &&
-        session.delivery === "hls" &&
-        (playlist === "live" || address !== undefined)
-      ) {
-        await serveHls(session, session.hls, address ?? null, url, request, response);
-      } else if (receiver && session.delivery === "mpegts" && playlist === "live") {
-        await sendLivePlaylist(session, receiver, response);
-      } else {
-        const segment = made === undefined ? undefined : receiver?.made.get(Number(made));
-        if (!segment) response.writeHead(404).end();
-        else {
-          response.writeHead(200, {
-            "Content-Type": "video/mp2t",
-            "Content-Length": segment.length,
-          });
-          response.end(segment);
-        }
-      }
-    }
-
-    /**
-     * A channel's playlist for a receiver: the segments made lately. The first one waits until
-     * there are enough to start playing from, or the stream turns out not to come.
-     */
-    async function sendLivePlaylist(
-      session: LiveSession,
-      receiver: LiveReceiver,
-      response: ServerResponse,
-    ): Promise<void> {
-      const left = new AbortController();
-      response.on("close", () => left.abort());
-      await until(
-        receiver.changed,
-        () => receiver.list.length >= LIVE_LIST.least || receiver.over,
-        AbortSignal.any([session.closed.signal, left.signal, AbortSignal.timeout(LIVE_START_MS)]),
-      );
-      if (response.destroyed) return;
-      if (receiver.list.length === 0) {
-        const failure = session.failure;
-        response.writeHead(failure && "status" in failure ? failure.status : 502).end();
-        return;
-      }
-      response.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
-      // A stream that is over says so, and the receiver stops asking.
-      response.end(livePlaylist(receiver.list) + (receiver.over ? "#EXT-X-ENDLIST\n" : ""));
-    }
-
-    /**
-     * Reads a channel's MPEG-TS from the provider for a receiver and has ffmpeg cut it into
-     * segments, which come back here one by one (see `receiveLive`). The picture and the chosen
-     * sound are copied when the receiver decodes them. One request to the provider, as for the
-     * UI's player; it starts when the session opens, so the receiver finds segments when it asks.
-     */
-    async function runLive(session: LiveSession, receiver: LiveReceiver): Promise<void> {
-      const started = performance.now();
-      const report = (
-        delivery: "direct" | "converted" | "none",
-        outcome: "ok" | StreamFailure["kind"],
-      ) =>
-        diagnostics.record({
-          op: "stream",
-          ms: Math.round(performance.now() - started),
-          delivery,
-          outcome,
-        });
-      const active = new AbortController();
-      session.active = active;
-      const signal = AbortSignal.any([session.closed.signal, active.signal]);
-      const over = (failure: StreamFailure) => {
-        if (signal.aborted) return;
-        session.failure ??= failure;
-        receiver.over = true;
-        tell(receiver.changed);
-      };
-
-      const hls = session.hlsInput;
-      const opened = hls
-        ? {
-            ok: true as const,
-            reader: null,
-            start: {
-              layout: hlsOutputLayout(hls.firstLayout),
-              diagnostic: {},
-              head: [],
-              pending: null,
-            },
-          }
-        : await openVariant(session, signal, (failure) => report("none", failure.kind));
-      if (signal.aborted) {
-        if (opened.ok) void opened.reader?.cancel().catch(() => {});
-        return;
-      }
-      if (!opened.ok) return over(opened.failure);
-      const { reader, start } = opened;
-      const { layout } = start;
-      const ffmpeg = deps.ffmpeg;
-      if (!layout || !ffmpeg) {
-        void reader?.cancel().catch(() => {});
-        report("none", "unsupported");
-        return over({
-          kind: "unsupported",
-          diagnostic: {
-            ...liveDiagnostic(layout, null, session.repair, session.audio),
-            diagnostic_delivery: "unknown",
-            diagnostic_stage: "inspect",
-            diagnostic_reason: !ffmpeg ? "tool_missing" : "inspection_undetermined",
-          },
-          detail: ffmpeg
-            ? t("A receiver plays channels sent as MPEG-TS or HLS, and this one is neither.")
-            : t("This build has no ffmpeg to make a receiver's stream."),
-        });
-      }
-      if (!hls) session.layout = layout;
-      const video = layout.video;
-      const input = hls ? convertedHls(session, hls, signal) : replay(start, reader!);
-      const cleaned =
-        video && video.codec !== "unknown" && CLEAN_START_CODECS.has(video.codec)
-          ? cleanStart(input, createCleanStart(video.pid, video.codec))
-          : input;
-      // The track asked for, else the sound in the viewer's language, else the channel's first.
-      const chosen = liveAudio(layout, session.audio, session.audioLanguage);
-      if (!hls) session.playing = chosen?.pid ?? null;
-      const decodes = (codec: Codec | "unknown") =>
-        codec !== "unknown" && session.decoders.has(codec);
-      const segments: LiveSegments = {
-        ...(hls ? { subtitles: [...new Set(layout.subtitles.map((track) => track.pid))] } : {}),
-        video: !video ? "none" : decodes(video.codec) ? "copy" : "h264",
-        audio: !chosen ? "none" : decodes(chosen.codec) ? "copy" : "aac",
-        pids: { video: video?.pid ?? null, audio: chosen?.pid ?? null },
-      };
-      const delivery =
-        segments.video === "h264" || segments.audio === "aac" ? "converted" : "direct";
-
-      session.diagnostic = {
-        ...liveDiagnostic(layout, null, session.repair, chosen?.pid ?? null),
-        ...start.diagnostic,
-        diagnostic_delivery: delivery,
-      };
-      const id = randomBytes(9).toString("base64url");
-      receiver.run = id;
-      receiver.first = (receiver.list.at(-1)?.index ?? -1) + 1;
-      const made = `${base}/hls/${session.token}/${id}`;
-      const child = spawn(
-        ffmpeg,
-        liveSegmentArguments(segments, receiver.first, `${made}/%d.ts`, `${made}/list`),
-        { stdio: ["pipe", "ignore", "pipe"] },
-      );
-      if (hls) {
-        const ended = new Promise<void>((resolve) => child.once("close", () => resolve()));
-        session.hlsChildren.add(ended);
-        void ended.finally(() => session.hlsChildren.delete(ended));
-      }
-      let errors = "";
-      child.stderr.on("data", (chunk: Buffer) => {
-        errors = (errors + chunk.toString()).slice(-2000);
-      });
-      const stop = () => child.kill("SIGKILL");
-      signal.addEventListener("abort", stop, { once: true });
-      const body = Readable.from(cleaned);
-      body.on("error", (cause) => {
-        if (!signal.aborted)
-          session.failure ??= hls ? hlsFailure(cause) : { kind: "network", detail: String(cause) };
-        child.stdin.end();
-      });
-      // ffmpeg stops reading when it fails or is killed; that write error is not the stream's.
-      child.stdin.on("error", () => {});
-      body.pipe(child.stdin);
-      child.on("error", (cause) =>
-        over({
-          kind: "unsupported",
-          detail: String(cause),
-          diagnostic: {
-            ...session.diagnostic,
-            diagnostic_stage: "convert",
-            diagnostic_reason: "tool_failed",
-          },
-        }),
-      );
-      child.on("close", (code) => {
-        signal.removeEventListener("abort", stop);
-        body.destroy();
-        if (signal.aborted) return;
-        const failure: StreamFailure =
-          session.failure ??
-          (code === 0
-            ? { kind: "network", detail: t("The provider's stream ended.") }
-            : {
-                kind: "unsupported",
-                detail: `${t("The stream could not be made into one a receiver plays.")} ${lastLine(errors, code, child.signalCode)}`,
-                diagnostic: {
-                  ...session.diagnostic,
-                  diagnostic_stage: "convert",
-                  diagnostic_reason: "conversion_failed",
-                },
-              });
-        report(delivery, failure.kind);
-        over(failure);
-      });
-      report(delivery, "ok");
-    }
-
-    /**
-     * What the ffmpeg of a channel's receiver stream sends back: a segment (`index`), kept until
-     * the playlist has moved past it, or its list of the segments that are whole, which puts
-     * them in the playlist.
-     */
-    function receiveLive(
-      session: LiveSession,
-      run: string,
-      index: number | null,
-      request: IncomingMessage,
-      response: ServerResponse,
-    ): void {
-      const receiver = session.receiver;
-      if (!receiver || receiver.run !== run) {
-        request.resume();
-        response.writeHead(410).end();
-        return;
-      }
-      request.on("error", () => {});
-      if (index !== null) {
-        const parts: Buffer[] = [];
-        let size = 0;
-        request.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > LIVE_SEGMENT_BYTES) request.destroy();
-          else parts.push(chunk);
-        });
-        request.on("end", () => {
-          if (receiver.run === run) receiver.made.set(index, Buffer.concat(parts));
-          response.writeHead(204).end();
-        });
-        return;
-      }
-      // The list comes anew with each segment: what it names that the playlist hasn't yet goes in.
-      let text = "";
-      request.setEncoding("utf8");
-      request.on("data", (part: string) => {
-        if (text.length < 64 * 1024) text += part;
-      });
-      request.on("end", () => {
-        response.writeHead(204).end();
-        if (receiver.run !== run) return;
-        for (const listed of listedSegments(text)) {
-          const newest = receiver.list.at(-1)?.index ?? -1;
-          if (listed.index <= newest || !receiver.made.has(listed.index)) continue;
-          // The first of an ffmpeg that isn't the session's first: the provider's stream started
-          // again, and its clock did too.
-          let fresh = receiver.list.length > 0 && listed.index === receiver.first;
-          while (
-            receiver.epochs[0] !== undefined &&
-            receiver.epochs[0] <= receiver.duration + 0.25
-          ) {
-            receiver.epochs.shift();
-            fresh = true;
-          }
-          receiver.duration += listed.length;
-          receiver.list = [...receiver.list, { ...listed, fresh }].slice(-LIVE_LIST.kept);
-          // One behind the playlist stays, for a receiver that asks for it a moment late.
-          const oldest = receiver.list[0]!.index - 1;
-          for (const kept of receiver.made.keys()) if (kept < oldest) receiver.made.delete(kept);
-        }
-        tell(receiver.changed);
-      });
-    }
-
-    /**
-     * Where the segments of the session's title start for a receiver: on the keyframes the file's
-     * index names when the receiver decodes the picture and the index can be read and used, and
-     * every few seconds with the picture converted otherwise. Reading the index takes a few
-     * requests of the provider and a bounded amount, before anything plays. Null when the file
-     * has no picture or doesn't say how long it is: it gets no playlist then.
-     */
-    async function planSegments(
-      session: TitleSessionState,
-      probe: TitleProbe,
-    ): Promise<Pick<TitleReceiver, "plan" | "index"> | null> {
-      const video = probe.video;
-      const end = endOf(probe);
-      if (!video || end === null) return null;
-      const converted = () => {
-        const plan = convertPlan(video.start, end);
-        return plan && { plan, index: "none" as const };
-      };
-      if (video.codec === null || !session.decoders.has(video.codec)) return converted();
-      const attempt: Attempt = {
-        signal: AbortSignal.any([session.closed.signal, AbortSignal.timeout(INDEX_LIMITS.ms)]),
-        spent: { bytes: 0, requests: 0 },
-        narrow: false,
-      };
-      const read = fileReader(session, session.kept, attempt, INDEX_LIMITS);
-      let keyframes: number[] | null = null;
-      let index: TitleReceiver["index"] = "none";
-      try {
-        if (probe.container === "matroska") {
-          const layout = (session.kept.layout ??= await readLayout(read));
-          // ffmpeg numbers its streams by the tracks it reads, in the file's order.
-          const track = layout?.tracks[video.id]?.number;
-          keyframes =
-            layout && track !== undefined
-              ? layout.cues.flatMap((cue) => (cue.track === track ? [cue.time] : []))
-              : null;
-          index = "cues";
-        } else if (probe.container === "mp4") {
-          // A cached probe hasn't read this session's source. Learn its size through the same
-          // bounded reader; the index then reuses the header's kept window.
-          if (session.identity.size === null) await read(0, 16);
-          if (session.identity.size !== null) {
-            const times = await mp4Keyframes(read, session.identity.size, video.id);
-            keyframes = times && times.map((time) => video.start + time);
-            index = "samples";
-          }
-        }
-      } catch {
-        // The provider didn't give the index, or it is more than may be read.
-        keyframes = null;
-      }
-      const plan = keyframes && keyframes.length > 0 ? copyPlan(keyframes, video.start, end) : null;
-      return plan ? { plan, index } : converted();
-    }
-
-    /** A receiver's request for something of a title: a playlist, a segment or a segment's subtitles. */
-    async function serveReceiverTitle(
-      session: TitleSessionState,
-      receiver: TitleReceiver,
-      load: TitleLoad,
-      route: RegExpExecArray,
-      response: ServerResponse,
-    ): Promise<void> {
-      const [, , playlist, video, cues] = route;
-      const probe = session.probe;
-      if (!probe) {
-        response.writeHead(410).end();
-        return;
-      }
-      // A receiver that asks is still there: the run may go on, and does while a request waits.
-      const idle = () => {
-        clearTimeout(load.idle);
-        load.idle = setTimeout(
-          () => (load.store.awaited().length > 0 ? idle() : load.run?.stop()),
-          deps.receiver?.idleMs ?? RECEIVER_IDLE_MS,
-        );
-      };
-      idle();
-      const { plan } = receiver;
-      const text = (body: string) => {
-        response.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl" });
-        response.end(body);
-      };
-      if (playlist === "master") {
-        const size = session.identity.size;
-        const track = subtitleTracks(probe.subtitles).find((each) => each.id === load.subtitle);
-        text(
-          masterPlaylist(
-            size !== null ? (size * 8) / (plan.end - plan.starts[0]!) : 8_000_000,
-            track ? { name: track.label, language: languageCode(track.language) } : null,
-          ),
-        );
-      } else if (playlist === "video") text(titlePlaylist(plan, (index) => `v${index}.ts`));
-      else if (playlist === "subs" && load.subtitle !== null) {
-        text(titlePlaylist(plan, (index) => `s${index}.vtt`));
-      } else if (video !== undefined && Number(video) < plan.starts.length) {
-        await sendSegment(session, receiver, load, Number(video), response);
-      } else if (
-        cues !== undefined &&
-        load.subtitle !== null &&
-        Number(cues) < plan.starts.length
-      ) {
-        await sendCues(receiver, load, Number(cues), response);
-      } else response.writeHead(404).end();
-    }
-
-    /**
-     * A segment of a title for a receiver, once it is made. Where the receiver asks is where it
-     * is: a run that isn't about to make the segment gives way to one that starts with it, so a
-     * skip anywhere in the title costs one new request to the provider, as for the UI's player.
-     */
-    async function sendSegment(
-      session: TitleSessionState,
-      receiver: TitleReceiver,
-      load: TitleLoad,
-      index: number,
-      response: ServerResponse,
-    ): Promise<void> {
-      const left = new AbortController();
-      response.on("close", () => left.abort());
-      const run = load.run;
-      // The one being taken from ffmpeg now, or the next: anything further is sooner had afresh.
-      const coming =
-        run !== null &&
-        !run.ended &&
-        !run.signal.aborted &&
-        index >= run.next &&
-        index <= run.next + 1 &&
-        index < run.from + run.count;
-      if (!load.store.has(index) && !coming) startRun(session, receiver, load, index);
-      const late = AbortSignal.timeout(deps.receiver?.segmentMs ?? SEGMENT_WAIT_MS);
-      const segment = await load.store.take(
-        index,
-        AbortSignal.any([load.closed.signal, left.signal, late]),
-      );
-      noteAhead(session, load);
-      if (!segment && late.aborted && !left.signal.aborted && !load.closed.signal.aborted) {
-        // The provider, or the ffmpeg reading it, has stopped. The run ends, which frees the
-        // provider, and whoever opened the session hears; asking again starts a new one.
-        const failure: StreamFailure = (session.failure ??= {
-          kind: "network",
-          detail: t("The provider did not send the file in time."),
-        });
-        load.run?.stop();
-        load.store.fail();
-        session.lan?.failed(failure);
-        if (!response.destroyed) response.writeHead(504).end();
-        return;
-      }
-      if (response.destroyed) return;
-      if (!segment) {
-        const failure = session.failure;
-        response.writeHead(failure && "status" in failure ? failure.status : 503).end();
-        return;
-      }
-      response.writeHead(200, { "Content-Type": "video/mp2t", "Content-Length": segment.length });
-      response.end(segment);
-    }
-
-    /**
-     * Tells the session how much of the title waits for the receiver, which says when a reading
-     * of a subtitle track's past may have the provider: while ffmpeg is held, playback spares it.
-     */
-    function noteAhead(session: TitleSessionState, load: TitleLoad): void {
-      const run = load.run;
-      session.progress = {
-        buffered: load.store.ahead * SEGMENT_S,
-        paused: run !== null && !run.ended && !load.store.room(run.next),
-        at: performance.now(),
-      };
-      session.slot.look();
-    }
-
-    /**
-     * Starts the ffmpeg that makes a title's segments from segment `from` on, in place of the one
-     * before. `mismatch` when it takes the place of a copied run whose segment didn't start where
-     * the file's index said.
-     */
-    function startRun(
-      session: TitleSessionState,
-      receiver: TitleReceiver,
-      load: TitleLoad,
-      from: number,
-      mismatch = false,
-    ): void {
-      const probe = session.probe;
-      const ffmpeg = deps.ffmpeg;
-      if (!probe || !ffmpeg) return;
-      const started = performance.now();
-      load.run?.stop();
-      // Requests that wait for a segment this run doesn't bring first get none.
-      for (const index of load.store.awaited()) {
-        if (index < from || index > from + 1) load.store.fail(index);
-      }
-      const { plan } = receiver;
-      const abort = new AbortController();
-      const signal = AbortSignal.any([load.closed.signal, abort.signal]);
-      const id = randomBytes(9).toString("base64url");
-      const reportUrl = (what: string) => `${base}/report/${session.token}/${id}/${what}`;
-      const cuts = runCuts(
-        plan,
-        from,
-        probe.origin,
-        // ffmpeg's reader for MP4 seeks by presentation time; see `runCuts`.
-        probe.video?.reordered === true && probe.container !== "mp4",
-      );
-      const planned = receiverPlan(
-        probe,
-        {
-          audio: load.audio,
-          subtitle: load.subtitle,
-          convert: plan.video === "convert",
-          cuts,
-          from,
-          first: plan.starts[0]!,
-        },
-        session.decoders,
-        {
-          source: `${base}/source/${session.token}`,
-          // ffmpeg starts sending the next segment without waiting for an answer to the last,
-          // and would read the whole file ahead of the receiver. With a name in the address it
-          // asks first, "Expect: 100-continue", as it does to learn how a server wants a login,
-          // and waits for the answer; the proxy wants none and answers when there is room.
-          segments: `http://ffmpeg@127.0.0.1:${port}/hls/${session.token}/${id}/%d.ts`,
-          subtitles: reportUrl("subtitles"),
-        },
-      );
-      let reported = false;
-      const report = (outcome: "ok" | StreamFailure["kind"]) => {
-        if (reported) return;
-        reported = true;
-        diagnostics.record({
-          op: "receiver",
-          ms: Math.round(performance.now() - started),
-          video: planned.video,
-          audio: planned.audio,
-          index: mismatch ? "mismatch" : planned.video === "copy" ? receiver.index : "none",
-          outcome,
-        });
-      };
-
-      // A new run starts clean: what went wrong before was dealt with, or happens again.
-      session.failure = null;
-      session.starting = abort;
-      session.running = abort;
-      session.progress = null;
-      // ffmpeg asks for the file in a moment: recovery's request is over by then.
-      session.slot.clear();
-      /** The run's first segment reached the store, or never will: recovery may read again. */
-      const settled = () => {
-        if (session.starting !== abort) return;
-        session.starting = null;
-        session.slot.look();
-      };
-
-      const child = spawn(ffmpeg, planned.args, { stdio: ["ignore", "ignore", "pipe"] });
-      let errors = "";
-      let spawnFailed = false;
-      child.stderr.on("data", (chunk: Buffer) => {
-        errors = (errors + chunk.toString()).slice(-2000);
-      });
-      const stop = () => {
-        child.kill("SIGKILL");
-        settled();
-      };
-      signal.addEventListener("abort", stop, { once: true });
-      const exited = new Promise<number | null>((resolve) => {
-        child.on("close", resolve);
-        child.on("error", (cause) => {
-          errors = String(cause);
-          spawnFailed = true;
-          resolve(null);
-        });
-      });
-
-      session.diagnostic = {
-        ...titleDiagnostic(probe, planned, load.audio),
-        diagnostic_fallback: mismatch ? "video" : "none",
-      };
-      const expected = plan.starts[from]!;
-      const cues: SubtitleEntry[] = [];
-      // What the run reads of its subtitle track is kept with the session's file, as a run of the
-      // UI's player keeps it, so a later position finds it read.
-      const kept = session.kept;
-      const generation = session.identity.generation;
-      const reading =
-        planned.subtitle && load.subtitle !== null
-          ? historyOf(kept, load.subtitle).reading()
-          : null;
-      const subtitles =
-        planned.subtitle && reading
-          ? subtitleSink(planned.subtitle, (entry) => {
-              // What it reads now is of another file than it started in.
-              if (session.identity.generation !== generation) return;
-              reading.add(entry);
-              reading.reach(entry.from - interleave(probe));
-              cues.push(entry);
-              tell(load.changed);
-            })
-          : null;
-      reading?.begin(from === 0 ? Number.NEGATIVE_INFINITY : expected + interleave(probe));
-      if (subtitles) session.reports.set(id, { subtitles: subtitles.receive });
-
-      const run: ReceiverRun = {
-        id,
-        from,
-        count: cuts.count,
-        next: from,
-        ended: false,
-        signal,
-        stop: () => abort.abort(),
-        cues,
-        // From the start of the file a run reads every line itself.
-        before:
-          load.subtitle === null || from === 0
-            ? Promise.resolve(null)
-            : cuesBefore(session, probe, load, load.subtitle, expected - probe.origin, signal),
-      };
-      load.run = run;
-
-      void exited.then(async (code) => {
-        signal.removeEventListener("abort", stop);
-        const whole = (await subtitles?.whole()) === true;
-        // ffmpeg exits cleanly after its input broke off too; the source knows better.
-        reading?.end(whole && code === 0 && !signal.aborted && !session.failure);
-        session.reports.delete(id);
-        run.ended = true;
-        if (session.running === abort) session.running = null;
-        settled();
-        if (signal.aborted) return;
-        if (code !== 0 || session.failure) {
-          session.failure ??= {
-            kind: "unsupported",
-            detail: `${t("The file could not be played.")} ${lastLine(errors, code, child.signalCode)}`,
-            diagnostic: {
-              ...session.diagnostic,
-              diagnostic_stage: "convert",
-              diagnostic_reason: spawnFailed ? "tool_failed" : "conversion_failed",
-            },
-          };
-          report(session.failure.kind);
-          // Nothing more comes of this run, and the next would fail the same way.
-          load.store.fail();
-        } else {
-          // It read the file to its end: a segment still waited for isn't in it.
-          for (const index of load.store.awaited()) if (index >= run.next) load.store.fail(index);
-        }
-        tell(load.changed);
-      });
-      run.settled = () => {
-        report("ok");
-        settled();
-      };
-    }
-
-    /**
-     * A segment a title's ffmpeg sends back. ffmpeg asks before it sends one (see `startRun`),
-     * and is told to go on only when the receiver is near that segment, which holds ffmpeg, and
-     * through it the provider's connection, while the receiver has enough. What follows a run's
-     * last cut isn't a segment of the playlist: the run ends there.
-     *
-     * The receiver has the playlist already, so every segment has to hold what that says: its
-     * pictures' times are read from the segment itself, the first where the segment starts and
-     * none at or after where the next does. A copied one that doesn't means the file's index
-     * named a keyframe that isn't there, or left the segment too long to keep: the title's
-     * picture is converted from then on, with keyframes made at the same starts. A converted one
-     * that doesn't can't be put right, and fails the stream.
-     */
-    async function receiveSegment(
-      session: TitleSessionState,
-      id: string,
-      index: number,
-      request: IncomingMessage,
-      response: ServerResponse,
-    ): Promise<void> {
-      const receiver = session.receiver;
-      const load = receiver?.load;
-      const run = load?.run;
-      const refuse = () => {
-        request.resume();
-        if (!response.headersSent) response.writeHead(410).end();
-      };
-      if (!receiver || !load || !run || run.id !== id) return refuse();
-      if (index >= run.from + run.count) {
-        run.stop();
-        return refuse();
-      }
-      /** The segment isn't what the playlist says: converted from here on, if it was copied. */
-      const wrong = () => {
-        run.stop();
-        if (receiver.plan.video === "copy") {
-          receiver.plan = { ...receiver.plan, video: "convert" };
-          startRun(session, receiver, load, index, true);
-        } else {
-          session.failure ??= {
-            kind: "unsupported",
-            detail: t("The file's picture can't be cut where a receiver's playlist needs it."),
-            diagnostic: {
-              ...titleDiagnostic(session.probe, null, load.audio),
-              diagnostic_stage: "convert",
-              diagnostic_reason: "conversion_failed",
-              diagnostic_fallback: "video",
-            },
-          };
-          load.store.fail();
-        }
-        refuse();
-      };
-      request.on("error", () => {});
-      run.next = index;
-      // ffmpeg asked before sending: it waits here, having read no more of the provider's file
-      // than this segment took.
-      await load.store.whenRoom(index, run.signal);
-      if (run.signal.aborted) return refuse();
-      if (request.headers.expect) response.writeContinue();
-      const parts: Buffer[] = [];
-      let size = 0;
-      try {
-        for await (const chunk of request as AsyncIterable<Buffer>) {
-          if (run.signal.aborted) return refuse();
-          size += chunk.length;
-          if (size > load.store.limits.segment) return wrong();
-          parts.push(chunk);
-        }
-      } catch {
-        return refuse();
-      }
-      if (run.signal.aborted) return refuse();
-      const segment = Buffer.concat(parts);
-      const listed = segmentSpan(receiver.plan, index);
-      const shows = pictureSpan(segment);
-      if (
-        shows === null ||
-        Math.abs(shows.first - listed.start) > listed.within ||
-        (listed.end !== null && shows.last >= listed.end + listed.within)
-      ) {
-        return wrong();
-      }
-      load.store.put(index, segment);
-      run.next = index + 1;
-      run.settled?.();
-      noteAhead(session, load);
-      tell(load.changed);
-      response.writeHead(204).end();
-    }
-
-    /**
-     * What a text subtitle track holds from before `start` seconds into the title that a run
-     * from there doesn't bring: the line on screen at the position, above all. It is read as for
-     * the UI's player (see `subtitlesBefore`), when playback spares the provider. Null when it
-     * can't be had, which the diagnostics note: the track then shows from its next line.
-     */
-    async function cuesBefore(
-      session: TitleSessionState,
-      probe: TitleProbe,
-      load: TitleLoad,
-      track: number,
-      start: number,
-      signal: AbortSignal,
-    ): Promise<Before | null> {
-      const started = performance.now();
-      const spent: Spent = { bytes: 0, requests: 0 };
-      const attempt: Attempt = {
-        signal: AbortSignal.any([signal, AbortSignal.timeout(limits.ms)]),
-        spent,
-        narrow: false,
-      };
-      const record = (outcome: "ok" | SubtitlesUnavailable) =>
-        diagnostics.record({
-          op: "subtitles",
-          ms: Math.round(performance.now() - started),
-          bytes: spent.bytes,
-          requests: spent.requests,
-          kept: session.kept.windows.most,
-          heldMs: Math.round(session.slot.counts.recoveryMs),
-          waitedMs: Math.round(session.slot.counts.longestWaitMs),
-          revoked: session.slot.counts.revoked,
-          outcome,
-        });
-      // What the receiver has waiting counts for two seconds, as what a player says does.
-      const noting = setInterval(() => noteAhead(session, load), 500);
-      session.recovering++;
-      try {
-        const before = await subtitlesBefore(
-          session,
-          probe,
-          { track, page: null, codec: "", start: Math.max(0, start) },
-          attempt,
-        );
-        if (!signal.aborted) record("ok");
-        return before;
-      } catch (cause) {
-        if (!signal.aborted) {
-          record(
-            cause instanceof Unavailable
-              ? cause.kind
-              : attempt.signal.aborted
-                ? "limit"
-                : "unreadable",
-          );
-        }
-        return null;
-      } finally {
-        clearInterval(noting);
-        session.recovering--;
-        tell(load.changed);
-      }
-    }
-
-    /**
-     * A segment's text subtitles for a receiver: every line on screen at some time in it, the one
-     * that began before it included. They are known once a run that began at or before the
-     * segment has read past its end. A receiver that asks sooner waits, a while at most, and gets
-     * a segment without lines rather than none: the picture never waits for subtitles.
-     */
-    async function sendCues(
-      receiver: TitleReceiver,
-      load: TitleLoad,
-      index: number,
-      response: ServerResponse,
-    ): Promise<void> {
-      const left = new AbortController();
-      response.on("close", () => left.abort());
-      const signal = AbortSignal.any([
-        load.closed.signal,
-        left.signal,
-        AbortSignal.timeout(deps.receiver?.cuesMs ?? CUES_WAIT_MS),
-      ]);
-      const reader = () => {
-        const run = load.run;
-        return run && run.from <= index && (run.next > index + 1 || run.ended) ? run : null;
-      };
-      await until(load.changed, () => reader() !== null, signal);
-      const run = reader();
-      // What came before the run's start is still being read, or the wait is already over: the
-      // segment goes without it then.
-      const before = run ? await unlessAborted(run.before, signal) : null;
-      if (response.destroyed) return;
-      const { plan } = receiver;
-      const entries = run
-        ? [
-            ...(before?.entries ?? []),
-            ...run.cues.filter((cue) => !before || cue.from > before.upTo),
-          ]
-        : [];
-      response.writeHead(200, { "Content-Type": "text/vtt; charset=utf-8" });
-      response.end(
-        subtitleSegment(
-          entries,
-          plan.starts[index]!,
-          plan.starts[index + 1] ?? plan.end,
-          plan.starts[0]!,
-        ),
-      );
-    }
-
     /** What ffmpeg sends back: a run's or a selection's subtitles, or where a picture starts. */
     function receiveReport(
       session: TitleSessionState,
@@ -4094,7 +3172,16 @@ function make(deps: PlaybackDeps) {
           try: () =>
             listen((request, response) => {
               const session = sessions.get(id);
-              if (session?.lan) void serveReceiver(session, session.lan, request, response);
+              if (!session?.lan) return void response.writeHead(410).end();
+              response.setHeader("Access-Control-Allow-Origin", "*");
+              response.setHeader("Cache-Control", "no-store");
+              if (!isPrivateAddress(request.socket.remoteAddress ?? ""))
+                return void response.writeHead(403).end();
+              if (request.method === "OPTIONS")
+                return void response
+                  .writeHead(204, { "Access-Control-Allow-Headers": "Range" })
+                  .end();
+              if (session.receiver) void session.receiver.serve(request, response);
               else response.writeHead(410).end();
             }, receiver.address),
           catch: () => new Failed({ error: { kind: "output", failure: { kind: "no-network" } } }),
@@ -4110,7 +3197,7 @@ function make(deps: PlaybackDeps) {
           origin: `http://${receiver.address}:${listening.port}`,
           requests: 0,
           failed: (failure) => receiver.failed?.(failure),
-        } satisfies Lan;
+        } satisfies ReceiverLan;
       });
 
     /** A session's scope and what ends with it; `receiver` hears of its end. */
@@ -4210,19 +3297,6 @@ function make(deps: PlaybackDeps) {
         const id = randomUUID();
         const { closed, scope: forked, lan } = yield* sessionScope(id, receiver);
         const token = randomBytes(18).toString("base64url");
-        const live: LiveReceiver | null = lan
-          ? {
-              token: randomBytes(18).toString("base64url"),
-              made: new Map(),
-              list: [],
-              run: null,
-              first: 0,
-              over: false,
-              changed: new Set(),
-              epochs: [],
-              duration: 0,
-            }
-          : null;
         const session: LiveSession = {
           kind: "live",
           id,
@@ -4239,11 +3313,7 @@ function make(deps: PlaybackDeps) {
           hlsChildren: new Set(),
           hlsRequests: new Set(),
           hls: format === "hls" ? hlsAddresses() : null,
-          proxied:
-            lan && live
-              ? (address) => `${lan.origin}/r/${live.token}/h${address}`
-              : (address) => `${base}/stream/${token}/${address}`,
-          receiver: live,
+          receiver: null,
           lan,
           decoders: new Set(decoders),
           repair: options.repair ?? false,
@@ -4271,6 +3341,7 @@ function make(deps: PlaybackDeps) {
             .whileAsked(options.turn)
             .pipe(Effect.tapError(() => Scope.close(session.scope, Exit.void)));
         }
+        if (lan) session.receiver = liveReceiverDelivery(liveSource(session), lan, receiverTools);
         return session;
       });
 
@@ -4620,13 +3691,12 @@ function make(deps: PlaybackDeps) {
           Effect.gen(function* () {
             yield* coordination.reclaim(channel.subscriptionId);
             const session = yield* liveSession(channel, receiver.decoders, options, receiver);
-            // The provider's stream starts now, so the receiver finds segments when it asks.
-            if (session.receiver && (!session.hls || session.delivery === "mpegts"))
-              void runLive(session, session.receiver);
+            // Delivery starts any segmenting run now, so the receiver finds segments when it asks.
+            void session.receiver?.run();
             return {
               sessionId: session.id,
               channel,
-              url: `${session.lan?.origin}/r/${session.receiver?.token}/live.m3u8`,
+              url: `${session.receiver?.url}`,
             };
           }),
         ),
@@ -4648,9 +3718,15 @@ function make(deps: PlaybackDeps) {
               receiver,
               asked,
             );
-            const planned = deps.ffmpeg
-              ? yield* Effect.promise(() => planSegments(session, probe).catch(() => null))
-              : null;
+            const lan = session.lan;
+            const planned =
+              deps.ffmpeg && lan
+                ? yield* Effect.promise(() =>
+                    titleReceiverDelivery(titleSource(session, probe), lan, receiverTools).catch(
+                      () => null,
+                    ),
+                  )
+                : null;
             // Where its picture has keyframes was read from the provider too.
             yield* standing;
             const end = endOf(probe);
@@ -4676,14 +3752,14 @@ function make(deps: PlaybackDeps) {
                 },
               });
             }
-            session.receiver = { ...planned, load: null };
+            session.receiver = planned;
             return {
               sessionId: session.id,
               title,
               duration: end - probe.origin,
               audio: audioTracks(probe.audio),
               subtitles: subtitleTracks(probe.subtitles),
-              offset: planned.plan.starts[0]! - probe.origin,
+              offset: planned.first - probe.origin,
             };
           }),
         ),
@@ -4694,42 +3770,7 @@ function make(deps: PlaybackDeps) {
       ) =>
         Effect.sync(() => {
           const session = sessions.get(sessionId);
-          if (session?.kind !== "title" || !session.receiver || !session.lan) return null;
-          const before = session.receiver.load;
-          before?.closed.abort();
-          // Only text reaches a receiver: the others are drawn by the UI's player.
-          const subtitle =
-            session.probe?.subtitles.find(
-              (track) => track.id === tracks.subtitle && track.format === "text",
-            )?.id ?? null;
-          const closed = new AbortController();
-          const load: TitleLoad = {
-            token: randomBytes(18).toString("base64url"),
-            audio: tracks.audio,
-            subtitle,
-            store: segmentStore({ ...SEGMENT_LIMITS, ...deps.receiver?.segments }),
-            closed,
-            run: null,
-            idle: undefined,
-            changed: new Set(),
-          };
-          const end = () => closed.abort();
-          session.closed.signal.addEventListener("abort", end, { once: true });
-          closed.signal.addEventListener(
-            "abort",
-            () => {
-              session.closed.signal.removeEventListener("abort", end);
-              clearTimeout(load.idle);
-              load.store.fail();
-              tell(load.changed);
-            },
-            { once: true },
-          );
-          session.receiver.load = load;
-          return {
-            url: `${session.lan.origin}/r/${load.token}/master.m3u8`,
-            subtitles: subtitle !== null,
-          };
+          return session?.kind === "title" ? (session.receiver?.load(tracks) ?? null) : null;
         }),
 
       receiverRequests: (sessionId: string) =>
@@ -4822,25 +3863,9 @@ function readsItsOwn(probe: TitleProbe, id: number | null, start: number): boole
   return start === 0 || (probe.container === "mp4" && track?.format === "text");
 }
 
-/**
- * The file's clock at the end of the title, or null when the file doesn't say how long it is. A
- * Matroska file counts its length from the start of its clock, wherever its first picture sits;
- * the others count theirs from their start time.
- */
-function endOf(probe: TitleProbe): number | null {
-  if (probe.duration === null) return null;
-  const end = probe.container === "matroska" ? probe.duration : probe.origin + probe.duration;
-  return end > probe.origin ? end : null;
-}
-
 /** How many bytes an entry holds. */
 function sizeOf(entry: SubtitleEntry): number {
   return "data" in entry ? entry.data.length : entry.text.length;
-}
-
-/** How far a subtitle packet of `probe`'s file may sit from the picture of its time, in seconds. */
-function interleave(probe: TitleProbe): number {
-  return probe.container === "other" ? INTERLEAVE_S.broadcast : INTERLEAVE_S.ordered;
 }
 
 /**
@@ -4850,13 +3875,6 @@ function interleave(probe: TitleProbe): number {
  */
 function gone(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
-}
-
-/** Resolves once what an ffmpeg that has ended `sent` over loopback is here, or has had its time. */
-function arrives(sent: Promise<unknown>): Promise<unknown> {
-  const { promise: late, resolve } = Promise.withResolvers<void>();
-  const timer = setTimeout(resolve, REPORT_WAIT_MS);
-  return Promise.race([sent, late]).finally(() => clearTimeout(timer));
 }
 
 /** Resolves once a response takes more, or its reader has left. */
@@ -4872,103 +3890,10 @@ function drained(response: ServerResponse): Promise<void> {
   });
 }
 
-/**
- * Reads the subtitles one ffmpeg sends, as `output` says they come, and hands each to `entry` in
- * the order ffmpeg read them, with their times on the file's clock.
- */
-function subtitleSink(output: SubtitleOutput, entry: (entry: SubtitleEntry) => void) {
-  let receiving: Promise<boolean> | null = null;
-  const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
-
-  function read(request: IncomingMessage): void {
-    if (output.kind === "cues") {
-      const reader = webvttReader();
-      const add = (cues: readonly Cue[]) => {
-        for (const cue of cues) {
-          entry({ from: cue.start, at: cue.start, until: cue.end, text: cue.text });
-        }
-      };
-      request.setEncoding("utf8");
-      request.on("data", (text: string) => add(reader.push(text)));
-      request.on("end", () => add(reader.end()));
-      return;
-    }
-    if (output.container === "sup") {
-      const segments = pgsSegments();
-      request.on("data", (chunk: Buffer) => {
-        for (const { at, set } of segments.push(chunk)) entry({ from: at, at, data: set });
-      });
-      return;
-    }
-    const reader = pesReader();
-    /** The last picture of a converted DVD track: the empty page after it is its end. */
-    let picture: number | null = null;
-    const forward = (packets: readonly PesPacket[]) => {
-      for (const packet of packets) {
-        if (packet.pts === null) continue;
-        const at = packet.pts / 90_000;
-        const data =
-          output.captions === null
-            ? packet.payload
-            : output.captions === "track"
-              ? captionsInTrack(packet.payload)
-              : captionsInPicture(packet.payload, output.captions);
-        // Most pictures carry no caption, only padding, which a decoder passes over.
-        if (
-          !data.some((byte, index) => (output.captions ? index % 3 > 0 && (byte & 0x7f) > 0 : true))
-        ) {
-          continue;
-        }
-        const ends = output.paired && picture !== null && dvbClears(data);
-        entry({ from: ends && picture !== null ? picture : at, at, data });
-        if (!ends) picture = at;
-      }
-    };
-    request.on("data", (chunk: Buffer) => forward(reader.push(chunk)));
-    // The last packet is whole only when ffmpeg ended the stream itself.
-    request.on("end", () => forward(reader.end()));
-  }
-
-  return {
-    /** Takes the request ffmpeg sends them in. */
-    receive(request: IncomingMessage): void {
-      receiving = new Promise((resolve) => {
-        let whole = false;
-        request.on("error", () => {});
-        request.on("end", () => {
-          whole = true;
-        });
-        request.on("close", () => resolve(whole));
-        read(request);
-      });
-      arrive();
-    },
-    /** Resolves once the request has come. */
-    arrived,
-    /**
-     * Resolves once everything ffmpeg sent has been read: true when it ended the stream itself,
-     * having written all it read of the file, false when it was cut off or never sent any.
-     */
-    whole: (): Promise<boolean> => receiving ?? Promise.resolve(false),
-  };
-}
-
 function optionalNumber(value: string | null): number | null {
   if (value === null || value === "") return null;
   const number = Number(value);
   return Number.isInteger(number) ? number : null;
-}
-
-/** ffmpeg's last error line, or how it ended when it said nothing. */
-function lastLine(
-  errors: string,
-  code: number | null,
-  signal: NodeJS.Signals | null,
-  start: number | null = null,
-): string {
-  const line = errors.trim().split("\n").at(-1);
-  if (line) return line;
-  return `ffmpeg ended with ${signal ?? code ?? "no exit"}${start === null ? ", before the picture started" : ""}.`;
 }
 
 /**
@@ -5019,39 +3944,6 @@ function textRelay(): TextRelay {
   };
 }
 
-/** What `promise` resolves with, or null once `signal` aborts, whichever comes first. */
-function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | null> {
-  if (signal.aborted) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const aborted = () => resolve(null);
-    signal.addEventListener("abort", aborted, { once: true });
-    void promise.then((value) => {
-      signal.removeEventListener("abort", aborted);
-      resolve(value);
-    });
-  });
-}
-
-/** Tells everyone waiting on `changed` to look again. */
-function tell(changed: ReadonlySet<() => void>): void {
-  for (const look of [...changed]) look();
-}
-
-/** Resolves once `ready()` holds, looked at whenever `changed` is told, or once `signal` aborts. */
-function until(changed: Set<() => void>, ready: () => boolean, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const look = () => {
-      if (!signal.aborted && !ready()) return;
-      changed.delete(look);
-      signal.removeEventListener("abort", look);
-      resolve();
-    };
-    changed.add(look);
-    signal.addEventListener("abort", look, { once: true });
-    look();
-  });
-}
-
 /**
  * Starts the proxy on a free port: loopback's, or `host`'s for a receiver on the local network. A
  * request may take as long as it likes to arrive: ffmpeg's reports are requests that last as long
@@ -5072,111 +3964,6 @@ function listen(
       else reject(new Error("Stream proxy has no TCP address."));
     });
   });
-}
-
-type ReadResult = Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>;
-
-interface StreamStart {
-  /** The tracks, or null when the data is not MPEG-TS. */
-  readonly layout: StreamLayout | null;
-  readonly diagnostic: PlaybackDiagnostic;
-  /** What was read while inspecting; the player still needs it. */
-  readonly head: readonly Uint8Array[];
-  /** A read still in flight when time ran out. */
-  readonly pending: Promise<ReadResult> | null;
-}
-
-/**
- * Reads until the stream's codecs settle how to deliver it, or the inspection limit is reached.
- * A track can stay undetermined when every codec it may turn out to be gets the same treatment.
- */
-async function inspectStart(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  decoders: ReadonlySet<Codec>,
-): Promise<StreamStart> {
-  const inspector = createInspector();
-  const head: Uint8Array[] = [];
-  let size = 0;
-  let latest: Inspection | null = null;
-  let pending: Promise<ReadResult> | null = null;
-  const facts = (): PlaybackDiagnostic => {
-    const unresolved = latest?.open.flat() ?? [];
-    return {
-      // Inspection's conservative codec guesses must never be reported as observed codecs.
-      ...(unresolved.length > 0
-        ? { diagnostic_video_codec: "unknown" as const, diagnostic_audio_codec: "unknown" as const }
-        : {}),
-      ...(!latest || unresolved.length > 0
-        ? { diagnostic_reason: "inspection_undetermined" as const }
-        : {}),
-    };
-  };
-  const deadline = Date.now() + INSPECT_LIMIT.ms;
-  while (size < INSPECT_LIMIT.bytes) {
-    pending ??= reader.read();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
-    });
-    const result = await Promise.race([pending, expired]).catch(() => null);
-    clearTimeout(timer);
-    if (result === null) break;
-    pending = null;
-    if (result.done) break;
-    head.push(result.value);
-    size += result.value.length;
-    latest = inspector.push(result.value) ?? latest;
-    const settled = latest?.open.every((candidates) => {
-      const decoded = candidates.filter((codec) => decoders.has(codec)).length;
-      return decoded === 0 || decoded === candidates.length;
-    });
-    if (latest && settled)
-      return { layout: latest.layout, diagnostic: facts(), head, pending: null };
-    if (inspector.notTransportStream)
-      return { layout: null, diagnostic: facts(), head, pending: null };
-  }
-  return { layout: latest?.layout ?? null, diagnostic: facts(), head, pending };
-}
-
-/** The inspected start of the stream followed by the rest of it. */
-async function* replay(
-  start: StreamStart,
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-): AsyncGenerator<Uint8Array> {
-  try {
-    yield* start.head;
-    if (start.pending) {
-      const result = await start.pending;
-      if (result.done) return;
-      yield result.value;
-    }
-    for (;;) {
-      const result = await reader.read();
-      if (result.done) return;
-      yield result.value;
-    }
-  } finally {
-    void reader.cancel().catch(() => {});
-  }
-}
-
-/** The stream from its first decodable picture on. */
-function cleanStart(
-  chunks: AsyncGenerator<Uint8Array>,
-  filter: ReturnType<typeof createCleanStart>,
-): AsyncGenerator<Uint8Array> {
-  return filtered(chunks, filter);
-}
-
-/** The stream through a filter that takes chunks and returns whole packets. */
-async function* filtered(
-  chunks: AsyncGenerator<Uint8Array>,
-  filter: { push(chunk: Uint8Array): Uint8Array },
-): AsyncGenerator<Uint8Array> {
-  for await (const chunk of chunks) {
-    const out = filter.push(chunk);
-    if (out.length > 0) yield out;
-  }
 }
 
 /** The tracks a channel's program table names, and its captions, as the UI lists them. */

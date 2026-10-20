@@ -27,7 +27,7 @@ apps/desktop         The app, package name mrstreamer
     playback         Stream inspection, HLS playlists through the proxy, the clean start, the
                      sound track choice, captions copied out of the pictures and ffmpeg
                      conversion behind the proxy; probing and ffmpeg runs for movies and episodes;
-                     the segments, playlists and indexes a receiver on the network is served
+                     receiver-delivery owns LAN tokens, playlists, segments and per-load runs
     receivers        The port a receiver adapter fills, and the two that do: Google Cast, a
                      sender of its own, and AirPlay, through the helper in native/airplay
     platform         Keychain-backed secrets, atomic JSON files, the guide store, the database
@@ -581,6 +581,8 @@ The service opens the session itself through `Playback`, so there is still one s
 ### What a receiver is served
 
 A receiver can't reach `127.0.0.1`, and must never see a provider address. A receiver session gets a listener of its own on the address of this computer that reaches the receiver: the one the Cast connection uses, or the best ranked private address for AirPlay, where the system doesn't say (`playback/lan.ts` leaves out tunnels and carrier-grade NAT). It serves only `/r/<token>/…`, to clients on private addresses, with a fresh token for every load, and it closes with the session. The proxy's own routes, `/stream`, `/source`, `/title`, `/report` and `/hls`, stay on loopback. The private-address check narrows who can ask; the token is what keeps the stream to its receiver.
+
+`services/playback.ts` owns admission, the registry, both listeners, session closure and shared report PUT routing. For each admitted receiver session it binds named live or title operations to `playback/receiver-delivery.ts`. Delivery owns the LAN token, live segment buffer, title plan and per-load store and runs. It receives no session object, registry or raw loopback token, only the loopback addresses its ffmpeg needs. Playback's shared title-run lease owns starting, running, progress reset, upstream-slot and report bookkeeping for local and receiver runs. HLS serving receives an explicit local or LAN URL mapper, so receiver playlists never fall back to loopback addresses.
 
 A movie or episode is served as HLS with a playlist of the whole title, so the receiver knows its length and can skip anywhere (`playback/receiver.ts`). Segments are made when asked for: ffmpeg's `segment` muxer runs from the segment the receiver wants and POSTs each one back to the proxy on loopback.
 

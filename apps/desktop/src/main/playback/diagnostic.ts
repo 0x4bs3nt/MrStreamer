@@ -40,3 +40,15 @@ export function titleDiagnostic(
         : "direct",
   };
 }
+
+/** ffmpeg's last error line, or how it ended when it said nothing. */
+export function lastLine(
+  errors: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  start?: number | null,
+): string {
+  const line = errors.trim().split("\n").at(-1);
+  if (line) return line;
+  return `ffmpeg ended with ${signal ?? code ?? "no exit"}${start === null ? ", before the picture started" : ""}.`;
+}

@@ -49,7 +49,45 @@
       }
     },
     {
+      "files": ["apps/desktop/src/**", "apps/desktop/test/**"],
+      "excludeFiles": ["apps/desktop/src/main/services/**", "apps/desktop/src/main/playback/**"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/playback/receiver-delivery", "**/playback/receiver-delivery.ts"],
+                "message": "Receiver delivery belongs to Playback. Open sessions through the Playback service."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["apps/desktop/src/main/services/**"],
+      "excludeFiles": ["apps/desktop/src/main/services/playback.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["**/ipc.ts", "**/handlers/**"],
+                "message": "Services are independent of IPC transport and request adapters."
+              },
+              {
+                "group": ["**/playback/receiver-delivery", "**/playback/receiver-delivery.ts"],
+                "message": "Receiver delivery belongs to Playback. Open sessions through the Playback service."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["apps/desktop/src/main/services/playback.ts"],
       "rules": {
         "no-restricted-imports": [
           "error",
