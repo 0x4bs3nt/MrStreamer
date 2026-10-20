@@ -18,12 +18,23 @@ fully qualified name is `Mr-Streamer-OSS/tap/mr-streamer`.
 | `{{SHA256}}`  | Lowercase 64-character SHA-256 of the exact released arm64 DMG        |
 
 The download origin, tag and filename are fixed by the template. Keep the
-signed/notarized DMG and app bundle unchanged. The planned shared package-update
-preparation tool must render production metadata and check successful verified
-release provenance, stable channel, exact assets and downloaded bytes against
-`SHA256SUMS.txt`, and fail on any mismatch or unresolved marker. It must not push,
-publish or activate automation. A livecheck result is update discovery, not that
-verification or permission to publish.
+signed/notarized DMG and app bundle unchanged. The shared preparation command checks
+published provenance, stable channel, the tag's complete asset/source set, canonical
+URLs and downloaded bytes against `SHA256SUMS.txt`, refusing mismatches or unresolved
+markers:
+
+```sh
+node apps/desktop/scripts/package-updates.ts render --version 0.0.18 \
+  --out .local/package-updates/stable-0.0.18
+```
+
+Use a new output directory each time. It writes `mr-streamer.rb` alongside the AUR
+recipe, that recipe's 0BSD licence and a deterministic `preparation.json` receipt.
+The app's GPL licence remains separate. Stable mode never depends on Actions or a
+later Store/feed outcome. The tool reads with the existing GitHub login and has no
+tap credential or publishing operation. Native Mac style/audit/install checks below
+remain required; the receipt's `native` field covers only Arch metadata generation.
+A livecheck result is update discovery, not verification or permission to publish.
 
 Livecheck uses GitHub's latest release and an anchored stable-only version regex.
 The cask supports Apple silicon and macOS 13 or newer, installs only
@@ -34,11 +45,14 @@ Normal uninstall keeps the profile, Keychain credentials and downloaded copies.
 
 Historical 0.0.16/0.0.17 and non-candidate nightly reconciliation casks are
 hand-pinned local fixtures outside production output, using the canonical versioned
-asset URL. The planned shared renderer must refuse those historical stable versions.
-Candidate-test rendering belongs to that same tool and accepts only a pinned,
-tested 0.0.18 nightly manifest with source/origin/digests verified. Mark its output
-non-publishable and keep it separate from stable metadata. Never copy a fixture
-or candidate cask into the public tap.
+asset URL. The shared renderer refuses those historical stable versions.
+Use `render --candidate <0.0.18-nightly.YYYYMMDD.RUN> --run <id> --out <new-directory>`
+for a published prerelease from a successful main release-workflow run, with exact
+source/origin/digests and package receipts checked. Retain its receipt within the
+three-day artifact window. Its leading comment says `NEVER PUBLISH`; keep it separate
+from stable output. See [package updates](../../docs/maintainers/releasing.md#package-updates).
+Never copy a fixture or candidate cask into the public tap. Rendering precedes native
+installed acceptance of its output.
 
 ## Isolated local validation
 

@@ -9,7 +9,37 @@ Public user documentation and website activation wait for checked public availab
 `PKGBUILD.in` owns the native package layout. The package-update preparation card
 ([276993052](https://github.com/orgs/Mr-Streamer-OSS/projects/1?pane=issue&itemId=276993052))
 owns the **one shared renderer** for AUR and Homebrew. This directory adds no release discovery,
-publishing workflow or generic renderer. Its output contract is:
+publishing workflow or generic renderer. Run it from the checkout:
+
+```sh
+node apps/desktop/scripts/package-updates.ts render --version 0.0.18 \
+  --out .local/package-updates/stable-0.0.18
+```
+
+The offline `srcinfo` step needs an unprivileged clean Arch builder with `makepkg`,
+`vercmp`, the [repository-supported Node/pnpm toolchain](../../docs/contributing/development.md)
+and a checkout prepared with `pnpm install --frozen-lockfile`. The builder user must
+be able to read that checkout and its installed dependencies and write to the
+rendered directory. Copying only the rendered folder into a `base-devel` environment
+is insufficient. From the checkout root inside that builder, replace
+`/path/to/rendered-directory` with your rendered directory and run:
+
+```sh
+node apps/desktop/scripts/package-updates.ts srcinfo --dir "/path/to/rendered-directory"
+```
+
+See [package updates](../../docs/maintainers/releasing.md#package-updates) for
+candidate `--candidate <nightly> --run <id>`, positive `--pkgrel`, exact input checks
+and the three-day candidate receipt window. Render needs only the existing
+read-only GitHub login, never AUR credentials. Each output leaf must be new.
+`preparation.json` is written last, with deterministic output hashes and
+`native: null`. The offline step validates it and the PKGBUILD digest for
+consistency, generates identical metadata twice, checks its version/revision/deb
+URL/hash and candidate ordering, then records native completion. Missing native
+tools leave it incomplete without writing `.SRCINFO`. makepkg sources the local
+PKGBUILD as usual; the digest comparison is not a security boundary.
+
+Its output contract is:
 
 | Literal token          | Required value                                                           |
 | ---------------------- | ------------------------------------------------------------------------ |
@@ -101,16 +131,16 @@ do not bypass encryption with a basic password store. Quit the app before replac
 ## Build and metadata generation
 
 In a disposable, fully updated Arch environment with `base-devel` and the declared dependencies,
-run the following as an unprivileged builder in the **rendered output directory**. Review every
-PKGBUILD before sourcing it. Do not run this against the unrendered template.
+prepare the checkout and toolchain as above. Run the following as an unprivileged builder in
+the **rendered output directory**, replacing `/path/to/checkout` with the builder's checkout
+path. Review every PKGBUILD before sourcing it. Do not run this against the unrendered template.
 
 ```sh
 bash -n PKGBUILD
 shellcheck -s bash -e SC2034,SC2154 PKGBUILD
 makepkg --verifysource
 makepkg --cleanbuild --noconfirm --log
-makepkg --printsrcinfo > .SRCINFO
-makepkg --printsrcinfo | cmp - .SRCINFO
+node /path/to/checkout/apps/desktop/scripts/package-updates.ts srcinfo --dir "$PWD"
 namcap PKGBUILD
 namcap ./*.pkg.tar.zst
 ```

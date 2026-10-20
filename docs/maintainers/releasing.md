@@ -172,9 +172,90 @@ The job runs the release commit's own `package-receipt.ts`, through `.github/act
 
 `resolvePackageReceipt` takes a pinned source and workflow commit, app/package version, platform/distribution and run/attempt/head commit. It validates downloaded JSON, requires one exact receipt and package artifact, checks GitHub run/head/expiry/digests and artifact id, recomputes both archive digests, and verifies every file's size and hash. Missing or ambiguous artifacts/files, duplicate ZIP names, extra files, wrong metadata and altered bytes stop resolution. Listing all artifact pages prevents a truncated response from masquerading as absence.
 
-No check in this repository reads receipts. They are kept as evidence of each package job: which source, workflow, run attempt and bytes produced its upload. `resolvePackageReceipt` stays as the read side of the contract. The [installed upgrade check](../contributing/testing.md#installed-upgrade) installs published releases and binds them by tag, `SHA256SUMS.txt` and `latest.yml` instead.
+Only `package-updates.ts` in candidate mode reads these receipts. They record which source, workflow, run attempt and bytes produced each package upload. `resolvePackageReceipt` owns that validation. The [installed upgrade check](../contributing/testing.md#installed-upgrade) installs published releases and binds them by tag, `SHA256SUMS.txt` and `latest.yml` instead.
 
 Public contract tests use synthetic package bytes and mocked GitHub responses, including producer CLI execution. They do not prove a native CI package. Before release acceptance, retain actual same-source receipt/package pairs from an authorized dry run for every applicable target. Neither a receipt nor these tests authorize dispatch, publication or Store submission.
+
+## Package updates
+
+`apps/desktop/scripts/package-updates.ts` prepares AUR and Homebrew recipes locally.
+It has no publishing operation. Wout owns release selection, native acceptance and
+any later package repository credentials. It uses `GH_TOKEN`, or the existing
+`gh auth token`, for read-only GitHub requests. No AUR key or tap credential is needed.
+
+After stable publication, use the bare canonical version, at least 0.0.18:
+
+```sh
+node apps/desktop/scripts/package-updates.ts render --version 0.0.18 \
+  --out .local/package-updates/stable-0.0.18
+```
+
+The command resolves the exact tag to a source commit on main containing the
+managed-update merge `3f8b06939023f95717de2b216f1c1a8f1736aeec`. The release target
+must equal that commit. It derives all expected binaries, updater metadata and
+source archives from the shared release contract and that tag's own licence/FFmpeg
+configuration. Every asset must be uploaded at its exact versioned repository URL,
+with a SHA-256 matching the complete checksum list. It also downloads and hashes
+the checksum file, DMG and deb, and pins the upstream GPL `LICENSE` at the source
+commit. It enumerates source archives without downloading them. Stable preparation
+never reads Actions; a later Store or feed failure does not invalidate checked,
+published direct binaries.
+
+Before stable publication, explicit candidate mode accepts only a published
+0.0.18 nightly prerelease pinned to its successful main release-workflow run:
+
+```sh
+node apps/desktop/scripts/package-updates.ts render \
+  --candidate 0.0.18-nightly.20261020.397 --run 39417603621 \
+  --out .local/package-updates/candidate-0.0.18-nightly.20261020.397
+```
+
+It additionally resolves each platform's unambiguous successful package receipt
+and checks its entire artifact, binding the published DMG/deb to those bytes.
+Published-run artifacts expire after three days. Retain the preparation receipt
+before expiry, or select a later eligible nightly. Candidate recipes say
+`CANDIDATE TEST ONLY. NEVER PUBLISH.` and must stay separate from stable output.
+Unpublished dry-run artifacts cannot supply the recipes' canonical release URLs.
+
+Each render creates a new output directory exclusively, containing `PKGBUILD`,
+`mr-streamer.rb`, the recipe's own 0BSD `LICENSE`, and finally `preparation.json`.
+The upstream app licence is a separate pinned download in the PKGBUILD. Outputs
+are deterministic and include hashes and provenance, with `native: null` until
+the offline native metadata step succeeds. Existing output directories refuse;
+use a fresh one to repeat preparation. For a recipe-only fix, pass `--pkgrel 2`
+or the next positive revision. Reset it to 1 for a new upstream version.
+
+The unprivileged clean Arch builder needs `makepkg`, `vercmp`, the
+[repository-supported Node/pnpm toolchain](../contributing/development.md) and a
+checkout prepared with `pnpm install --frozen-lockfile`. The builder user must be
+able to read the checkout and its installed dependencies and write to the rendered
+directory. Copying only the rendered folder into a `base-devel` environment is
+insufficient. From the checkout root inside that builder, replace
+`/path/to/rendered-directory` with your rendered directory and run:
+
+```sh
+node apps/desktop/scripts/package-updates.ts srcinfo --dir "/path/to/rendered-directory"
+```
+
+This needs no token or network. It validates `preparation.json`, checks the recorded
+PKGBUILD hash for consistency, runs actual `makepkg --printsrcinfo` twice and
+requires identical bytes. Native metadata must match the recorded pkgver, pkgrel,
+deb URL and checksum. Candidate `vercmp` must show the Arch `alpha` version below
+matching stable. Only then does it write `.SRCINFO` and update the receipt's
+`native` field. Missing tools refuse without writing `.SRCINFO` or completing the
+receipt. The hash check is consistency checking; makepkg sources the local PKGBUILD
+as usual. It is not a security boundary for hand-edited recipes.
+
+Continue with the [AUR runbook](../../packaging/aur/README.md) and
+[Homebrew runbook](../../packaging/homebrew/README.md) for source verification,
+native build/audit, installation and retained-state checks. Rendering does not
+require installed acceptance of the output it is creating. After stable
+publication, regenerate production metadata from the exact stable bytes and repeat
+native and installed acceptance. A failed package route stays inactive while
+successful direct downloads and the other route remain available. Retry the same
+verified release without replacing upstream assets. External repository setup,
+publication, automation and website activation require separate authorization;
+this tool configures none of them.
 
 ## Microsoft Store package
 
