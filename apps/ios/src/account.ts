@@ -73,6 +73,8 @@ import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 // that deletion, as when the Keychain refuses the password, the subscription signs in again with
 // whichever password the Keychain holds then, or asks for one (`recoverLogin`). The details of titles
 // opened from it (details-cache.ts, which titles.ts saves while `savable` holds) go with its lists.
+// Which saved lists a launch is still reading is kept apart from the lists (`readingSaved`): a list
+// stays idle while its copy is read, and after it when there is none, until its provider is asked.
 
 /** A list one subscription loads; a failed or repeated load keeps the last one it had. */
 export type Loadable<A> =
@@ -127,11 +129,27 @@ export type Catalogue =
 
 const roster = store<Roster>({ kind: "restoring" });
 const catalogue = store<Catalogue>({ kind: "loading" });
+/**
+ * The saved lists a launch is still reading, by `kind|id`, each with the login it reads them for.
+ * One goes once its read has shown its list or found none, once its login is replaced, and at once
+ * when its subscription is removed: a read the disk never answers holds nothing else up.
+ */
+const reading = store<ReadonlyMap<string, Source>>(new Map());
 
 export const useRoster = () => useStore(roster);
 export const useCatalogue = () => useStore(catalogue);
 /** Every subscription's channels as they stand, for owners outside React. */
 export const currentCatalogue = () => catalogue.get();
+/** Calls `listener` whenever every subscription's channels change. */
+export const onCatalogue = (listener: () => void) => catalogue.subscribe(listener);
+/** Whether a launch still reads a saved list from the phone: of `kind` and `id`, when given. */
+export const readingSaved = (kind?: Kind, id?: string) =>
+  [...reading.get().keys()].some((key) => {
+    const at = key.indexOf("|");
+    return (!kind || key.slice(0, at) === kind) && (!id || key.slice(at + 1) === id);
+  });
+/** Calls `listener` whenever a saved list's read at launch starts or ends. */
+export const onReadingSaved = (listener: () => void) => reading.subscribe(listener);
 /** The saved subscriptions as they stand, for owners outside React. */
 export const members = (): readonly Member[] => {
   const now = roster.get();
@@ -220,8 +238,28 @@ function syncRoster() {
   });
   roster.set({ kind: "ready", members: next });
   const ids = next.map((member) => member.entry.id);
+  // After the roster, so what waits on a removed subscription's read sees it gone with it.
+  for (const key of reading.get().keys()) {
+    const id = key.slice(key.indexOf("|") + 1);
+    if (!ids.includes(id)) stopReading(id);
+  }
   setViewingOwners(ids);
   setWatchlistOwners(ids);
+}
+
+/**
+ * Ends the reads at launch of `id`'s saved lists: with `kind` and `source`, that one alone, while
+ * it is still read for that login.
+ */
+function stopReading(id: string, kind?: Kind, source?: Source) {
+  const now = reading.get();
+  const keys = (kind ? [kind] : (["live", "titles"] as const))
+    .map((each) => `${each}|${id}`)
+    .filter((key) => now.has(key) && (!source || now.get(key) === source));
+  if (keys.length === 0) return;
+  const next = new Map(now);
+  for (const key of keys) next.delete(key);
+  reading.set(next);
 }
 
 function setMember(id: string, change: (member: Member) => Member) {
@@ -302,6 +340,7 @@ async function recoverLogin(id: string, before: Source | undefined): Promise<voi
   if (!entry || currentSource(id) !== before) return;
   if (password) return signIn(entry, password, "again");
   dropSource(id);
+  stopReading(id);
   for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${id}`)?.abort();
   const error: AppError = { kind: "needs-secret", subscriptionId: id };
   const settled = <A>(now: Loadable<A>): Loadable<A> =>
@@ -317,23 +356,29 @@ async function recoverLogin(id: string, before: Source | undefined): Promise<voi
 /**
  * At launch: shows `kind`'s saved list while it is still idle for `source`, as loaded when it is
  * fresh, else as the last one while it loads again. Answers whether to ask the provider for it.
+ * The read ends (`readingSaved`) once the list shows, or once there is none to show.
  */
 async function fromSaved(id: string, kind: Kind, source: Source): Promise<boolean> {
   const saved = await readList(id, kind, () => savable(id, source));
-  const member = members().find((each) => each.entry.id === id);
-  if (currentSource(id) !== source || member?.[kind].kind !== "idle") return false;
-  if (!saved) return true;
-  const fresh = Date.now() - saved.fetchedAt < FRESH_FOR;
-  const shown = <A>(value: A): Loadable<A> =>
-    fresh
-      ? { kind: "ready", value, from: "cache", fetchedAt: saved.fetchedAt, took: null }
-      : { kind: "loading", last: value };
-  setMember(id, (now) =>
-    saved.kind === "live"
-      ? { ...now, live: shown(saved.catalogue) }
-      : { ...now, titles: shown(saved.catalogue) },
-  );
-  return !fresh;
+  try {
+    const member = members().find((each) => each.entry.id === id);
+    if (currentSource(id) !== source || member?.[kind].kind !== "idle") return false;
+    if (!saved) return true;
+    const fresh = Date.now() - saved.fetchedAt < FRESH_FOR;
+    const shown = <A>(value: A): Loadable<A> =>
+      fresh
+        ? { kind: "ready", value, from: "cache", fetchedAt: saved.fetchedAt, took: null }
+        : { kind: "loading", last: value };
+    setMember(id, (now) =>
+      saved.kind === "live"
+        ? { ...now, live: shown(saved.catalogue) }
+        : { ...now, titles: shown(saved.catalogue) },
+    );
+    return !fresh;
+  } finally {
+    // After the list shows, so what waits for every read sees it in the roster.
+    stopReading(id, kind, source);
+  }
 }
 
 /**
@@ -455,6 +500,8 @@ function signIn(
     login: [entry.username, password],
   };
   setSource(id, source);
+  // A read at launch for the login before ends: this one's lists come from its provider.
+  stopReading(id);
   setMember(id, (member) => ({
     ...member,
     needsSecret: false,
@@ -470,6 +517,7 @@ function signIn(
     reloadTitles(id);
     return;
   }
+  reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
   void fromSaved(id, "live", source).then((load) => {
     if (load && currentSource(id) === source) reloadChannels(id);
   });
@@ -855,6 +903,10 @@ function libraryOf(shown: readonly Labelled[]): Library {
   joined = { parts: shown, library };
   return library;
 }
+
+/** Whether the channels that show are worked out of every subscription's list that shows. */
+export const channelsWorkedOut = () =>
+  liveSources().every((source) => parts.get(source.subscriptionId)?.catalogue === source.catalogue);
 
 /** Shows the channels from the parts there are, and works out those still to come. */
 function publish() {

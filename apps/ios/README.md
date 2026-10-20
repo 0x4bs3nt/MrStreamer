@@ -105,6 +105,19 @@ Each responsibility has one owner, a plain module with a store the screens read:
   64 MiB and 250,000 rows, every list together 256 MiB, the oldest movie and series lists going
   first. A new password or a removal deletes a subscription's copies first, and no write of the
   earlier login is saved after that.
+- `src/startup.ts`: whether the app is still opening. A launch opens once every saved list has
+  been read and the channels and the movie and series collections are worked out of those that
+  show. A missing, unreadable or doubtful copy only ends that list's read, and a password the
+  Keychain lost leaves that subscription with nothing to read; the other subscriptions' reads and
+  views still hold the opening. With no subscription saved it opens at once. No login check or
+  provider answer is waited for; a list a provider already gave is worked out with the rest.
+  Until the app opens, `titles.ts` indexes no saved titles while others are still read, so two
+  providers' saved lists are indexed once. If a disk read has not finished after 8 seconds, the
+  app opens without it: the lists read by then are indexed and show, and the late one joins them
+  when it answers. `src/startup-screen.tsx` covers the screens until then: iOS's launch screen
+  (`expo-splash-screen`) and then the app's own copy of it at the same place, both drawing
+  `assets/splash.png`, the approved artwork, kept as it is (nothing generates it), with "Opening
+  your library" beneath after a second. Nothing on it moves.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
   facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
   as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one

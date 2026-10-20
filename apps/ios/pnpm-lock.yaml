@@ -78,6 +78,9 @@ importers:
       expo-secure-store:
         specifier: 58.0.2
         version: 58.0.2(expo@58.0.9)
+      expo-splash-screen:
+        specifier: 58.0.8
+        version: 58.0.8(expo@58.0.9)(supports-color@8.1.1)
       expo-symbols:
         specifier: 58.0.4
         version: 58.0.4(expo-font@58.0.8)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
@@ -1504,6 +1507,11 @@ packages:
   expo-server@58.0.5:
     resolution: {integrity: sha512-FHYecxfGOuAhacHcanR6qCN8Cln9S+FFulcYetLu3ddDg55ohuCsMZ9U4Egzwdm+A2o6N+MdSoJKquBC5F9NIg==}
     engines: {node: ^22.13.0 || ^24.3.0 || ^26.0.0 || >=27.0.0}
+
+  expo-splash-screen@58.0.8:
+    resolution: {integrity: sha512-0JsLzisL4SGzK87Vi05uOezNORL/DAxMc4NptsQcG4aAbfiF7R+Q2AHmc6dV7Vi86lpsY7VFQXqUGbLGjXw6JQ==}
+    peerDependencies:
+      expo: '*'
 
   expo-symbols@58.0.4:
     resolution: {integrity: sha512-cZeIh4bf4uUI5GhI0BK88dV1BCoWlgp1fmbPuUY/bZnonmyGS881Yvy8MkbM+R+ozo7W9TdZFpbFRWjUA+spcA==}
@@ -4164,6 +4172,16 @@ snapshots:
       expo: 58.0.9(@babel/core@7.29.7(supports-color@8.1.1))(@expo/metro-runtime@58.0.14)(expo-router@58.0.18)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)
 
   expo-server@58.0.5: {}
+
+  expo-splash-screen@58.0.8(expo@58.0.9)(supports-color@8.1.1):
+    dependencies:
+      '@expo/config-plugins': 58.0.8(supports-color@8.1.1)
+      '@expo/image-utils': 0.12.4(supports-color@8.1.1)
+      expo: 58.0.9(@babel/core@7.29.7(supports-color@8.1.1))(@expo/metro-runtime@58.0.14)(expo-router@58.0.18)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)
+      xml2js: 0.6.0
+    transitivePeerDependencies:
+      - supports-color
+      - typescript
 
   expo-symbols@58.0.4(expo-font@58.0.8)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0):
     dependencies:

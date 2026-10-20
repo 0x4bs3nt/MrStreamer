@@ -1,16 +1,20 @@
 import { DarkTheme, Stack, ThemeProvider, usePathname } from "expo-router";
 import { useEffect } from "react";
 import { StyleSheet, View } from "react-native";
-import { restore, useRoster } from "../account.ts";
+import { useRoster } from "../account.ts";
 import { startDownloads } from "../downloads.ts";
 import { onScreen } from "../playback.ts";
+import { holdLaunchScreen, StartupScreen } from "../startup-screen.tsx";
+import { startUp, useStartup } from "../startup.ts";
 import { onTelemetryScreen, startTelemetry } from "../telemetry/index.ts";
 import { WatchLayer } from "../watch.tsx";
 
 // The app: Connect until a subscription is saved, then the four tabs, with Search over them.
 // Without one, Connect also opens Downloads (`offline`), as copies play with no provider. Watch
 // lies over all of them, outside navigation, so the one player view it shows lives on under
-// Picture in Picture while the tabs are used.
+// Picture in Picture while the tabs are used. The launch screen covers them until the app opens
+// with what the phone saved (startup.ts); the tabs are there under it from when the subscriptions
+// are read, so navigation, links and downloads work as they would without it.
 
 const theme = {
   ...DarkTheme,
@@ -23,14 +27,15 @@ const theme = {
   },
 };
 
-let restored: Promise<void> | null = null;
+holdLaunchScreen();
 
 export default function RootLayout() {
   const roster = useRoster();
+  const startup = useStartup();
   const pathname = usePathname();
   useEffect(() => {
     startTelemetry();
-    restored ??= restore();
+    void startUp();
     startDownloads();
   }, []);
   // A request still waiting when the viewer moves to another screen lapses (playback.ts).
@@ -38,8 +43,17 @@ export default function RootLayout() {
     onScreen(pathname);
     onTelemetryScreen(pathname);
   }, [pathname]);
-  if (roster.kind === "restoring") return <View style={styles.black} />;
-  const signedIn = roster.members.length > 0;
+  const opening = roster.kind === "restoring" || startup.kind === "opening";
+  return (
+    <View style={styles.black}>
+      {roster.kind === "ready" ? <App signedIn={roster.members.length > 0} /> : null}
+      {opening ? <StartupScreen /> : null}
+    </View>
+  );
+}
+
+/** The screens, Connect's or the tabs', with Watch over them. */
+function App({ signedIn }: { readonly signedIn: boolean }) {
   return (
     <ThemeProvider value={theme}>
       <View style={styles.black}>

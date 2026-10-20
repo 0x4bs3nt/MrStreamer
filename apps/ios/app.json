@@ -39,6 +39,15 @@
         }
       ],
       [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "image": "./assets/splash.png",
+          "imageWidth": 240,
+          "resizeMode": "contain"
+        }
+      ],
+      [
         "expo-video",
         {
           "supportsPictureInPicture": true,

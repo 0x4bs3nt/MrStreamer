@@ -64,6 +64,9 @@ vi.mock("../src/account.ts", () => ({
   retryTitles: () => undefined,
   reloadTitles: () => undefined,
   useRoster: () => ({ kind: "ready", members: [] }),
+  // No launch is reading saved lists here.
+  readingSaved: () => false,
+  onReadingSaved: () => () => undefined,
 }));
 vi.mock("../src/sources.ts", () => ({
   currentSource: (id: string) => edges.sources.get(id),
