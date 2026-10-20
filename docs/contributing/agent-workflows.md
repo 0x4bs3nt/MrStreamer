@@ -36,3 +36,17 @@ Use the installed `architect` skill when types, ownership and module boundaries 
 Use the installed `mac-mini` skill for native macOS checks, including its `onmac` synchronization and installed `cua-driver` controls. The verification skill has checkout-scoped command recipes and evidence pull/cleanup guidance. Real subscriptions, native audio/GPU behavior, installers/updates and TV receivers still need their own documented checks.
 
 Keep the relevant feature entry current in a product change. To audit the entire map, ask "Use verify-mrstreamer to maintain its feature map" and follow its maintenance reference. This reuses the same skill and adds no global workflow or recurring schedule.
+
+## Automated PR reviews
+
+CodeRabbit and Cubic supplement CI and the independent-review/pr-audit gates. Use the free public OSS review path only. Do not enable paid seats, overflow/flex, API features, or trial-dependent tools. A free allowance can pause reviews, and CodeRabbit can report a passing rate-limit check without reviewing; batch pushes and wait for the reset instead of buying capacity.
+
+Both configurations skip drafts and support incremental reviews. CodeRabbit currently requires a manual trigger for each head on public repos below 10 stars. Use `@coderabbitai review` for the latest changes; avoid repeated full-review commands. Cubic reviews subsequent pushes automatically. Keep source, tests, shared contracts, workflows, packaging and dependency changes in review. CodeRabbit keeps its built-in generated/binary filters and explicitly includes pnpm lockfiles. No custom exclusions hide accidentally committed local secrets. Fixes, generated tests/docstrings, automated approval and merge are disabled. Wout keeps Cubic auto-resolution of addressed threads enabled; verify fixes before merging even when a thread is already resolved. Reviewers use AGENTS.md; CI owns formatting and lint.
+
+Before accepting a review, confirm its reviewed head matches the latest PR commit and inspect skipped paths. Verify findings against the source, fix real defects and explain false positives. An old green review is not evidence for a newer push. Prefer an incremental rerun over repeating a full review. CodeRabbit's commit-count auto-pause is disabled, but manual pauses and rate limits still need attention.
+
+CodeRabbit reads `.coderabbit.yaml` from the PR branch. Cubic reads `cubic.yaml` only from the default branch; its first configuration PR uses the dashboard settings. Keep those per-repo settings safe during bootstrap, then check the effective configuration after merge. Invalid Cubic YAML falls back to dashboard settings, so a completed review alone does not prove the YAML applied.
+
+On the first real configuration PR, record the effective settings, AGENTS context, reviewed SHA and incremental follow-up result on the matching project cards. Confirm free public entitlement without relying on a trial. Do not seed defects or open a throwaway PR to get a bot comment. Required-check or branch-protection changes need known check names and separate maintainer approval.
+
+References: [CodeRabbit review limits](https://docs.coderabbit.ai/management/plans), [path-filter overrides](https://docs.coderabbit.ai/configuration/path-instructions), [Cubic configuration](https://docs.cubic.dev/configure/cubic-yaml) and [public fair use](https://docs.cubic.dev/account/ai-review-usage).
