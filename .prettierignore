@@ -5,3 +5,5 @@ LICENSE
 apps/desktop/assets/brand/
 .local/
 apps/desktop/test/fixtures/
+apps/ios/licences/texts/
+apps/ios/src/licences.json

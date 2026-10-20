@@ -3,8 +3,8 @@ import { tabScreenOptions } from "../../../header.tsx";
 
 /**
  * Home, with the shared top bar (`header.tsx`): Downloads and Settings open on its stack, and
- * Settings' provider form above Settings. Home opens at its root from the other tabs: what it
- * pushed closes as the viewer leaves for another tab.
+ * Settings' provider form and Licences above Settings. Home opens at its root from the other
+ * tabs: what it pushed closes as the viewer leaves for another tab.
  */
 export default function HomeLayout() {
   return (
@@ -13,6 +13,8 @@ export default function HomeLayout() {
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
       <Stack.Screen name="provider" options={{ title: "" }} />
+      <Stack.Screen name="licences" options={{ title: "Licences" }} />
+      <Stack.Screen name="licence" options={{ title: "" }} />
     </Stack>
   );
 }

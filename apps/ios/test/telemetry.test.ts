@@ -439,6 +439,31 @@ describe("what the app reports of its use", () => {
     expect(names().filter((name) => name === "search_used")).toHaveLength(3);
   });
 
+  it("counts Licences as the Settings they open from, on every tab", async () => {
+    const app = await launch();
+    app.setStatistics(true);
+    await until(() => captured.length === 2);
+    for (const tab of ["", "/live", "/films", "/series"]) {
+      app.onTelemetryScreen(tab || "/");
+      for (const screen of ["settings", "licences", "licence", "licences", "settings"]) {
+        app.onTelemetryScreen(`${tab}/${screen}`);
+      }
+    }
+
+    await until(() => captured.length === 2 + 8);
+    await quiet();
+    expect(ofName("feature_opened").map((properties) => properties["feature"])).toEqual([
+      "home",
+      "settings",
+      "live_tv",
+      "settings",
+      "movies",
+      "settings",
+      "series",
+      "settings",
+    ]);
+  });
+
   it("sends only the fixed properties, and nothing the viewer typed, watched or signed in with", async () => {
     const app = await launch();
     app.setStatistics(true);

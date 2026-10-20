@@ -30,16 +30,21 @@ import {
 import { DownloadsLink } from "../../../downloads-screen.tsx";
 import { failureOf } from "../../../errors.ts";
 import { tabHref, useTabs, type Tab } from "../../../header.tsx";
+import { licences } from "../../../licences.ts";
+import { openLink } from "../../../open-link.ts";
 import { setStatistics, useStatistics } from "../../../telemetry/index.ts";
 import { hasTmdb, useMetadataStatus, useTitleTimings } from "../../../titles.ts";
 import { ChannelLogo, colors, TextButton } from "../../../ui.tsx";
 
+const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
+
 /**
  * Settings as one list: the providers first, each a row with Add provider under them, then
- * Downloads, a row with what they take that opens them, Playback, Privacy and About. M3U playlists
- * and guide sources come here as they come to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and
- * notice, as the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and
- * what it opens goes on that tab too.
+ * Downloads, a row with what they take that opens them, Playback, Privacy with the privacy policy
+ * in the browser, and About with Licences. M3U playlists and guide sources come here as they come
+ * to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and notice, as
+ * the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and what it
+ * opens goes on that tab too.
  */
 export default function Settings() {
   const roster = useRoster();
@@ -92,11 +97,24 @@ export default function Settings() {
           .filter(Boolean)
           .join(" ")}
       </Text>
+      <Opens
+        label="Privacy policy"
+        role="link"
+        onPress={() => openLink(PRIVACY_POLICY)}
+        testID="settings-privacy-policy"
+      />
 
       <Section name="About" />
       <Line
         label="Version"
         value={`${Constants.expoConfig?.version ?? "?"} (${Constants.platform?.ios?.buildNumber ?? "?"})`}
+      />
+      <Opens
+        label="Licences"
+        value={String(licences.components.length)}
+        role="button"
+        onPress={() => router.push(tabHref(tab, "licences"))}
+        testID="settings-licences"
       />
       <TmdbLine />
       {hasTmdb ? (
@@ -301,6 +319,37 @@ function Section({ name }: { name: string }) {
   );
 }
 
+/** A row that opens something: a screen of Settings' own, or a page in the browser as a link. */
+function Opens({
+  label,
+  value,
+  role,
+  onPress,
+  testID,
+}: {
+  label: string;
+  value?: string;
+  role: "button" | "link";
+  onPress: () => void;
+  testID: string;
+}) {
+  return (
+    <Pressable
+      accessibilityRole={role}
+      accessibilityLabel={value ? `${label}, ${value}` : label}
+      onPress={onPress}
+      style={({ pressed }) => [styles.line, pressed && styles.pressed]}
+      testID={testID}
+    >
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.opens}>
+        {value ? <Text style={styles.value}>{value}</Text> : null}
+        <SymbolView name="chevron.right" size={14} tintColor={colors.dim} weight="semibold" />
+      </View>
+    </Pressable>
+  );
+}
+
 function Line({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.line} accessible accessibilityLabel={`${label}, ${value}`}>
@@ -358,6 +407,7 @@ const styles = StyleSheet.create({
   },
   label: { color: colors.text, fontSize: 17, flexShrink: 1 },
   value: { color: colors.dim, fontSize: 17, flexShrink: 1, textAlign: "right" },
+  opens: { flexDirection: "row", alignItems: "center", gap: 8 },
   paragraph: {
     color: colors.dim,
     fontSize: 13,

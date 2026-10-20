@@ -228,9 +228,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
 Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home, Live, Movies
 and Series. Every screen of theirs has one top bar (`src/header.tsx`): the brand on the left, after
 the back button on a pushed screen, and Search, Downloads and Settings on the right, less the
-button of the screen it is on. Downloads, Settings and Settings' provider form (`provider`, Add
-provider or a provider's Edit) are Home's screens, pushed on the tab they were asked from (the other
-tabs' route files re-export them), and close as the viewer leaves that tab; Movies' and Series'
+button of the screen it is on. Downloads, Settings and what Settings opens (`provider`, Add
+provider or a provider's Edit; `licences` and a component's `licence`) are Home's screens, pushed
+on the tab they were asked from (the other tabs' route files re-export them), and close as the viewer leaves that tab; Movies' and Series'
 details under them stay. `search` opens over the tabs, fading in, and closes back onto the screen
 it opened over; it keeps its text until the app ends, and says, above the keyboard (or atop the
 results when too little room is left there), when the latest text is still being searched and which
@@ -286,6 +286,19 @@ and after seeks; the test AVI (MPEG-4 Part 2, MP3) ran to its end without a pict
 TMDB's key is built in from `EXPO_PUBLIC_TMDB_KEY` (`EXPO_PUBLIC_TMDB_API` points at a test
 server). Without one, collections that need TMDB are left out, details show the provider's
 facts, and Settings shows no attribution.
+
+Settings' Privacy opens the privacy policy, `https://mrstreamer.app/privacy`, in the browser, and
+About opens Licences: the app under GPL-3.0-only, then every component the build carries, each
+with its licence, its exact source and its notices in full, read from `src/licences.json` with no
+network. `scripts/licences.ts` generates that file from the release bundle's source map (the
+JavaScript packages in it, and licence files of code they vendor), the native modules Expo links
+and `licences/manifest.json`, which pins what isn't an npm package (FFmpeg with its configure
+flags, Hermes and React Native's third-party pods) and texts packages were published without. A
+package with no licence text, or a pin that no longer matches, fails it. Run it after a dependency,
+patch or FFmpeg change and commit the result; `testflight.sh archive` runs it with `--check`
+against the native project's `Podfile.lock` (`scripts/native-pods.ts`) and refuses a stale file,
+a pod Licences doesn't describe, a manifest-pinned pod at another version than Licences shows, or
+one inside the native project that React Native doesn't generate there.
 
 ## What Hermes lacks
 

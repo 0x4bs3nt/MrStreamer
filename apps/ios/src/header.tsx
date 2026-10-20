@@ -12,9 +12,10 @@ import { colors } from "./ui.tsx";
 
 // The top bar every tab's screens share, layout A: the brand on the left, after the system's back
 // button on a pushed screen, and Search, Downloads and Settings on the right as the system's own
-// glass buttons. Downloads, Settings and the provider form open on the tab they were asked from;
-// leaving that tab closes them again, while Movies' and Series' details stay. Search opens above
-// the tabs (`app/search.tsx`) and closes back to the screen it opened over.
+// glass buttons. Downloads, Settings and what Settings opens (the provider form, Licences) open on
+// the tab they were asked from; leaving that tab closes them again, while Movies' and Series'
+// details stay. Search opens above the tabs (`app/search.tsx`) and closes back to the screen it
+// opened over.
 
 const TABS = ["(home)", "live", "films", "series"] as const;
 
@@ -22,9 +23,15 @@ const TABS = ["(home)", "live", "films", "series"] as const;
 export type Tab = (typeof TABS)[number];
 
 /** A screen the top bar pushes on the tab it shows on. */
-export type TabScreen = "downloads" | "settings" | "provider";
+export type TabScreen = "downloads" | "settings" | "provider" | "licences" | "licence";
 
-const SHARED: readonly string[] = ["downloads", "settings", "provider"] satisfies TabScreen[];
+const SHARED: readonly string[] = [
+  "downloads",
+  "settings",
+  "provider",
+  "licences",
+  "licence",
+] satisfies TabScreen[];
 
 const BASE = { "(home)": "", live: "/live", films: "/films", series: "/series" } as const;
 
@@ -144,11 +151,11 @@ export function tabScreenOptions(tab: Tab) {
 
 /**
  * Closes what the top bar pushed on a tab's stack once another tab is selected, as Home always
- * did: Downloads, Settings and the provider form, and anything above them. What was under them,
- * such as Movies' details, stays. Called once, by the tabs' layout. It follows which tab
- * navigation's state selects, not a tab's blur: Search over the tabs blurs the tab first without
- * changing the selection, so nothing closes then, and a Search result in another tab closes Search
- * and selects that tab in one step, with no second blur to see.
+ * did: Downloads, Settings, the provider form and Licences, and anything above them. What was
+ * under them, such as Movies' details, stays. Called once, by the tabs' layout. It follows which
+ * tab navigation's state selects, not a tab's blur: Search over the tabs blurs the tab first
+ * without changing the selection, so nothing closes then, and a Search result in another tab
+ * closes Search and selects that tab in one step, with no second blur to see.
  */
 export function useCloseOnTabChange() {
   const navigation = useNavigation();

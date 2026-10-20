@@ -98,9 +98,13 @@ export function onSearchText(text: string): void {
   searching = typed;
 }
 
+const LEGAL: ReadonlySet<string | undefined> = new Set(["licences", "licence"]);
+
 function featureOf(path: string): IosFeature | null {
   if (path === "/") return "home";
   const [first, second] = path.split("/").slice(1);
+  // Licences and a component's notices are Settings' own screens, on Home and every tab.
+  if (LEGAL.has(first) || LEGAL.has(second)) return "settings";
   // Downloads and Settings open on whichever tab asked for them: /live/settings is Settings.
   if (second === "settings" || second === "downloads") return second;
   if (second === "provider") return null;

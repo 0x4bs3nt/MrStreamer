@@ -32,6 +32,8 @@ case "${1:-}" in
     # The FFmpeg libraries modules/title-formats links, from their pinned source.
     scripts/build-ffmpeg.sh ios
     CI=1 npx expo prebuild --platform ios --clean
+    # Settings' Licences must be this build's: the bundle's packages and every pod it links.
+    node scripts/licences.ts --check --pods ios/Podfile.lock
     xcodebuild archive -workspace ios/MrStreamer.xcworkspace -scheme MrStreamer \
       -configuration Release -destination generic/platform=iOS -archivePath "$archive" \
       "${auth[@]}" DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic | xcbeautify

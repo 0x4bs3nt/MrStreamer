@@ -15,6 +15,8 @@ export default function FilmsLayout() {
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
       <Stack.Screen name="provider" options={{ title: "" }} />
+      <Stack.Screen name="licences" options={{ title: "Licences" }} />
+      <Stack.Screen name="licence" options={{ title: "" }} />
     </Stack>
   );
 }
