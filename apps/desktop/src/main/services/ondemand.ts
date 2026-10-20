@@ -39,6 +39,7 @@ import type { WatchlistPage } from "@mrstreamer/contracts/watchlist";
 import { diagnosed } from "@mrstreamer/core/diagnostics";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
 import { currentLanguage, t } from "@mrstreamer/core/i18n";
+import { TMDB_EXPIRE_MS, TMDB_REFRESH_MS } from "@mrstreamer/core/metadata/policy";
 import {
   tmdb,
   GENRES,
@@ -90,8 +91,6 @@ import {
 /** Provider details retained in memory; freshness still requires the current catalogue and age. */
 const DETAILS_KEPT = 200;
 const DAY = 24 * 60 * 60 * 1000;
-const TMDB_REFRESH = 150 * DAY;
-const TMDB_EXPIRE = 182 * DAY;
 
 interface Timed<A> {
   readonly at: number;
@@ -678,7 +677,7 @@ function make(deps: OnDemandDeps) {
       JSON.stringify([kind, id, viewer]);
     const validAbout = (key: string, now: number) => {
       const kept = abouts.get(key);
-      return kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE)
+      return kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE_MS)
         ? kept.value
         : null;
     };
@@ -703,7 +702,10 @@ function make(deps: OnDemandDeps) {
         }
         const now = yield* Clock.currentTimeMillis;
         const value = validAbout(key, now);
-        if ((kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH)) || !tmdbKey)
+        if (
+          (kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH_MS)) ||
+          !tmdbKey
+        )
           return { value, flight: undefined };
         const flightKey = JSON.stringify([sourceKey(source), key]);
         const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
@@ -1018,10 +1020,13 @@ function make(deps: OnDemandDeps) {
         }
         const now = yield* Clock.currentTimeMillis;
         const usable =
-          kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE)
+          kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_EXPIRE_MS)
             ? kept.value
             : null;
-        if ((kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH)) || !tmdbKey)
+        if (
+          (kept && younger(kept.at, now, kept.value === null ? DAY : TMDB_REFRESH_MS)) ||
+          !tmdbKey
+        )
           return usable;
         const client = tmdb({ key: tmdbKey, ...(deps.tmdbApi ? { api: deps.tmdbApi } : {}) });
         const fiber = yield* shared(
