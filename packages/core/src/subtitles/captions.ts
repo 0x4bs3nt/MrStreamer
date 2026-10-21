@@ -81,11 +81,19 @@ export function captionsInTrack(packet: Uint8Array): Uint8Array {
 /** NAL units in Annex B data, each from its header byte. */
 function* nalUnits(data: Uint8Array): Generator<Uint8Array> {
   let start = -1;
-  for (let index = 0; index + 2 < data.length; index++) {
-    if (data[index] === 0 && data[index + 1] === 0 && data[index + 2] === 1) {
-      if (start >= 0) yield trimZeros(data.subarray(start, index));
-      start = index + 3;
-      index += 2;
+  for (let index = 2; index < data.length;) {
+    const byte = data[index]!;
+    // Only zero can be inside a start code ending in either of the next two bytes.
+    if (byte > 1) {
+      index += 3;
+    } else if (byte === 0) {
+      index++;
+    } else if (data[index - 1] === 0 && data[index - 2] === 0) {
+      if (start >= 0) yield trimZeros(data.subarray(start, index - 2));
+      start = index + 1;
+      index += 3;
+    } else {
+      index += 3;
     }
   }
   if (start >= 0 && start < data.length) yield data.subarray(start);

@@ -19,6 +19,7 @@ import { miniPlayer } from "../../src/renderer/src/app/mini-player.ts";
 import { closeWatch, openWatch, useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { WatchScreen } from "../../src/renderer/src/features/watch/WatchScreen.tsx";
 import { player } from "../../src/renderer/src/player/player.ts";
+import { queries } from "../../src/renderer/src/lib/queries.ts";
 
 // This computer keeps a window on top of others, so Watch has its mini player.
 await vi.hoisted(async () => {
@@ -160,11 +161,11 @@ async function watching(channel = vrt): Promise<void> {
   player.setAudible(true);
   openWatch();
   await act(async () => player.play(channel));
+  const client = new QueryClient();
+  await client.fetchQuery(queries.preferences());
   const root = createRoot(container);
   await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client: new QueryClient() }, createElement(WatchScreen)),
-    ),
+    root.render(createElement(QueryClientProvider, { client }, createElement(WatchScreen))),
   );
   unmount = () => act(() => root.unmount());
 }

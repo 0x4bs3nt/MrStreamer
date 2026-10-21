@@ -11,6 +11,7 @@ import {
   type LiveDiscovery,
 } from "@mrstreamer/contracts/live-browse";
 import type { Viewing } from "@mrstreamer/contracts/viewing";
+import type { Preferences } from "@mrstreamer/contracts/preferences";
 import { call } from "../../lib/ipc.ts";
 import type { Listing, ListingMatch } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
@@ -46,6 +47,7 @@ export function browseQuery(
   list: ChannelList,
   viewing: Viewing | undefined,
   visibility: "viewer" | "ordinary",
+  preferences: Preferences | undefined,
 ): LiveBrowseQuery {
   const filters = list.filters ?? EMPTY_LIVE_FILTERS;
   return {
@@ -66,15 +68,19 @@ export function browseQuery(
       languages: [...filters.languages],
       subscriptions: [...filters.subscriptions],
     },
-    visibility,
+    // Main gives a viewer hiding adults the ordinary list. Share Home's entry only once
+    // preferences are known; without a snapshot, main still applies its saved policy.
+    visibility:
+      visibility === "viewer" && preferences && !preferences.adultTitles ? "ordinary" : visibility,
   };
 }
 
 /** Membership and facets always belong to the current descriptor, including personal order. */
 export function useListChannels(list: ChannelList, visibility: "viewer" | "ordinary" = "viewer") {
   const viewing = useQuery(queries.viewing());
+  const preferences = useQuery(queries.preferences());
   const personal = list.kind === "favourites" || list.kind === "recent";
-  const request = browseQuery(list, viewing.data, visibility);
+  const request = browseQuery(list, viewing.data, visibility, preferences.data);
   const empty = request.scope.kind === "channels" && request.scope.channels.length === 0;
   const result = useQuery({
     ...queries.browse(request),

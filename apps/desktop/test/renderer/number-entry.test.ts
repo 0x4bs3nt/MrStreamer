@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { useUi, type ChannelList } from "../../src/renderer/src/app/ui-store.ts";
 import { NumberEntry, numberEntry } from "../../src/renderer/src/features/watch/NumberEntry.tsx";
+import { queries } from "../../src/renderer/src/lib/queries.ts";
 
 let cleanup = () => {};
 afterEach(() => {
@@ -45,11 +46,12 @@ it.each<ChannelList>([
     expect(query).toEqual({
       scope: { kind: "all" },
       filters: { browseTopics: [], countries: [], languages: [], subscriptions: [] },
-      visibility: "viewer",
+      visibility: "ordinary",
     });
     return browseResult([first, duplicate]);
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await client.fetchQuery(queries.preferences());
   const onChannel = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);

@@ -86,6 +86,7 @@ async function favouritesPage(count: number, list: ChannelList = { kind: "favour
   ipc.reset();
   useUi.setState({ view: "live", list, watching: false, searchOpen: false, searchFrom: "" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await client.fetchQuery(queries.preferences());
   const shown = Array.from({ length: count }, (_, index) => String(index + 1));
   const favourites = [...shown.slice(0, 1), HIDDEN[0], ...shown.slice(1), HIDDEN[1]].map(own);
   const channels = shown.map(channel);

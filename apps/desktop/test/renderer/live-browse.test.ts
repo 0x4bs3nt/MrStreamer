@@ -15,6 +15,7 @@ import {
 } from "../../src/renderer/src/features/live/lists.ts";
 import { BrowseFilters } from "../../src/renderer/src/features/live/BrowseFilters.tsx";
 import { queries, keepViewing, rosterOf } from "../../src/renderer/src/lib/queries.ts";
+import { acceptPreferences } from "../../src/renderer/src/lib/preferences.ts";
 
 const own = (id: string) => ({ subscriptionId: SUBSCRIPTION, id });
 const channel = (id: string): LiveChannel => ({
@@ -54,6 +55,7 @@ let cleanup = () => {};
 beforeEach(() => {
   vi.useFakeTimers();
   ipc.reset();
+  ipc.answer("liveBrowse.remember", (selection) => selection);
   useUi.setState({ list: { kind: "all" } });
 });
 afterEach(() => {
@@ -61,8 +63,9 @@ afterEach(() => {
   vi.useRealTimers();
 });
 const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
-async function mount() {
+async function mount({ loadPreferences = true } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (loadPreferences) await client.fetchQuery(queries.preferences());
   client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
   client.setQueryData(queries.viewing().queryKey, viewing(1, ["1", "2"]));
   client.setQueryData(queries.rememberedLiveBrowse().queryKey, () => ({
@@ -72,9 +75,14 @@ async function mount() {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
+  let liveChannels: readonly LiveChannel[] | undefined;
+  let homeChannels: readonly LiveChannel[] | undefined;
   function View() {
     const list = useUi((state) => state.list);
     const browse = useListChannels(list);
+    const ordinary = useListChannels(list, "ordinary");
+    liveChannels = browse.channels;
+    homeChannels = ordinary.channels;
     const show = useShowList();
     const home = useHomeDiscovery();
     return createElement(
@@ -84,6 +92,11 @@ async function mount() {
       createElement("button", { onClick: () => show({ kind: "favourites" }) }, "Favourites"),
       createElement("button", { onClick: () => show({ kind: "all" }) }, "All"),
       createElement("output", {}, browse.channels?.map((each) => each.id).join(",") ?? "pending"),
+      createElement(
+        "output",
+        { id: "ordinary" },
+        ordinary.channels?.map((each) => each.id).join(",") ?? "pending",
+      ),
       createElement("p", { id: "home" }, JSON.stringify(home)),
       createElement(BrowseFilters, { list, result: browse.data }),
     );
@@ -105,8 +118,94 @@ async function mount() {
       expect(button).toBeDefined();
       button!.click();
     });
-  return { client, container, click, output: () => container.querySelector("output")?.textContent };
+  return {
+    client,
+    container,
+    click,
+    output: () => container.querySelector("output")?.textContent,
+    ordinary: () => container.querySelector("#ordinary")?.textContent,
+    channels: () => ({ live: liveChannels, home: homeChannels }),
+  };
 }
+
+it.each([undefined, false])(
+  "shares one in-flight browse and warm result when loaded adultTitles is %s",
+  async (adultTitles) => {
+    ipc.prefer(adultTitles === undefined ? {} : { adultTitles });
+    const answer = ipc.hold("library.browse");
+    const p = await mount();
+    expect(ipc.argsOf("library.browse")).toHaveLength(1);
+    expect(ipc.argsOf("library.browse")[0]?.visibility).toBe("ordinary");
+    await act(async () => answer.resolve(result(["safe"])));
+    await settle();
+    expect(p.output()).toBe("safe");
+    expect(p.channels().live).toBe(p.channels().home);
+    ipc.always("library.browse", result(["sport"]));
+    await p.click("Sports");
+    await settle();
+    await p.click("All");
+    await settle();
+    expect(p.output()).toBe("safe");
+    expect(p.channels().live).toBe(p.channels().home);
+    expect(
+      ipc.argsOf("library.browse").filter((query) => query.filters.browseTopics.length === 0),
+    ).toHaveLength(1);
+  },
+);
+
+it("preserves main's saved viewer policy after a failed initial preference read and keeps Home ordinary", async () => {
+  ipc.prefer({ adultTitles: true });
+  ipc.refuse("preferences.get", { kind: "unexpected", detail: "unavailable" });
+  ipc.answer("library.browse", (query) =>
+    result(query.visibility === "viewer" ? ["safe", "adult"] : ["safe"]),
+  );
+  const p = await mount({ loadPreferences: false });
+  expect(p.output()).toBe("safe,adult");
+  expect(p.ordinary()).toBe("safe");
+  expect(ipc.argsOf("library.browse").map((query) => query.visibility)).toEqual([
+    "viewer",
+    "ordinary",
+  ]);
+  expect(p.client.getQueryData(queries.preferences().queryKey)).toBeUndefined();
+});
+
+it("keeps Home ordinary through hidden/shown/hidden resets and discards obsolete viewer replies", async () => {
+  ipc.answer("library.browse", (query) =>
+    result(query.visibility === "viewer" ? ["safe", "adult"] : ["safe"]),
+  );
+  const p = await mount();
+  expect(p.output()).toBe("safe");
+  await act(async () =>
+    acceptPreferences(p.client, ipc.snapshot({ volume: 1, muted: false, adultTitles: true })),
+  );
+  await settle();
+  expect(p.output()).toBe("safe,adult");
+  expect(p.ordinary()).toBe("safe");
+  const viewer = ipc.argsOf("library.browse").find((query) => query.visibility === "viewer")!;
+  const obsolete = ipc.hold("library.browse", (query) => query.visibility === "viewer");
+  await act(async () => {
+    void p.client.invalidateQueries({ queryKey: queries.browse(viewer).queryKey });
+  });
+  const reset = ipc.hold("library.browse", (query) => query.visibility === "viewer");
+  await act(async () =>
+    acceptPreferences(p.client, ipc.snapshot({ volume: 1, muted: false, adultTitles: false })),
+  );
+  await settle();
+  expect(p.output()).toBe("safe");
+  expect(p.channels().live).toBe(p.channels().home);
+  await act(async () => {
+    obsolete.resolve(result(["obsolete-adult"]));
+    reset.resolve(result(["obsolete-reset-adult"]));
+  });
+  await settle();
+  expect(p.output()).toBe("safe");
+  expect(p.ordinary()).toBe("safe");
+  expect(p.client.getQueryData(queries.browse(viewer).queryKey)).toBeUndefined();
+  const ordinary = ipc.argsOf("library.browse").find((query) => query.visibility === "ordinary")!;
+  expect(p.client.getQueryData(queries.browse(ordinary).queryKey)?.channels).toBe(
+    p.channels().live,
+  );
+});
 
 it("never makes old-key rows actionable and retains valid same-key rows during refetch", async () => {
   ipc.always("library.browse", result(["1"]));

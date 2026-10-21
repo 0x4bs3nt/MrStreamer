@@ -15,13 +15,18 @@ const channel = readFileSync(
 );
 
 /** What a decoder shows for one stream of the channel, read in small pieces. */
-function decode(pid: number, codec: SubtitleCodec, page: number | null): SubtitleChange[] {
+function decode(
+  pid: number,
+  codec: SubtitleCodec,
+  page: number | null,
+  chunkSize = 1000,
+): SubtitleChange[] {
   const reader = pesReader();
   const decoder = subtitleDecoder(codec, page);
   const changes: SubtitleChange[] = [];
   const packets = [];
-  for (let offset = 0; offset < channel.length; offset += 1000) {
-    packets.push(...reader.push(channel.subarray(offset, offset + 1000)));
+  for (let offset = 0; offset < channel.length; offset += chunkSize) {
+    packets.push(...reader.push(channel.subarray(offset, offset + chunkSize)));
   }
   packets.push(...reader.end());
   for (const packet of packets) {
@@ -83,15 +88,99 @@ describe("subtitles the player draws", () => {
     expect(cleared?.screen).toMatchObject({ kind: "picture", pictures: [] });
   });
 
-  it("reads closed captions from the picture, pop-on, until erased", () => {
-    const changes = decode(0x100, "captions", 1);
+  it.each([1, 7, 1000, 65_536])(
+    "reads closed captions from the picture, pop-on, until erased, in %i-byte chunks",
+    (chunkSize) => {
+      const changes = decode(0x100, "captions", 1, chunkSize);
 
-    expect(changes.map((change) => text(change))).toEqual([["HELLO CAPTIONS"], []]);
-    // Shown with the first of the two frames that end the caption, as ffmpeg's decoder shows
-    // it; erased three seconds in.
-    expect(changes[0]!.at).toBeCloseTo(1.4 + 0.92, 2);
-    expect(changes[1]!.at).toBeCloseTo(1.4 + 3, 2);
-    // Channel 3 carries nothing.
-    expect(decode(0x100, "captions", 3)).toEqual([]);
+      expect(changes.map((change) => text(change))).toEqual([["HELLO CAPTIONS"], []]);
+      // Shown with the first of the two frames that end the caption, as ffmpeg's decoder shows
+      // it; erased three seconds in.
+      expect(changes[0]!.at).toBeCloseTo(1.4 + 0.92, 2);
+      expect(changes[1]!.at).toBeCloseTo(1.4 + 3, 2);
+      // Channel 3 carries nothing.
+      expect(decode(0x100, "captions", 3, chunkSize)).toEqual([]);
+    },
+  );
+});
+
+/** One registered ATSC caption message, including the SEI NAL header and trailing bits. */
+function sei(header: readonly number[], pairs: readonly number[]): number[] {
+  const payload = [
+    0xb5,
+    0,
+    0x31,
+    0x47,
+    0x41,
+    0x39,
+    0x34,
+    3,
+    0x40 | (pairs.length / 3),
+    0xff,
+    ...pairs,
+  ];
+  return [...header, 4, payload.length, ...payload, 0x80];
+}
+
+describe("captions in Annex B pictures", () => {
+  it("keeps H.264 captions after slices and across access units in their original order", () => {
+    // prettier-ignore
+    const picture = Uint8Array.from([
+      0, 0, 1, 9, 0xf0,
+      0, 0, 0, 1, ...sei([6], [0xfc, 0x94, 0x20]),
+      0, 0, 1, 0x65, 0x88,
+      0, 0, 1, ...sei([6], [0xfd, 0x9c, 0x20]),
+      0, 0, 0, 1, 9, 0xf0,
+      0, 0, 1, 0x41, 0x88,
+      0, 0, 0, 1, ...sei([6], [0xfc, 0xc8, 0x49]),
+      0, 0,
+    ]);
+    expect(captionsInPicture(picture, "h264")).toEqual(
+      Uint8Array.from([0, 0x94, 0x20, 1, 0x9c, 0x20, 0, 0xc8, 0x49]),
+    );
   });
+
+  it("keeps HEVC prefix and suffix captions on both sides of slices and access units", () => {
+    // prettier-ignore
+    const picture = Uint8Array.from([
+      0, 0, 1, ...sei([78, 1], [0xfc, 0x94, 0x20]),
+      0, 0, 0, 1, 2, 1, 0x88,
+      0, 0, 1, ...sei([80, 1], [0xfd, 0x9c, 0x20]),
+      0, 0, 1, 70, 1, 0x10,
+      0, 0, 0, 1, 2, 1, 0x88,
+      0, 0, 0, 1, ...sei([80, 1], [0xfc, 0xc8, 0x49]),
+    ]);
+    expect(captionsInPicture(picture, "hevc")).toEqual(
+      Uint8Array.from([0, 0x94, 0x20, 1, 0x9c, 0x20, 0, 0xc8, 0x49]),
+    );
+  });
+
+  it.each(["h264", "hevc"] as const)(
+    "reads %s captions with emulation bytes, zero padding and truncated boundaries without writing input",
+    (codec) => {
+      const header = codec === "h264" ? [6] : [78, 1];
+      const message = sei(header, [0xfc, 0x94, 0x20]);
+      for (let padding = 0; padding < 6; padding++) {
+        for (const tail of [[], [0], [0, 0], [0, 0, 1], [0, 0, 0, 1]]) {
+          // prettier-ignore
+          const input = Uint8Array.from([
+            ...Array<number>(padding).fill(0x55),
+            0, 0, 1, ...header,
+            // An unrelated SEI message contains an escaped start-code pattern.
+            5, 3, 0, 0, 3, 1,
+            ...message.slice(header.length),
+            0, 0, 0, 0, ...tail,
+          ]);
+          const original = input.slice();
+          const pairs = captionsInPicture(input, codec);
+          expect(pairs).toEqual(Uint8Array.from([0, 0x94, 0x20]));
+          pairs.fill(0);
+          expect(input).toEqual(original);
+        }
+      }
+      for (const input of [[], [0], [0, 0], [0, 0, 1], [0, 0, 1, ...header, 4, 15, 0xb5]]) {
+        expect(captionsInPicture(Uint8Array.from(input), codec)).toEqual(new Uint8Array());
+      }
+    },
+  );
 });

@@ -19,6 +19,7 @@ import type { Viewing } from "@mrstreamer/contracts/viewing";
 import { t } from "@mrstreamer/core/i18n";
 import { appError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
+import { currentPreferences } from "../../lib/preferences.ts";
 import { browseQuery } from "./lists.ts";
 import { useUi } from "../../app/ui-store.ts";
 import { keepViewing, queries, rosterOf, savedAs, useSubscriptions } from "../../lib/queries.ts";
@@ -200,7 +201,9 @@ export function useFavouriteOrder(
    * gives the array the list gets for them from then on.
    */
   const read = async (viewing: Viewing) => {
-    const listed = queries.browse(browseQuery(useUi.getState().list, viewing, "viewer"));
+    const listed = queries.browse(
+      browseQuery(useUi.getState().list, viewing, "viewer", currentPreferences(client)),
+    );
     await client.fetchQuery({ ...listed, staleTime: 0 });
     return client.getQueryData(listed.queryKey)?.channels;
   };

@@ -15,11 +15,11 @@ export const browseChannels = (category: OwnedId | null) =>
   queries.browse({
     scope: category ? { kind: "category", category } : { kind: "all" },
     filters: { browseTopics: [], countries: [], languages: [], subscriptions: [] },
-    visibility: "viewer",
+    visibility: "ordinary",
   });
 export const browseChannelsOf = (channels: readonly OwnedId[]) =>
   queries.browse({
     scope: { kind: "channels", channels: channels.map(ownedId) },
     filters: { browseTopics: [], countries: [], languages: [], subscriptions: [] },
-    visibility: "viewer",
+    visibility: "ordinary",
   });
