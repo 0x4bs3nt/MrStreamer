@@ -442,6 +442,13 @@ const openWatchlist = async (d: Driver) => {
   } else await d.click("Open Watchlist", button("header button", "Watchlist"));
 };
 
+/** Before task sections were introduced, these controls all lived in General. */
+const openSettingsSection = async (d: Driver, section: "Live TV" | "Playback" | "Subtitles") => {
+  await d.wait(() => d.exists(button("nav button", "General")), 30_000, "Settings navigation");
+  const destination = (await d.exists(button("nav button", section))) ? section : "General";
+  await d.click(`Open ${destination}`, button("nav button", destination));
+};
+
 /** Settings > About's version line and the commit its source link names. */
 export async function about(d: Driver) {
   await d.click("Open Settings", labelled("Settings"));
@@ -595,9 +602,13 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
     "the app after connecting",
   );
   await d.click("Open Settings", labelled("Settings"));
-  await d.click("Open General", button("nav button", "General"));
+  await openSettingsSection(d, "Live TV");
   await d.select("Quality", labelled("Quality"), "hd");
+  await d.capture("settings-quality");
+  await openSettingsSection(d, "Playback");
   await d.select("Audio in", labelled("Audio in"), "nl");
+  await d.capture("settings-audio");
+  await openSettingsSection(d, "Subtitles");
   await d.select("Subtitles", labelled("Subtitles"), "fr");
   await configureSubtitleUi(d);
   await d.capture("settings");
@@ -669,7 +680,7 @@ export async function seedStable(d: Driver, services: Services, titles: Fixtures
   // Stable remembers the alternate track as a global preference. Restore the original seed
   // through Settings, then require all the original state, including provider progress, intact.
   await d.click("Open Settings", labelled("Settings"));
-  await d.click("Open General", button("nav button", "General"));
+  await openSettingsSection(d, "Playback");
   await d.restoreAudio();
   await d.capture("settings-restored");
   await d.key("Escape", 27);
@@ -883,7 +894,11 @@ export async function upgradeToCandidate(
   await copiesShown(d, inherited.length);
   await d.capture("copies-kept");
   await d.click("Open Settings", labelled("Settings"));
-  await d.click("Open General", button("nav button", "General"));
+  await openSettingsSection(d, "Live TV");
+  await d.capture("settings-quality");
+  await openSettingsSection(d, "Playback");
+  await d.capture("settings-audio");
+  await openSettingsSection(d, "Subtitles");
   await d.capture("settings");
   await d.key("Escape", 27);
   await d.click("Open Live TV", button("header button", "Live TV"));
