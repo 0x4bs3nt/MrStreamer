@@ -90,10 +90,15 @@ and were not launched. See [payload audit](payload-audit.md).
 
 ## Native layout and updater contract
 
-Keep `/opt/Mr. Streamer` and its resource-relative paths. `/usr/bin/mrstreamer` is a package-owned
-symlink to its bundled executable. The upstream desktop entry, WM class, icon and changelog
-are retained. Arch's existing ALPM hooks refresh the desktop and hicolor caches; there are no
-Debian alternatives, `.install` scripts or custom cache hooks. No MIME association is invented.
+Install the payload at `/opt/mrstreamer`. A 21 October 2026 trace showed Chromium's SUID
+sandbox fallback splitting the original helper path at its space when user namespaces were
+unavailable. The direct deb keeps `/opt/Mr. Streamer`. Resource-relative paths, executable name,
+ASAR bytes and profile identity stay unchanged. `/usr/bin/mrstreamer` is a package-owned symlink
+to the bundled executable. The upstream desktop entry is retained except for Exec, which becomes
+`Exec=/opt/mrstreamer/mrstreamer %U`; its original single Exec line is checked before rewriting.
+The WM class, icon and changelog are retained. Arch's existing ALPM hooks refresh the desktop
+and hicolor caches; there are no Debian alternatives, `.install` scripts or custom cache hooks.
+No MIME association is invented.
 
 The package removes exactly three upstream Debian resource files: `package-type`,
 `app-update.yml` and `apparmor-profile`. It does not execute `postinst`/`postrm` or install/load
@@ -107,7 +112,7 @@ Its containing directories are root-owned 0755. No runtime chmod/probe, `--no-sa
 exception or host sysctl change is added. Review future upstream sandbox changes before release.
 The container validates the stored mode and ownership, not operation of a desktop sandbox.
 
-The package adds `/opt/Mr. Streamer/resources/mrstreamer-installation.json` mode 0644:
+The package adds `/opt/mrstreamer/resources/mrstreamer-installation.json` mode 0644:
 
 ```json
 { "schema": 1, "updates": "pacman" }

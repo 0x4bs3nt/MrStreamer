@@ -50,11 +50,20 @@ package() {
   bsdtar -xOf control.tar.xz ./control | grep -Fx "Version: ${_upstream_version//-/\~}"
   bsdtar -xOf control.tar.xz ./control | grep -Fx 'Architecture: amd64'
 
-  local app="$pkgdir/opt/Mr. Streamer"
+  local app="$pkgdir/opt/mrstreamer"
   install -dm755 "$pkgdir/opt" "$pkgdir/usr/bin"
   cp -a 'payload/opt/Mr. Streamer' "$app"
   cp -a payload/usr/share "$pkgdir/usr/"
-  ln -s '/opt/Mr. Streamer/mrstreamer' "$pkgdir/usr/bin/mrstreamer"
+  ln -s /opt/mrstreamer/mrstreamer "$pkgdir/usr/bin/mrstreamer"
+
+  local desktop="$pkgdir/usr/share/applications/mrstreamer.desktop"
+  test "$(grep -c '^Exec=' "$desktop")" -eq 1
+  grep -Fxq 'Exec="/opt/Mr. Streamer/mrstreamer" %U' "$desktop"
+  sed -i 's|^Exec="/opt/Mr\. Streamer/mrstreamer" %U$|Exec=/opt/mrstreamer/mrstreamer %U|' "$desktop"
+  grep -Fxq 'Exec=/opt/mrstreamer/mrstreamer %U' "$desktop"
+  if grep -Fq '/opt/Mr. Streamer' "$desktop"; then
+    return 1
+  fi
 
   # fakeroot records root:root and the SUID sandbox helper in the pacman archive.
   # Match Arch's Electron packaging; never probe host namespaces or change host policy.
@@ -68,11 +77,11 @@ package() {
 
   local licenses="$pkgdir/usr/share/licenses/$pkgname"
   install -Dm644 mrstreamer-LICENSE "$licenses/LICENSE"
-  ln -s '/opt/Mr. Streamer/LICENSE.electron.txt' "$licenses/LICENSE.electron.txt"
-  ln -s '/opt/Mr. Streamer/LICENSES.chromium.html' "$licenses/LICENSES.chromium.html"
+  ln -s '/opt/mrstreamer/LICENSE.electron.txt' "$licenses/LICENSE.electron.txt"
+  ln -s '/opt/mrstreamer/LICENSES.chromium.html' "$licenses/LICENSES.chromium.html"
   local notice
   for notice in LICENSE-FFmpeg.txt LICENSE-x264.txt LICENSE-dav1d.txt; do
-    ln -s "/opt/Mr. Streamer/resources/ffmpeg/$notice" "$licenses/$notice"
+    ln -s "/opt/mrstreamer/resources/ffmpeg/$notice" "$licenses/$notice"
   done
   install -dm755 "$pkgdir/usr/share/doc/$pkgname"
   printf 'Release and bundled sources: %s\nApplication source: %s\n' \

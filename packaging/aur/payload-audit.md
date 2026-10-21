@@ -26,7 +26,15 @@ under `flags=(unconfined)`. None of those scripts/policy effects run in the Arch
 
 The payload has no launcher symlink; Arch owns it in the archive. Its desktop entry invokes
 `"/opt/Mr. Streamer/mrstreamer" %U`, icon `mrstreamer`, WM class `mrstreamer`, category AudioVideo,
-and no MIME types. Preserve it and the hicolor 1024px icon. Existing Arch ALPM hooks update caches.
+and no MIME types. The 20 October decision preserved it and the hicolor 1024px icon.
+Existing Arch ALPM hooks update caches.
+
+On 21 October 2026, the .18 AUR recipe changed the installed root to `/opt/mrstreamer` after
+an actual nightly 401 launch exposed Chromium's SUID helper path splitting at the space.
+It preserves the resource-relative subtree and payload bytes, rewriting only the desktop Exec
+line to the new executable path. Desktop identity and the profile remain unchanged. The direct
+deb still uses `/opt/Mr. Streamer`; its input paths, hashes and AppArmor attachment above and
+below remain historical facts about the inspected deb.
 
 Upstream `resources/package-type` contains `deb`; `resources/app-update.yml` points at the official
 GitHub repo with updater cache `mrstreamer-updater`. Both are removed in the Arch copy along with
@@ -171,9 +179,10 @@ installed managed-runtime and full native GUI acceptance remain open.
 Namcap's process exited zero but reported an `/opt` ELF error, unstripped Vulkan, the intentional
 SUID helper, unused upstream libdl/libpthread links, and possibly-unused libsecret/xdg-utils.
 The `/opt` finding is its questionable-directory rule, while Arch's package guidelines explicitly
-allow `/opt/pkg` for large self-contained applications. Preserving the official layout avoids
-unnecessary relocation. The remaining findings describe deliberate preservation or runtime-loaded
-libraries; none was hidden. The hicolor implicit-dependency warning was fixed by declaring it.
+allow `/opt/pkg` for large self-contained applications. The decision to preserve the official
+layout was made on 20 October 2026 and was superseded by the .18 AUR relocation described above.
+The remaining findings describe deliberate preservation or runtime-loaded libraries; none was hidden.
+The hicolor implicit-dependency warning was fixed by declaring it.
 
 The initial container install check failed because the official Docker image's `NoExtract`
 configuration omitted documentation. That image-minimization setting was removed only inside the
