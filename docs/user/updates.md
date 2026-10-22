@@ -24,6 +24,18 @@ When a check doesn't work, Settings says why in a few words: you're offline, the
 
 **GitHub ›** beside an offered update in Settings opens its release. You can also take an installer from the [download page](https://mrstreamer.app/download) and install it over the old one. Mr. Streamer keeps its data in a folder of its own (see [Troubleshooting](troubleshooting.md#where-your-data-is)), so everything carries over.
 
+## Installed through Homebrew
+
+The maintained Homebrew tap uses the same signed stable DMG for macOS 13 or later on Apple silicon. The [download page](https://mrstreamer.app/download) has the current install command.
+
+You can keep updating in the app. For a Homebrew update, quit Mr. Streamer first, then run `brew upgrade`. This can update other Homebrew packages too. Quit before a reinstall or uninstall as well.
+
+With Homebrew's default upgrade settings, plain `brew upgrade` compares the installed app with the tap and can skip an app that updated itself to a newer version. Stable and Nightly use different version formats, which Homebrew cannot reliably compare, so it normally skips that comparison. Use the app's updater to switch channels.
+
+An explicitly named upgrade, `--greedy` or `brew reinstall` can replace a newer app with the tap's version. Before an intentional replacement, compare Settings > **About** with `brew info --cask mr-streamer-oss/tap/mr-streamer`.
+
+Homebrew replaces the app bundle. Your profile and downloaded copies live outside it, and Homebrew uninstall leaves them in place. If a direct install already occupies the destination, quit it and move only its app bundle aside before installing through Homebrew. Leave the profile and downloads alone.
+
 ## Installed from the Microsoft Store
 
 The Microsoft Store updates a copy you installed from it, so Mr. Streamer never looks for updates or downloads them, and shows no update notice. Settings > **Updates** shows your version, updated by the Microsoft Store, and **Open Store** opens Mr. Streamer's page there. The Store only carries stable releases, so there's no channel to choose.

@@ -143,15 +143,17 @@ function escapeHtml(text: string): string {
 /** Writes only independently verified package routes, never inferred from the release feed. */
 export function writePackages(html: string, routes: PackageRoutes = PACKAGE_ROUTES): string {
   return html.replaceAll(
-    /<!-- package:(homebrew|aur):(link|details) -->/g,
-    (_mark, name: "homebrew" | "aur", part: "link" | "details") => {
+    /<!-- package:(homebrew|aur):(link|details|availability) -->/g,
+    (_mark, name: "homebrew" | "aur", part: "link" | "details" | "availability") => {
       const route = routes[name];
       if (
         route.publication.state !== "published" ||
         !/^\d+\.\d+\.\d+$/.test(route.publication.lastVerifiedVersion)
       )
         return "";
-      const link = `<a data-package="${name}" href="${escapeHtml(route.url)}">${escapeHtml(route.name)} · ${escapeHtml(route.platform)}, ${escapeHtml(route.architecture)}</a>`;
+      const label = `${route.name} · ${route.platform}, ${route.architecture}`;
+      const link = `<a data-package="${name}" href="${escapeHtml(route.url)}">${escapeHtml(label)}</a>`;
+      if (part === "availability") return `<span>Also on ${link}.</span>`;
       if (part === "link") return link;
       return `<div class="package-route">${link}<small>${escapeHtml(route.updates)} Package ${escapeHtml(route.publication.lastVerifiedVersion)}.</small><pre><code>${escapeHtml(route.install)}</code></pre></div>`;
     },
@@ -287,7 +289,8 @@ export function renderPage(
     );
   if (page.address === "/privacy") content = withAnalyticsSwitch(content);
   if (page.address === "/docs") content = guideIndex();
-  if (page.address === "/faq") content = readFileSync(join(root, "src/faq.html"), "utf8");
+  if (page.address === "/faq")
+    content = writePackages(readFileSync(join(root, "src/faq.html"), "utf8"));
   if (page.address === "/download")
     content = writePackages(readFileSync(join(root, "src/download.html"), "utf8"));
   if (page.address === "/releases") content = releaseHistory(releases);

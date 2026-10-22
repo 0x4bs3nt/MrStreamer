@@ -8,7 +8,7 @@ import type { SiteCapture } from "./src/analytics.ts";
 import { installers, verifiedDownloads, writeDownloads, type Downloads } from "./src/downloads.ts";
 import { systemOf } from "./src/system.ts";
 import { INDEXNOW_KEY, INDEXNOW_MARKER } from "./scripts/indexnow.ts";
-import { PAGES, SITE, renderPage } from "./scripts/pages.ts";
+import { PAGES, SITE, renderPage, writePackages } from "./scripts/pages.ts";
 import { newestStable, stableReleases, type Release } from "./scripts/releases.ts";
 import { siteAnalyticsConfiguration } from "./scripts/site-analytics.ts";
 
@@ -111,7 +111,7 @@ const config = (analytics: SiteCapture | null): UserConfig => ({
           const history =
             page?.address === "/releases" ? await (releases ??= resolveReleases()) : null;
           const rendered = page && page.address !== "/" ? renderPage(file, found, history) : html;
-          const withSystem = rendered.replace("<!-- system -->", () => systemScript);
+          const withSystem = writePackages(rendered).replace("<!-- system -->", () => systemScript);
           return writeDownloads(withSystem, found, resolved?.verifiedAt);
         },
       },

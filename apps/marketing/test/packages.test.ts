@@ -7,6 +7,18 @@ import { writeDownloads, installers } from "../src/downloads.ts";
 import { PACKAGE_ROUTES, type PackageRoutes, type PackageName } from "../src/packages.ts";
 
 const template = readFileSync(join(import.meta.dirname, "../src/download.html"), "utf8");
+const home = readFileSync(join(import.meta.dirname, "../index.html"), "utf8");
+const faq = readFileSync(join(import.meta.dirname, "../src/faq.html"), "utf8");
+const unpublished: PackageRoutes = {
+  homebrew: {
+    ...PACKAGE_ROUTES.homebrew,
+    publication: { state: "unpublished", lastVerifiedVersion: null },
+  },
+  aur: {
+    ...PACKAGE_ROUTES.aur,
+    publication: { state: "unpublished", lastVerifiedVersion: null },
+  },
+};
 
 function open(routes: PackageRoutes = PACKAGE_ROUTES) {
   document.body.innerHTML = writeDownloads(writePackages(template, routes), {
@@ -17,7 +29,7 @@ function open(routes: PackageRoutes = PACKAGE_ROUTES) {
 
 function published(name: PackageName): PackageRoutes {
   return {
-    ...PACKAGE_ROUTES,
+    ...unpublished,
     [name]: {
       ...PACKAGE_ROUTES[name],
       publication: {
@@ -31,7 +43,7 @@ function published(name: PackageName): PackageRoutes {
 
 describe("independently published download routes", () => {
   it("keeps unpublished package links and commands out of the built page", () => {
-    open();
+    open(unpublished);
     expect(document.querySelector("[data-package], pre")).toBeNull();
     expect(document.body.textContent).not.toContain("brew install");
     expect(document.body.textContent).not.toContain("makepkg");
@@ -94,4 +106,38 @@ describe("independently published download routes", () => {
     });
     expect(document.querySelector("[data-package], pre")).toBeNull();
   });
+
+  it.each([home, faq])(
+    "keeps availability copy in sync with publication and withdrawal",
+    (html) => {
+      for (const state of ["published", "withdrawn", "unpublished"] as const) {
+        const routes = published("homebrew");
+        const template = document.createElement("template");
+        template.innerHTML = writePackages(html, {
+          ...routes,
+          homebrew: {
+            ...routes.homebrew,
+            publication:
+              state === "unpublished"
+                ? { state, lastVerifiedVersion: null }
+                : {
+                    state,
+                    lastVerifiedVersion: "0.0.18",
+                    receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1",
+                  },
+          },
+        });
+        const link = template.content.querySelector<HTMLAnchorElement>("[data-package]");
+        if (state === "published") {
+          expect(link?.href).toBe(PACKAGE_ROUTES.homebrew.url);
+          expect(link?.parentElement?.textContent).toBe("Also on Homebrew · macOS, Apple silicon.");
+        } else {
+          expect(link).toBeNull();
+          expect(template.content.textContent).not.toContain("Also on");
+        }
+        expect(template.content.querySelector('a[href="/download"]')).not.toBeNull();
+        expect(template.content.querySelector('[data-package="aur"]')).toBeNull();
+      }
+    },
+  );
 });

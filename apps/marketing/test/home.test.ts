@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { renderPage } from "../scripts/pages.ts";
+import { renderPage, writePackages } from "../scripts/pages.ts";
 import { LATEST, installers, writeDownloads, type Downloads } from "../src/downloads.ts";
 import type { System } from "../src/system.ts";
 
@@ -10,10 +10,18 @@ import type { System } from "../src/system.ts";
 // marked as the script in the head marks it. What shows is what the stylesheet leaves on display.
 
 const root = join(import.meta.dirname, "..");
-const home = readFileSync(join(root, "index.html"), "utf8");
+const home = writePackages(readFileSync(join(root, "index.html"), "utf8"));
 const css = readFileSync(join(root, "src/styles.css"), "utf8");
 
 const STORE = "https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge";
+const HOMEBREW = [
+  "Homebrew · macOS, Apple silicon",
+  "https://github.com/Mr-Streamer-OSS/homebrew-tap",
+];
+const BREW_UPDATES = [
+  "Homebrew updates and reinstalling",
+  "/docs/updates#installed-through-homebrew",
+];
 const FILES = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download";
 const RELEASED: Downloads = { version: "0.0.7", installers };
 const SYSTEMS = [undefined, "windows", "mac", "linux"] as const;
@@ -70,7 +78,7 @@ describe("the home page", () => {
         ["Download", "/download"],
       ]);
       expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
-      expect(links("#downloads a")).toEqual([["Download", "/download"]]);
+      expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW]);
       expect(
         document.querySelector(
           '[data-installer], [data-release-version], a[href^="https://apps."]',
@@ -126,7 +134,7 @@ describe("the download page", () => {
       {
         heading: "Mac your system",
         line: "macOS 13 or later, Apple silicon.",
-        links: [["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`]],
+        links: [["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`], HOMEBREW],
       },
     ]);
   });
@@ -151,7 +159,7 @@ describe("the download page", () => {
       {
         heading: "Mac your system",
         line: "macOS 13 or later, Apple silicon.",
-        links: [["Download the DMG", LATEST]],
+        links: [["Download the DMG", LATEST], HOMEBREW],
       },
     ]);
 
@@ -171,6 +179,8 @@ describe("the download page", () => {
 
       expect(links(".rows a")).toEqual([
         ["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`],
+        HOMEBREW,
+        BREW_UPDATES,
         ["Microsoft Store", STORE],
         ["Download the setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
         ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
@@ -187,6 +197,8 @@ describe("the download page", () => {
 
     expect(links(".rows a")).toEqual([
       ["Download the DMG on GitHub Releases", LATEST],
+      HOMEBREW,
+      BREW_UPDATES,
       ["Microsoft Store", STORE],
       ["Download the setup .exe on GitHub Releases", LATEST],
       ["Download the AppImage on GitHub Releases", LATEST],
@@ -202,6 +214,8 @@ describe("the download page", () => {
 
     expect(links(".rows a")).toEqual([
       ["Download the DMG", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-mac-arm64.dmg`],
+      HOMEBREW,
+      BREW_UPDATES,
       ["Microsoft Store", STORE],
       ["Download the setup .exe", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-win-x64-setup.exe`],
       ["Download the AppImage", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-x86_64.AppImage`],
