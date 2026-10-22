@@ -1,4 +1,5 @@
-import type { Title } from "@mrstreamer/contracts/ondemand";
+import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import { router } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
@@ -39,12 +40,51 @@ import {
 import { Artwork } from "../titles-ui.tsx";
 import { ChannelRow, colors, TextButton, useRowHeight } from "../ui.tsx";
 
-/** Rows of each kind shown before the rest are left out. */
-const SHOWN = 20;
+/** Movies and series each show this many at first, and this many more at each Show more. */
+const PAGE = 20;
 
 type Row =
   | { readonly kind: "title"; readonly title: Title }
   | { readonly kind: "channel"; readonly channel: Channel };
+
+/** Movies, series or channels found, and how many of them there are in all. */
+interface Found {
+  readonly title: string;
+  readonly total: number;
+  readonly data: readonly Row[];
+  /** Movies or series with matches still to show: how many Show more adds. */
+  readonly more: { readonly kind: TitleKind; readonly count: number } | null;
+}
+
+/** How many movies and series the viewer asked to see of the text they asked it of. */
+interface Asked {
+  readonly query: string;
+  readonly limits: Readonly<Record<TitleKind, number>>;
+}
+
+const firstPage = (query: string): Asked => ({ query, limits: { movie: PAGE, series: PAGE } });
+
+/** The best `limit` titles of `kind` for `query`, of the lists as they stand; null for none. */
+function foundTitles(
+  index: IndexedCatalogue,
+  kind: TitleKind,
+  query: string,
+  limit: number,
+): Found | null {
+  const page = searchTitles(index, kind, query, limit);
+  if (page.total === 0) return null;
+  const left = page.total - page.titles.length;
+  return {
+    title: kind === "movie" ? "Movies" : "Series",
+    total: page.total,
+    data: page.titles.map((title) => ({ kind: "title", title })),
+    more: left > 0 ? { kind, count: Math.min(PAGE, left) } : null,
+  };
+}
+
+/** "Show 20 more movies", "Show 1 more movie", "Show 5 more series". */
+const moreLabel = ({ kind, count }: NonNullable<Found["more"]>) =>
+  `Show ${count} more ${kind === "series" ? "series" : count === 1 ? "movie" : "movies"}`;
 
 /** What's still to come, or couldn't come, of what Search looks through, in sentences. */
 interface SearchStatus {
@@ -122,12 +162,14 @@ let kept = "";
 /**
  * Search, over the tab it opened from, which stays as it was under it: movies, series
  * and live channels by name, matched as the desktop's search matches words, titles by any of
- * their names, TMDB's translations included, the best first. It comes down a little as it fades
- * in, or only fades under Reduce Motion, with the keyboard up. Cancel or a swipe back closes it
- * onto that screen. A title closes it and opens its details in Movies or Series; a channel closes
- * it and plays in Watch, which closes onto that screen too. Searching, and what hasn't loaded or
- * failed, is the status line at the bottom, above the keyboard, or at the top of the results
- * where the bottom has too little room for a line of it.
+ * their names, TMDB's translations included, the best first. Movies and series show 20 each, and
+ * each has its own Show more for the next 20, or the few left, until every match shows; new text
+ * starts both at 20 again. It comes down a little as it fades in, or only fades under Reduce
+ * Motion, with the keyboard up. Cancel or a swipe back closes it onto that screen. A title closes
+ * it and opens its details in Movies or Series; a channel closes it and plays in Watch, which
+ * closes onto that screen too. Searching, and what hasn't loaded or failed, is the status line at
+ * the bottom, above the keyboard, or at the top of the results where the bottom has too little
+ * room for a line of it.
  */
 export default function Search() {
   const tabs = useTabs();
@@ -153,34 +195,50 @@ export default function Search() {
     }
   }, [drop, reduceMotion]);
 
-  const sections = useMemo(() => {
-    const found: { title: string; total: number; data: Row[] }[] = [];
-    if (lists.kind === "ready" && typed.trim()) {
-      for (const [kind, name] of [
-        ["movie", "Movies"],
-        ["series", "Series"],
-      ] as const) {
-        const page = searchTitles(lists.index, kind, typed);
-        if (page.total > 0) {
-          found.push({
-            title: name,
-            total: page.total,
-            data: page.titles.slice(0, SHOWN).map((title) => ({ kind: "title", title })),
-          });
+  // How many movies and series show, for the text searched. New text starts both at the first
+  // page again. New lists or metadata keep what was asked, found again in what they hold now, so
+  // no row of lists or names since replaced stays and none shows twice.
+  const searched = typed.trim();
+  const [asked, setAsked] = useState(() => firstPage(searched));
+  if (asked.query !== searched) setAsked(firstPage(searched));
+  const { limits } = asked.query === searched ? asked : firstPage(searched);
+  const index = lists.kind === "ready" ? lists.index : null;
+  // Each kind is searched apart, so Show more searches its own kind again and nothing else.
+  // A new metadata version adds TMDB's names to search.
+  const movies = useMemo(
+    () => (index && searched ? foundTitles(index, "movie", typed, limits.movie) : null),
+    [index, typed, searched, limits.movie, metadata],
+  );
+  const series = useMemo(
+    () => (index && searched ? foundTitles(index, "series", typed, limits.series) : null),
+    [index, typed, searched, limits.series, metadata],
+  );
+  const channels = useMemo((): Found | null => {
+    const found = library ? searchChannels(library, typed) : [];
+    return found.length > 0
+      ? {
+          title: "Channels",
+          total: found.length,
+          data: found.map((channel) => ({ kind: "channel", channel })),
+          more: null,
         }
-      }
-    }
-    const channels = library ? searchChannels(library, typed) : [];
-    if (channels.length > 0) {
-      found.push({
-        title: "Channels",
-        total: channels.length,
-        data: channels.map((channel) => ({ kind: "channel", channel })),
+      : null;
+  }, [library, typed]);
+  const sections = useMemo(
+    () => [movies, series, channels].filter((found) => found !== null),
+    [movies, series, channels],
+  );
+  const showMore = useCallback(
+    (section: Found) => {
+      if (!section.more) return;
+      const { kind } = section.more;
+      setAsked({
+        query: searched,
+        limits: { ...limits, [kind]: section.data.length + PAGE },
       });
-    }
-    return found;
-    // A new metadata version adds TMDB's names to search.
-  }, [lists, library, typed, metadata]);
+    },
+    [searched, limits],
+  );
 
   const change = useCallback((text: string) => {
     kept = text;
@@ -274,6 +332,13 @@ export default function Search() {
                 : `${section.title} · ${section.total}`}
             </Text>
           )}
+          renderSectionFooter={({ section }) =>
+            section.more ? (
+              <View style={styles.more}>
+                <TextButton label={moreLabel(section.more)} onPress={() => showMore(section)} />
+              </View>
+            ) : null
+          }
           renderItem={({ item }) =>
             item.kind === "title" ? (
               <TitleRow title={item.title} height={height} onPress={open} />
@@ -475,6 +540,7 @@ const styles = StyleSheet.create({
   lead: { marginTop: 8 },
   nothing: { padding: 16, gap: 4 },
   nothingText: { color: colors.text, fontSize: 17, fontWeight: "600" },
+  more: { paddingHorizontal: 16 },
   section: {
     color: colors.text,
     fontSize: 20,

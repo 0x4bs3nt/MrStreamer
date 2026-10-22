@@ -1,15 +1,18 @@
 import * as React from "react";
+import type { TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
 import { Window, type HTMLInputElement } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
 import type { Channel, Library } from "../src/library.ts";
-import type { TitleLists } from "../src/titles.ts";
 
 // Search over the tabs: what it finds opens where it belongs and closes Search first, the query
-// stays for the session, and what hasn't loaded or failed says so instead of claiming nothing has
-// the name. The real screen runs with React DOM on a happy-dom window, as provider-form.test.ts
-// does, with channel search from library.ts; the stores it reads are set by each test, and title
-// search finds titles whose name holds the query.
+// stays for the session, every movie and series that matches can be reached a page at a time, and
+// what hasn't loaded or failed says so instead of claiming nothing has the name. The real screen
+// runs with React DOM on a happy-dom window, as provider-form.test.ts does, with channel search
+// from library.ts and movies and series from the real title owner (titles.ts): each test gives
+// the subscriptions' lists, which it indexes as the app does, and TMDB's names stand in for its
+// metadata store. Nothing here asks a provider for anything; a request would show in `did`.
 
 const REACT_DOM = "react-dom/client";
 const window = new Window();
@@ -19,19 +22,15 @@ type Root = { render(node: unknown): void; unmount(): void };
 const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-interface FoundTitle {
-  readonly kind: "movie" | "series";
-  readonly key: string;
-  readonly id: string;
-  readonly subscriptionId: string;
-  readonly title: string;
-}
-
 const scenario = vi.hoisted(() => ({
   members: [] as Member[],
+  /** Who listens to the subscriptions changing: the title owner. */
+  roster: new Set<() => void>(),
   catalogue: { kind: "loading" } as Catalogue,
-  lists: { kind: "loading" } as TitleLists,
-  titles: [] as FoundTitle[],
+  /** TMDB's name of each title in the viewer's language, by TMDB id, once its metadata came. */
+  tmdbNames: new Map<string, string>(),
+  /** The title owner's notice of what the metadata store learned. */
+  notify: null as ((change: { content: boolean }) => void) | null,
   /** What the screen did, in order. */
   did: [] as string[],
   /** What VoiceOver was given to read out. */
@@ -90,6 +89,7 @@ vi.mock("react-native", async () => {
       sections,
       renderItem,
       renderSectionHeader,
+      renderSectionFooter,
       ListHeaderComponent,
       ListEmptyComponent,
       testID,
@@ -98,6 +98,7 @@ vi.mock("react-native", async () => {
       sections: readonly Section[];
       renderItem: (info: { item: unknown }) => React.ReactNode;
       renderSectionHeader: (info: { section: Section }) => React.ReactNode;
+      renderSectionFooter?: (info: { section: Section }) => React.ReactNode;
       ListHeaderComponent?: React.ReactNode;
       ListEmptyComponent?: React.ReactNode;
     }) =>
@@ -115,6 +116,7 @@ vi.mock("react-native", async () => {
                 section.data.map((item, at) =>
                   createElement(Fragment, { key: at }, renderItem({ item })),
                 ),
+                renderSectionFooter?.({ section }),
               ),
             ),
       ),
@@ -169,21 +171,52 @@ vi.mock("../src/account.ts", () => ({
   playChannel: (channel: Channel, _place: string, options: { watch: boolean }) =>
     scenario.did.push(`play ${channel.key}${options.watch ? " in Watch" : ""}`),
   retry: (id: string) => scenario.did.push(`retry ${id}`),
-}));
-vi.mock("../src/titles.ts", () => ({
-  useTitleLists: () => scenario.lists,
-  useMetadataVersion: () => 0,
-  searchTitles: (_index: unknown, kind: string, query: string) => {
-    const titles = scenario.titles.filter(
-      (title) => title.kind === kind && title.title.toLowerCase().includes(query.toLowerCase()),
-    );
-    return { total: titles.length, titles };
+  // What the title owner reads of the subscriptions. No launch is reading saved lists here.
+  members: () => scenario.members,
+  onRoster: (listener: () => void) => {
+    scenario.roster.add(listener);
+    return () => scenario.roster.delete(listener);
   },
-  titleCount: (_index: unknown, kind: string) =>
-    scenario.titles.filter((title) => title.kind === kind).length,
+  shownOf: (titles: { kind: string; value?: unknown; last?: unknown }) =>
+    titles.kind === "ready" ? titles.value : (titles.last ?? null),
+  readingSaved: () => false,
+  onReadingSaved: () => () => undefined,
+}));
+vi.mock("expo-file-system", () => ({
+  File: class {},
+  Directory: class {},
+  Paths: { cache: "/c" },
+}));
+vi.mock("../src/sources.ts", () => ({
+  currentSource: (id: string) => void scenario.did.push(`provider ${id}`),
+  sourceOf: (id: string) => {
+    scenario.did.push(`provider ${id}`);
+    throw new Error(`${id} isn't signed in`);
+  },
+}));
+vi.mock("../src/viewing.ts", () => ({ serveViewing: () => undefined }));
+vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
+vi.mock("@mrstreamer/core/metadata/store", () => ({
+  metadataStore: (deps: { onChange: (change: { content: boolean }) => void }) => {
+    scenario.notify = deps.onChange;
+    return {
+      get: () => null,
+      name: (_kind: string, id: string) => {
+        const name = scenario.tmdbNames.get(id);
+        return name ? { name, original: null } : null;
+      },
+      searchName: () => "",
+      searchAliases: () => [],
+      services: () => [],
+      expiresAt: () => Infinity,
+      want: () => undefined,
+      status: () => null,
+    };
+  },
 }));
 vi.mock("../src/resume.ts", () => ({
-  openDetails: (title: FoundTitle) => scenario.did.push(`details ${title.kind} ${title.id}`),
+  openDetails: (title: { kind: TitleKind; id: string }) =>
+    scenario.did.push(`details ${title.kind} ${title.id}`),
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" } }),
@@ -216,17 +249,68 @@ vi.mock("../src/ui.tsx", async () => {
 });
 
 const { default: Search } = await import("../src/app/search.tsx");
+const { titlesWorkedOut } = await import("../src/titles.ts");
 
-const member = (id: string, label: string, standing: Partial<Member> = {}): Member =>
+/** When the newest title of a list was added; each one after it a day before. */
+const NEWEST = Date.UTC(2026, 9, 1);
+
+/**
+ * A provider's titles of `kind` named "`name` 1" to "`name` `count`", with ids `prefix`1 on, the
+ * first added last: equally good matches, search ranks the most recently added first, so this is
+ * the order it finds them in.
+ */
+const titled = (kind: TitleKind, prefix: string, name: string, count: number, start = 0) =>
+  Array.from({ length: count }, (_, at): ProviderTitle => ({
+    id: `${prefix}${at + 1}`,
+    name: `${name} ${at + 1}`,
+    posterUrl: null,
+    backdropUrl: null,
+    rating: null,
+    addedAt: NEWEST - (start + at) * 86_400_000,
+    releaseDate: null,
+    categoryIds: [],
+    adult: false,
+    container: kind === "movie" ? "mp4" : null,
+  }));
+
+/** A provider's movie and series lists. */
+const lists = (
+  movies: readonly ProviderTitle[],
+  series: readonly ProviderTitle[] = [],
+): OnDemandCatalogue => ({ movieCategories: [], movies, seriesCategories: [], series });
+
+/** Northwind's lists: Dune, and nothing else. */
+const duneOnly = () => lists([{ ...titled("movie", "", "", 1)[0]!, id: "7", name: "Dune" }]);
+
+const member = (
+  id: string,
+  label: string,
+  standing: Partial<Member> = {},
+  titles: OnDemandCatalogue = lists([]),
+): Member =>
   ({
     entry: { id },
     label,
     account: null,
     needsSecret: false,
     live: { kind: "ready", value: {}, took: 1 },
-    titles: { kind: "ready", value: {}, took: 1 },
+    titles: { kind: "ready", value: titles, took: 1 },
     ...standing,
   }) as Member;
+
+/**
+ * The subscriptions as they now stand: the title owner hears of it and indexes the lists that
+ * show, as it does in the app, and this waits until they show.
+ */
+async function subscriptions(members: Member[]) {
+  scenario.members = members;
+  await React.act(async () => {
+    for (const listener of [...scenario.roster]) listener();
+    await vi.waitFor(() => {
+      if (!titlesWorkedOut()) throw new Error("Still indexing");
+    });
+  });
+}
 
 const channels = [
   { key: "a:1", title: "NPO 1" },
@@ -240,14 +324,6 @@ const library = {
   labels: new Map(),
 } as unknown as Library;
 const ready: Catalogue = { kind: "ready", library, failing: [] };
-const indexed = { kind: "ready", index: {} } as TitleLists;
-const dune: FoundTitle = {
-  kind: "movie",
-  key: "a:7",
-  id: "7",
-  subscriptionId: "a",
-  title: "Dune",
-};
 
 let container: ReturnType<typeof document.createElement>;
 let unmount = () => {};
@@ -274,28 +350,32 @@ function press(testID: string) {
 }
 const text = () => container.textContent ?? "";
 
-beforeEach(() => {
-  Object.assign(scenario, {
-    members: [member("a", "Northwind")],
-    catalogue: ready,
-    lists: indexed,
-    titles: [dune],
-    did: [],
-    said: [],
-    fontScale: 1,
-  });
+beforeEach(async () => {
+  Object.assign(scenario, { catalogue: ready, did: [], said: [], fontScale: 1 });
   scenario.keyboard.clear();
+  scenario.tmdbNames.clear();
+  await subscriptions([member("a", "Northwind", {}, duneOnly())]);
 });
 afterEach(() => unmount());
 
 describe("Search over the tabs", () => {
-  it("closes before a movie opens in Movies, and before a channel plays in Watch", () => {
+  it("closes before a title opens in Movies or Series, and before a channel plays in Watch", async () => {
+    const prophecy = { ...titled("series", "p", "", 1)[0]!, name: "Dune Prophecy" };
+    await subscriptions([member("a", "Northwind", {}, lists(duneOnly().movies, [prophecy]))]);
     open();
     type("dune");
     press("search-title-7");
+    press("search-title-p1");
     type("npo");
     press("channel-a:1");
-    expect(scenario.did).toEqual(["back", "details movie 7", "back", "play a:1 in Watch"]);
+    expect(scenario.did).toEqual([
+      "back",
+      "details movie 7",
+      "back",
+      "details series p1",
+      "back",
+      "play a:1 in Watch",
+    ]);
   });
 
   it("opens again on the query it closed with", () => {
@@ -308,33 +388,39 @@ describe("Search over the tabs", () => {
     expect(text()).toContain("BBC One");
   });
 
-  it("says what still loads, not that nothing has the name", () => {
-    scenario.members = [
-      member("a", "Northwind"),
+  it("says what still loads, not that nothing has the name", async () => {
+    await subscriptions([
+      member("a", "Northwind", {}, duneOnly()),
       member("b", "Southwind", { titles: { kind: "loading", last: null } }),
-    ];
-    scenario.lists = { kind: "loading" };
+    ]);
     open();
     type("npo");
-    expect(text()).toContain(
-      "Movies and series still loading, 1 of 2 providers. Channels searched.",
-    );
+    const loading =
+      "Movies and series still loading, 1 of 2 providers. Movies, series and channels searched.";
+    expect(text()).toContain(loading);
     expect(text()).toContain("NPO 1");
+    // What Northwind lists is searched meanwhile.
+    type("dune");
+    expect(text()).toContain("Dune");
     type("zzq");
     expect(text()).not.toContain("Nothing named");
     // Read out once, not again for each search while the lists stand as they were.
-    expect(scenario.said).toEqual([
-      "Movies and series still loading, 1 of 2 providers. Channels searched.",
-    ]);
+    expect(scenario.said).toEqual([loading]);
   });
 
   /** Two providers in trouble: Northwind's channels didn't update, Southwind lost its password. */
-  const troubled = () => [
-    member("a", "Northwind", {
-      live: { kind: "failed", error: { kind: "unexpected", detail: "" }, last: {}, since: 0 },
-    } as Partial<Member>),
-    member("b", "Southwind", { needsSecret: true }),
-  ];
+  const troubled = () =>
+    subscriptions([
+      member(
+        "a",
+        "Northwind",
+        {
+          live: { kind: "failed", error: { kind: "unexpected", detail: "" }, last: {}, since: 0 },
+        } as Partial<Member>,
+        duneOnly(),
+      ),
+      member("b", "Southwind", { needsSecret: true }),
+    ]);
   /** The keyboard covering the bottom of an 844-point window from `top` down, or going away. */
   const keyboardTo = (top: number) =>
     React.act(() =>
@@ -354,8 +440,8 @@ describe("Search over the tabs", () => {
       : `bottom ${line.getAttribute("data-max-height")}`;
   };
 
-  it("keeps its line, Retry and Settings in one scroll that the keyboard shrinks and frees", () => {
-    scenario.members = troubled();
+  it("keeps its line, Retry and Settings in one scroll that the keyboard shrinks and frees", async () => {
+    await troubled();
     open();
     type("dune");
     const open600 = placed();
@@ -380,8 +466,8 @@ describe("Search over the tabs", () => {
     expect(placed()).toBe(open600);
   });
 
-  it("leads the results with its line where the bottom can't show a whole line of it", () => {
-    scenario.members = troubled();
+  it("leads the results with its line where the bottom can't show a whole line of it", async () => {
+    await troubled();
     // The largest accessibility text size.
     scenario.fontScale = 3.1;
     open();
@@ -426,31 +512,39 @@ describe("Search over the tabs", () => {
     expect(scenario.said).toEqual([]);
   });
 
-  it("names a provider that failed, retries it, and opens Settings on the tab under Search", () => {
-    scenario.members = [
-      member("a", "Northwind"),
+  it("names a provider that failed, retries it, and opens Settings on the tab under Search", async () => {
+    // Southwind's lists didn't load again: what it listed before is still searched.
+    const before = lists([], [{ ...titled("series", "p", "", 1)[0]!, name: "Dune Prophecy" }]);
+    await subscriptions([
+      member("a", "Northwind", {}, duneOnly()),
       member("b", "Southwind", {
-        titles: { kind: "failed", error: { kind: "unexpected", detail: "" }, last: null, since: 0 },
+        titles: {
+          kind: "failed",
+          error: { kind: "unexpected", detail: "" },
+          last: before,
+          since: 0,
+        },
       }),
-    ];
+    ]);
     open();
     type("dune");
     expect(text()).toContain(
       "Couldn't load movies and series from Southwind. Movies, series and channels searched.",
     );
     expect(text()).toContain("Dune");
+    expect(text()).toContain("Dune Prophecy");
     press("text-Retry");
     press("text-Settings");
     // Search closes, then Settings goes on Live's own stack (tab-routes.test.ts).
     expect(scenario.did).toEqual(["retry b", "dismiss 1", "push /live/settings"]);
   });
 
-  it("doesn't say nothing has the name when a provider's lists failed", () => {
-    scenario.members = [
+  it("doesn't say nothing has the name when a provider's lists failed", async () => {
+    await subscriptions([
       member("a", "Northwind", {
         live: { kind: "failed", error: { kind: "unexpected", detail: "" }, last: null, since: 0 },
       }),
-    ];
+    ]);
     scenario.catalogue = {
       kind: "failed",
       error: { kind: "unexpected", detail: "" },
@@ -467,5 +561,179 @@ describe("Search over the tabs", () => {
     type("zzq");
     expect(text()).toContain('Nothing named "zzq".');
     expect(text()).toContain("Searched 2 channels, 1 movie and 0 series.");
+  });
+});
+
+describe("Every movie and series that matches", () => {
+  /** The ids of the movies or series that show, in order. */
+  const shownIds = (kind: TitleKind) =>
+    [...container.querySelectorAll('[data-testid^="search-title-"]')]
+      .map((row) => row.getAttribute("data-testid")!.slice("search-title-".length))
+      .filter((id) => id.startsWith(kind === "movie" ? "m" : "s"));
+  /** The ids "`prefix`1" to "`prefix``count`". */
+  const ids = (prefix: string, count: number, from = 1) =>
+    Array.from({ length: count }, (_, at) => `${prefix}${from + at}`);
+  const name = { movie: ["Movies", "movie", "movies"], series: ["Series", "series", "series"] };
+  const moreOf = (kind: TitleKind, count: number) =>
+    `text-Show ${count} more ${count === 1 ? name[kind][1] : name[kind][2]}`;
+  /** The Show more buttons of `kind` on screen, whatever count they offer. */
+  const moreButtons = (kind: TitleKind) =>
+    [...container.querySelectorAll('[data-testid^="text-Show "]')]
+      .map((button) => button.getAttribute("data-testid")!)
+      .filter((testID) =>
+        kind === "series" ? testID.endsWith(" series") : / movies?$/.test(testID),
+      );
+
+  it.each([0, 20, 21, 61, 125])(
+    "shows %i matches of each kind 20 at a time, best first, each kind on its own",
+    async (count) => {
+      await subscriptions([
+        member(
+          "a",
+          "Northwind",
+          {},
+          lists(titled("movie", "m", "Ocean", count), titled("series", "s", "Ocean", count)),
+        ),
+      ]);
+      open();
+      type("ocean");
+      for (const [kind, prefix] of [
+        ["movie", "m"],
+        ["series", "s"],
+      ] as const) {
+        // Showing every movie first leaves the series as they were, at 20.
+        let showing = Math.min(20, count);
+        for (;;) {
+          expect(shownIds(kind)).toEqual(ids(prefix, showing));
+          const header = name[kind][0];
+          if (count === 0) expect(text()).not.toContain(`${header} ·`);
+          else if (showing < count) expect(text()).toContain(`${header} · ${showing} of ${count}`);
+          else {
+            expect(text()).toContain(`${header} · ${count}`);
+            expect(text()).not.toContain(`${header} · ${count} of`);
+          }
+          const left = count - showing;
+          // One Show more while any are left, for the next 20 or the few left; none after.
+          expect(moreButtons(kind)).toEqual(left === 0 ? [] : [moreOf(kind, Math.min(20, left))]);
+          if (left === 0) break;
+          press(moreOf(kind, Math.min(20, left)));
+          showing += Math.min(20, left);
+        }
+      }
+      if (count === 0) expect(text()).toContain('Nothing named "ocean".');
+      // The last of them, ranked last, is there to open.
+      if (count > 0) {
+        press(`search-title-m${count}`);
+        expect(scenario.did).toEqual(["back", `details movie m${count}`]);
+      }
+    },
+  );
+
+  it("starts again at 20 of each for new text", async () => {
+    await subscriptions([
+      member(
+        "a",
+        "Northwind",
+        {},
+        lists(titled("movie", "m", "Ocean", 125), titled("series", "s", "Ocean", 125)),
+      ),
+    ]);
+    open();
+    type("ocean");
+    press(moreOf("movie", 20));
+    press(moreOf("movie", 20));
+    press(moreOf("series", 20));
+    expect(shownIds("movie")).toEqual(ids("m", 60));
+    expect(shownIds("series")).toEqual(ids("s", 40));
+    // The same titles match, but the text is new.
+    type("ocea");
+    expect(shownIds("movie")).toEqual(ids("m", 20));
+    expect(shownIds("series")).toEqual(ids("s", 20));
+    expect(text()).toContain("Movies · 20 of 125");
+    // And going back to the text before doesn't bring back what was shown of it.
+    type("ocean");
+    expect(shownIds("movie")).toEqual(ids("m", 20));
+    expect(shownIds("series")).toEqual(ids("s", 20));
+    expect(scenario.did).toEqual([]);
+  });
+
+  it("opens again on the text it closed with, at 20 of each", async () => {
+    await subscriptions([
+      member(
+        "a",
+        "Northwind",
+        {},
+        lists(titled("movie", "m", "Ocean", 125), titled("series", "s", "Ocean", 125)),
+      ),
+    ]);
+    open();
+    type("ocean");
+    press(moreOf("movie", 20));
+    press(moreOf("series", 20));
+    press(moreOf("series", 20));
+    expect(shownIds("movie")).toEqual(ids("m", 40));
+    expect(shownIds("series")).toEqual(ids("s", 60));
+    press("text-Cancel");
+    unmount();
+    open();
+    expect(field().value).toBe("ocean");
+    expect(shownIds("movie")).toEqual(ids("m", 20));
+    expect(shownIds("series")).toEqual(ids("s", 20));
+    expect(text()).toContain("Movies · 20 of 125");
+    expect(text()).toContain("Series · 20 of 125");
+    expect(scenario.did).toEqual(["back"]);
+  });
+
+  it("finds them again in new lists and names, keeping how many show, never twice", async () => {
+    // Northwind lists 125 movies; Southwind 30 newer than all of them, ranked first.
+    const northwind = titled("movie", "m", "Ocean", 125);
+    const southwind = titled("movie", "mb", "Ocean deep", 30, -31);
+    // A movie no provider calls Ocean, but TMDB does: newer than Northwind's, older than
+    // Southwind's.
+    const renamed: ProviderTitle = {
+      ...titled("movie", "mz", "Zee", 1, -1)[0]!,
+      tmdbId: "900",
+    };
+    await subscriptions([
+      member("a", "Northwind", {}, lists([renamed, ...northwind])),
+      member("b", "Southwind", {}, lists(southwind)),
+    ]);
+    open();
+    type("ocean");
+    press(moreOf("movie", 20));
+    press(moreOf("movie", 20));
+    expect(shownIds("movie")).toEqual([...ids("mb", 30), ...ids("m", 30)]);
+    expect(text()).toContain("Movies · 60 of 155");
+
+    // TMDB's name arrives: the movie it names Ocean is found, still 60 showing, each once.
+    scenario.tmdbNames.set("900", "Ocean Blue");
+    React.act(() => scenario.notify?.({ content: true }));
+    expect(text()).toContain("Movies · 60 of 156");
+    expect(shownIds("movie")).toEqual([...ids("mb", 30), "mz1", ...ids("m", 29)]);
+    expect(text()).toContain("Ocean Blue");
+
+    // Showing more goes on from there.
+    press(moreOf("movie", 20));
+    expect(shownIds("movie")).toEqual([...ids("mb", 30), "mz1", ...ids("m", 49)]);
+
+    // Southwind is removed: its 30 shown movies go, and the next of Northwind's take their
+    // places, still 80 showing.
+    await subscriptions([member("a", "Northwind", {}, lists([renamed, ...northwind]))]);
+    expect(text()).toContain("Movies · 80 of 126");
+    expect(shownIds("movie")).toEqual(["mz1", ...ids("m", 79)]);
+    press(moreOf("movie", 20));
+    press(moreOf("movie", 20));
+    press(moreOf("movie", 6));
+    expect(shownIds("movie")).toEqual(["mz1", ...ids("m", 125)]);
+    expect(moreButtons("movie")).toEqual([]);
+
+    // Northwind's lists come again with fewer movies: those show, all of them.
+    await subscriptions([
+      member("a", "Northwind", {}, lists([renamed, ...northwind.slice(0, 40)])),
+    ]);
+    expect(shownIds("movie")).toEqual(["mz1", ...ids("m", 40)]);
+    expect(text()).toContain("Movies · 41");
+    expect(moreButtons("movie")).toEqual([]);
+    expect(scenario.did).toEqual([]);
   });
 });

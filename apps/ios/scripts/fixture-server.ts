@@ -31,12 +31,13 @@
 // and fifteen days before FIXTURE_ANCHOR, epoch seconds, the fake panel's TITLES_ADDED unless
 // given, so New holds them while the app's clock reads up to three days after it. The lists keep
 // their ids and sizes. What it declares, with a hash of the titles, is in server.json and at the
-// control port's /profile. FIXTURE_LOGOS=png lists channel logos as PNG marks (`pngLogo`) at this
-// server's address, which passes them on from the panel and logs them, in place of the SVG
-// addresses the panel lists at its own port without serving them. With them, FIXTURE_ART_CACHEABLE=1
-// answers the logos with `Cache-Control: public, max-age=86400`, as a panel letting caches keep
-// them would, and FIXTURE_ART_LOGIN=1 lists each logo's address with the login in its query, as
-// some panels do; the log leaves the query out.
+// control port's /profile. FIXTURE_PROFILE=browse adds the titles a Search and Watchlist journey
+// needs, with controls of its own; see scripts/browse-profile.ts. FIXTURE_LOGOS=png lists channel
+// logos as PNG marks (`pngLogo`) at this server's address, which passes them on from the panel and
+// logs them, in place of the SVG addresses the panel lists at its own port without serving them.
+// With them, FIXTURE_ART_CACHEABLE=1 answers the logos with `Cache-Control: public,
+// max-age=86400`, as a panel letting caches keep them would, and FIXTURE_ART_LOGIN=1 lists each
+// logo's address with the login in its query, as some panels do; the log leaves the query out.
 //
 // The control port listens on the workbench only and is never tunnelled to the Mac:
 //   POST /fail-catalogue?status=503    channel and category lists answer that; status=none restores
@@ -48,7 +49,7 @@
 //   POST /fail-title-lists?status=503  movie and series lists, their categories and details answer
 //                                      that; status=login refuses the login for the two lists, as
 //                                      panels do; status=none restores
-//   GET  /profile                      what FIXTURE_PROFILE=measure declares, when it is on
+//   GET  /profile                      what FIXTURE_PROFILE=measure or browse declares, when on
 //   POST /delay-details?ms=8000        movie and series details answer that much later; ms=0 restores
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -66,8 +67,10 @@ import {
   startFakeProvider,
   TITLES_ADDED,
   type FakeChannel,
+  type FakeTitles,
 } from "../../desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../desktop/test/fake-tmdb.ts";
+import { browseControls, browseTitles } from "./browse-profile.ts";
 
 const USERNAME = process.env.FIXTURE_USERNAME ?? "fixture";
 const PASSWORD = process.env.FIXTURE_PASSWORD ?? "fixture-pass";
@@ -155,6 +158,7 @@ function recording(file: string): Media {
   return found;
 }
 
+const browsing = process.env.FIXTURE_PROFILE === "browse";
 const provider = await startFakeProvider({
   channels: CHANNELS,
   titles: Number(process.env.FIXTURE_TITLES ?? 120),
@@ -162,7 +166,18 @@ const provider = await startFakeProvider({
   password: PASSWORD,
   second,
   ...(pngLogos ? { logoPng: pngLogo } : {}),
+  ...(browsing ? { titlesOf: (built: FakeTitles) => browseTitles(built, second) } : {}),
 });
+const browse = browsing ? browseControls(provider, second) : null;
+// Lists the browse profile holds are answered as the server stops, which the signal then does.
+if (browse) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      browse.stop();
+      setTimeout(() => process.kill(process.pid, signal), 250);
+    });
+  }
+}
 /** What the measurement profile declares about the titles it serves, when it is on. */
 const profile =
   process.env.FIXTURE_PROFILE === "measure"
@@ -177,7 +192,7 @@ const profile =
         const sha256 = createHash("sha256").update(JSON.stringify(titles)).digest("hex");
         return { name: "measure", ...declared, sha256 };
       })()
-    : null;
+    : (browse?.declared ?? null);
 const tmdb = await startFakeTmdb();
 // One service streams the first movies and series it is told about.
 tmdb.stream(
@@ -436,6 +451,9 @@ createServer((request, response) => {
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://control.test");
   const json = (body: unknown) => answer(response, 200, "application/json", JSON.stringify(body));
+  const browsed = browse?.control(request.method ?? "GET", url);
+  if (browsed)
+    return answer(response, browsed.status, "application/json", JSON.stringify(browsed.body));
   if (request.method === "POST" && url.pathname === "/fail-catalogue") {
     const status = url.searchParams.get("status");
     provider.failCatalogue(status && status !== "none" ? Number(status) : null);
@@ -492,7 +510,7 @@ writeFileSync(
   JSON.stringify({ port, controlPort, started, ...(profile ? { profile } : {}) }),
 );
 console.log(`fake TMDB at http://127.0.0.1:${port}/tmdb/3`);
-if (profile) console.log(`measurement profile ${JSON.stringify(profile)}`);
+if (profile) console.log(`${profile.name} profile ${JSON.stringify(profile)}`);
 console.log(
   `fixture panel http://127.0.0.1:${port} as ${USERNAME}, ${provider.catalogue.channels.length} channels; control http://127.0.0.1:${controlPort}`,
 );

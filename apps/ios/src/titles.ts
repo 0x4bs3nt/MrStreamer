@@ -519,17 +519,32 @@ export function tilesOf(made: Collections, of: "genres" | "services"): readonly 
 export const titleCount = (index: IndexedCatalogue, kind: TitleKind) =>
   kindOf(index, kind).titles.length;
 
-/** Titles of `kind` whose names hold every word of `query`, by any name TMDB gave them too. */
-export function searchTitles(index: IndexedCatalogue, kind: TitleKind, query: string) {
+/**
+ * Titles of `kind` whose names hold every word of `query`, by any name TMDB gave them too: the
+ * best `limit` of them, best first, and how many match in all. A larger `limit` over the same
+ * index and metadata gives the same titles first, then the next best.
+ */
+export function searchTitles(
+  index: IndexedCatalogue,
+  kind: TitleKind,
+  query: string,
+  limit: number,
+) {
   const tk = tmdbKind(kind);
-  const page = searchPage(index, kind, query, (title) => {
-    if (!title.tmdbId) return "";
-    const shown = metadata.name(tk, title.tmdbId, language);
-    return {
-      ...(shown ? { title: shown.name, original: shown.original } : {}),
-      names: metadata.searchAliases(tk, title.tmdbId),
-    };
-  });
+  const page = searchPage(
+    index,
+    kind,
+    query,
+    (title) => {
+      if (!title.tmdbId) return "";
+      const shown = metadata.name(tk, title.tmdbId, language);
+      return {
+        ...(shown ? { title: shown.name, original: shown.original } : {}),
+        names: metadata.searchAliases(tk, title.tmdbId),
+      };
+    },
+    limit,
+  );
   return { ...page, titles: page.titles.map(named) };
 }
 
