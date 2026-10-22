@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Catalogue } from "../src/account.ts";
 import type { Playing } from "../src/playback.ts";
 
 // Returns from Picture in Picture as Watch answers them, and Watch's Downloads and Settings, which
@@ -10,7 +11,9 @@ import type { Playing } from "../src/playback.ts";
 // as Expo runs a view's async functions on the main queue. It tells AVKit the answer for the
 // number still waiting; another return, Picture in Picture stopping and the view going each tell
 // AVKit no for the one waiting. Asked to start Picture in Picture, it starts when the test says
-// the iPhone can. The Swift itself is not run here.
+// the iPhone can. The Swift itself is not run here. The star of a channel playing saves to the
+// real viewing record, over the files stand-in (native-files.ts), with the channels Live shows
+// set by each test.
 
 const REACT_DOM = "react-dom/client";
 const window = new Window();
@@ -55,6 +58,8 @@ const native = vi.hoisted(() => ({
   /** Navigation's state, from the root, and the path on show. */
   root: { index: 0, routes: [] as object[] },
   pathname: "/live",
+  /** The channels Live shows. */
+  catalogue: { kind: "loading" } as Catalogue,
 }));
 
 vi.mock("expo-video", async () => {
@@ -175,6 +180,14 @@ vi.mock("../src/glass.tsx", async () => {
   };
 });
 vi.mock("../src/ui.tsx", () => ({ colors: { text: "#FFFFFF", dim: "#8E8E93" } }));
+vi.mock("expo-file-system", () => import("./native-files.ts"));
+vi.mock("../src/account.ts", () => ({
+  useCatalogue: () => native.catalogue,
+  currentCatalogue: () => native.catalogue,
+  useRoster: () => ({ kind: "ready", members: [] }),
+  // The star stars a channel only of a provider still saved.
+  members: () => [{ entry: { id: "a" } }],
+}));
 
 const { closeWatch, openWatch, play, playbackState, retry, stop, togglePause } =
   await import("../src/playback.ts");
@@ -712,5 +725,73 @@ describe("Watch set aside when the tabs go", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+const { buildLibrary } = await import("../src/library.ts");
+const viewing = await import("../src/viewing.ts");
+
+describe("the star of the channel playing", () => {
+  const library = buildLibrary([
+    {
+      subscriptionId: "a",
+      label: "Home",
+      catalogue: {
+        categories: [{ id: "1", name: "NL | News" }],
+        channels: [
+          {
+            id: "9",
+            name: "NL | Nieuws HD",
+            number: null,
+            logoUrl: null,
+            categoryIds: ["1"],
+            guideId: null,
+            catchupDays: null,
+          },
+        ],
+      },
+    },
+  ]);
+  const [listed] = library.channels;
+  if (!listed) throw new Error("No channel listed");
+  const live: Playing = { ...channel(listed.id), id: listed.key };
+  const saved = () => (viewing.currentViewing()?.favourites ?? []).map((each) => each.id);
+  /** Resolves once the record shows `ids` as the favourites. */
+  async function shows(ids: readonly string[]) {
+    for (let waited = 0; JSON.stringify(saved()) !== JSON.stringify(ids); waited += 10) {
+      if (waited > 4_000) throw new Error(`The favourites stayed ${JSON.stringify(saved())}`);
+      await act(() => new Promise((done) => setTimeout(done, 10)));
+    }
+  }
+
+  beforeEach(async () => {
+    native.catalogue = { kind: "ready", library, failing: [] };
+    viewing.setViewingOwners(["a"]);
+    viewing.setViewingChannels(library.byKey);
+    await viewing.eraseViewing("a");
+  });
+
+  it("stars and unstars it while it plays on, untouched", async () => {
+    const watch = await watching(live);
+    native.player.length = 0;
+    await watch.press("watch-favourite");
+    await shows(["9"]);
+    await watch.press("watch-favourite");
+    await shows([]);
+    expect(native.player).toEqual([]);
+    expect(playbackState.get()).toMatchObject({
+      phase: { kind: "playing", item: live },
+      watch: true,
+      pip: false,
+    });
+  });
+
+  it("isn't there for a movie, or a channel Live no longer shows", async () => {
+    const film = await watching(movie("1"));
+    expect(() => film.press("watch-favourite")).toThrow("No watch-favourite");
+    unmount();
+    native.catalogue = { kind: "loading" };
+    const gone = await watching(live);
+    expect(() => gone.press("watch-favourite")).toThrow("No watch-favourite");
   });
 });

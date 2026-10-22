@@ -11,6 +11,7 @@ import {
   useRoster,
 } from "../../../account.ts";
 import { failureOf } from "../../../errors.ts";
+import { useFavourites } from "../../../favourites.ts";
 import { Glass, IconButton } from "../../../glass.tsx";
 import { tabHref } from "../../../header.tsx";
 import type { Channel, Library } from "../../../library.ts";
@@ -46,10 +47,12 @@ const MOVIES = 20;
 
 /**
  * Home: the Stage, a muted preview of what plays or of the channel to play, then On now,
- * Continue watching, the watchlist and Movies for you. The watchlist's heading is always there,
- * with nothing saved too, and opens all of it. On now lists the channels watched lately,
- * or the first of the country last chosen in Live until there are any; their programmes join
- * when iOS reads a guide, favourites when iOS has them. Downloads join Home as they come to iOS.
+ * Favourites, Continue watching, the watchlist and Movies for you. The headings of Favourites
+ * and the watchlist are always there, with nothing saved too, and open all of it. On now lists
+ * the channels watched lately, or the first of the country last chosen in Live until there are
+ * any; their programmes join when iOS reads a guide. Favourites lists those that open now
+ * (favourites.ts), in their order; a tile previews its channel on the Stage, as On now's do.
+ * Downloads join Home as they come to iOS.
  * Until channels and movies first come, still shapes hold On now and Movies for you; what loads
  * or failed by provider is the status line at the bottom.
  */
@@ -123,6 +126,7 @@ export default function Home() {
             actions={[{ label: "Try again", onPress: retryChannels }]}
           />
         ) : null}
+        <Favourites library={library} playing={playing} onPress={preview} />
         <TitleRows />
         <MoviesForYou />
         {library && onNow.length === 0 && playback.phase.kind === "idle" && !titlesShown ? (
@@ -153,6 +157,9 @@ const openSettings = () => router.push(tabHref("(home)", "settings"));
 /** The whole watchlist, on Home's own stack. */
 const openWatchlist = () => router.push("/watchlist");
 
+/** Every favourite, on Home's own stack. */
+const openFavourites = () => router.push("/favourites");
+
 const placeOf = (library: Library, channel: Channel) => library.placeOf.get(channel.key) ?? "";
 
 /** Channels as a row of logos to preview on the Stage, with All channels opening Live. */
@@ -182,37 +189,100 @@ function OnNow({
           <Text style={styles.linkText}>All channels</Text>
         </Pressable>
       </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.tiles}
-      >
-        {channels.map((channel) => {
-          const line =
-            channel.key === playing?.id ? playing.word : shelfOf(placeOf(library, channel));
-          return (
-            <Pressable
-              key={channel.key}
-              accessibilityRole="button"
-              accessibilityLabel={[channel.title, line].filter(Boolean).join(", ")}
-              onPress={() => onPress(channel)}
-              style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
-              testID={`home-channel-${channel.key}`}
-            >
-              <ChannelLogo channel={channel} style={styles.tileLogo} large />
-              <Text style={styles.tileName} numberOfLines={1}>
-                {channel.title}
-              </Text>
-              {line ? (
-                <Text style={styles.tileLine} numberOfLines={1}>
-                  {line}
-                </Text>
-              ) : null}
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <Tiles
+        channels={channels}
+        library={library}
+        playing={playing}
+        onPress={onPress}
+        testID="home-channel"
+      />
     </View>
+  );
+}
+
+/**
+ * The favourites that open, as a row of logos to preview on the Stage, under a heading that is
+ * always there and opens every favourite: those that don't show and none at all too.
+ */
+function Favourites({
+  library,
+  playing,
+  onPress,
+}: {
+  library: Library | null;
+  playing: ChannelStatus | null;
+  onPress: (channel: Channel) => void;
+}) {
+  const favourites = useFavourites();
+  const channels = favourites?.shown.map(({ channel }) => channel) ?? [];
+  return (
+    <View style={styles.block}>
+      <ShelfHead
+        name="Favourites"
+        // Every favourite the list holds, as the Watchlist's heading counts what it saved.
+        total={favourites?.original.length ?? 0}
+        onAll={openFavourites}
+        testID="favourites-heading"
+      />
+      {library && channels.length > 0 ? (
+        <Tiles
+          channels={channels}
+          library={library}
+          playing={playing}
+          onPress={onPress}
+          testID="home-favourite"
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/** Channels as logos scrolling sideways, each previewing its channel when pressed. */
+function Tiles({
+  channels,
+  library,
+  playing,
+  onPress,
+  testID,
+}: {
+  channels: readonly Channel[];
+  library: Library;
+  playing: ChannelStatus | null;
+  onPress: (channel: Channel) => void;
+  /** Each tile's, before its channel's key. */
+  testID: string;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.tiles}
+    >
+      {channels.map((channel) => {
+        const line =
+          channel.key === playing?.id ? playing.word : shelfOf(placeOf(library, channel));
+        return (
+          <Pressable
+            key={channel.key}
+            accessibilityRole="button"
+            accessibilityLabel={[channel.title, line].filter(Boolean).join(", ")}
+            onPress={() => onPress(channel)}
+            style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
+            testID={`${testID}-${channel.key}`}
+          >
+            <ChannelLogo channel={channel} style={styles.tileLogo} large />
+            <Text style={styles.tileName} numberOfLines={1}>
+              {channel.title}
+            </Text>
+            {line ? (
+              <Text style={styles.tileLine} numberOfLines={1}>
+                {line}
+              </Text>
+            ) : null}
+          </Pressable>
+        );
+      })}
+    </ScrollView>
   );
 }
 

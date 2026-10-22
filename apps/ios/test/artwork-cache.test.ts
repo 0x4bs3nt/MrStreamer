@@ -23,6 +23,8 @@ const { document } = window;
 const drawn = vi.hoisted(() => new Map<string, () => void>());
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
+// Channel rows draw their star with an SF Symbol.
+vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("../src/loading.tsx", () => ({
   Placeholders: () => null,
   Shape: () => null,

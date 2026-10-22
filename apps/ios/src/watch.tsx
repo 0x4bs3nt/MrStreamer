@@ -16,6 +16,8 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useCatalogue } from "./account.ts";
+import { starChannel, useFavouriteKeys } from "./favourites.ts";
 import { Glass, IconButton } from "./glass.tsx";
 import { openOnTabs, useTabs, type TabScreen } from "./header.tsx";
 import {
@@ -45,8 +47,9 @@ import { colors } from "./ui.tsx";
 /**
  * Watch: the player full screen, over the tabs, with A3's controls: a close button, AirPlay,
  * Picture in Picture, Downloads and Settings at the top, and everything else in one large glass
- * panel, all showing and hiding together. A movie or an episode adds a scrubber, its sound and
- * subtitle tracks and the next episode. It is the app's own layer rather than a route, because
+ * panel, all showing and hiding together. A channel adds its star, which stars or unstars it and
+ * leaves what plays alone. A movie or an episode adds a scrubber, its sound and subtitle tracks
+ * and the next episode. It is the app's own layer rather than a route, because
  * the view that starts Picture in Picture has to stay while it plays: Watch then hides, and the
  * tabs and accessory take over. Closing it shows the screen under it, a title's details among
  * them. A movie or an episode turns Watch to landscape while it shows; the screens under it turn
@@ -325,6 +328,7 @@ function Controls({
                 />
               </>
             )}
+            {phase.item.live ? <Star item={phase.item} /> : null}
             <IconButton
               symbol="stop.fill"
               label="Stop"
@@ -338,6 +342,27 @@ function Controls({
         {streaming && !phase.item.live ? <TitleButtons next={phase.item.next} /> : null}
       </Glass>
     </>
+  );
+}
+
+/**
+ * The star of the channel playing, while Live shows it: stars or unstars it, whichever provider
+ * it is from, and nothing else.
+ */
+function Star({ item }: { item: Playing }) {
+  const catalogue = useCatalogue();
+  const favourites = useFavouriteKeys();
+  const channel = catalogue.kind === "ready" ? catalogue.library.byKey.get(item.id) : undefined;
+  if (!channel) return null;
+  const favourite = favourites.has(channel.key);
+  return (
+    <IconButton
+      symbol={favourite ? "star.fill" : "star"}
+      label={favourite ? "Remove from Favourites" : "Add to Favourites"}
+      onPress={() => starChannel(channel, !favourite)}
+      size={22}
+      testID="watch-favourite"
+    />
   );
 }
 

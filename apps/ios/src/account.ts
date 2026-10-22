@@ -46,7 +46,7 @@ import {
   type SubscriptionEntry,
 } from "./subscriptions.ts";
 import { noteAction } from "./telemetry/index.ts";
-import { eraseViewing, setViewingOwners } from "./viewing.ts";
+import { eraseViewing, setViewingChannels, setViewingOwners } from "./viewing.ts";
 import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 
 // The saved subscriptions, each signed in on its own, and their lists. Everything from all of them
@@ -923,9 +923,10 @@ function publish() {
   const failing = all.filter((member) => member.live.kind === "failed" || member.needsSecret);
   const loading = pending || all.some((member) => member.live.kind === "loading");
   const [first] = failing;
+  const library = shown.length > 0 ? libraryOf(shown) : null;
   catalogue.set(
-    shown.length > 0
-      ? { kind: "ready", library: libraryOf(shown), failing }
+    library
+      ? { kind: "ready", library, failing }
       : loading || !first
         ? { kind: "loading" }
         : {
@@ -937,8 +938,13 @@ function publish() {
                 : { kind: "needs-secret", subscriptionId: first.entry.id },
           },
   );
+  // The favourites show by the channels that show: the same library, kept while a list reloads
+  // or fails, and none while no subscription's channels show.
+  setViewingChannels(library?.byKey ?? NO_CHANNELS);
   if (pending) void work();
 }
+
+const NO_CHANNELS: ReadonlyMap<string, Channel> = new Map();
 
 /** Works out each catalogue that has no part yet, one after another, then shows it joined. */
 async function work() {

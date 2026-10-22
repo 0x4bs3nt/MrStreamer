@@ -8,6 +8,7 @@ import {
   ViewingRecord,
   ViewingSeries,
   ViewingStore,
+  type FavouriteGroup,
   type SeriesSeasons,
 } from "@mrstreamer/core/viewing/service";
 import * as Effect from "effect/Effect";
@@ -15,7 +16,8 @@ import * as Layer from "effect/Layer";
 import { describe, expect, it } from "vitest";
 
 // The record service over the in-memory store, as iOS runs it: one subscription, its snapshot
-// kept by whoever saves it. Each `app` is one launch over the snapshot the last one saved.
+// kept by whoever saves it. Each `app` is one launch over the snapshot the last one saved. With a
+// `favourite` port, as iOS gives one, favourites go by its groups of stream ids, listed or not.
 
 const SUB = "xtream-a";
 const seasons: SeriesSeasons = [
@@ -25,7 +27,11 @@ const seasons: SeriesSeasons = [
   },
 ];
 
-function app(snapshot: ViewingSnapshot | null, save: (next: ViewingSnapshot) => void) {
+function app(
+  snapshot: ViewingSnapshot | null,
+  save: (next: ViewingSnapshot) => void,
+  favourite?: (streamId: string) => FavouriteGroup | undefined,
+) {
   const layer = ViewingRecord.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -33,7 +39,10 @@ function app(snapshot: ViewingSnapshot | null, save: (next: ViewingSnapshot) => 
         Layer.succeed(ViewingAccount, {
           owners: Effect.succeed([{ subscriptionId: SUB, key: SUB, original: false }]),
         }),
-        Layer.succeed(ViewingChannels, { lookup: () => Effect.succeed(() => undefined) }),
+        Layer.succeed(ViewingChannels, {
+          lookup: () => Effect.succeed(() => undefined),
+          ...(favourite ? { favourite: () => Effect.succeed(favourite) } : {}),
+        }),
         Layer.succeed(ViewingSeries, {
           identity: (series) =>
             Effect.succeed({
@@ -116,5 +125,43 @@ describe("the viewing record over the in-memory store", () => {
     await running.run((record) => record.markEpisode("m1", episode(1), true));
     await running.run((record) => record.erase(SUB));
     expect(kept.snapshot?.accounts).toEqual({});
+  });
+
+  it("stars, shows, moves and unstars a favourite by the port's group, none of it listed", async () => {
+    const kept: { snapshot: ViewingSnapshot | null } = { snapshot: null };
+    // Streams 7, 3 and 5 are one favourite, shown by 3; 9 is one of its own.
+    const group: FavouriteGroup = { id: "3", streamIds: ["3", "5", "7"] };
+    const running = app(
+      null,
+      (next) => (kept.snapshot = next),
+      (id) => (group.streamIds.includes(id) ? group : undefined),
+    );
+    const own = (id: string) => ({ subscriptionId: SUB, id });
+    await running.run((record) => record.setFavourite("f1", own("7"), true));
+    const starred = await running.run((record) => record.setFavourite("f2", own("9"), true));
+    expect(starred.favourites).toEqual([own("3"), own("9")]);
+    expect(kept.snapshot?.accounts[SUB]?.state.favourites).toEqual(["3", "5", "7", "9"]);
+
+    const moved = await running.run((record) =>
+      record.reorderFavourites("o1", { original: starred.favourites, order: [own("9"), own("3")] }),
+    );
+    expect(moved.favourites).toEqual([own("9"), own("3")]);
+    expect(kept.snapshot?.accounts[SUB]?.state.favourites).toEqual(["9", "3", "5", "7"]);
+
+    // Unstarred by any of its streams, every one of them goes.
+    const unstarred = await running.run((record) => record.setFavourite("f3", own("5"), false));
+    expect(unstarred.favourites).toEqual([own("9")]);
+    expect(kept.snapshot?.accounts[SUB]?.state.favourites).toEqual(["9"]);
+  });
+
+  it("goes by each stream alone without the port, as before it, when nothing is listed", async () => {
+    const kept: { snapshot: ViewingSnapshot | null } = { snapshot: null };
+    const running = app(null, (next) => (kept.snapshot = next));
+    const own = (id: string) => ({ subscriptionId: SUB, id });
+    await running.run((record) => record.setFavourite("f1", own("7"), true));
+    await running.run((record) => record.setFavourite("f2", own("5"), true));
+    const unstarred = await running.run((record) => record.setFavourite("f3", own("5"), false));
+    expect(unstarred.favourites).toEqual([own("7")]);
+    expect(kept.snapshot?.accounts[SUB]?.state.favourites).toEqual(["7"]);
   });
 });

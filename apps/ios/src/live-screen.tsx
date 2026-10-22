@@ -20,6 +20,8 @@ import {
   useRoster,
 } from "./account.ts";
 import { failureOf } from "./errors.ts";
+import { starChannel, useFavouriteKeys } from "./favourites.ts";
+import { FavouritesEntry } from "./favourites-screen.tsx";
 import { Glass, IconButton } from "./glass.tsx";
 import { tabHref } from "./header.tsx";
 import type { Channel, Library, Region, Shelf } from "./library.ts";
@@ -30,13 +32,16 @@ import { store, useStore } from "./store.ts";
 import { ShelfHead, TextTabs } from "./titles-ui.tsx";
 import { ChannelLogo, ChannelRow, colors, Message, Notice, useRowHeight } from "./ui.tsx";
 
-// Live, in Movies' and Series' shape: a large title, then For you, Categories and All as text
+// Live, in Movies' and Series' shape: a large title, its Favourites row, which opens every
+// favourite (favourites-screen.tsx), and Find countries or categories, which finds them by name
+// in every provider's channels (live-discover.tsx), then For you, Categories and All as text
 // tabs, with the country first in their row, reading All countries until one is chosen. All lists
 // every channel of every provider and country once, in a virtualised list of rows of one fixed
 // height, and is where Live opens at launch. For you leads with the channel watched last and Play,
 // then the recent channels and a few categories as shelves of logos; Categories is every category
 // as a tile. A category's shelf or tile opens all its channels, pushed on Live's stack. Nothing
-// plays until a tile, a row or Play is pressed, and each plays in Watch. A "country" is the
+// plays until a tile, a row or Play is pressed, and each plays in Watch; a row's star stars or
+// unstars its channel and plays nothing. A "country" is the
 // provider's group, which can be a language or a label. Rows and tiles show the channel's category
 // or quality until iOS reads a guide, which brings now and next. While channels first load, still
 // rows hold the list's place; what loads or failed by provider is the status line at the bottom,
@@ -69,8 +74,17 @@ const nameOf = ({ region, shelf }: Category, chosen = false) =>
   chosen || shelf.title === region.name ? shelf.title : `${shelf.title} · ${region.name}`;
 
 /** Where a category's channels open, by its region and title, which name it across providers. */
-const categoryHref = ({ region, shelf }: Category) =>
+export const categoryHref = ({ region, shelf }: Category) =>
   `/live/category?region=${encodeURIComponent(region.name)}&name=${encodeURIComponent(shelf.title)}` as const;
+
+/**
+ * Live shows `region`'s channels from now on, every one again with null, on the tab it showed.
+ * Home's On now shows the country chosen last until channels are watched.
+ */
+export function chooseCountry(region: Region | null) {
+  if (region) writeState((state) => ({ ...state, region: region.name }));
+  place.set((current) => ({ ...current, region: region?.name ?? null }));
+}
 
 /** Settings, on Live's own stack. */
 const openSettings = () => router.push(tabHref("live", "settings"));
@@ -79,9 +93,31 @@ const openSettings = () => router.push(tabHref("live", "settings"));
 const watch = (library: Library, channel: Channel) =>
   playChannel(channel, library.placeOf.get(channel.key) ?? "", { watch: true });
 
-/** The Live tab. */
+/** The Live tab. Its Favourites and Find rows show whatever the channels' state. */
 export function LiveHome() {
-  return <Channels>{(library) => <Browse library={library} />}</Channels>;
+  return <Channels lead={<Entries />}>{(library) => <Browse library={library} />}</Channels>;
+}
+
+/**
+ * Live's own rows, before its tabs: Favourites, and Find countries or categories. On the tab only:
+ * a category's screen has neither.
+ */
+function Entries() {
+  return (
+    <>
+      <FavouritesEntry />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Find countries or categories"
+        onPress={() => router.push("/live/discover")}
+        style={({ pressed }) => [styles.find, pressed && styles.pressed]}
+        testID="live-discover"
+      >
+        <SymbolView name="magnifyingglass" size={15} tintColor={colors.dim} />
+        <Text style={styles.findText}>Find countries or categories</Text>
+      </Pressable>
+    </>
+  );
 }
 
 /** All of one category's channels, pushed over Live by its region and title. */
@@ -91,7 +127,13 @@ export function CategoryScreen({ region, name }: { region: string; name: string 
       {(library) => {
         const found = library.regions.find((each) => each.name === region);
         const shelf = found?.shelves.find((each) => each.title === name);
-        if (!found || !shelf) return <Message text="This category isn't listed any more." />;
+        if (!found || !shelf) {
+          return (
+            <Still>
+              <Message text="This category isn't listed any more." />
+            </Still>
+          );
+        }
         return (
           <ChannelList
             library={library}
@@ -108,8 +150,17 @@ export function CategoryScreen({ region, name }: { region: string; name: string 
 /**
  * Live's screens with the channels there are, under the status line; still rows while the first
  * list loads, the failure when no provider's list came, or that the providers list no channels.
+ * `lead` goes first in those three, as the screen with channels leads with it in its own list.
+ * Each of the three is in a `Still`, as the channels are in their list, so it starts below the
+ * header.
  */
-function Channels({ children }: { children: (library: Library) => ReactNode }) {
+function Channels({
+  lead,
+  children,
+}: {
+  lead?: ReactNode;
+  children: (library: Library) => ReactNode;
+}) {
   const catalogue = useCatalogue();
   const roster = useRoster();
   const height = useRowHeight();
@@ -124,14 +175,18 @@ function Channels({ children }: { children: (library: Library) => ReactNode }) {
   if (catalogue.kind === "loading") {
     return (
       <Docked status={status ?? loadingStatus("channels")}>
-        <PlaceholderRows height={height} />
+        <Still>
+          {lead}
+          <PlaceholderRows height={height} />
+        </Still>
       </Docked>
     );
   }
   if (catalogue.kind === "failed") {
     const failure = failureOf(catalogue.error, catalogue.member.entry.server);
     return (
-      <View style={styles.screen}>
+      <Still>
+        {lead}
         <Notice
           failure={{
             headline: "Couldn't load channels",
@@ -142,23 +197,44 @@ function Channels({ children }: { children: (library: Library) => ReactNode }) {
             { label: "Provider settings", onPress: openSettings },
           ]}
         />
-      </View>
+      </Still>
     );
   }
   if (catalogue.library.regions.length === 0) {
     return (
       <Docked status={status}>
-        <Notice
-          failure={{
-            headline: "No live channels",
-            advice: `${host || "Your providers"} ${host ? "lists" : "list"} no live channels.`,
-          }}
-          actions={[{ label: "Reload", onPress: reloadAllChannels }]}
-        />
+        <Still>
+          {lead}
+          <Notice
+            failure={{
+              headline: "No live channels",
+              advice: `${host || "Your providers"} ${host ? "lists" : "list"} no live channels.`,
+            }}
+            actions={[{ label: "Reload", onPress: reloadAllChannels }]}
+          />
+        </Still>
       </Docked>
     );
   }
   return <Docked status={status}>{children(catalogue.library)}</Docked>;
+}
+
+/**
+ * What a Live screen shows in place of channels, as the screen's own scrolling content: the
+ * header's and status bar's insets keep it below them, as the channels' list is, and its end
+ * clears the status line.
+ */
+function Still({ children }: { children: ReactNode }) {
+  const inset = useDockInset();
+  return (
+    <ScrollView
+      style={styles.screen}
+      contentInsetAdjustmentBehavior="automatic"
+      contentContainerStyle={{ paddingBottom: inset }}
+    >
+      {children}
+    </ScrollView>
+  );
 }
 
 function Browse({ library }: { library: Library }) {
@@ -175,8 +251,12 @@ function Browse({ library }: { library: Library }) {
       ),
     [library, region],
   );
-  // With one category or none, a shelf or tile would only repeat All.
-  const browsable = categories.length > 1;
+  // With one category or none in every country together, a shelf or tile would only repeat All.
+  // A country chosen with one keeps the tab Live showed, as Find countries or categories does; one
+  // with none, as Other channels, shows All, the tab kept for when it is cleared.
+  const browsable =
+    (region === null || region.shelves.length > 0) &&
+    library.regions.reduce((count, each) => count + each.shelves.length, 0) > 1;
   const tabs: readonly { value: Tab; label: string }[] = browsable
     ? [
         { value: "for-you", label: "For you" },
@@ -189,27 +269,27 @@ function Browse({ library }: { library: Library }) {
   const gone = kept.region !== null && region === null ? kept.region : null;
   const countries = library.regions.length > 1 || gone !== null;
 
-  const choose = useCallback((next: Region | null) => {
-    // Home's On now shows the country chosen last until channels are watched.
-    if (next) writeState((state) => ({ ...state, region: next.name }));
-    place.set((current) => ({ ...current, region: next?.name ?? null }));
-  }, []);
-  const header =
-    countries || tabs.length > 1 ? (
-      <>
-        {gone ? <Text style={styles.note}>{`${gone} isn't listed any more.`}</Text> : null}
-        <TextTabs
-          lead={
-            countries ? (
-              <Country regions={library.regions} chosen={region} onChoose={choose} />
-            ) : null
-          }
-          tabs={tabs}
-          value={tab}
-          onChange={(next) => place.set((current) => ({ ...current, tab: next }))}
-        />
-      </>
-    ) : null;
+  // Live's own rows lead, scrolling with the list, before the country and the tabs.
+  const header = (
+    <>
+      <Entries />
+      {countries || tabs.length > 1 ? (
+        <>
+          {gone ? <Text style={styles.note}>{`${gone} isn't listed any more.`}</Text> : null}
+          <TextTabs
+            lead={
+              countries ? (
+                <Country regions={library.regions} chosen={region} onChoose={chooseCountry} />
+              ) : null
+            }
+            tabs={tabs}
+            value={tab}
+            onChange={(next) => place.set((current) => ({ ...current, tab: next }))}
+          />
+        </>
+      ) : null}
+    </>
+  );
 
   const key = `${tab}\n${region?.name ?? ""}`;
   if (tab === "for-you") {
@@ -251,14 +331,18 @@ function ChannelList({
   const height = useRowHeight();
   const inset = useDockInset();
   const playing = channelStatus(usePlayback().phase);
+  const favourites = useFavouriteKeys();
   const [top, setTop] = useState(0);
   const onPress = useCallback((channel: Channel) => watch(library, channel), [library]);
+  // Rows draw again when a star or what plays changes.
+  const playingNow = playing && `${playing.id} ${playing.word}`;
+  const extraData = useMemo(() => ({ favourites, playingNow }), [favourites, playingNow]);
   return (
     <FlatList
       style={styles.screen}
       data={channels}
       keyExtractor={(channel) => channel.key}
-      extraData={playing && `${playing.id} ${playing.word}`}
+      extraData={extraData}
       ListHeaderComponent={
         <View onLayout={(event) => setTop(event.nativeEvent.layout.height)}>{header}</View>
       }
@@ -269,6 +353,8 @@ function ChannelList({
           status={item.key === playing?.id ? playing.word : null}
           height={height}
           onPress={onPress}
+          favourite={favourites.has(item.key)}
+          onFavourite={starChannel}
         />
       )}
       getItemLayout={(_, index) => ({ length: height, offset: top + height * index, index })}
@@ -594,6 +680,14 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000000" },
   pressed: { opacity: 0.6 },
   note: { color: colors.text, fontSize: 15, marginHorizontal: 16, marginVertical: 12 },
+  find: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 16,
+  },
+  findText: { color: colors.dim, fontSize: 17 },
   categoryName: {
     color: colors.text,
     fontSize: 28,

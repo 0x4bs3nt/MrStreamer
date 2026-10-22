@@ -51,6 +51,9 @@
 //                                      panels do; status=none restores
 //   GET  /profile                      what FIXTURE_PROFILE=measure or browse declares, when on
 //   POST /delay-details?ms=8000        movie and series details answer that much later; ms=0 restores
+//   POST /live-lists?unlist=<ids>      channel lists leave out those streams, which answer 404;
+//                                      unlist= lists them all again; see scripts/live-lists.ts
+//   GET  /live-lists                   the streams left out
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -71,6 +74,7 @@ import {
 } from "../../desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../desktop/test/fake-tmdb.ts";
 import { browseControls, browseTitles } from "./browse-profile.ts";
+import { liveLists } from "./live-lists.ts";
 
 const USERNAME = process.env.FIXTURE_USERNAME ?? "fixture";
 const PASSWORD = process.env.FIXTURE_PASSWORD ?? "fixture-pass";
@@ -169,6 +173,7 @@ const provider = await startFakeProvider({
   ...(browsing ? { titlesOf: (built: FakeTitles) => browseTitles(built, second) } : {}),
 });
 const browse = browsing ? browseControls(provider, second) : null;
+const lists = liveLists(provider);
 // Lists the browse profile holds are answered as the server stops, which the signal then does.
 if (browse) {
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -354,7 +359,7 @@ createServer((request, response) => {
   const live = /^\/live\/([^/]+)\/([^/]+)\/(\d+)\.m3u8$/.exec(url.pathname);
   if (live) {
     const [, user, pass, id = ""] = live;
-    const channel = channels.get(id);
+    const channel = lists.unlisted(id) ? undefined : channels.get(id);
     const found = channel ? mediaOf(channel) : null;
     const left = failing.get(id) ?? 0;
     const status =
@@ -373,7 +378,7 @@ createServer((request, response) => {
   const segment = /^\/hls\/(\d+)\/(\d+)\.ts$/.exec(url.pathname);
   if (segment) {
     const [, id = "", n = "0"] = segment;
-    const channel = channels.get(id);
+    const channel = lists.unlisted(id) ? undefined : channels.get(id);
     const found = channel ? mediaOf(channel) : null;
     const file = found?.segments[Number(n) % found.segments.length]?.file;
     const status = found && file ? 200 : 404;
@@ -451,7 +456,8 @@ createServer((request, response) => {
 createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://control.test");
   const json = (body: unknown) => answer(response, 200, "application/json", JSON.stringify(body));
-  const browsed = browse?.control(request.method ?? "GET", url);
+  const browsed =
+    browse?.control(request.method ?? "GET", url) ?? lists.control(request.method ?? "GET", url);
   if (browsed)
     return answer(response, browsed.status, "application/json", JSON.stringify(browsed.body));
   if (request.method === "POST" && url.pathname === "/fail-catalogue") {

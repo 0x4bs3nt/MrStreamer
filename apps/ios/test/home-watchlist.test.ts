@@ -11,8 +11,8 @@ import type { TitleLists } from "../src/titles.ts";
 // its row of posters shows the saved titles a provider that still signs in lists, each opening
 // through such a provider. The real Home screen runs with React DOM on a happy-dom window over the
 // real watchlist owner, whose file is written to the files stand-in (native-files.ts), and lists
-// indexed by core as the app's are. What else Home shows (the Stage, On now, Movies for you) stands
-// in as nothing; how each provider stands is set by each test.
+// indexed by core as the app's are. What else Home shows (the Stage, On now, Favourites, Movies for
+// you) stands in as nothing; how each provider stands is set by each test.
 
 const REACT_DOM = "react-dom/client";
 const window = new Window();
@@ -79,7 +79,10 @@ vi.mock("../src/playback.ts", () => ({
   setMuted: () => undefined,
 }));
 vi.mock("../src/storage.ts", () => ({ useSavedState: () => ({}) }));
-vi.mock("../src/viewing.ts", () => ({ removeFromContinue: async () => undefined }));
+vi.mock("../src/viewing.ts", () => ({
+  removeFromContinue: async () => undefined,
+  useViewing: () => null,
+}));
 vi.mock("../src/errors.ts", () => ({ failureOf: () => ({ headline: "", advice: "" }) }));
 vi.mock("../src/header.tsx", () => ({ tabHref: (_tab: string, screen: string) => `/${screen}` }));
 vi.mock("../src/glass.tsx", () => ({ Glass: () => null, IconButton: () => null }));

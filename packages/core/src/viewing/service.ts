@@ -30,6 +30,10 @@
 // streams did, and shows them by channel: a list holding two streams of one channel shows it once,
 // by the channel's id. Nothing stored is rewritten, so those builds still read every list. A new
 // order of the favourites is no exception: it is the same favourites, removed and added again.
+// Which streams are one favourite is the channels port's `favourite` where the app gives one, as
+// an app that remembers a channel's streams after its list drops some does; else the channel the
+// catalogue lists now. Starring, unstarring, showing and ordering favourites all go by that one
+// answer. Recent channels and watching go by the catalogue alone.
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { seriesOf, type TitleRef } from "@mrstreamer/contracts/ondemand";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
@@ -93,8 +97,24 @@ export class ViewingChannels extends Context.Service<
     readonly lookup: (
       subscriptionId: string,
     ) => Effect.Effect<(channelId: string) => LiveChannel | undefined>;
+    /**
+     * Which favourite a saved stream id of the subscription is: the streams starred, unstarred
+     * and moved together, and the id it shows by. Only favourites read it. Without it, each is
+     * the channel `lookup` finds now, with its streams.
+     */
+    readonly favourite?: (
+      subscriptionId: string,
+    ) => Effect.Effect<(streamId: string) => FavouriteGroup | undefined>;
   }
 >()("mrstreamer/ViewingChannels") {}
+
+/** One favourite as the channels port names it: by ids alone, nothing to play. */
+export interface FavouriteGroup {
+  /** What the favourite shows by: the channel's id, or one of its streams' while none is listed. */
+  readonly id: string;
+  /** Every stream id of it the record may hold, `id` among them. */
+  readonly streamIds: readonly string[];
+}
 
 /** An episode of a series, in one subscription. */
 export type EpisodeRef = Extract<TitleRef, { readonly kind: "episode" }>;
@@ -353,6 +373,20 @@ const none: Viewing = {
 };
 
 type ChannelOf = (channelId: string) => LiveChannel | undefined;
+type FavouriteOf = (streamId: string) => FavouriteGroup | undefined;
+
+/** Favourites as the catalogue alone groups them: each the channel listed now, with its streams. */
+const byChannel =
+  (channelOf: ChannelOf): FavouriteOf =>
+  (streamId) => {
+    const channel = channelOf(streamId);
+    return (
+      channel && {
+        id: channel.id,
+        streamIds: [channel.id, ...channel.variants.map(({ id }) => id)],
+      }
+    );
+  };
 
 /** The saved subscriptions and their channels, as a change or a read finds them. */
 interface Saved {
@@ -361,6 +395,8 @@ interface Saved {
   readonly ofAccount: ReadonlyMap<string, ViewingOwner>;
   /** A subscription's channels, by its id. */
   readonly channelsOf: ReadonlyMap<string, ChannelOf>;
+  /** Which favourite each of a subscription's stream ids is, by its id. */
+  readonly favouritesOf: ReadonlyMap<string, FavouriteOf>;
 }
 
 /** The records as a change finds them when it commits, with whose they are. */
@@ -419,12 +455,19 @@ function namedIn(filter: TitleFilter): readonly OwnedId[] {
   return [...(filter.movies ?? []), ...(filter.series ?? [])];
 }
 
-/** A stored channel as the lists show it: its channel's id, in its subscription. */
-function shownAs({ ofAccount, channelsOf }: Saved, { account, id }: StoredChannel): OwnedId | null {
-  const owner = ofAccount.get(account);
+/**
+ * A stored channel as the lists show it, in its subscription: by its channel's id among recent
+ * channels (`channelsOf`), by its favourite's among favourites (`favouritesOf`), else its own.
+ */
+function shownAs(
+  saved: Saved,
+  { account, id }: StoredChannel,
+  by: "channelsOf" | "favouritesOf",
+): OwnedId | null {
+  const owner = saved.ofAccount.get(account);
   if (!owner) return null;
   const { subscriptionId } = owner;
-  return { subscriptionId, id: channelsOf.get(subscriptionId)?.(id)?.id ?? id };
+  return { subscriptionId, id: saved[by].get(subscriptionId)?.(id)?.id ?? id };
 }
 
 /** One account's lists, out of the records read as one. */
@@ -450,7 +493,7 @@ function eventsOf(found: Found, owner: ViewingOwner, command: ViewingCommand): A
 function rearranged(found: Found, { original, order }: FavouriteOrder): AccountEvent[] | Failed {
   const streams = new Map<string, StoredChannel[]>();
   for (const stream of found.stored.favourites) {
-    const channel = shownAs(found, stream);
+    const channel = shownAs(found, stream, "favouritesOf");
     if (!channel) continue;
     const key = ownedKey(channel);
     const stored = streams.get(key);
@@ -511,15 +554,19 @@ function make() {
     const saved = Effect.gen(function* () {
       const owners = yield* account.owners;
       const lookups = yield* Effect.forEach(owners, ({ subscriptionId }) =>
-        Effect.map(
-          channels.lookup(subscriptionId),
-          (channelOf) => [subscriptionId, channelOf] as const,
-        ),
+        Effect.gen(function* () {
+          const channelOf = yield* channels.lookup(subscriptionId);
+          const favouriteOf = channels.favourite
+            ? yield* channels.favourite(subscriptionId)
+            : byChannel(channelOf);
+          return { subscriptionId, channelOf, favouriteOf };
+        }),
       );
       return {
         owners,
         ofAccount: new Map(owners.map((owner) => [owner.key, owner])),
-        channelsOf: new Map(lookups),
+        channelsOf: new Map(lookups.map((each) => [each.subscriptionId, each.channelOf])),
+        favouritesOf: new Map(lookups.map((each) => [each.subscriptionId, each.favouriteOf])),
       } satisfies Saved;
     });
 
@@ -551,18 +598,18 @@ function make() {
     });
 
     const shown = (found: Found): Viewing => {
-      const byChannel = (list: readonly StoredChannel[]) => [
+      const listed = (list: readonly StoredChannel[], by: "channelsOf" | "favouritesOf") => [
         ...new Map(
           list.flatMap((stream) => {
-            const channel = shownAs(found, stream);
+            const channel = shownAs(found, stream, by);
             return channel ? [[ownedKey(channel), channel] as const] : [];
           }),
         ).values(),
       ];
       const { stored } = found;
       return {
-        favourites: byChannel(stored.favourites),
-        recent: byChannel(stored.recent).slice(0, RECENT_LIMIT),
+        favourites: listed(stored.favourites, "favouritesOf"),
+        recent: listed(stored.recent, "channelsOf").slice(0, RECENT_LIMIT),
         continueWatching: stored.continueWatching
           .flatMap(({ account, progress }) => {
             const owner = found.ofAccount.get(account);
@@ -668,8 +715,9 @@ function make() {
       setFavourite: (commandId: string, channel: OwnedId, favourite: boolean) =>
         run(commandId, [channel], (found, [owner]) => {
           if (!owner) return noSubscription;
-          const listed = found.channelsOf.get(owner.subscriptionId)?.(channel.id);
-          const ids = listed ? [listed.id, ...listed.variants.map(({ id }) => id)] : [channel.id];
+          const ids = found.favouritesOf.get(owner.subscriptionId)?.(channel.id)?.streamIds ?? [
+            channel.id,
+          ];
           return eventsOf(found, owner, {
             kind: "set-favourite",
             channelIds: [...new Set(ids)],

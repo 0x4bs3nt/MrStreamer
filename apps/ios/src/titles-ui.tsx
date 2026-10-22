@@ -189,10 +189,12 @@ export function ShelfHead({
   name,
   total,
   onAll,
+  testID,
 }: {
   name: string;
   total: number;
   onAll?: (() => void) | undefined;
+  testID?: string;
 }) {
   return (
     <Pressable
@@ -201,6 +203,7 @@ export function ShelfHead({
       disabled={!onAll}
       onPress={onAll}
       style={styles.shelfHead}
+      testID={testID}
     >
       <Text style={styles.shelfName} numberOfLines={1}>
         {name}

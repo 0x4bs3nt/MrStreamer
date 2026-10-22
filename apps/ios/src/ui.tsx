@@ -1,4 +1,5 @@
 import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
+import { SymbolView } from "expo-symbols";
 import type { Channel } from "./library.ts";
 import { memo } from "react";
 import {
@@ -8,6 +9,7 @@ import {
   Text,
   useWindowDimensions,
   View,
+  type AccessibilityActionEvent,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -70,12 +72,18 @@ export function ChannelLogo({
   );
 }
 
+/**
+ * A channel as a row that plays it when pressed. With `onFavourite`, a star at its end stars or
+ * unstars it without playing, which VoiceOver offers as the row's action.
+ */
 export const ChannelRow = memo(function ChannelRow({
   channel,
   detail,
   status,
   height,
   onPress,
+  favourite = false,
+  onFavourite,
 }: {
   channel: Channel;
   detail: string;
@@ -83,28 +91,61 @@ export const ChannelRow = memo(function ChannelRow({
   status: string | null;
   height: number;
   onPress: (channel: Channel) => void;
+  favourite?: boolean;
+  onFavourite?: ((channel: Channel, favourite: boolean) => void) | undefined;
 }) {
   const tags = channel.tags.join(" ");
+  const star = favourite ? "Remove from Favourites" : "Add to Favourites";
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={[channel.title, status?.toLowerCase()].filter(Boolean).join(", ")}
-      accessibilityHint={detail}
-      onPress={() => onPress(channel)}
-      style={({ pressed }) => [styles.row, { height }, pressed && styles.pressed]}
-      testID={`channel-${channel.key}`}
-    >
-      <ChannelLogo channel={channel} style={styles.rowMark} />
-      <View style={styles.names}>
-        <Text style={styles.title} numberOfLines={1}>
-          {channel.title}
-          {tags ? <Text style={styles.tags}>{`  ${tags}`}</Text> : null}
-        </Text>
-        <Text style={styles.detail} numberOfLines={1}>
-          {status ?? detail}
-        </Text>
-      </View>
-    </Pressable>
+    <View style={[styles.row, { height }, onFavourite && styles.starred]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={[channel.title, favourite && "favourite", status?.toLowerCase()]
+          .filter(Boolean)
+          .join(", ")}
+        accessibilityHint={detail}
+        {...(onFavourite
+          ? {
+              accessibilityActions: [{ name: "activate" }, { name: "favourite", label: star }],
+              onAccessibilityAction: ({ nativeEvent }: AccessibilityActionEvent) => {
+                if (nativeEvent.actionName === "activate") onPress(channel);
+                if (nativeEvent.actionName === "favourite") onFavourite(channel, !favourite);
+              },
+            }
+          : {})}
+        onPress={() => onPress(channel)}
+        style={({ pressed }) => [styles.main, pressed && styles.pressed]}
+        testID={`channel-${channel.key}`}
+      >
+        <ChannelLogo channel={channel} style={styles.rowMark} />
+        <View style={styles.names}>
+          <Text style={styles.title} numberOfLines={1}>
+            {channel.title}
+            {tags ? <Text style={styles.tags}>{`  ${tags}`}</Text> : null}
+          </Text>
+          <Text style={styles.detail} numberOfLines={1}>
+            {status ?? detail}
+          </Text>
+        </View>
+      </Pressable>
+      {onFavourite ? (
+        <Pressable
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          accessibilityLabel={star}
+          onPress={() => onFavourite(channel, !favourite)}
+          style={({ pressed }) => [styles.star, pressed && styles.pressed]}
+          testID={`star-${channel.key}`}
+        >
+          <SymbolView
+            name={favourite ? "star.fill" : "star"}
+            size={18}
+            tintColor={colors.text}
+            weight="semibold"
+          />
+        </Pressable>
+      ) : null}
+    </View>
   );
 });
 
@@ -155,11 +196,13 @@ export function TextButton({
   onPress,
   disabled,
   destructive,
+  testID,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   destructive?: boolean;
+  testID?: string;
 }) {
   return (
     <Pressable
@@ -168,6 +211,7 @@ export function TextButton({
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [styles.textButton, (pressed || disabled) && styles.pressed]}
+      testID={testID}
     >
       <Text style={[styles.textButtonLabel, destructive && styles.destructive]}>{label}</Text>
     </Pressable>
@@ -175,7 +219,10 @@ export function TextButton({
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
+  row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16 },
+  starred: { paddingRight: 4 },
+  main: { flex: 1, flexDirection: "row", alignItems: "center", gap: 12, alignSelf: "stretch" },
+  star: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   pressed: { opacity: 0.5 },
   mark: {
     borderRadius: 6,

@@ -44,6 +44,8 @@ vi.mock("../src/downloads.ts", () => ({
 vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
 // ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
 vi.mock("expo-file-system", () => import("./native-files.ts"));
+// Channel rows draw their star with an SF Symbol.
+vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   type Props = { children?: React.ReactNode; testID?: string };
