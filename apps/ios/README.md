@@ -14,9 +14,13 @@ tabs (`src/live-screen.tsx`). Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
 A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
-4K tile or Continue watching asks for its own version over it.
+4K tile or Continue watching asks for its own version over it. While a provider needs its
+password, the version remembered from it and how far its versions got are left out of the
+version details pick on their own, under Automatic too, and count again once the password is
+back; a version asked for, or chosen in the menu while the details show, keeps its precedence.
 A movie or an episode plays in Watch from where it stopped. Home leads with the preview, then
 channels to preview (On now: recent ones, else the country last chosen in Live), Continue watching, the watchlist
+(its heading always there, opening all of it on Home's stack: `watchlist`)
 and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
 channel's category where the desktop shows its programme: iOS reads no guide yet. Search finds
 movies, series and channels: 20 movies and 20 series at first, each kind with its own Show more
@@ -184,6 +188,14 @@ Each responsibility has one owner, a plain module with a store the screens read:
   per subscription under its id.
 - `src/watchlist.ts`: saved movies and series, each subscription's record in `watchlists.json`,
   shown as one by core's watchlist rules. Beta 2's `watchlist.json` is read until the first change.
+  It also gives the Watchlist screen its rows (`src/watchlist-screen.tsx`), newest saved or by
+  name. A row is the title the lists have now, or what was saved of it, with why it isn't listed:
+  lists still loading, lists that didn't load or a password needed. "No longer listed" shows only
+  once every provider that may list it answered and its lists are indexed. Nothing playable is
+  made of what was saved. Remove takes out the entry as it stands then, for every provider
+  showing it, and nothing when a sheet left open names records gone since. A provider removed
+  with its history kept keeps its saves for its return; removed with its history deleted, its
+  saves go too. A refused write leaves the entry and says so.
 - `src/downloads.ts`: movies and episodes downloaded to the phone, as the desktop's downloads:
   `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. One
   transfers at a time through `src/download-task.ts`, the app's own native owner of a background

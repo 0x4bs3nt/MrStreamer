@@ -20,7 +20,10 @@ export const iosActions = [
 ] as const satisfies readonly AnalyticsAction[];
 export type IosAction = (typeof iosActions)[number];
 
-/** The desktop's screens the iOS app has. It has no Watchlist screen of its own. */
+/**
+ * The desktop's screens the iOS app counts. Its Watchlist screen counts as none of them: the
+ * desktop's watchlist feature isn't among these.
+ */
 export const iosFeatures = [
   "home",
   "live_tv",

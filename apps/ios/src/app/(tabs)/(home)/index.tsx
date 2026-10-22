@@ -27,11 +27,17 @@ import {
 } from "../../../playback.ts";
 import { openDetails, resume, useContinueWatching } from "../../../resume.ts";
 import { useSavedState } from "../../../storage.ts";
-import { named, useCollections, useMetadataVersion, useTitleLists } from "../../../titles.ts";
-import { PlaceholderShelf, Shelf } from "../../../titles-ui.tsx";
+import {
+  named,
+  titlesWorkedOut,
+  useCollections,
+  useMetadataVersion,
+  useTitleLists,
+} from "../../../titles.ts";
+import { PlaceholderShelf, Shelf, ShelfHead } from "../../../titles-ui.tsx";
 import { ChannelLogo, colors, Message, Notice } from "../../../ui.tsx";
 import { removeFromContinue } from "../../../viewing.ts";
-import { useWatchlist, watchlistTitles } from "../../../watchlist.ts";
+import { useWatchlist, watchlistRows } from "../../../watchlist.ts";
 
 /** How many channels On now shows. */
 const ON_NOW = 12;
@@ -40,7 +46,8 @@ const MOVIES = 20;
 
 /**
  * Home: the Stage, a muted preview of what plays or of the channel to play, then On now,
- * Continue watching, the watchlist and Movies for you. On now lists the channels watched lately,
+ * Continue watching, the watchlist and Movies for you. The watchlist's heading is always there,
+ * with nothing saved too, and opens all of it. On now lists the channels watched lately,
  * or the first of the country last chosen in Live until there are any; their programmes join
  * when iOS reads a guide, favourites when iOS has them. Downloads join Home as they come to iOS.
  * Until channels and movies first come, still shapes hold On now and Movies for you; what loads
@@ -142,6 +149,9 @@ function Content({ children }: { children: ReactNode }) {
 
 /** Settings, on Home's own stack. */
 const openSettings = () => router.push(tabHref("(home)", "settings"));
+
+/** The whole watchlist, on Home's own stack. */
+const openWatchlist = () => router.push("/watchlist");
 
 const placeOf = (library: Library, channel: Channel) => library.placeOf.get(channel.key) ?? "";
 
@@ -248,19 +258,34 @@ function MoviesForYou() {
   return <Shelf name={shelf.name} titles={shelf.titles} onPress={(title) => openDetails(title)} />;
 }
 
-/** Continue watching and the watchlist, as rows of posters. */
+/**
+ * Continue watching and the watchlist, as rows of posters. The watchlist's row shows the saved
+ * titles its screen opens (`watchlistRows`): those a provider that still signs in lists, through
+ * that provider. Its heading counts every entry and opens them all, and stays without posters
+ * when none can open or nothing is saved.
+ */
 function TitleRows() {
   const continuing = useContinueWatching();
   const lists = useTitleLists();
+  const roster = useRoster();
   const saved = useWatchlist();
   const metadata = useMetadataVersion();
   const watchlist = useMemo(
     () =>
       lists.kind === "ready"
-        ? watchlistTitles(lists.index, saved).flatMap(({ title }) => (title ? [named(title)] : []))
+        ? watchlistRows(
+            saved,
+            {
+              index: lists.index,
+              complete: titlesWorkedOut(),
+              members: roster.kind === "ready" ? roster.members : [],
+              named,
+            },
+            "newest",
+          ).flatMap(({ title }) => (title ? [title] : []))
         : [],
-    // A new metadata version renames titles.
-    [lists, saved, metadata],
+    // A new metadata version renames titles; a provider losing its password drops its own.
+    [lists, saved, roster, metadata],
   );
   const entryOf = (key: string) => continuing.find((entry) => entry.title.key === key);
   return (
@@ -294,8 +319,18 @@ function TitleRows() {
         />
       ) : null}
       {watchlist.length > 0 ? (
-        <Shelf name="Watchlist" titles={watchlist} onPress={(title) => openDetails(title)} />
-      ) : null}
+        <Shelf
+          name="Watchlist"
+          titles={watchlist}
+          total={saved.length}
+          onAll={openWatchlist}
+          onPress={(title) => openDetails(title)}
+        />
+      ) : (
+        <View style={styles.block}>
+          <ShelfHead name="Watchlist" total={saved.length} onAll={openWatchlist} />
+        </View>
+      )}
     </>
   );
 }

@@ -997,6 +997,33 @@ describe("removing a subscription", () => {
     expect(progress.map((each) => each.position)).toEqual([200]);
   });
 
+  it("keeps a removed provider's saves for its return, while Remove takes out what shows", async () => {
+    const { app, a, b } = await twoProviders();
+    const watchlist = await import("../src/watchlist.ts");
+    const shared = titlesOf(app).find(
+      (title) => title.tmdbId && new Set(title.versions.map((v) => v.subscriptionId)).size === 2,
+    );
+    const own = titlesOf(app).find((title) => title.versions.every((v) => v.subscriptionId === b));
+    if (!shared || !own) throw new Error("The lists lack a shared or own film");
+    watchlist.saveTitle(shared);
+    watchlist.saveTitle(own);
+    const owners = () =>
+      watchlist.currentWatchlist().map((entry) => entry.map((each) => each.subscriptionId));
+    expect(owners()).toEqual([[b], [a, b]]);
+
+    // Removed with its history kept: its saves leave the watchlist, and stay on the phone.
+    await app.remove(b, { keepHistory: true });
+    expect(owners()).toEqual([[a]]);
+    // Removing the film both saved takes out only what shows of it: the first's record.
+    watchlist.removeEntry(watchlist.currentWatchlist()[0]!);
+    expect(owners()).toEqual([]);
+    expect(memory.files.get(doc("watchlists.json"))).toContain(b);
+
+    // Added again, the second's saves come back, both of them.
+    expect(await app.add({ server: two.url, ...TWO })).toBe(b);
+    expect(owners()).toEqual([[b], [b]]);
+  });
+
   it("keeps the version picked with its history, plays it once added again, and erases it with it", async () => {
     const { app, a, b } = await twoProviders();
     const both = (title: { versions: readonly { subscriptionId: string }[] }) =>

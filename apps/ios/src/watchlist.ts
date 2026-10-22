@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import { lazy } from "@mrstreamer/contracts/lazy";
-import type { Title } from "@mrstreamer/contracts/ondemand";
+import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import { ownedId } from "@mrstreamer/contracts/subscription";
 import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import {
   entriesOf,
@@ -13,6 +14,7 @@ import {
   type SavedTitle,
 } from "@mrstreamer/core/ondemand/watchlist";
 import { useMemo } from "react";
+import type { Member } from "./account.ts";
 import { readJson, removeJson, writeJson } from "./files.ts";
 import { store, useStore } from "./store.ts";
 
@@ -23,6 +25,15 @@ import { store, useStore } from "./store.ts";
 // goes by `titleOf`, and each time the lists are read, saved titles take their name and versions
 // as the lists have them now (`settled`). A removed subscription's record stays for when its
 // account is added again, unless its history went with it.
+//
+// Its screen lists every entry (`watchlistRows`): the title it is in the lists, which opens its
+// details, or, while the lists hold none that is surely it, what was saved of it and why: a
+// provider whose lists are still to come, failed or need its password may still list it, so only
+// lists every provider of it gave in full say it is no longer listed. A title opens only through
+// a provider that still signs in: one whose password the Keychain lost keeps its last lists in
+// the index, but nothing of it opens. Nothing that plays is made of what was saved. An entry is
+// taken out by the records it was shown with (`removeEntry`), found again in the watchlist as it
+// stands then.
 //
 // Private beta 2 kept its one subscription's record in watchlist.json. Until the first change
 // writes watchlists.json, that record is read from there; the old file stays as it was for an
@@ -62,16 +73,26 @@ const saved = store<Accounts>({ accounts: {} });
 /** The saved subscriptions in their order: only their records show. */
 const owners = store<readonly string[]>([]);
 let loaded = false;
+/**
+ * The highest `sequence` this run read or gave, whatever was removed, erased or refused since. A
+ * record's id is its time and sequence, so a new record never takes the id of one this run gave
+ * before, even when the clock repeats: an action left open on a removed record can't name it.
+ */
+let given = 0;
+
+const highest = (accounts: Accounts["accounts"]) =>
+  Math.max(0, ...Object.values(accounts).flatMap((list) => list.map((entry) => entry.sequence)));
 
 function load() {
   if (loaded) return;
   loaded = true;
   const current = Watchlists()(readJson(FILE));
-  if (!(current instanceof type.errors)) return saved.set({ accounts: current.accounts });
-  const legacy = Legacy()(readJson(LEGACY));
-  if (!(legacy instanceof type.errors)) {
+  const legacy = current instanceof type.errors ? Legacy()(readJson(LEGACY)) : null;
+  if (!(current instanceof type.errors)) saved.set({ accounts: current.accounts });
+  else if (legacy && !(legacy instanceof type.errors)) {
     saved.set({ accounts: { [legacy.subscriptionId]: legacy.entries } });
   }
+  given = highest(saved.get().accounts);
 }
 
 function write(accounts: Accounts["accounts"]) {
@@ -142,10 +163,7 @@ export function saveTitle(title: Title) {
   const ids = owners.get();
   if (savedEntry(entries(accounts, ids), title)) return;
   const savedAt = Date.now();
-  let sequence = Math.max(
-    0,
-    ...Object.values(accounts).flatMap((list) => list.map((entry) => entry.sequence)),
-  );
+  let sequence = Math.max(given, highest(accounts));
   const next = { ...accounts };
   for (const subscriptionId of ids) {
     const facts = factsOf(title, subscriptionId);
@@ -156,13 +174,34 @@ export function saveTitle(title: Title) {
       { ...facts, id: `${savedAt.toString(36)}-${sequence}`, savedAt, sequence },
     ];
   }
+  // Given, even if the file refuses them.
+  given = sequence;
   write(next);
 }
 
 /** Takes a title's entry out, with what every subscription saved of it. */
 export function removeTitle(title: Title) {
+  const entry = savedEntry(currentWatchlist(), title);
+  if (entry) removeEntry(entry);
+}
+
+/** One saved record, by its subscription and its own id: what an action on an entry holds. */
+export type SavedRef = Pick<SavedMember, "subscriptionId" | "id">;
+
+/**
+ * Takes out the entry that holds one of `refs`, as the watchlist stands now, with what every
+ * saved subscription saved of it: records the entry gained since go too. Nothing goes when no
+ * entry holds them any more, as once it was removed, or saved again as new records, whose ids
+ * differ (`given`). What a removed subscription kept stays for when it is added again. Throws
+ * when the file won't take the change, and the watchlist stays as it was.
+ */
+export function removeEntry(refs: readonly SavedRef[]) {
   const { accounts } = saved.get();
-  const entry = savedEntry(entries(accounts, owners.get()), title);
+  const entry = entries(accounts, owners.get()).find((members) =>
+    members.some((member) =>
+      refs.some((ref) => ref.subscriptionId === member.subscriptionId && ref.id === member.id),
+    ),
+  );
   if (!entry) return;
   const next = { ...accounts };
   for (const member of entry) {
@@ -171,6 +210,102 @@ export function removeTitle(title: Title) {
     );
   }
   write(next);
+}
+
+/** Why the lists that show hold no title that is surely an entry. */
+export type Unlisted = "loading" | "failed" | "needs-secret" | "not-listed";
+
+/** An entry as the Watchlist screen shows it. */
+export type WatchlistRow = {
+  readonly entry: WatchlistEntry;
+  /** The record it was saved with first: the same while it stays saved. */
+  readonly key: string;
+  readonly kind: TitleKind;
+  /** As the title shows now, else as it was saved. */
+  readonly name: string;
+  readonly year: number | null;
+} & (
+  | { readonly title: Title; readonly unlisted: null }
+  | { readonly title: null; readonly unlisted: Unlisted }
+);
+
+/** What the watchlist's titles are looked up in. */
+export interface WatchlistSources {
+  /** The lists that show, null while none do. */
+  readonly index: IndexedCatalogue | null;
+  /** Whether every saved subscription's lists that show are in `index` (`titlesWorkedOut`). */
+  readonly complete: boolean;
+  /** The saved subscriptions, with how each one's lists stand. */
+  readonly members: readonly Member[];
+  /** A title as it shows, with TMDB's name once known (`named`). */
+  readonly named: (title: Title) => Title;
+}
+
+/** Newest saved first, or by name. */
+export type WatchlistOrder = "newest" | "name";
+
+const byName = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+/**
+ * Every entry of `list` as its screen shows it, in `order`: by name, those of one name keep the
+ * newest first.
+ */
+export function watchlistRows(
+  list: readonly WatchlistEntry[],
+  sources: WatchlistSources,
+  order: WatchlistOrder,
+): readonly WatchlistRow[] {
+  const newest = latestFirst(list);
+  const { index } = sources;
+  const signedIn = new Set(
+    sources.members.flatMap((member) => (member.needsSecret ? [] : [member.entry.id])),
+  );
+  const looked = index
+    ? watchlistTitles(index, newest)
+    : newest.map((entry) => ({ entry, title: null }));
+  const rows = looked.flatMap(({ entry, title: found }): WatchlistRow[] => {
+    const [first] = entry;
+    if (!first) return [];
+    const shared = { entry, key: `${first.subscriptionId}:${first.id}`, kind: first.kind };
+    // The version the title shows first, else another of a provider that still signs in, as
+    // details show a title with a version (`automaticVersion` keeps one opened that isn't first).
+    const version =
+      found &&
+      (signedIn.has(found.subscriptionId)
+        ? found
+        : found.versions.find((each) => signedIn.has(each.subscriptionId)));
+    if (found && version) {
+      const title = sources.named({ ...found, ...ownedId(version) });
+      return [{ ...shared, name: title.title, year: title.year, title, unlisted: null }];
+    }
+    const unlisted = unlistedBy(entry, sources);
+    return [{ ...shared, name: first.name, year: first.year, title: null, unlisted }];
+  });
+  return order === "name" ? rows.toSorted((a, b) => byName.compare(a.name, b.name)) : rows;
+}
+
+/**
+ * Why no title in the lists is surely `entry`, from how the lists of the subscriptions that may
+ * list it stand: those that saved it, and every one for a title the lists know by its TMDB id.
+ * Any still to come say loading, then a lost password, then a failure; only lists all of them gave
+ * and that show in full say it is no longer listed.
+ */
+function unlistedBy(entry: WatchlistEntry, { members, complete }: WatchlistSources): Unlisted {
+  const [first] = entry;
+  const anyone = Boolean(first?.tmdbId) && !first?.adult;
+  const relevant = members.filter(
+    (member) => anyone || entry.some((saved) => saved.subscriptionId === member.entry.id),
+  );
+  const standing = relevant.map((member): Unlisted => {
+    if (member.needsSecret) return "needs-secret";
+    if (member.titles.kind === "failed") return "failed";
+    if (member.titles.kind === "ready") return complete ? "not-listed" : "loading";
+    return "loading";
+  });
+  return (
+    (["loading", "needs-secret", "failed"] as const).find((each) => standing.includes(each)) ??
+    (relevant.length > 0 ? "not-listed" : "loading")
+  );
 }
 
 /** The title each entry is in the lists now, or null when they hold none that is surely it. */

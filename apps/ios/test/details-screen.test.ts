@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { Download } from "@mrstreamer/contracts/downloads";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { TitleProgress } from "@mrstreamer/contracts/viewing";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import { byIds, indexCatalogue, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import type { OnDemandCatalogue } from "@mrstreamer/core/provider";
@@ -27,10 +28,12 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 
 const scenario = vi.hoisted(() => ({
   lists: { kind: "idle" } as { kind: "idle" } | { kind: "ready"; index: unknown },
-  members: [] as Array<{ entry: { id: string }; label: string }>,
+  members: [] as Array<{ entry: { id: string }; label: string; needsSecret?: boolean }>,
   /** The version menu last shown: its options, and what picking one does. */
   menu: null as { options: readonly string[]; pick: (index: number) => void } | null,
   played: [] as OwnedId[],
+  /** How far each version got, as the viewing record answers. */
+  progress: [] as TitleProgress[],
   /** The film's download as the owner has it, and what it was asked to do. */
   download: undefined as Download | undefined,
   asked: [] as string[],
@@ -145,7 +148,7 @@ vi.mock("../src/play-title.ts", () => ({
 }));
 vi.mock("../src/viewing.ts", () => ({
   useViewing: () => null,
-  progressOf: async () => [],
+  progressOf: async () => scenario.progress,
   markEpisode: async () => null,
   relist: async () => undefined,
   seriesViewing: async () => ({ progress: [], marks: [] }),
@@ -202,11 +205,25 @@ async function relaunch(): Promise<App> {
   return app;
 }
 
-/** One film, which both providers list under the same id and TMDB id. */
+/** One film and one series, which both providers list under the same ids and TMDB ids. */
 const catalogue: OnDemandCatalogue = {
   movieCategories: [],
   seriesCategories: [],
-  series: [],
+  series: [
+    {
+      id: "2",
+      name: "Same series (EN)",
+      tmdbId: "200001",
+      container: null,
+      categoryIds: [],
+      posterUrl: null,
+      backdropUrl: null,
+      releaseDate: null,
+      rating: null,
+      addedAt: 1,
+      adult: false,
+    },
+  ],
   movies: [
     {
       id: "1",
@@ -237,6 +254,19 @@ function providers(...ids: string[]) {
   scenario.members = ids.map((id) => ({ entry: { id }, label: LABELS[id] ?? id }));
 }
 
+/** Until the progress read for the screen has answered. */
+async function settled() {
+  for (let at = 0; at < 5; at++) await React.act(async () => await Promise.resolve());
+}
+
+/** The providers whose password the Keychain no longer gives back, their lists still showing. */
+function lost(...ids: string[]) {
+  scenario.members = scenario.members.map((member) => ({
+    ...member,
+    needsSecret: ids.includes(member.entry.id),
+  }));
+}
+
 let unmount = () => {};
 afterEach(() => {
   unmount();
@@ -245,6 +275,7 @@ afterEach(() => {
   scenario.download = undefined;
   scenario.asked.length = 0;
   scenario.details = () => new Promise(() => undefined);
+  scenario.progress = [];
   storage.writeState(() => ({ subscription: null, recent: [], region: null }));
 });
 
@@ -259,15 +290,18 @@ const factsOf = (plot: string) => ({
   backdropUrl: null,
 });
 
-/** The film's details as `version` opens them, `asked` for or not, drawn by `app`. */
-function mount({ version = "a:1", asked = false, app = launched } = {}) {
+/** The `kind`'s details as `version` opens them, `asked` for or not, drawn by `app`. */
+function mount({
+  version = "a:1",
+  asked = false,
+  app = launched,
+  kind = "movie" as "movie" | "series",
+} = {}) {
   const { React, createRoot, DetailsScreen } = app;
   const container = document.createElement("div");
   const root = createRoot(container);
   const render = () =>
-    React.act(() =>
-      root.render(React.createElement(DetailsScreen, { kind: "movie", version, asked })),
-    );
+    React.act(() => root.render(React.createElement(DetailsScreen, { kind, version, asked })));
   render();
   unmount = () => React.act(() => root.unmount());
   const press = (testID: string) =>
@@ -479,6 +513,174 @@ describe("a film's version picked", () => {
     page.openVersions()("Home");
     unmount();
     expect(mount({ version: "b:1" }).play()).toBe("a");
+  });
+});
+
+describe("a film's version picked from a provider that lost its password", () => {
+  it("gives way to the version another provider opened, and comes back with the password", () => {
+    providers("a", "b");
+    const read: string[] = [];
+    scenario.details = (version) => {
+      read.push(version);
+      return new Promise(() => undefined);
+    };
+    mount().openVersions()("Home");
+    unmount();
+    // Opened through Cabin, as the Watchlist opens a title Home lists too: the pick still wins.
+    expect(mount({ version: "b:1" }).play()).toBe("a");
+    unmount();
+
+    lost("a");
+    read.length = 0;
+    const page = mount({ version: "b:1" });
+    expect(page.play()).toBe("b");
+    expect(read).toEqual(["b:1"]);
+    // Its password back, the pick saved plays again, picked once only.
+    lost();
+    page.render();
+    expect(page.play()).toBe("a");
+  });
+
+  it("goes with the version opened over progress on a provider that lost its password", async () => {
+    providers("a", "b");
+    const read: string[] = [];
+    scenario.details = (version) => {
+      read.push(version);
+      return new Promise(() => undefined);
+    };
+    // Stopped partway in Cabin's version.
+    const partway = { position: 600, duration: 6000, finished: false, at: 1, since: 1 };
+    scenario.progress = [{ title: { kind: "movie", subscriptionId: "b", id: "1" }, ...partway }];
+    const page = mount();
+    await settled();
+    expect(page.play()).toBe("b");
+
+    // Cabin's password lost: Home's own version, opened as the watchlist opens it, plays.
+    lost("b");
+    page.render();
+    await settled();
+    expect(page.play()).toBe("a");
+    expect(read.at(-1)).toBe("a:1");
+    // Its password back, the progress decides again.
+    lost();
+    page.render();
+    await settled();
+    expect(page.play()).toBe("b");
+    // Cabin remembered from the menu too: with its password lost, neither keeps it.
+    page.openVersions()("Cabin");
+    unmount();
+    lost("b");
+    const picked = mount();
+    await settled();
+    expect(picked.play()).toBe("a");
+    unmount();
+
+    // A series goes on where its last episode played, by the same rule.
+    scenario.progress = [
+      {
+        title: {
+          kind: "episode",
+          subscriptionId: "b",
+          id: "21",
+          seriesId: "2",
+          season: 1,
+          episode: 1,
+        },
+        ...partway,
+      },
+    ];
+    mount({ kind: "series", version: "a:2" });
+    await settled();
+    expect(read.at(-1)).toBe("a:2");
+  });
+
+  it("goes with Automatic to a provider that signs in when the film's own lost its password", async () => {
+    providers("a", "b", "c");
+    const read: string[] = [];
+    scenario.details = (version) => {
+      read.push(version);
+      return new Promise(() => undefined);
+    };
+    // Home's version is the film's own; Home lost its password. Opened through Cabin, as the
+    // watchlist opens it, then Automatic chosen.
+    lost("a");
+    const page = mount({ version: "b:1" });
+    await settled();
+    expect(page.play()).toBe("b");
+    page.openVersions()("Automatic");
+    await settled();
+    expect(page.play()).toBe("b");
+    expect(read.at(-1)).toBe("b:1");
+    // Its password back, Automatic goes with the film's own again.
+    lost();
+    page.render();
+    await settled();
+    expect(page.play()).toBe("a");
+    // Home chosen from the menu stays chosen with its password lost.
+    page.openVersions()("Home");
+    lost("a");
+    page.render();
+    await settled();
+    expect(page.play()).toBe("a");
+    unmount();
+
+    // How far c's version got still goes first under Automatic.
+    scenario.progress = [
+      {
+        title: { kind: "movie", subscriptionId: "c", id: "1" },
+        ...{ position: 600, duration: 6000, finished: false, at: 1, since: 1 },
+      },
+    ];
+    const resumed = mount({ version: "b:1" });
+    resumed.openVersions()("Automatic");
+    await settled();
+    expect(resumed.play()).toBe("c");
+  });
+
+  it("goes with Automatic over progress on a provider that lost its password, and not a version chosen", async () => {
+    providers("a", "b");
+    const read: string[] = [];
+    scenario.details = (version) => {
+      read.push(version);
+      return new Promise(() => undefined);
+    };
+    scenario.progress = [
+      {
+        title: { kind: "movie", subscriptionId: "b", id: "1" },
+        ...{ position: 600, duration: 6000, finished: false, at: 1, since: 1 },
+      },
+    ];
+    const page = mount();
+    await settled();
+    page.openVersions()("Automatic");
+    expect(page.play()).toBe("b");
+
+    // Cabin's password lost while Automatic stands: the film's own version.
+    lost("b");
+    page.render();
+    await settled();
+    expect(page.play()).toBe("a");
+    expect(read.at(-1)).toBe("a:1");
+    // Its password back, the progress decides again.
+    lost();
+    page.render();
+    await settled();
+    expect(page.play()).toBe("b");
+
+    // Cabin chosen from the menu stays chosen, its password lost or not.
+    page.openVersions()("Cabin");
+    lost("b");
+    page.render();
+    await settled();
+    expect(page.play()).toBe("b");
+  });
+
+  it("still plays a version asked for, as a 4K tile asks, from that provider", () => {
+    providers("a", "b");
+    mount().openVersions()("Cabin");
+    unmount();
+    lost("a");
+    expect(mount({ version: "a:1", asked: true }).play()).toBe("a");
   });
 });
 

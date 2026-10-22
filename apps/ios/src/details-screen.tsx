@@ -167,13 +167,31 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
   // it is listed (storage.ts), then the title's own choice. Kept by its ids, so a render that
   // works out the same version reads nothing again.
   const askedFor = asked && title.versions.some((each) => sameOwned(each, opened)) ? opened : null;
+  // A pick remembered from a provider whose password the Keychain lost, or how far a version of
+  // one got, gives way meanwhile to the version opened, as the watchlist opens one through another
+  // provider; Automatic chosen here leaves out that progress too. Both stay saved, and count again
+  // once the password is back. A version chosen from the menu or asked for stays.
+  const roster = useRoster();
+  const lost = new Set(
+    (roster.kind === "ready" ? roster.members : members()).flatMap((member) =>
+      member.needsSecret ? [member.entry.id] : [],
+    ),
+  );
+  const remembered = pickedVersion(title, state);
+  const usable = played.filter((each) => !lost.has(each.title.subscriptionId));
+  // Automatic falls back to the title's own version; while that one's provider needs its
+  // password, to the first version of a provider that signs in, if any.
+  const automatic = automaticVersion(title, usable, title);
+  const signedIn = title.versions.find((each) => !lost.has(each.subscriptionId));
   const chosen =
     listed === AUTOMATIC
-      ? automaticVersion(title, played, title)
+      ? lost.has(automatic.subscriptionId) && signedIn
+        ? ownedId(signedIn)
+        : automatic
       : (listed ??
         askedFor ??
-        pickedVersion(title, state) ??
-        automaticVersion(title, played, opened));
+        (remembered && !lost.has(remembered.subscriptionId) ? remembered : null) ??
+        automaticVersion(title, usable, opened));
   const version = useMemo(
     () => ({ subscriptionId: chosen.subscriptionId, id: chosen.id }),
     [chosen.subscriptionId, chosen.id],
@@ -192,7 +210,6 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
     again,
   );
   const failedHere = useFailure(title.kind, version);
-  const roster = useRoster();
   // Versions from several subscriptions say which each is from, in the order they were added.
   const providers = useMemo(() => {
     const listed = roster.kind === "ready" ? roster.members : members();
