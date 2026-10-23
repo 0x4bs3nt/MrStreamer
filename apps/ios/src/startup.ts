@@ -18,8 +18,9 @@ import { endLaunchBatch, onTitleLists, titlesWorkedOut } from "./titles.ts";
 // Only what is on the phone counts: no login check or provider's answer is waited for, and a
 // list that wasn't saved loads after, as screens show it; one a provider answered while it opens is
 // worked out with the rest. Once open it stays open. A read the disk never answers doesn't keep it
-// opening past `LONGEST`: the lists read by then are worked out and show, and the late one joins
-// them when it answers.
+// opening past `LONGEST` once the registry is known: the real screens show each pending source
+// as loading, the lists read by then are worked out and show, and late answers join them. This
+// scheduled fallback cannot interrupt synchronous registry reads, parsing or a busy JS thread.
 
 export type Startup =
   /** What the phone saved doesn't show yet. */
@@ -27,7 +28,7 @@ export type Startup =
   /** Screens show what the phone saved, or what loads without it. */
   | { readonly kind: "open" };
 
-/** How long the saved lists may take to show before the app opens without the rest. */
+/** How long awaitable restoration may hold the overlay once the registry can choose routes. */
 const LONGEST = 8_000;
 
 const startup = store<Startup>({ kind: "opening" });
@@ -40,6 +41,7 @@ export const onStartup = (listener: () => void) => startup.subscribe(listener);
 
 let started: Promise<void> | null = null;
 let restored = false;
+let expired = false;
 const stops: Array<() => void> = [];
 
 function open() {
@@ -51,22 +53,22 @@ function open() {
 
 function settle() {
   if (startup.get().kind === "open") return;
-  const shows =
-    restored &&
-    currentRoster().kind === "ready" &&
-    !readingSaved() &&
-    channelsWorkedOut() &&
-    titlesWorkedOut();
-  if (shows) open();
+  if (currentRoster().kind !== "ready") return;
+  const shows = restored && !readingSaved() && channelsWorkedOut() && titlesWorkedOut();
+  if (expired || shows) open();
 }
 
 /**
  * At launch, once: reads the saved subscriptions and signs them in again (`restore`), and opens
- * the app as soon as what they saved shows. Resolves once the subscriptions are read.
+ * the app as soon as what they saved shows. Resolves once launch password reads settle, without
+ * waiting for provider authentication or saved-list reads.
  */
 export function startUp(): Promise<void> {
   started ??= (() => {
-    const timer = setTimeout(open, LONGEST);
+    const timer = setTimeout(() => {
+      expired = true;
+      settle();
+    }, LONGEST);
     stops.push(
       () => clearTimeout(timer),
       onRoster(settle),

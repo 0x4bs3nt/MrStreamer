@@ -111,7 +111,7 @@ export interface Member {
   readonly titles: Loadable<OnDemandCatalogue>;
 }
 
-/** Ready with none: Connect shows. */
+/** Registry known, independently of Keychain readiness. Ready with none: Connect shows. */
 export type Roster =
   { readonly kind: "restoring" } | { readonly kind: "ready"; readonly members: readonly Member[] };
 
@@ -542,19 +542,45 @@ async function settleSecret(id: string) {
 }
 
 /**
- * At launch: the saved subscriptions, each signed in again with its password from the Keychain.
- * A first launch since installing first removes what an earlier install left in the Keychain.
- * The first launch since private beta 2 makes the registry from its state.json, keeping its
- * subscription's id; a launch after that finds the registry and migrates nothing again.
+ * Reads one launch password without holding up mutations or another subscription. A late answer
+ * only signs in the same account, if no removal or password change has superseded this read.
+ * A name-only edit still takes effect. Until the answer, no Source or saved list is authorized.
+ */
+async function restorePassword(entry: SubscriptionEntry): Promise<void> {
+  const { id } = entry;
+  const before = currentSource(id);
+  const deleted = dropped.get(id);
+  const password = await keychainSecrets.read(id).catch(() => null);
+  await serially(async () => {
+    const now = registry.subscriptions.find((each) => each.id === id);
+    if (
+      !now ||
+      !sameAccount(now, entry) ||
+      currentSource(id) !== before ||
+      dropped.get(id) !== deleted
+    )
+      return;
+    if (password) signIn(now, password, null);
+    else setMember(id, (member) => ({ ...member, needsSecret: true }));
+  });
+}
+
+/**
+ * At launch: publishes the saved registry before waiting on Keychain or cleanup, then restores
+ * each password independently. Resolves once those reads finish, not provider authentication or
+ * saved lists. The first launch clears secrets from an earlier install before accepting new ones;
+ * beta 2's state migrates once, keeping its subscription id. Cleanup stays serialized with edits.
  */
 export function restore(): Promise<void> {
   return serially(async () => {
     const saved = readRegistry();
+    registry = saved ?? migrated(readState());
+    // Registry readiness chooses the real routes. It never grants credentials or cache access.
+    syncRoster();
     if (!saved && firstLaunch()) {
       await keychainSecrets.clear().catch(() => undefined);
       writeState((state) => state);
     }
-    registry = saved ?? migrated(readState());
     // A write that fails leaves the old files as they were, and the next launch tries again.
     try {
       if (!saved) writeRegistry(registry);
@@ -564,18 +590,12 @@ export function restore(): Promise<void> {
     }
     for (const id of registry.pendingSecrets) await settleSecret(id).catch(() => undefined);
     for (const id of registry.erasing) await eraseHistory(id).catch(() => undefined);
-    const passwords = await Promise.all(
-      registry.subscriptions.map((entry) => keychainSecrets.read(entry.id).catch(() => null)),
-    );
-    syncRoster();
     const ids = registry.subscriptions.map((entry) => entry.id);
     pruneLists(ids);
     pruneDetails(ids);
-    registry.subscriptions.forEach((entry, at) => {
-      const password = passwords[at];
-      if (password) signIn(entry, password, null);
-      else setMember(entry.id, (member) => ({ ...member, needsSecret: true }));
-    });
+    return registry.subscriptions;
+  }).then(async (entries) => {
+    await Promise.all(entries.map(restorePassword));
   });
 }
 

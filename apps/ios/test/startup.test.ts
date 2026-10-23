@@ -17,6 +17,8 @@ const memory = vi.hoisted(() => ({
   held: [] as Array<() => void>,
   holdLogins: false,
   holdLists: false,
+  holdPasswords: new Set<string>(),
+  heldPasswords: [] as Array<() => void>,
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -31,7 +33,13 @@ vi.mock("expo-video", () => ({
 }));
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
-  getItemAsync: async (key: string) => memory.keychain.get(key) ?? null,
+  getItemAsync: async (key: string) => {
+    const password = memory.keychain.get(key) ?? null;
+    if (memory.holdPasswords.has(key)) {
+      await new Promise<void>((go) => memory.heldPasswords.push(go));
+    }
+    return password;
+  },
   setItemAsync: async (key: string, value: string) => {
     memory.keychain.set(key, value);
   },
@@ -187,6 +195,7 @@ beforeEach(async () => {
   native.undeletable = null;
   native.sizeOf = null;
   memory.keychain.clear();
+  memory.holdPasswords.clear();
   memory.requests.length = 0;
   memory.holdLogins = false;
   memory.holdLists = false;
@@ -202,6 +211,8 @@ afterEach(() => {
   memory.holdLogins = false;
   memory.holdLists = false;
   release();
+  memory.holdPasswords.clear();
+  for (const go of memory.heldPasswords.splice(0)) go();
   native.gate = null;
   vi.useRealTimers();
 });
@@ -356,6 +367,102 @@ describe("opening after a launch", () => {
     expect(app.titleLists()).toEqual({ kind: "ready", index });
     await until(() => app.currentStartup().kind === "open", "the app to open");
     expect(app.seen.opened?.titlesFrom.has(b)).toBe(true);
+  });
+
+  it("opens the real saved roster at the deadline while Keychain hasn't answered, without authorizing a source", async () => {
+    const { a, b } = await savedBoth();
+    for (const id of [a, b]) memory.holdPasswords.add(`s.${id}`);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(memory.heldPasswords).toHaveLength(2);
+    expect(app.currentStartup().kind).toBe("open");
+    // Root mounts the actual App only for a ready roster, and chooses Connect only for zero members.
+    expect(app.currentRoster()).toMatchObject({ kind: "ready" });
+    expect(app.members().map((each) => each.entry.id)).toEqual([a, b]);
+    const sources = await import("../src/sources.ts");
+    expect(sources.signedIn()).toEqual([]);
+    expect(app.seen.opened?.channelsFrom.size).toBe(0);
+    expect(app.seen.opened?.titlesFrom.size).toBe(0);
+    expect(app.members().every((each) => !each.needsSecret && each.live.kind === "idle")).toBe(
+      true,
+    );
+
+    memory.holdPasswords.clear();
+    for (const go of memory.heldPasswords.splice(0)) go();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(app.titlesFrom()).toEqual(new Set([a, b]));
+    expect(app.currentStartup().kind).toBe("open");
+  });
+
+  it("shows a healthy provider's retained library while another password is pending, then asks for a missing password", async () => {
+    const { a, b } = await savedBoth();
+    memory.keychain.delete(`s.${b}`);
+    memory.holdPasswords.add(`s.${b}`);
+    memory.holdLogins = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(app.currentStartup().kind).toBe("open");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+    expect(member(app, a).live).toMatchObject({ kind: "ready", from: "cache" });
+    expect(member(app, b)).toMatchObject({ needsSecret: false, live: { kind: "idle" } });
+    // Refresh remains usable for the healthy source while the other Keychain read is pending.
+    vi.useRealTimers();
+    app.reloadChannels(a);
+    await until(() => member(app, a).live.kind === "ready", "the healthy refresh");
+    expect(member(app, a).live).toMatchObject({ kind: "ready", from: "provider" });
+    for (const go of memory.heldPasswords.splice(0)) go();
+    await until(() => member(app, b).needsSecret, "the missing password");
+    expect(member(app, b)).toMatchObject({ needsSecret: true, live: { kind: "idle" } });
+    const sources = await import("../src/sources.ts");
+    expect(sources.currentSource(b)).toBeUndefined();
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+  });
+
+  it("can remove a subscription with a held password and never restores its late credentials or cache", async () => {
+    const { a, b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    await app.remove(b, { keepHistory: false });
+    expect(app.members().map((each) => each.entry.id)).toEqual([a]);
+    for (const go of memory.heldPasswords.splice(0)) go();
+    await app.startUp();
+    await until(() => app.currentStartup().kind === "open", "the app to open");
+    const sources = await import("../src/sources.ts");
+    expect(sources.currentSource(b)).toBeUndefined();
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+    expect(app.seen.opened?.channelsFrom).toEqual(new Set([a]));
+  });
+
+  it("keeps a name edit while a password is pending and accepts the unchanged account's late answer", async () => {
+    const { b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    await app.update(b, { name: "Renamed" });
+    for (const go of memory.heldPasswords.splice(0)) go();
+    await app.startUp();
+    await until(() => app.currentStartup().kind === "open", "the app to open");
+    expect(member(app, b).label).toBe("Renamed");
+    expect(member(app, b).live).toMatchObject({ kind: "ready", from: "cache" });
+  });
+
+  it("doesn't replace an explicit password edit with an older Keychain answer", async () => {
+    const { b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    // Re-entering even the same password creates a new authorized Source and discards old cache.
+    await app.update(b, { password: TWO.password });
+    const sources = await import("../src/sources.ts");
+    const edited = sources.sourceOf(b);
+    for (const go of memory.heldPasswords.splice(0)) go();
+    await app.startUp();
+    expect(sources.sourceOf(b)).toBe(edited);
+    expect(member(app, b).needsSecret).toBe(false);
   });
 
   it("opens at once with no subscription saved", async () => {
