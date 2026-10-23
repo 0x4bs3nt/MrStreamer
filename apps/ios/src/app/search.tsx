@@ -27,7 +27,14 @@ import {
 import { useReduceMotion } from "../glass.tsx";
 import { openOnTabs, useTabs } from "../header.tsx";
 import { inTasks, searchChannelsSteps, type Channel, type Library } from "../library.ts";
-import { StatusLine, useStatusAnnouncement, useStatusFits, type Status } from "../loading.tsx";
+import {
+  libraryStatus,
+  StatusLine,
+  useProviderStatus,
+  useStatusAnnouncement,
+  useStatusFits,
+  type Status,
+} from "../loading.tsx";
 import { channelStatus, usePlayback } from "../playback.ts";
 import { openDetails } from "../resume.ts";
 import { onSearchText } from "../telemetry/index.ts";
@@ -152,15 +159,13 @@ function useSection(request: Request | null, session: RefObject<SearchSession>) 
 const moreLabel = ({ kind, count }: NonNullable<Found["more"]>) =>
   `Show ${count} more ${kind === "series" ? "series" : count === 1 ? "movie" : "movies"}`;
 
-/** What's still to come, or couldn't come, of what Search looks through, in sentences. */
+/** Search's loading/indexing text, provider progress and retry targets. */
 interface SearchStatus {
   readonly text: string;
   /** Providers whose lists are in, of all of them, while some still load. */
   readonly loading: { readonly settled: number; readonly of: number } | null;
   /** Providers whose lists failed, to try again. */
   readonly retry: readonly string[];
-  /** A provider failed or asks for its password: Settings is where that's fixed. */
-  readonly settings: boolean;
 }
 
 const unsettled = (member: Member, list: Pick<Member["live"] | Member["titles"], "kind">) =>
@@ -172,7 +177,7 @@ const kinds = (channels: boolean, titles: boolean) =>
 
 /**
  * How Search's sources stand, or null when every provider's channels, movies and series are in.
- * A provider that failed keeps what it had before in the results, and says so.
+ * Provider failure text and recovery come from libraryStatus.
  */
 function searchStatus(
   members: readonly Member[],
@@ -180,17 +185,6 @@ function searchStatus(
   lists: TitleLists,
 ): SearchStatus | null {
   const sentences: string[] = [];
-  for (const member of members) {
-    const { label, live, titles, needsSecret } = member;
-    if (needsSecret) sentences.push(`Enter the password for ${label} in Settings.`);
-    else if (live.kind === "failed" && titles.kind === "failed") {
-      sentences.push(`Couldn't load channels, movies or series from ${label}.`);
-    } else if (live.kind === "failed") sentences.push(`Couldn't load channels from ${label}.`);
-    else if (titles.kind === "failed") {
-      sentences.push(`Couldn't load movies and series from ${label}.`);
-    }
-  }
-  const failed = sentences.length > 0;
   const channelsLoading =
     catalogue.kind === "loading" || members.some((member) => unsettled(member, member.live));
   const titlesLoading =
@@ -205,20 +199,18 @@ function searchStatus(
         : "";
     sentences.push(`${kinds(channelsLoading, titlesLoading)} still loading${count}.`);
   }
-  if (sentences.length === 0) return null;
+  const failed = members.filter(
+    (member) =>
+      !member.needsSecret && (member.live.kind === "failed" || member.titles.kind === "failed"),
+  );
+  if (sentences.length === 0 && failed.length === 0) return null;
   const channels = catalogue.kind === "ready";
   const titles = lists.kind === "ready";
   if (channels || titles) sentences.push(`${kinds(channels, titles)} searched.`);
   return {
     text: sentences.join(" "),
     loading: channelsLoading || titlesLoading ? { settled, of: Math.max(1, members.length) } : null,
-    retry: members
-      .filter(
-        (member) =>
-          !member.needsSecret && (member.live.kind === "failed" || member.titles.kind === "failed"),
-      )
-      .map((member) => member.entry.id),
-    settings: failed,
+    retry: failed.map((member) => member.entry.id),
   };
 }
 
@@ -364,6 +356,10 @@ export default function Search() {
   const playing = channelStatus(phase);
   const searching = searched !== "";
   const pending = movies.pending || series.pending || channels.pending;
+  const providers = libraryStatus(members, { channels: true, titles: true, retry, settings });
+  const line = useProviderStatus(
+    searchLine(searching ? status : null, searching ? providers : null, pending),
+  );
   const keyboard = useKeyboardHeight();
   // The height under the search field, for results and the status line together; measured as
   // laid out, so a turn of the phone updates it, as the keyboard updates its reserve.
@@ -371,18 +367,13 @@ export default function Search() {
   const reserve = (keyboard > 0 ? keyboard : insets.bottom) + 8;
   // What the keyboard leaves for results and the line, less the gap above the line.
   const room = area - reserve - 8;
-  const line = searchLine(
-    query.trim() !== "" ? status : null,
-    pending,
-    () => status?.retry.forEach((id) => retry(id)),
-    settings,
-  );
   // The line sits at the bottom, above the keyboard, where its share of the room shows at least
   // a whole line of it. Where it doesn't, as with the largest text in landscape with the keyboard
-  // up, it leads the results instead, whole, in their one scroll; dismissing the keyboard (a drag
+  // up, it leads the results instead, whole, in their one scroll. Persistent recovery always
+  // leads the results. For other status, dismissing the keyboard (a drag
   // or the Search key) frees room and brings it back down. Nothing shows until the area is laid out.
   const docked = useStatusFits(room);
-  const place = !line || area === 0 ? null : docked ? "bottom" : "results";
+  const place = !line || area === 0 ? null : line.inline || !docked ? "results" : "bottom";
   // Read out from here, once per change, wherever the line sits.
   useStatusAnnouncement(line?.text ?? null, line?.announce ?? false);
   const shown = line ? { ...line, announce: false } : null;
@@ -475,7 +466,7 @@ export default function Search() {
           ListEmptyComponent={
             // Nothing has the name only once the latest text was searched in every list. While one
             // loads or failed, the status line says what was searched instead.
-            searching && !pending && !status ? (
+            searching && !pending && !status && !providers ? (
               <Nothing query={searched} library={library} lists={lists} />
             ) : undefined
           }
@@ -502,24 +493,25 @@ export default function Search() {
 
 /**
  * Search's status line: Searching while the latest text waits to be searched, then what hasn't
- * loaded or failed, with Retry and Settings. The provider count shows as a bar with two or more
- * providers. Null with nothing to say.
+ * loaded or failed, with the shared provider notice or persistent recovery. The provider count
+ * shows as a bar with two or more providers. Null with nothing to say.
  */
 function searchLine(
   status: SearchStatus | null,
+  providers: Status | null,
   pending: boolean,
-  onRetry: () => void,
-  onSettings: () => void,
 ): Status | null {
-  if (!status && !pending) return null;
-  const actions = status
-    ? [
-        ...(status.retry.length > 0 ? [{ label: "Retry", onPress: onRetry }] : []),
-        ...(status.settings ? [{ label: "Settings", onPress: onSettings }] : []),
-      ]
-    : [];
+  if (!status && !providers && !pending) return null;
+  const actions = [...(providers?.actions ?? [])];
+  if (status?.retry.length && !actions.some((action) => action.label === "Retry")) {
+    actions.push({ label: "Retry", onPress: () => status.retry.forEach(retry) });
+  }
+  // The persistent recovery owns its full explanation. Otherwise Search supplies the loading
+  // sentence, including indexing and provider counts, rather than repeating libraryStatus's.
+  const text = providers?.inline ? providers.text : (status?.text ?? "");
   return {
-    text: pending ? ["Searching.", status?.text].filter(Boolean).join(" ") : status!.text,
+    ...providers,
+    text: [pending ? "Searching." : "", text].filter(Boolean).join(" "),
     actions,
     ...(status?.loading && status.loading.of > 1
       ? { progress: status.loading.settled / status.loading.of }

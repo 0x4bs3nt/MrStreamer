@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { TitleKind } from "@mrstreamer/contracts/ondemand";
-import type { OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
+import type { LiveCatalogue, OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
 import { Window, type HTMLInputElement } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
@@ -53,13 +53,17 @@ vi.mock("react-native", async () => {
     children,
     testID,
     onLayout,
+    style,
   }: Props & {
+    style?: { width?: string } | ({ width?: string } | undefined)[];
     onLayout?: (event: { nativeEvent: { layout: { width: number; height: number } } }) => void;
   }) => {
     useEffect(() => {
       onLayout?.({ nativeEvent: { layout: { width: 390, height: 600 } } });
     }, []);
-    return createElement("div", { "data-testid": testID }, children);
+    const width = (Array.isArray(style) ? style.find((part) => part?.width !== undefined) : style)
+      ?.width;
+    return createElement("div", { "data-testid": testID, "data-width": width }, children);
   };
   type Style = { maxHeight?: number } | undefined;
   /** A scroll view, which shows the most height it may take. */
@@ -173,6 +177,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 vi.mock("../src/account.ts", () => ({
+  currentRoster: () => ({ kind: "ready", members: scenario.members }),
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   useCatalogue: () => scenario.catalogue,
   playChannel: (channel: Channel, _place: string, options: { watch: boolean }) =>
@@ -235,6 +240,20 @@ vi.mock("../src/glass.tsx", async () => {
     useReduceMotion: () => false,
     useMotionAllowed: () => false,
     Glass: ({ children }: { children?: React.ReactNode }) => createElement("div", null, children),
+    IconButton: ({
+      label,
+      onPress,
+      testID,
+    }: {
+      label: string;
+      onPress: () => void;
+      testID: string;
+    }) =>
+      createElement(
+        "button",
+        { "aria-label": label, "data-testid": testID, onClick: onPress },
+        label,
+      ),
   };
 });
 vi.mock("../src/telemetry/index.ts", () => ({ onSearchText: () => undefined }));
@@ -293,6 +312,20 @@ const lists = (
 /** Northwind's lists: Dune, and nothing else. */
 const duneOnly = () => lists([{ ...titled("movie", "", "", 1)[0]!, id: "7", name: "Dune" }]);
 
+const liveLists: LiveCatalogue = {
+  categories: [],
+  channels: ["NPO 1", "BBC One"].map((name, index) => ({
+    id: String(index + 1),
+    name,
+    number: index + 1,
+    logoUrl: null,
+    categoryIds: [],
+    guideId: null,
+    catchupDays: null,
+  })),
+};
+const emptyLive: LiveCatalogue = { categories: [], channels: [] };
+
 const member = (
   id: string,
   label: string,
@@ -304,8 +337,8 @@ const member = (
     label,
     account: null,
     needsSecret: false,
-    live: { kind: "ready", value: {}, took: 1 },
-    titles: { kind: "ready", value: titles, took: 1 },
+    live: { kind: "ready", value: liveLists, from: "provider", fetchedAt: 0, took: 1 },
+    titles: { kind: "ready", value: titles, from: "provider", fetchedAt: 0, took: 1 },
     ...standing,
   }) as Member;
 
@@ -321,7 +354,10 @@ async function subscriptions(members: Member[]) {
       if (!titlesWorkedOut()) throw new Error("Still indexing");
     });
   });
-  if (activeRoot) await settled();
+  if (activeRoot) {
+    React.act(() => render());
+    await settled();
+  }
 }
 
 const channels = [
@@ -339,11 +375,13 @@ const ready: Catalogue = { kind: "ready", library, failing: [] };
 
 let container: ReturnType<typeof document.createElement>;
 let activeRoot = false;
+let render = () => {};
 let unmount = () => {};
 function startOpen() {
   container = document.createElement("div");
   const root = createRoot(container);
-  React.act(() => root.render(React.createElement(Search)));
+  render = () => root.render(React.createElement(Search));
+  React.act(render);
   activeRoot = true;
   unmount = () => {
     React.act(() => root.unmount());
@@ -394,6 +432,7 @@ beforeEach(async () => {
   scenario.presses.clear();
   scenario.keyboard.clear();
   scenario.tmdbNames.clear();
+  await subscriptions([]);
   await subscriptions([member("a", "Northwind", {}, duneOnly())]);
 });
 afterEach(() => {
@@ -462,7 +501,12 @@ describe("Search over the tabs", () => {
         "a",
         "Northwind",
         {
-          live: { kind: "failed", error: { kind: "unexpected", detail: "" }, last: {}, since: 0 },
+          live: {
+            kind: "failed",
+            error: { kind: "unexpected", detail: "" },
+            last: liveLists,
+            since: 0,
+          },
         } as Partial<Member>,
         duneOnly(),
       ),
@@ -500,12 +544,12 @@ describe("Search over the tabs", () => {
     expect(shrunk).toBeLessThan(200 / 2);
     expect(shrunk).toBeLessThan(Number(open600!.split(" ")[1]));
     const panel = statusLine()!;
-    expect(panel.textContent).toContain("Enter the password for Southwind in Settings.");
+    expect(panel.textContent).toContain("Southwind needs a password");
     // Retry and Settings are in that same bounded scroll.
-    expect(panel.textContent).toMatch(/searched\.RetrySettings$/);
+    expect(panel.textContent).toContain("DetailsRetry");
     expect(text()).toContain("Dune");
     await press("text-Retry");
-    await press("text-Settings");
+    await press("text-Details");
     expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
 
     // With the keyboard down the line has its room again.
@@ -525,11 +569,11 @@ describe("Search over the tabs", () => {
     keyboardTo(444);
     expect(placed()).toBe("results");
     expect(statusLine()!.textContent).toMatch(
-      /^Couldn't load channels from Northwind\..*RetrySettings$/,
+      /^Northwind unavailable\. Southwind needs a password.*DetailsRetry/,
     );
     expect(text()).toContain("Dune");
     await press("text-Retry");
-    await press("text-Settings");
+    await press("text-Details");
     expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
     // A keyboard over the whole area still leaves the line, and the results, in the one scroll.
     keyboardTo(200);
@@ -676,13 +720,11 @@ describe("Search over the tabs", () => {
     ]);
     await open();
     await type("dune");
-    expect(text()).toContain(
-      "Couldn't load movies and series from Southwind. Movies, series and channels searched.",
-    );
+    expect(text()).toContain("Southwind unavailable. Movies, series and channels searched.");
     expect(text()).toContain("Dune");
     expect(text()).toContain("Dune Prophecy");
     await press("text-Retry");
-    await press("text-Settings");
+    await press("text-Details");
     // Search closes, then Settings goes on Live's own stack (tab-routes.test.ts).
     expect(scenario.did).toEqual(["retry b", "dismiss 1", "push /live/settings"]);
   });
@@ -700,8 +742,190 @@ describe("Search over the tabs", () => {
     };
     await open();
     await type("zzq");
-    expect(text()).toContain("Couldn't load channels from Northwind. Movies and series searched.");
+    expect(text()).toContain("Couldn't load channels from Northwind.RetrySettings");
+    expect(placed()).toBe("results");
+    expect(container.querySelector('[data-testid="dismiss-provider-notice"]')).toBeNull();
     expect(text()).not.toContain("Nothing named");
+  });
+
+  const failure = { kind: "unexpected", detail: "" } as const;
+  const failedLive = (last: LiveCatalogue | null = liveLists, since = 0): Member["live"] => ({
+    kind: "failed",
+    error: failure,
+    last,
+    since,
+  });
+  const failedTitles = (last: OnDemandCatalogue | null = duneOnly()): Member["titles"] => ({
+    kind: "failed",
+    error: failure,
+    last,
+    since: 0,
+  });
+  const notice = () => container.querySelector('[data-testid="dismiss-provider-notice"]');
+
+  it("keeps an acknowledged failure quiet through navigation, rename and retry without changing provider state", async () => {
+    const failed = member("a", "Northwind", { live: failedLive() }, duneOnly());
+    await subscriptions([failed]);
+    await open();
+    await type("dune");
+    expect(text()).toContain("Northwind unavailable");
+    await press("dismiss-provider-notice");
+    expect(notice()).toBeNull();
+    expect(text()).not.toContain("unavailable");
+    expect(scenario.members[0]).toBe(failed);
+    expect(scenario.members[0]!.live.kind).toBe("failed");
+    await press("text-Retry");
+    expect(scenario.did).toEqual(["retry a"]);
+    await press("text-Cancel");
+    unmount();
+    await subscriptions([
+      member("a", "Renamed", { live: { kind: "loading", last: liveLists } }, duneOnly()),
+    ]);
+    await open();
+    expect(text()).toContain("Dune");
+    expect(text()).toContain("Channels still loading");
+    expect(text()).not.toMatch(/unavailable|Couldn't/);
+    await subscriptions([member("a", "Renamed", { live: failedLive(liveLists, 99) }, duneOnly())]);
+    expect(notice()).toBeNull();
+    expect(text()).not.toMatch(/unavailable|Couldn't/);
+    expect(scenario.members[0]!.live.kind).toBe("failed");
+    await press("search-title-7");
+    expect(scenario.did).toEqual(["retry a", "back", "back", "details movie 7"]);
+  });
+
+  it("keeps Searching, provider progress, Retry and announcements when its compact failure is dismissed", async () => {
+    await subscriptions([
+      member("a", "Northwind", { live: failedLive() }, duneOnly()),
+      member("b", "Southwind", {
+        live: { kind: "loading", last: null },
+        titles: { kind: "loading", last: null },
+      }),
+    ]);
+    await open();
+    await type("dune");
+    expect(text()).toContain("Northwind unavailable");
+    expect(text().match(/still loading/g)).toHaveLength(1);
+    expect(container.querySelector('[data-width="50%"]')).not.toBeNull();
+    const said = scenario.said.length;
+    vi.useFakeTimers();
+    startType("bbc");
+    expect(text()).toContain("Searching.");
+    startPress("dismiss-provider-notice");
+    expect(text()).toContain("Searching.");
+    expect(text()).toContain("1 of 2 providers");
+    expect(text()).not.toContain("unavailable");
+    expect(container.querySelector('[data-width="50%"]')).not.toBeNull();
+    expect(scenario.said).toHaveLength(said);
+    startPress("text-Retry");
+    expect(scenario.did).toEqual(["retry a"]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("BBC One");
+    expect(text()).not.toContain("Searching.");
+    expect(scenario.said.at(-1)).toContain("1 of 2 providers");
+    startPress("text-Cancel");
+    expect(scenario.did).toEqual(["retry a", "back"]);
+    expect(scenario.dismissed).toBe(1);
+  });
+
+  it("treats equal labels as distinct providers and password loss as a separate incident", async () => {
+    await subscriptions([member("a", "Same", { live: failedLive() }, duneOnly())]);
+    await open();
+    await type("dune");
+    await press("dismiss-provider-notice");
+    await subscriptions([
+      member("a", "Same", { live: failedLive() }, duneOnly()),
+      member("b", "Same", { live: failedLive() }),
+    ]);
+    expect(text().match(/Same unavailable/g)).toHaveLength(1);
+    await press("dismiss-provider-notice");
+    await subscriptions([
+      member("a", "Same", { needsSecret: true, live: { kind: "idle" }, titles: { kind: "idle" } }),
+      member("b", "Same"),
+    ]);
+    expect(text()).toContain("Same needs a password");
+    await press("text-Details");
+    expect(scenario.did).toEqual(["dismiss 1", "push /live/settings"]);
+    expect(scenario.dismissed).toBe(1);
+    unmount();
+    // A successful provider answer ends the password incident too.
+    await subscriptions([member("a", "Same", {}, duneOnly()), member("b", "Same")]);
+    await open();
+    expect(text()).not.toContain("needs a password");
+    await subscriptions([
+      member("a", "Same", { needsSecret: true, live: { kind: "idle" }, titles: { kind: "idle" } }),
+      member("b", "Same"),
+    ]);
+    expect(text()).toContain("Same needs a password");
+    await press("dismiss-provider-notice");
+    expect(notice()).toBeNull();
+    await subscriptions([member("b", "Same")]);
+    await subscriptions([
+      member("a", "Same", { needsSecret: true, live: { kind: "idle" }, titles: { kind: "idle" } }),
+      member("b", "Same"),
+    ]);
+    expect(notice()).not.toBeNull();
+    expect(text()).toContain("Same needs a password");
+  });
+
+  it("waits for actual recovery of every failed source and forgets a removed provider's acknowledgement", async () => {
+    await subscriptions([member("a", "Northwind", { live: failedLive(), titles: failedTitles() })]);
+    await open();
+    await type("dune");
+    await press("dismiss-provider-notice");
+    const readyLive: Member["live"] = {
+      kind: "ready",
+      value: liveLists,
+      from: "provider",
+      fetchedAt: 1,
+      took: 1,
+    };
+    // Recovering channels alone leaves the title failure acknowledged.
+    await subscriptions([member("a", "Northwind", { live: readyLive, titles: failedTitles() })]);
+    expect(notice()).toBeNull();
+    await subscriptions([
+      member("a", "Northwind", {
+        live: { ...readyLive, from: "cache" },
+        titles: { kind: "ready", value: duneOnly(), from: "cache", fetchedAt: 0, took: null },
+      }),
+    ]);
+    await subscriptions([member("a", "Northwind", { live: failedLive(), titles: failedTitles() })]);
+    expect(notice()).toBeNull();
+    // Both provider answers end the incident; a later failure is new.
+    await subscriptions([member("a", "Northwind", {}, duneOnly())]);
+    await subscriptions([member("a", "Northwind", { live: failedLive() }, duneOnly())]);
+    expect(text()).toContain("Northwind unavailable");
+    await press("dismiss-provider-notice");
+    await subscriptions([]);
+    await subscriptions([member("a", "Northwind", { live: failedLive() }, duneOnly())]);
+    expect(text()).toContain("Northwind unavailable");
+    expect(notice()).not.toBeNull();
+  });
+
+  it("keeps detailed empty-list recovery in the results after acknowledging a floating notice", async () => {
+    await subscriptions([member("a", "Northwind", { live: failedLive(), titles: failedTitles() })]);
+    await open();
+    await type("dune");
+    await press("dismiss-provider-notice");
+    await subscriptions([
+      member("a", "Northwind", { live: failedLive(emptyLive), titles: failedTitles(lists([])) }),
+    ]);
+    expect(text()).toContain("Couldn't update channels, movies and series from Northwind.");
+    expect(placed()).toBe("results");
+    expect(notice()).toBeNull();
+    expect(text()).not.toContain("Nothing named");
+    await press("text-Retry");
+    expect(scenario.did).toEqual(["retry a"]);
+    // First-load failures without any retained list keep the same recovery path.
+    await subscriptions([
+      member("a", "Northwind", { live: failedLive(null), titles: failedTitles(null) }),
+    ]);
+    expect(text()).toContain("Couldn't load channels, movies and series from Northwind.");
+    expect(placed()).toBe("results");
+    expect(notice()).toBeNull();
+    await press("text-Settings");
+    expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
   });
 
   it("says nothing has the name only with everything in, and how much it looked through", async () => {
