@@ -40,6 +40,8 @@ interface IndexedKind {
   readonly byTmdbId: () => ReadonlyMap<string, Title>;
   /** Folded names, index-aligned with `titles`, worked out on the first search. */
   readonly searchNames: () => readonly SearchNames[];
+  /** The same preparation in slices, sharing completed spellings across cancelled searches. */
+  readonly searchNamesSteps: () => Steps<readonly SearchNames[]>;
 }
 
 export interface IndexedCatalogue {
@@ -243,6 +245,18 @@ function* indexKind(
       byId.set(ownedKey(version), title);
     }
   }
+  const folded: SearchNames[] = [];
+  function* searchNamesSteps(): Steps<readonly SearchNames[]> {
+    const due = pacer();
+    while (folded.length < shown.length) {
+      if (due()) yield;
+      // Read the cursor after yielding: another search may have prepared names meanwhile.
+      const at = folded.length;
+      const title = shown[at];
+      if (title) folded.push(indexNames(title.title, names[at] ?? []));
+    }
+    return folded;
+  }
   return {
     titles: shown,
     byId,
@@ -254,9 +268,8 @@ function* indexKind(
           ),
         ),
     ),
-    searchNames: once(() =>
-      shown.map((title, index) => indexNames(title.title, names[index] ?? [])),
-    ),
+    searchNames: () => finish(searchNamesSteps()),
+    searchNamesSteps,
   };
 }
 
@@ -383,13 +396,26 @@ export function searchPage(
   limit = SEARCH_LIMIT,
   selection?: { readonly filters: TitleFilters; readonly files: FilterFiles },
 ): { readonly titles: Title[]; readonly total: number; readonly unfiltered?: number } {
+  return finish(searchPageSteps(catalogue, kind, query, aliases, limit, selection));
+}
+
+/** The exact `searchPage` scan and name preparation, yielding between slices for input. */
+export function* searchPageSteps(
+  catalogue: IndexedCatalogue,
+  kind: TitleKind,
+  query: string,
+  aliases: (title: Title) => string | TitleSearchAliases = () => "",
+  limit = SEARCH_LIMIT,
+  selection?: { readonly filters: TitleFilters; readonly files: FilterFiles },
+): Steps<{ readonly titles: Title[]; readonly total: number; readonly unfiltered?: number }> {
+  const due = pacer();
   const asked = nameQuery(query);
   if (asked.words.length === 0)
     return { titles: [], total: 0, ...(selection ? { unfiltered: 0 } : {}) };
   const qualified = yearQuery(query);
   const indexed = kindOf(catalogue, kind);
   const { titles } = indexed;
-  const searchNames = indexed.searchNames();
+  const searchNames = yield* indexed.searchNamesSteps();
   // Only the best `limit` are kept: when twice that many wait, the worst half goes, and a match
   // that doesn't beat the worst kept is never held. The scan is in catalogue order and sorts are
   // stable, so equals stay in that order, as one sort of every match would leave them.
@@ -398,6 +424,7 @@ export function searchPage(
   let total = 0;
   let unfiltered = 0;
   for (const [index, title] of titles.entries()) {
+    if (due()) yield;
     if (title.adult) continue;
     const extra = aliasNames(title, aliases(title));
     const names = searchNames[index];

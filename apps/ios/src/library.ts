@@ -299,9 +299,20 @@ export async function inTasks<A>(steps: Steps<A>, wanted: () => boolean): Promis
 
 /** Channels whose names hold every word of `query`, in the catalogue's order. */
 export function searchChannels(library: Library, query: string): readonly Channel[] {
+  return finish(searchChannelsSteps(library, query));
+}
+
+/** The same full channel matches, in catalogue order, yielding between slices for input. */
+export function* searchChannelsSteps(library: Library, query: string): Steps<readonly Channel[]> {
   const words = searchWords(query);
   if (words.length === 0) return [];
-  return library.channels.filter((channel) => matchRanges(channel.title, words).length > 0);
+  const found: Channel[] = [];
+  const due = pacer();
+  for (const channel of library.channels) {
+    if (due()) yield;
+    if (matchRanges(channel.title, words).length > 0) found.push(channel);
+  }
+  return found;
 }
 
 /** A country or a category Live's discovery found: a country opens in Live, a category whole. */

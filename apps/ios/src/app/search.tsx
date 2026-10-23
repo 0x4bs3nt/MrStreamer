@@ -1,8 +1,9 @@
 import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
+import { pacer, type Steps } from "@mrstreamer/core/steps";
 import { router } from "expo-router";
 import { SymbolView } from "expo-symbols";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   Animated,
   Keyboard,
@@ -25,13 +26,13 @@ import {
 } from "../account.ts";
 import { useReduceMotion } from "../glass.tsx";
 import { openOnTabs, useTabs } from "../header.tsx";
-import { searchChannels, type Channel, type Library } from "../library.ts";
+import { inTasks, searchChannelsSteps, type Channel, type Library } from "../library.ts";
 import { StatusLine, useStatusAnnouncement, useStatusFits, type Status } from "../loading.tsx";
 import { channelStatus, usePlayback } from "../playback.ts";
 import { openDetails } from "../resume.ts";
 import { onSearchText } from "../telemetry/index.ts";
 import {
-  searchTitles,
+  searchTitlesSteps,
   titleCount,
   useMetadataVersion,
   useTitleLists,
@@ -65,20 +66,85 @@ interface Asked {
 const firstPage = (query: string): Asked => ({ query, limits: { movie: PAGE, series: PAGE } });
 
 /** The best `limit` titles of `kind` for `query`, of the lists as they stand; null for none. */
-function foundTitles(
+function* foundTitles(
   index: IndexedCatalogue,
   kind: TitleKind,
   query: string,
   limit: number,
-): Found | null {
-  const page = searchTitles(index, kind, query, limit);
+): Steps<Found | null> {
+  const page = yield* searchTitlesSteps(index, kind, query, limit);
   if (page.total === 0) return null;
   const left = page.total - page.titles.length;
+  const data: Row[] = [];
+  const due = pacer();
+  for (const title of page.titles) {
+    if (due()) yield;
+    data.push({ kind: "title", title });
+  }
   return {
     title: kind === "movie" ? "Movies" : "Series",
     total: page.total,
-    data: page.titles.map((title) => ({ kind: "title", title })),
+    data,
     more: left > 0 ? { kind, count: Math.min(PAGE, left) } : null,
+  };
+}
+
+function* foundChannels(library: Library, query: string): Steps<Found | null> {
+  const channels = yield* searchChannelsSteps(library, query);
+  if (channels.length === 0) return null;
+  const data: Row[] = [];
+  const due = pacer();
+  for (const channel of channels) {
+    if (due()) yield;
+    data.push({ kind: "channel", channel });
+  }
+  return { title: "Channels", total: channels.length, data, more: null };
+}
+
+/** Text changes and dismissal invalidate every section before React schedules its next render. */
+interface SearchSession {
+  generation: number;
+  closed: boolean;
+}
+
+interface Request {
+  readonly generation: number;
+  readonly steps: () => Steps<Found | null>;
+}
+
+/** Each section publishes independently, only for its current text, lists, names and page. */
+function useSection(request: Request | null, session: RefObject<SearchSession>) {
+  const latest = useRef(request);
+  latest.current = request;
+  const mounted = useRef(false);
+  const [finished, setFinished] = useState<{ request: Request; found: Found | null } | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    let active = true;
+    const wanted = () =>
+      active &&
+      latest.current === request &&
+      !session.current.closed &&
+      session.current.generation === request?.generation;
+    if (request) {
+      void inTasks(request.steps(), wanted).then((found) => {
+        if (wanted()) setFinished({ request, found });
+      });
+    }
+    return () => {
+      active = false;
+      mounted.current = false;
+    };
+  }, [request, session]);
+  return {
+    found: finished && finished.request === request ? finished.found : null,
+    pending: request !== null && finished?.request !== request,
+    current: () =>
+      mounted.current &&
+      request !== null &&
+      latest.current === request &&
+      !session.current.closed &&
+      session.current.generation === request.generation,
   };
 }
 
@@ -180,9 +246,10 @@ export default function Search() {
   const metadata = useMetadataVersion();
   const { phase } = usePlayback();
   const height = useRowHeight();
-  const [query, setQuery] = useState(kept);
-  // Results follow the latest text; typing goes on while an earlier search is drawn.
-  const typed = useDeferredValue(query);
+  const [entry, setEntry] = useState(() => ({ text: kept, generation: 0 }));
+  const query = entry.text;
+  const input = useRef(query);
+  const session = useRef<SearchSession>({ generation: 0, closed: false });
   const library = catalogue.kind === "ready" ? catalogue.library : null;
   const members = roster.kind === "ready" ? roster.members : [];
   const status = searchStatus(members, catalogue, lists);
@@ -198,72 +265,105 @@ export default function Search() {
   // How many movies and series show, for the text searched. New text starts both at the first
   // page again. New lists or metadata keep what was asked, found again in what they hold now, so
   // no row of lists or names since replaced stays and none shows twice.
-  const searched = typed.trim();
+  const searched = query.trim();
   const [asked, setAsked] = useState(() => firstPage(searched));
-  if (asked.query !== searched) setAsked(firstPage(searched));
   const { limits } = asked.query === searched ? asked : firstPage(searched);
   const index = lists.kind === "ready" ? lists.index : null;
   // Each kind is searched apart, so Show more searches its own kind again and nothing else.
   // A new metadata version adds TMDB's names to search.
-  const movies = useMemo(
-    () => (index && searched ? foundTitles(index, "movie", typed, limits.movie) : null),
-    [index, typed, searched, limits.movie, metadata],
+  const movieRequest = useMemo(
+    () =>
+      index && searched
+        ? {
+            generation: entry.generation,
+            steps: () => foundTitles(index, "movie", query, limits.movie),
+          }
+        : null,
+    [index, query, searched, limits.movie, metadata, entry.generation],
   );
-  const series = useMemo(
-    () => (index && searched ? foundTitles(index, "series", typed, limits.series) : null),
-    [index, typed, searched, limits.series, metadata],
+  const seriesRequest = useMemo(
+    () =>
+      index && searched
+        ? {
+            generation: entry.generation,
+            steps: () => foundTitles(index, "series", query, limits.series),
+          }
+        : null,
+    [index, query, searched, limits.series, metadata, entry.generation],
   );
-  const channels = useMemo((): Found | null => {
-    const found = library ? searchChannels(library, typed) : [];
-    return found.length > 0
-      ? {
-          title: "Channels",
-          total: found.length,
-          data: found.map((channel) => ({ kind: "channel", channel })),
-          more: null,
-        }
-      : null;
-  }, [library, typed]);
+  const channelRequest = useMemo(
+    () =>
+      library && searched
+        ? {
+            generation: entry.generation,
+            steps: () => foundChannels(library, query),
+          }
+        : null,
+    [library, query, searched, entry.generation],
+  );
+  const movies = useSection(movieRequest, session);
+  const series = useSection(seriesRequest, session);
+  const channels = useSection(channelRequest, session);
   const sections = useMemo(
-    () => [movies, series, channels].filter((found) => found !== null),
-    [movies, series, channels],
+    () => [movies.found, series.found, channels.found].filter((found) => found != null),
+    [movies.found, series.found, channels.found],
   );
   const showMore = useCallback(
     (section: Found) => {
       if (!section.more) return;
       const { kind } = section.more;
-      setAsked({
+      if (!(kind === "movie" ? movies : series).current()) return;
+      setAsked((current) => ({
         query: searched,
-        limits: { ...limits, [kind]: section.data.length + PAGE },
-      });
+        limits: {
+          ...(current.query === searched ? current.limits : firstPage(searched).limits),
+          [kind]: section.data.length + PAGE,
+        },
+      }));
     },
-    [searched, limits],
+    [searched, movies, series],
   );
 
   const change = useCallback((text: string) => {
+    if (session.current.closed || text === input.current) return;
+    if (text.trim() !== input.current.trim()) setAsked(firstPage(text.trim()));
+    input.current = text;
+    session.current.generation++;
     kept = text;
-    setQuery(text);
+    setEntry({ text, generation: session.current.generation });
     onSearchText(text);
   }, []);
-  const watch = useCallback(
-    (channel: Channel) => {
-      if (!library) return;
-      close();
-      playChannel(channel, library.placeOf.get(channel.key) ?? "", { watch: true });
-    },
-    [library],
-  );
-  const open = useCallback((title: Title) => {
+  const dismiss = () => {
+    if (session.current.closed) return false;
+    session.current.closed = true;
+    session.current.generation++;
+    Keyboard.dismiss();
+    return true;
+  };
+  const close = () => {
+    if (dismiss()) back();
+  };
+  const watch = (channel: Channel) => {
+    if (!library || !channels.current()) return;
+    close();
+    playChannel(channel, library.placeOf.get(channel.key) ?? "", { watch: true });
+  };
+  const open = (title: Title) => {
+    if (!(title.kind === "movie" ? movies : series).current()) return;
     close();
     openDetails(title);
-  }, []);
+  };
   // Closes Search and opens Settings on the tab under it.
-  const settings = () => (tabs ? openOnTabs(tabs, "settings") : close());
+  const settings = () => {
+    if (dismiss()) {
+      if (tabs) openOnTabs(tabs, "settings");
+      else back();
+    }
+  };
 
   const playing = channelStatus(phase);
-  const searching = typed.trim() !== "";
-  // The latest text isn't searched yet: the last results stay meanwhile.
-  const pending = query.trim() !== "" && typed !== query;
+  const searching = searched !== "";
+  const pending = movies.pending || series.pending || channels.pending;
   const keyboard = useKeyboardHeight();
   // The height under the search field, for results and the status line together; measured as
   // laid out, so a turn of the phone updates it, as the keyboard updates its reserve.
@@ -309,6 +409,7 @@ export default function Search() {
             autoCapitalize="none"
             autoCorrect={false}
             returnKeyType="search"
+            onSubmitEditing={Keyboard.dismiss}
             clearButtonMode="while-editing"
             keyboardAppearance="dark"
             selectionColor="#FFFFFF"
@@ -374,8 +475,8 @@ export default function Search() {
           ListEmptyComponent={
             // Nothing has the name only once the latest text was searched in every list. While one
             // loads or failed, the status line says what was searched instead.
-            searching && typed === query && !status ? (
-              <Nothing query={typed.trim()} library={library} lists={lists} />
+            searching && !pending && !status ? (
+              <Nothing query={searched} library={library} lists={lists} />
             ) : undefined
           }
           testID="search-list"
@@ -453,7 +554,7 @@ function useKeyboardHeight(): number {
 }
 
 /** Back to the screen Search opened over, or Home when it opened with none under it. */
-function close() {
+function back() {
   if (router.canGoBack()) router.back();
   else router.replace("/");
 }

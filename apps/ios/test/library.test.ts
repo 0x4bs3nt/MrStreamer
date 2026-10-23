@@ -1,6 +1,7 @@
 import type { LiveCatalogue, ProviderChannel } from "@mrstreamer/core/provider";
 import { describe, expect, it } from "vitest";
-import { buildLibrary, searchPlaces } from "../src/library.ts";
+import { finish } from "@mrstreamer/core/steps";
+import { buildLibrary, searchChannels, searchChannelsSteps, searchPlaces } from "../src/library.ts";
 
 // What Live can show of a provider's channel list: every channel it may show is in some region,
 // whatever categories the provider lists, and channels for adults stay out. A second provider's
@@ -29,6 +30,30 @@ const only = (catalogue: LiveCatalogue) =>
 
 const shown = (regions: ReturnType<typeof buildLibrary>["regions"]) =>
   regions.map((region) => [region.name, region.channels.map((each) => each.title)]);
+
+describe.each([
+  { mode: "synchronous", search: searchChannels },
+  {
+    mode: "sliced",
+    search: (library: ReturnType<typeof buildLibrary>, query: string) =>
+      finish(searchChannelsSteps(library, query)),
+  },
+])("$mode channel search", ({ search }) => {
+  it("keeps every matching provider identity in catalogue order, with all words required", () => {
+    const catalogue: LiveCatalogue = {
+      categories: [],
+      channels: [channel("1", "Café-Film", []), channel("2", "Film", [])],
+    };
+    const library = buildLibrary([
+      { subscriptionId: "a", label: "North", catalogue },
+      { subscriptionId: "b", label: "South", catalogue },
+    ]);
+    for (const query of ["cafe film", "cafefilm", "CAFÉ"])
+      expect(search(library, query).map((each) => each.key)).toEqual(["a:1", "b:1"]);
+    expect(search(library, "film missing")).toEqual([]);
+    expect(search(library, "   ")).toEqual([]);
+  });
+});
 
 describe("the channels Live shows", () => {
   it("shows every channel when the provider lists no categories", () => {

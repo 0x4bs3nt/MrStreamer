@@ -23,6 +23,8 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const scenario = vi.hoisted(() => ({
+  dismissed: 0,
+  presses: new Map<string, () => void>(),
   members: [] as Member[],
   /** Who listens to the subscriptions changing: the title owner. */
   roster: new Set<() => void>(),
@@ -69,8 +71,10 @@ vi.mock("react-native", async () => {
     ScrollView,
     Text: ({ children }: Props) => createElement("span", null, children),
     Image: () => null,
-    Pressable: ({ children, testID, onPress }: Props & { onPress: () => void }) =>
-      createElement("button", { "data-testid": testID, onClick: onPress }, children),
+    Pressable: ({ children, testID, onPress }: Props & { onPress: () => void }) => {
+      if (testID) scenario.presses.set(testID, onPress);
+      return createElement("button", { "data-testid": testID, onClick: onPress }, children);
+    },
     TextInput: ({
       value,
       onChangeText,
@@ -131,6 +135,9 @@ vi.mock("react-native", async () => {
     },
     AppState: { currentState: "active", addEventListener: () => undefined },
     Keyboard: {
+      dismiss: () => {
+        scenario.dismissed++;
+      },
       addListener: (
         event: string,
         listener: (event: { endCoordinates: { screenY: number } }) => void,
@@ -237,14 +244,18 @@ vi.mock("../src/ui.tsx", async () => {
   return {
     colors: { text: "#FFFFFF", dim: "#A1A1A6", fill: "#1C1C1E", line: "#2C2C2E" },
     useRowHeight: () => 60,
-    ChannelRow: ({ channel, onPress }: { channel: Channel; onPress: (c: Channel) => void }) =>
-      createElement(
+    ChannelRow: ({ channel, onPress }: { channel: Channel; onPress: (c: Channel) => void }) => {
+      scenario.presses.set(`channel-${channel.key}`, () => onPress(channel));
+      return createElement(
         "button",
         { "data-testid": `channel-${channel.key}`, onClick: () => onPress(channel) },
         channel.title,
-      ),
-    TextButton: ({ label, onPress }: { label: string; onPress: () => void }) =>
-      createElement("button", { "data-testid": `text-${label}`, onClick: onPress }, label),
+      );
+    },
+    TextButton: ({ label, onPress }: { label: string; onPress: () => void }) => {
+      scenario.presses.set(`text-${label}`, onPress);
+      return createElement("button", { "data-testid": `text-${label}`, onClick: onPress }, label);
+    },
   };
 });
 
@@ -310,6 +321,7 @@ async function subscriptions(members: Member[]) {
       if (!titlesWorkedOut()) throw new Error("Still indexing");
     });
   });
+  if (activeRoot) await settled();
 }
 
 const channels = [
@@ -326,48 +338,83 @@ const library = {
 const ready: Catalogue = { kind: "ready", library, failing: [] };
 
 let container: ReturnType<typeof document.createElement>;
+let activeRoot = false;
 let unmount = () => {};
-function open() {
+function startOpen() {
   container = document.createElement("div");
   const root = createRoot(container);
   React.act(() => root.render(React.createElement(Search)));
-  unmount = () => React.act(() => root.unmount());
+  activeRoot = true;
+  unmount = () => {
+    React.act(() => root.unmount());
+    activeRoot = false;
+  };
 }
 const field = () => container.querySelector('[data-testid="search-field"]') as HTMLInputElement;
-function type(text: string) {
+function startType(text: string) {
   React.act(() => {
     const input = field();
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, text);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
-function press(testID: string) {
+function startPress(testID: string) {
   const button = container.querySelector(`[data-testid="${testID}"]`) as {
     click(): void;
   } | null;
   if (!button) throw new Error(`No ${testID} on screen`);
   React.act(() => button.click());
 }
+/** Wait for query work, including React's publication, without pretending DOM is native paint. */
+async function settled() {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await React.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    if (!text().includes("Searching.")) return;
+  }
+  throw new Error("Search did not settle");
+}
+async function open() {
+  startOpen();
+  await settled();
+}
+async function type(text: string) {
+  startType(text);
+  await settled();
+}
+async function press(testID: string) {
+  startPress(testID);
+  await settled();
+}
 const text = () => container.textContent ?? "";
 
 beforeEach(async () => {
-  Object.assign(scenario, { catalogue: ready, did: [], said: [], fontScale: 1 });
+  Object.assign(scenario, { catalogue: ready, did: [], said: [], fontScale: 1, dismissed: 0 });
+  scenario.presses.clear();
   scenario.keyboard.clear();
   scenario.tmdbNames.clear();
   await subscriptions([member("a", "Northwind", {}, duneOnly())]);
 });
-afterEach(() => unmount());
+afterEach(() => {
+  unmount();
+  vi.useRealTimers();
+});
 
 describe("Search over the tabs", () => {
   it("closes before a title opens in Movies or Series, and before a channel plays in Watch", async () => {
     const prophecy = { ...titled("series", "p", "", 1)[0]!, name: "Dune Prophecy" };
     await subscriptions([member("a", "Northwind", {}, lists(duneOnly().movies, [prophecy]))]);
-    open();
-    type("dune");
-    press("search-title-7");
-    press("search-title-p1");
-    type("npo");
-    press("channel-a:1");
+    await open();
+    await type("dune");
+    await press("search-title-7");
+    unmount();
+    await open();
+    await press("search-title-p1");
+    unmount();
+    await open();
+    await type("npo");
+    await press("channel-a:1");
     expect(scenario.did).toEqual([
       "back",
       "details movie 7",
@@ -378,12 +425,12 @@ describe("Search over the tabs", () => {
     ]);
   });
 
-  it("opens again on the query it closed with", () => {
-    open();
-    type("bbc");
-    press("text-Cancel");
+  it("opens again on the query it closed with", async () => {
+    await open();
+    await type("bbc");
+    await press("text-Cancel");
     unmount();
-    open();
+    await open();
     expect(field().value).toBe("bbc");
     expect(text()).toContain("BBC One");
   });
@@ -393,16 +440,16 @@ describe("Search over the tabs", () => {
       member("a", "Northwind", {}, duneOnly()),
       member("b", "Southwind", { titles: { kind: "loading", last: null } }),
     ]);
-    open();
-    type("npo");
+    await open();
+    await type("npo");
     const loading =
       "Movies and series still loading, 1 of 2 providers. Movies, series and channels searched.";
     expect(text()).toContain(loading);
     expect(text()).toContain("NPO 1");
     // What Northwind lists is searched meanwhile.
-    type("dune");
+    await type("dune");
     expect(text()).toContain("Dune");
-    type("zzq");
+    await type("zzq");
     expect(text()).not.toContain("Nothing named");
     // Read out once, not again for each search while the lists stand as they were.
     expect(scenario.said).toEqual([loading]);
@@ -442,8 +489,8 @@ describe("Search over the tabs", () => {
 
   it("keeps its line, Retry and Settings in one scroll that the keyboard shrinks and frees", async () => {
     await troubled();
-    open();
-    type("dune");
+    await open();
+    await type("dune");
     const open600 = placed();
     expect(open600).toMatch(/^bottom \d/);
     // The keyboard takes the bottom 400 of the window, leaving 200 of the 600 under the field.
@@ -457,8 +504,8 @@ describe("Search over the tabs", () => {
     // Retry and Settings are in that same bounded scroll.
     expect(panel.textContent).toMatch(/searched\.RetrySettings$/);
     expect(text()).toContain("Dune");
-    press("text-Retry");
-    press("text-Settings");
+    await press("text-Retry");
+    await press("text-Settings");
     expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
 
     // With the keyboard down the line has its room again.
@@ -470,8 +517,8 @@ describe("Search over the tabs", () => {
     await troubled();
     // The largest accessibility text size.
     scenario.fontScale = 3.1;
-    open();
-    type("dune");
+    await open();
+    await type("dune");
     expect(placed()).toMatch(/^bottom \d/);
     // The keyboard leaves 200 points under the field: at this size its share there would be
     // less than a line, so the line moves above the results, whole, and they keep the rest.
@@ -481,8 +528,8 @@ describe("Search over the tabs", () => {
       /^Couldn't load channels from Northwind\..*RetrySettings$/,
     );
     expect(text()).toContain("Dune");
-    press("text-Retry");
-    press("text-Settings");
+    await press("text-Retry");
+    await press("text-Settings");
     expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
     // A keyboard over the whole area still leaves the line, and the results, in the one scroll.
     keyboardTo(200);
@@ -494,22 +541,123 @@ describe("Search over the tabs", () => {
     expect(scenario.said).toHaveLength(1);
   });
 
-  it("says it is searching while the latest text waits, keeping the last results", () => {
-    open();
-    type("dun");
-    const shown: string[] = [];
-    const observer = new window.MutationObserver(() => undefined);
-    observer.observe(container, { childList: true, subtree: true, characterData: true });
-    type("dune");
-    for (const record of observer.takeRecords()) {
-      for (const node of record.addedNodes) shown.push(node.textContent ?? "");
-    }
-    observer.disconnect();
-    expect(shown.some((each) => each.includes("Searching."))).toBe(true);
-    // Once searched, the line goes and Dune is still there.
+  it("says it is searching until the current text has results", async () => {
+    await open();
+    await type("dun");
+    startType("dune");
+    expect(text()).toContain("Searching.");
+    expect(text()).not.toContain("Nothing named");
+    await settled();
     expect(text()).not.toContain("Searching.");
     expect(text()).toContain("Dune");
     expect(scenario.said).toEqual([]);
+  });
+
+  it("replaces pending text, clears immediately and rejects a previously displayed result tap", async () => {
+    await open();
+    await type("dune");
+    // An onPress already sent by native may arrive after its row's query was replaced.
+    const oldTap = scenario.presses.get("search-title-7")!;
+    vi.useFakeTimers();
+    startType("bbc");
+    React.act(oldTap);
+    expect(scenario.did).toEqual([]);
+    expect(text()).toContain("Searching.");
+    expect(text()).not.toContain("Dune");
+    startType("npo");
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("NPO 1");
+    expect(text()).not.toContain("BBC One");
+    const oldChannelTap = scenario.presses.get("channel-a:1")!;
+    startType("bbc");
+    startType("");
+    expect(field().value).toBe("");
+    expect(text()).not.toMatch(/Searching\.|NPO 1|BBC One|Nothing named/);
+    React.act(oldChannelTap);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).not.toMatch(/NPO 1|BBC One|Nothing named/);
+    // No browse navigation, playback or provider requests came from typing or old taps.
+    expect(scenario.did).toEqual([]);
+    startPress("text-Cancel");
+    expect(scenario.dismissed).toBe(1);
+    unmount();
+    startOpen();
+    expect(field().value).toBe("");
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).not.toMatch(/NPO 1|BBC One|Nothing named/);
+  });
+
+  it("restarts a query that replaces itself within one native input batch", async () => {
+    await open();
+    await type("dune");
+    const oldTap = scenario.presses.get("search-title-7")!;
+    vi.useFakeTimers();
+    React.act(() => {
+      startType("bbc");
+      startType("dune");
+      oldTap();
+    });
+    expect(scenario.did).toEqual([]);
+    expect(field().value).toBe("dune");
+    expect(text()).toContain("Searching.");
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("Dune");
+    startPress("search-title-7");
+    expect(scenario.did).toEqual(["back", "details movie 7"]);
+  });
+
+  it("cancels before pending work completes and reopens on the retained query without old work", async () => {
+    await open();
+    await type("npo");
+    const oldTap = scenario.presses.get("channel-a:1")!;
+    vi.useFakeTimers();
+    startType("dune");
+    startPress("text-Cancel");
+    expect(scenario.did).toEqual(["back"]);
+    expect(scenario.dismissed).toBe(1);
+    React.act(oldTap);
+    // Deliberately keep the dismissed screen mounted until its pending tasks drain.
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).not.toContain("Dune");
+    expect(scenario.did).toEqual(["back"]);
+    unmount();
+    startOpen();
+    expect(field().value).toBe("dune");
+    startType("bbc");
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("BBC One");
+    expect(text()).not.toContain("Dune");
+    expect(scenario.did).toEqual(["back"]);
+  });
+
+  it("abandons work when the native Back gesture unmounts Search", async () => {
+    await open();
+    vi.useFakeTimers();
+    startType("dune");
+    expect(text()).toContain("Searching.");
+    unmount();
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(container.textContent).toBe("");
+    expect(scenario.did).toEqual([]);
+    startOpen();
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("Dune");
   });
 
   it("names a provider that failed, retries it, and opens Settings on the tab under Search", async () => {
@@ -526,15 +674,15 @@ describe("Search over the tabs", () => {
         },
       }),
     ]);
-    open();
-    type("dune");
+    await open();
+    await type("dune");
     expect(text()).toContain(
       "Couldn't load movies and series from Southwind. Movies, series and channels searched.",
     );
     expect(text()).toContain("Dune");
     expect(text()).toContain("Dune Prophecy");
-    press("text-Retry");
-    press("text-Settings");
+    await press("text-Retry");
+    await press("text-Settings");
     // Search closes, then Settings goes on Live's own stack (tab-routes.test.ts).
     expect(scenario.did).toEqual(["retry b", "dismiss 1", "push /live/settings"]);
   });
@@ -550,15 +698,15 @@ describe("Search over the tabs", () => {
       error: { kind: "unexpected", detail: "" },
       member: scenario.members[0]!,
     };
-    open();
-    type("zzq");
+    await open();
+    await type("zzq");
     expect(text()).toContain("Couldn't load channels from Northwind. Movies and series searched.");
     expect(text()).not.toContain("Nothing named");
   });
 
-  it("says nothing has the name only with everything in, and how much it looked through", () => {
-    open();
-    type("zzq");
+  it("says nothing has the name only with everything in, and how much it looked through", async () => {
+    await open();
+    await type("zzq");
     expect(text()).toContain('Nothing named "zzq".');
     expect(text()).toContain("Searched 2 channels, 1 movie and 0 series.");
   });
@@ -595,8 +743,8 @@ describe("Every movie and series that matches", () => {
           lists(titled("movie", "m", "Ocean", count), titled("series", "s", "Ocean", count)),
         ),
       ]);
-      open();
-      type("ocean");
+      await open();
+      await type("ocean");
       for (const [kind, prefix] of [
         ["movie", "m"],
         ["series", "s"],
@@ -616,18 +764,44 @@ describe("Every movie and series that matches", () => {
           // One Show more while any are left, for the next 20 or the few left; none after.
           expect(moreButtons(kind)).toEqual(left === 0 ? [] : [moreOf(kind, Math.min(20, left))]);
           if (left === 0) break;
-          press(moreOf(kind, Math.min(20, left)));
+          await press(moreOf(kind, Math.min(20, left)));
           showing += Math.min(20, left);
         }
       }
       if (count === 0) expect(text()).toContain('Nothing named "ocean".');
       // The last of them, ranked last, is there to open.
       if (count > 0) {
-        press(`search-title-m${count}`);
+        await press(`search-title-m${count}`);
         expect(scenario.did).toEqual(["back", `details movie m${count}`]);
       }
     },
   );
+
+  it("keeps both independent page requests when their taps arrive before matching runs", async () => {
+    await subscriptions([
+      member(
+        "a",
+        "Northwind",
+        {},
+        lists(titled("movie", "m", "Ocean", 61), titled("series", "s", "Ocean", 61)),
+      ),
+    ]);
+    await open();
+    await type("ocean");
+    const movieMore = scenario.presses.get(moreOf("movie", 20))!;
+    const seriesMore = scenario.presses.get(moreOf("series", 20))!;
+    vi.useFakeTimers();
+    React.act(() => {
+      movieMore();
+      seriesMore();
+    });
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(shownIds("movie")).toEqual(ids("m", 40));
+    expect(shownIds("series")).toEqual(ids("s", 40));
+    expect(scenario.did).toEqual([]);
+  });
 
   it("starts again at 20 of each for new text", async () => {
     await subscriptions([
@@ -638,20 +812,20 @@ describe("Every movie and series that matches", () => {
         lists(titled("movie", "m", "Ocean", 125), titled("series", "s", "Ocean", 125)),
       ),
     ]);
-    open();
-    type("ocean");
-    press(moreOf("movie", 20));
-    press(moreOf("movie", 20));
-    press(moreOf("series", 20));
+    await open();
+    await type("ocean");
+    await press(moreOf("movie", 20));
+    await press(moreOf("movie", 20));
+    await press(moreOf("series", 20));
     expect(shownIds("movie")).toEqual(ids("m", 60));
     expect(shownIds("series")).toEqual(ids("s", 40));
     // The same titles match, but the text is new.
-    type("ocea");
+    await type("ocea");
     expect(shownIds("movie")).toEqual(ids("m", 20));
     expect(shownIds("series")).toEqual(ids("s", 20));
     expect(text()).toContain("Movies · 20 of 125");
     // And going back to the text before doesn't bring back what was shown of it.
-    type("ocean");
+    await type("ocean");
     expect(shownIds("movie")).toEqual(ids("m", 20));
     expect(shownIds("series")).toEqual(ids("s", 20));
     expect(scenario.did).toEqual([]);
@@ -666,16 +840,16 @@ describe("Every movie and series that matches", () => {
         lists(titled("movie", "m", "Ocean", 125), titled("series", "s", "Ocean", 125)),
       ),
     ]);
-    open();
-    type("ocean");
-    press(moreOf("movie", 20));
-    press(moreOf("series", 20));
-    press(moreOf("series", 20));
+    await open();
+    await type("ocean");
+    await press(moreOf("movie", 20));
+    await press(moreOf("series", 20));
+    await press(moreOf("series", 20));
     expect(shownIds("movie")).toEqual(ids("m", 40));
     expect(shownIds("series")).toEqual(ids("s", 60));
-    press("text-Cancel");
+    await press("text-Cancel");
     unmount();
-    open();
+    await open();
     expect(field().value).toBe("ocean");
     expect(shownIds("movie")).toEqual(ids("m", 20));
     expect(shownIds("series")).toEqual(ids("s", 20));
@@ -698,22 +872,23 @@ describe("Every movie and series that matches", () => {
       member("a", "Northwind", {}, lists([renamed, ...northwind])),
       member("b", "Southwind", {}, lists(southwind)),
     ]);
-    open();
-    type("ocean");
-    press(moreOf("movie", 20));
-    press(moreOf("movie", 20));
+    await open();
+    await type("ocean");
+    await press(moreOf("movie", 20));
+    await press(moreOf("movie", 20));
     expect(shownIds("movie")).toEqual([...ids("mb", 30), ...ids("m", 30)]);
     expect(text()).toContain("Movies · 60 of 155");
 
     // TMDB's name arrives: the movie it names Ocean is found, still 60 showing, each once.
     scenario.tmdbNames.set("900", "Ocean Blue");
     React.act(() => scenario.notify?.({ content: true }));
+    await settled();
     expect(text()).toContain("Movies · 60 of 156");
     expect(shownIds("movie")).toEqual([...ids("mb", 30), "mz1", ...ids("m", 29)]);
     expect(text()).toContain("Ocean Blue");
 
     // Showing more goes on from there.
-    press(moreOf("movie", 20));
+    await press(moreOf("movie", 20));
     expect(shownIds("movie")).toEqual([...ids("mb", 30), "mz1", ...ids("m", 49)]);
 
     // Southwind is removed: its 30 shown movies go, and the next of Northwind's take their
@@ -721,9 +896,9 @@ describe("Every movie and series that matches", () => {
     await subscriptions([member("a", "Northwind", {}, lists([renamed, ...northwind]))]);
     expect(text()).toContain("Movies · 80 of 126");
     expect(shownIds("movie")).toEqual(["mz1", ...ids("m", 79)]);
-    press(moreOf("movie", 20));
-    press(moreOf("movie", 20));
-    press(moreOf("movie", 6));
+    await press(moreOf("movie", 20));
+    await press(moreOf("movie", 20));
+    await press(moreOf("movie", 6));
     expect(shownIds("movie")).toEqual(["mz1", ...ids("m", 125)]);
     expect(moreButtons("movie")).toEqual([]);
 

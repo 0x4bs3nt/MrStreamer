@@ -23,7 +23,7 @@ import {
   byIds,
   indexSteps,
   kindOf,
-  searchPage,
+  searchPageSteps,
   type IndexedCatalogue,
 } from "@mrstreamer/core/ondemand/catalogue";
 import {
@@ -34,7 +34,7 @@ import {
 } from "@mrstreamer/core/ondemand/collections";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
-import type { Steps } from "@mrstreamer/core/steps";
+import { finish, pacer, type Steps } from "@mrstreamer/core/steps";
 import { File, Paths } from "expo-file-system";
 import { useEffect, useSyncExternalStore } from "react";
 import {
@@ -530,8 +530,18 @@ export function searchTitles(
   query: string,
   limit: number,
 ) {
+  return finish(searchTitlesSteps(index, kind, query, limit));
+}
+
+/** The same names and ranking as `searchTitles`, in slices that Search can cancel. */
+export function* searchTitlesSteps(
+  index: IndexedCatalogue,
+  kind: TitleKind,
+  query: string,
+  limit: number,
+): Steps<{ readonly titles: Title[]; readonly total: number }> {
   const tk = tmdbKind(kind);
-  const page = searchPage(
+  const page = yield* searchPageSteps(
     index,
     kind,
     query,
@@ -545,7 +555,13 @@ export function searchTitles(
     },
     limit,
   );
-  return { ...page, titles: page.titles.map(named) };
+  const titles: Title[] = [];
+  const due = pacer();
+  for (const title of page.titles) {
+    if (due()) yield;
+    titles.push(named(title));
+  }
+  return { ...page, titles };
 }
 
 /** A title with TMDB's name for the viewer, once known, as collections show it. */
