@@ -79,6 +79,12 @@ function PreferenceRow<K extends keyof Preferences>({
       if (field === "adultTitles" && value === false) useUi.setState({ savedEntry: null });
     },
   });
+  // A timed-out consent call can still commit. Only the accepted value matching this
+  // mutation's boolean intent makes its save error obsolete.
+  const consentSaved =
+    field === "analyticsEnabled" &&
+    typeof update.variables === "boolean" &&
+    read.data?.analyticsEnabled === update.variables;
   const change = (value: Preferences[K]) => {
     if (
       !read.data ||
@@ -105,7 +111,7 @@ function PreferenceRow<K extends keyof Preferences>({
       </fieldset>
       <SaveFeedback
         pending={update.isPending}
-        error={update.error}
+        error={consentSaved ? null : update.error}
         retryDisabled={fieldBusy}
         retry={() => change(update.variables!)}
       />

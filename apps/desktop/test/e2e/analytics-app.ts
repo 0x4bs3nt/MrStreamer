@@ -38,6 +38,7 @@ import { analyticsOptions } from "./analytics-options.ts";
 import { boundary } from "./analytics-boundary.ts";
 import { closeNative } from "./analytics-exit.ts";
 import { failRendererLaunch } from "./analytics-launch-diagnostic.ts";
+import { startupProbe } from "./analytics-startup.ts";
 import { runNativeTelemetry } from "./analytics-native.ts";
 import { disposableRunner, ownedTree } from "./installed-upgrade-windows.ts";
 import {
@@ -334,8 +335,44 @@ async function send(method: string, params: Record<string, unknown> = {}) {
 }
 
 let launchOrdinal = 0;
-async function launch() {
+let startupSample: Awaited<ReturnType<typeof startupProbe>>["read"] | undefined;
+let startupPreferences: Awaited<ReturnType<typeof startupProbe>>["preferences"] | undefined;
+let startupReadDelayMs = 0;
+let startupCaptureFrom = 0;
+const startupSamples: unknown[] = [];
+async function captureStartup() {
+  const sample = startupSample;
+  startupSample = undefined;
+  if (!sample) return;
+  const operations = await sample().catch(() => null);
+  const enabled = page
+    ? await page
+        .evaluate<boolean | null>(
+          `(() => {
+        const checked = document.querySelector(${JSON.stringify(checkbox)})?.getAttribute('aria-checked');
+        return checked === 'true' ? true : checked === 'false' ? false : null;
+      })()`,
+          2000,
+        )
+        .catch(() => null)
+    : null;
+  startupSamples.push({
+    launchOrdinal,
+    capturedAt: new Date().toISOString(),
+    injectedReadDelayMs: startupReadDelayMs,
+    operations,
+    preferences: await startupPreferences?.().catch(() => null),
+    captureRefusing: rejectCapture,
+    receivedBodies: payloads.length - startupCaptureFrom,
+    enabled,
+  });
+  observations.startupIO = startupSamples;
+}
+async function launch(readDelayMs = options.slowStartup ? 1700 : 0) {
   const ordinal = ++launchOrdinal;
+  startupReadDelayMs = readDelayMs;
+  startupPreferences = undefined;
+  startupCaptureFrom = payloads.length;
   preparedExit = undefined;
   const port = await freePort();
   debuggingPort = port;
@@ -352,7 +389,7 @@ async function launch() {
     target.executable ?? (await electronExecutable()),
     [
       `--remote-debugging-port=${port}`,
-      `--inspect=${inspectorPort}`,
+      `${options.slowStartup ? "--inspect-brk" : "--inspect"}=${inspectorPort}`,
       "--remote-debugging-address=127.0.0.1",
       `--user-data-dir=${profile}`,
       "--enable-automation",
@@ -386,9 +423,19 @@ async function launch() {
   });
   for (const stream of [app.stdout, app.stderr])
     stream?.on("data", (chunk: Buffer) => log.push(chunk.toString()));
-  page = await connect(port, "page", { app });
-  mainPage = await connect(inspectorPort, "node", { app });
-  const comparedMainPid = await mainPage.evaluate<number>("process.pid");
+  let comparedMainPid: number;
+  if (!options.slowStartup) {
+    page = await connect(port, "page", { app });
+    mainPage = await connect(inspectorPort, "node", { app });
+    comparedMainPid = await mainPage.evaluate<number>("process.pid");
+  } else {
+    mainPage = await connect(inspectorPort, "node", { app });
+    const probe = await startupProbe(mainPage, profile, readDelayMs, app.pid);
+    comparedMainPid = probe.pid;
+    startupSample = probe.read;
+    startupPreferences = probe.preferences;
+    page = await connect(port, "page", { app });
+  }
   if (comparedMainPid !== app.pid) throw new Error("Wrong main inspector process.");
   const identity = await send("Browser.getBrowserCommandLine");
   const arguments_ = record(identity) ? identity["arguments"] : null;
@@ -401,13 +448,34 @@ async function launch() {
     ].every((arg) => arguments_.includes(arg))
   )
     throw new Error("Wrong app instance.");
-  const url = await live().evaluate<string>("location.href");
+  // Navigation can destroy a blank document's context. Keep sampling this same owned page
+  // within the existing allowance, then retain the ordinary launch receipt on failure.
+  const navigationStarted = performance.now();
+  const urlSamples: { elapsedMs: number; url?: string; error?: string }[] = [];
+  let url = "";
+  while (performance.now() - navigationStarted < 4000) {
+    const remaining = Math.floor(4000 - (performance.now() - navigationStarted));
+    if (remaining <= 0) break;
+    try {
+      url = await page.evaluate<string>("location.href", Math.min(500, remaining));
+      urlSamples.push({ elapsedMs: performance.now() - navigationStarted, url });
+      if (url !== "about:blank") break;
+    } catch (error) {
+      urlSamples.push({
+        elapsedMs: performance.now() - navigationStarted,
+        error: String(error).slice(0, 2048),
+      });
+    }
+    const pause = Math.min(150, 4000 - (performance.now() - navigationStarted));
+    if (pause > 0) await delay(pause);
+  }
   if (
     target.executable
       ? !url.startsWith("file:") ||
         !/\/(?:resources|Resources)\/app\.asar\/out\/renderer\//.test(url)
       : !url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href)
   ) {
+    observations.rendererLaunchWait = { launchOrdinal: ordinal, samples: urlSamples };
     await failRendererLaunch(new Error("Wrong renderer build."), {
       evidence,
       observations,
@@ -547,6 +615,7 @@ async function launch() {
 async function quit() {
   if (app) {
     const closing = app;
+    await captureStartup();
     mainPage?.close();
     mainPage = undefined;
     if (options.native) {
@@ -889,6 +958,7 @@ async function capturePrefixFailure() {
     prefixErrors.push(`failure capture: ${String(error)}`);
     return;
   }
+  await capture("fixture-guide-requests.json", async () => provider?.guideRequests());
   await capture("counter-samples.json", async () => prefixCounters);
   await capture("rename-measurements.json", async () => observations.guideFavouriteRenames);
   await capture("analytics.json.read.json", async () => {
@@ -911,7 +981,7 @@ async function capturePrefixFailure() {
     return temporary.map((file) => file.name);
   });
   if (page)
-    for (const method of ["preferences.get", "viewing.get"])
+    for (const method of ["preferences.get", "viewing.get", "guide.status", "guide.sources"])
       await capture(`${method}.json`, () =>
         live().evaluate(`window.mrStreamer.invoke(${JSON.stringify(method)})`),
       );
@@ -1307,6 +1377,122 @@ async function productPaths() {
   rejectUpdate = false;
 }
 
+/** Real app, local HTTP, owned profile. Seeded baseline is labelled, never an installed upgrade. */
+async function lifecyclePaths() {
+  await new Promise<void>((resolve) => capture.close(() => resolve()));
+  await launch();
+  await connectFixture();
+  await waitFor(async () => {
+    const state = await loadedAnalytics();
+    return (
+      state.pending.length === 2 &&
+      state.lifecycle?.legacyRetries.every((item) => item.failures >= 4) === true &&
+      state.lifecycle.legacyRetries.length === 2 &&
+      state.lifecycle.pending[0]?.failures === 4
+    );
+  });
+  await snapshot("lifecycle-offline");
+  await quit();
+  const before = await loadedAnalytics();
+  const original = [
+    ...before.pending.map((item) => item.event),
+    ...before.lifecycle!.pending.map((item) => item.event),
+  ];
+  if (
+    original.length !== 3 ||
+    before.pending.some((item) => item.attempts !== 0) ||
+    before.lifecycle!.pending.some((item) => item.attempts !== 0) ||
+    payloads.length
+  )
+    throw new Error("Offline first/day/version work lost or spent transmission attempts.");
+  await writeFile(join(evidence, "offline-before-restart.json"), JSON.stringify(before, null, 2));
+  await launch();
+  await settings();
+  const after = await loadedAnalytics();
+  if (
+    !isDeepStrictEqual(after.pending, before.pending) ||
+    !isDeepStrictEqual(after.lifecycle, before.lifecycle)
+  )
+    throw new Error("Offline restart changed retained lifecycle work or backoff.");
+  await new Promise<void>((resolve) =>
+    capture.listen(Number(new URL(endpoint).port), "127.0.0.1", resolve),
+  );
+  await waitFor(
+    async () =>
+      count("app_version_observed") === 1 &&
+      count("app_active_day") === 1 &&
+      count("installation_observed") === 1,
+  );
+  for (const event of original) {
+    const delivered = sent().find((item) => item.uuid === event.uuid);
+    if (!isDeepStrictEqual(delivered, event)) throw new Error("Recovered lifecycle event changed.");
+  }
+  await snapshot("lifecycle-recovered");
+  await click(checkbox);
+  await waitFor(async () => (await preference()).analyticsEnabled === false);
+  await quit();
+  const disabled = await loadedAnalytics();
+  if (disabled.lifecycle || disabled.summaries || disabled.pending.length)
+    throw new Error("Opt-out retained work.");
+  const offCount = payloads.length;
+  await launch();
+  await settings();
+  await delay(1200);
+  if ((await preference()).analyticsEnabled || payloads.length !== offCount)
+    throw new Error("Disabled restart captured.");
+  await snapshot("lifecycle-off");
+  await click(checkbox);
+  await waitFor(async () => count("app_version_observed") === 2);
+  const reenabled = sent()
+    .filter((event) => event.event === "app_version_observed")
+    .at(-1)!;
+  if (
+    reenabled.properties.observation_kind !== "unknown_history" ||
+    "previous_app_version" in reenabled.properties ||
+    count("installation_observed") !== 1 ||
+    count("app_active_day") !== 1
+  )
+    throw new Error("Re-enable invented prior history or repeated activity.");
+  await snapshot("lifecycle-reenabled");
+  await quit();
+  const retained = await loadedAnalytics();
+  retained.lifecycle!.baseline = { app_version: "0.0.17", build_channel: "stable" };
+  await writeFile(join(profile, "analytics.json"), JSON.stringify(retained));
+  await launch();
+  await settings();
+  await waitFor(async () => count("app_version_observed") === 3);
+  const transition = sent()
+    .filter((event) => event.event === "app_version_observed")
+    .at(-1)!;
+  if (
+    transition.properties.observation_kind !== "transition" ||
+    transition.properties.previous_app_version !== "0.0.17" ||
+    count("app_active_day") !== 1 ||
+    transition.distinct_id !== before.installationId
+  )
+    throw new Error("Seeded same-day transition lost identity or repeated activity.");
+  await snapshot("lifecycle-seeded-transition");
+  observations.lifecycle = {
+    offlineFailuresPerEvent: 4,
+    original,
+    before,
+    after,
+    reenabled,
+    transition,
+    unchangedEvents: true,
+    sameIdentity: true,
+    disabledRestartSilent: true,
+    seededBaseline:
+      "0.0.17 stable, written only after the owned app exited; not an installed upgrade",
+  };
+}
+
+async function loadedAnalytics(): Promise<AnalyticsRecord> {
+  const state = AnalyticsRecord()(await analyticsFile());
+  if (state instanceof type.errors) throw new Error("Invalid owned analytics record.");
+  return state;
+}
+
 try {
   profile = await mkdtemp(join(tmpdir(), "mrstreamer-analytics-"));
   profiles.push(profile);
@@ -1352,7 +1538,9 @@ try {
   if (!updateAddress || typeof updateAddress === "string")
     throw new Error("No local update endpoint.");
   updateEndpoint = `http://127.0.0.1:${updateAddress.port}`;
-  if (options.native) {
+  if (options.lifecycle) {
+    await lifecyclePaths();
+  } else if (options.native) {
     await runNativeTelemetry({
       options,
       evidence,
@@ -1463,6 +1651,26 @@ try {
     )
       throw new Error("Default control is not checked.");
     await snapshot("on");
+    if (options.slowStartup) {
+      await quit();
+      await launch();
+      await settings();
+      // Inspect the cached control before any helper preferences.get can refresh it.
+      await waitFor(() =>
+        live().evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(checkbox)})?.getAttribute('aria-checked') === 'true'`,
+        ),
+      );
+      const bootReads = await mainPage!.evaluate<{ startedMs: number; enabled: boolean | null }[]>(
+        "globalThis.__analyticsStartupIO.preferenceReads",
+      );
+      if (bootReads.length !== 1 || bootReads[0]?.enabled !== false)
+        throw new Error(
+          "Slow-startup cache proof needs one disabled boot reply and no refresh reads.",
+        );
+      observations.startupConsentCache = { bootReads, checkedAfterRecovery: true };
+      await snapshot("recovered-cached-consent");
+    }
     injectedFailure("analytics");
     actions.push({
       action: "Opened real General Privacy control, default checked",
@@ -1502,8 +1710,9 @@ try {
     observations["payloadAllowlist"] = Object.keys(first.properties).sort();
     observations["activityAllowlist"] = Object.keys(day.properties).sort();
     if (volumeWorkload) await volumePaths();
-    else await productPaths();
-    const enabledCaptures = payloads.length;
+    else if (!options.slowStartup) await productPaths();
+    else observations.startupPrivacyOnly = true;
+    let enabledCaptures = payloads.length;
     if (new Set(sent().map((event) => event.uuid)).size !== enabledCaptures)
       throw new Error("A capture was delivered twice.");
     await click(checkbox);
@@ -1514,6 +1723,94 @@ try {
       at: new Date().toISOString(),
     });
     await quit();
+    if (options.slowStartup) {
+      // The retained opt-out is loaded only after both boot and the UI enable call time out.
+      await launch(5000);
+      await settings();
+      await waitFor(() =>
+        live().evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(checkbox)})?.getAttribute('aria-checked') === 'false' && !document.querySelector(${JSON.stringify(checkbox)})?.closest('fieldset')?.disabled`,
+        ),
+      );
+      const readReplies = startupPreferences!;
+      const beforeEnable = await readReplies();
+      if (
+        beforeEnable.preferenceReads.length !== 1 ||
+        beforeEnable.preferenceReads[0]?.enabled !== false
+      )
+        throw new Error("Late enable needs one disabled boot reply.");
+      await click(checkbox);
+      await waitFor(
+        async () => (await readReplies()).preferenceUpdates.some((reply) => reply.ok === false),
+        4000,
+      );
+      const failed = (await readReplies()).preferenceUpdates[0];
+      if (
+        failed?.requested !== true ||
+        failed.ok !== false ||
+        failed.error !== "Analytics preference could not be saved." ||
+        failed.endedMs === null ||
+        failed.endedMs - failed.startedMs < 1500
+      )
+        throw new Error("Late enable did not retain its bounded public save failure.");
+      const feedback = await live().evaluate<string | null>(
+        "document.querySelector('[role=alert]')?.textContent ?? null",
+      );
+      observations.lateConsentCommit = {
+        injectedReadDelayMs: 5000,
+        beforeEnable,
+        failed,
+        feedback,
+      };
+      await snapshot("late-enable-timeout");
+      await waitFor(
+        () =>
+          live().evaluate<boolean>(
+            `document.querySelector(${JSON.stringify(checkbox)})?.getAttribute('aria-checked') === 'true' && !document.querySelector('[role=alert]')`,
+          ),
+        10_000,
+      );
+      const afterEnable = await readReplies();
+      const read = (await startupSample!()).find((operation) => operation.operation === "read");
+      if (
+        afterEnable.preferenceReads.length !== 1 ||
+        read?.endedMs === null ||
+        read?.endedMs === undefined ||
+        read.endedMs <= failed.endedMs
+      )
+        throw new Error(
+          "Late enable cache proof was refreshed or did not outlast its failed update.",
+        );
+      await waitFor(async () => count("app_version_observed") === 2);
+      observations.lateConsentCommit = {
+        injectedReadDelayMs: 5000,
+        beforeEnable,
+        failed,
+        feedback,
+        afterEnable,
+        read,
+        checkedAfterCommit: true,
+        feedbackAfterCommit: await live().evaluate<string | null>(
+          "document.querySelector('[role=alert]')?.textContent ?? null",
+        ),
+        capturesAfterCommit: payloads.length,
+      };
+      await snapshot("late-enable-committed");
+      await click(checkbox);
+      await waitFor(async () =>
+        (await readReplies()).preferenceUpdates.some(
+          (reply) => reply.requested === false && reply.ok === true,
+        ),
+      );
+      await waitFor(() =>
+        live().evaluate<boolean>(
+          `document.querySelector(${JSON.stringify(checkbox)})?.getAttribute('aria-checked') === 'false'`,
+        ),
+      );
+      enabledCaptures = payloads.length;
+      await snapshot("late-enable-restored-off");
+      await quit();
+    }
     await launch();
     await settings();
     if ((await preference()).analyticsEnabled !== false)
@@ -1526,12 +1823,18 @@ try {
       action: "Restarted same profile, checkbox remains off and capture count unchanged",
       at: new Date().toISOString(),
     });
+    const versionsBeforeReenable = count("app_version_observed");
     await click(checkbox);
     await waitFor(async () => (await preference()).analyticsEnabled === true);
     await snapshot("reenabled");
     await delay(1200);
-    if (payloads.length !== enabledCaptures)
-      throw new Error("Re-enable duplicated first-seen/day.");
+    if (
+      payloads.length !== enabledCaptures + 1 ||
+      count("installation_observed") !== 1 ||
+      count("app_active_day") !== 1 ||
+      count("app_version_observed") !== versionsBeforeReenable + 1
+    )
+      throw new Error("Re-enable did not observe an unknown current version exactly once.");
     const diagnostics = await live().evaluate<unknown>(
       "window.mrStreamer.invoke('diagnostics.preview')",
     );
@@ -1558,7 +1861,7 @@ try {
     const legacyEnvelope = (event: string, extra: object) => ({
       uuid: randomUUID(),
       distinct_id: legacyId,
-      timestamp: "2026-10-12T09:00:00.000Z",
+      timestamp: new Date(Date.now() - 86_400_000).toISOString(),
       event,
       properties: { ...first.properties, profile_origin: "upgrading", ...extra },
     });
@@ -1692,6 +1995,7 @@ try {
     "Transport accepts only this literal loopback endpoint; explicit isolated profile and automation also exclude configured production transport.";
 } catch (error) {
   failure = error;
+  await captureStartup();
   await restorePrefix();
   await capturePrefixFailure();
   if (page) await snapshot("failure").catch(() => {});

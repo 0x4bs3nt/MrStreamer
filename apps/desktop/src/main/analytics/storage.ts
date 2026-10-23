@@ -8,6 +8,7 @@ import {
   AnalyticsRecord,
   LegacyRecord,
   SummaryBlock,
+  LifecycleBlock,
   SUMMARY_TTL_MS,
   WINDOW_MS,
   OUTBOX_BYTES,
@@ -119,6 +120,34 @@ export function analyticsStore(dataDir: string) {
                     ? block.unfinished
                     : null,
               },
+            };
+          }
+        }
+        const lifecycle = type({ "lifecycle?": "unknown" })(current);
+        if (!(lifecycle instanceof type.errors) && lifecycle.lifecycle !== undefined) {
+          const block = LifecycleBlock()(lifecycle.lifecycle);
+          if (
+            !(block instanceof type.errors) &&
+            checked.enabled &&
+            block.installationId === checked.installationId &&
+            block.pending.every((item) => item.event.distinct_id === checked.installationId) &&
+            new Set(block.pending.map((item) => item.event.uuid)).size === block.pending.length &&
+            new Set(block.legacyRetries.map((item) => item.uuid)).size ===
+              block.legacyRetries.length &&
+            Buffer.byteLength(JSON.stringify(block)) <= OUTBOX_BYTES
+          ) {
+            const cutoff = Date.now() - SUMMARY_TTL_MS;
+            record.lifecycle = {
+              ...block,
+              pending: block.pending.filter((item) => Date.parse(item.event.timestamp) >= cutoff),
+              legacyRetries: block.legacyRetries.filter((retry) =>
+                checked.pending.some(
+                  (item) =>
+                    item.event.uuid === retry.uuid &&
+                    (item.event.event === "installation_observed" ||
+                      item.event.event === "app_active_day"),
+                ),
+              ),
             };
           }
         }

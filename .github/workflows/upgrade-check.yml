@@ -115,14 +115,14 @@ jobs:
           [ -n "$SHA" ] && args+=(--sha "$SHA")
           node apps/desktop/test/e2e/installed-media.ts \
             --packages "$RUNNER_TEMP/installed-upgrade-packages" --out "$RUNNER_TEMP/installed-media" "${args[@]}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: installed-media-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/installed-media/evidence/
           retention-days: 14
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: installed-media-profiles-${{ github.run_id }}-${{ github.run_attempt }}
@@ -135,7 +135,7 @@ jobs:
             !${{ runner.temp }}/installed-media/profiles/**/DawnWebGPUCache/
           retention-days: 7
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: native-telemetry-${{ github.run_id }}-${{ github.run_attempt }}
@@ -143,7 +143,7 @@ jobs:
             ${{ runner.temp }}/native-telemetry/evidence/
           retention-days: 14
           if-no-files-found: warn
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: native-telemetry-profiles-${{ github.run_id }}-${{ github.run_attempt }}
@@ -154,7 +154,7 @@ jobs:
             !${{ runner.temp }}/native-telemetry/profiles/**/GPUCache/
           retention-days: 7
           if-no-files-found: warn
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: installed-upgrade-${{ github.run_id }}-${{ github.run_attempt }}
@@ -165,7 +165,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
       # What a failure left, to look at: the fake subscription's profile, without Chromium's caches.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: installed-upgrade-profile-${{ github.run_id }}-${{ github.run_attempt }}

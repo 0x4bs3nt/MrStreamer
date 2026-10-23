@@ -1200,7 +1200,13 @@ it.skipIf(!hasTools)(
     });
     try {
       analytics.setForeground(true);
-      await eventually(() => expect(events).toHaveLength(2));
+      await eventually(() =>
+        expect(events.map(({ event }) => event).sort()).toEqual([
+          "app_active_day",
+          "app_version_observed",
+          "installation_observed",
+        ]),
+      );
       await connect();
       /** A title for the receiver under a run of its own, as when no window is left to ask. */
       const playRun = async (position: number) => {

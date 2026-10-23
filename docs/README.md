@@ -23,6 +23,8 @@ Start with the [contribution policy](../CONTRIBUTING.md).
 - [Architecture](./contributing/architecture.md)
 - [Playback evaluation](./contributing/playback-evaluation.md): why playback works the way it does
 - [Marketing artwork](./contributing/marketing-artwork.md): the app captures the website shows, and how to take them
+- [Store artwork](./contributing/store-artwork.md): selected hat stills, placements and reproducible exports
+- [Linux listing captures](./contributing/linux-listing-capture.md): genuine window candidates and their remaining compositor check
 
 ## Maintaining
 
@@ -30,6 +32,7 @@ Start with the [contribution policy](../CONTRIBUTING.md).
 - [Releasing](./maintainers/releasing.md)
 - [Signing](./maintainers/signing.md)
 - [Microsoft Store submissions](./maintainers/microsoft-store.md)
+- [Desktop installation reports](./maintainers/desktop-telemetry/README.md): prepared PostHog definitions and UTC activity queries
 - [Licences and sources](./maintainers/licences.md)
 - [The website](../apps/marketing/README.md): running it, publishing it and the one-time setup
 - [The iOS app](../apps/ios/README.md): its own install, what Hermes lacks, the runtime proof and TestFlight builds

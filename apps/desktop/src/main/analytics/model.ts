@@ -192,8 +192,60 @@ export const SummaryBlock = lazy(() =>
 );
 export type SummaryBlock = Infer<typeof SummaryBlock>;
 
+/** Foreground observations, independent of the once-per-day activity ledger. */
+const VersionIdentity = lazy(() => BuildProperties().pick("app_version", "build_channel"));
+const VersionObservation = lazy(() =>
+  event(
+    type.unit("app_version_observed"),
+    Common()
+      .merge({ observation_kind: "'new_profile' | 'unknown_history'" })
+      .onUndeclaredKey("delete")
+      .or(
+        Common()
+          .merge({
+            observation_kind: "'transition'",
+            previous_app_version: VersionIdentity()
+              .get("app_version")
+              .narrow((version) => version !== "unknown"),
+            previous_build_channel: VersionIdentity().get("build_channel"),
+          })
+          .onUndeclaredKey("delete"),
+      ),
+  ),
+);
+export type VersionObservation = Infer<typeof VersionObservation>;
+
+/** Additive state. Legacy pending keeps only names understood by the .15 loader. */
+export const LifecycleBlock = lazy(() =>
+  type({
+    version: "1",
+    installationId: "string.uuid",
+    baseline: VersionIdentity().or("null"),
+    pending: type({
+      event: VersionObservation(),
+      attempts: "0 <= number.integer <= 3",
+      failures: "0 <= number.integer <= 2147483647",
+      nextAttemptAt: "string.date.iso",
+    })
+      .onUndeclaredKey("delete")
+      .array()
+      .atMostLength(OUTBOX_LIMIT),
+    legacyRetries: type({
+      uuid: "string.uuid",
+      failures: "0 <= number.integer <= 2147483647",
+      nextAttemptAt: "string.date.iso",
+    })
+      .onUndeclaredKey("delete")
+      .array()
+      .atMostLength(OUTBOX_LIMIT),
+  }).onUndeclaredKey("delete"),
+);
+export type LifecycleBlock = Infer<typeof LifecycleBlock>;
+
 /** Complete load/send union, including retired .15 producers. */
-export const CaptureEvent = lazy(() => QueuedLegacyEvent().or(SummaryEvent()));
+export const CaptureEvent = lazy(() =>
+  QueuedLegacyEvent().or(SummaryEvent()).or(VersionObservation()),
+);
 export type CaptureEvent = Infer<typeof CaptureEvent>;
 export type CaptureName = CaptureEvent["event"];
 
@@ -225,7 +277,9 @@ export const LegacyRecord = lazy(() =>
       .atMostLength(OUTBOX_LIMIT),
   }).onUndeclaredKey("delete"),
 );
-export const AnalyticsRecord = lazy(() => LegacyRecord().merge({ "summaries?": SummaryBlock() }));
+export const AnalyticsRecord = lazy(() =>
+  LegacyRecord().merge({ "summaries?": SummaryBlock(), "lifecycle?": LifecycleBlock() }),
+);
 export type AnalyticsRecord = Infer<typeof AnalyticsRecord>;
 export type DirectName = Exclude<
   QueuedLegacyEvent["event"],

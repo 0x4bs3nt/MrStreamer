@@ -404,8 +404,10 @@ async function start(): Promise<void> {
     arch: process.arch,
     store: storeCopy,
   });
+  let refreshConsent: (() => Promise<void>) | undefined;
   const analytics = new Analytics({
     dataDir,
+    consentChanged: () => refreshConsent?.(),
     playbackReset: () => {
       if (mainWindow) emit(mainWindow.webContents, "analytics.reset", null);
     },
@@ -586,6 +588,11 @@ async function start(): Promise<void> {
       },
     }),
   );
+  refreshConsent = async () => {
+    await runtime.runPromise(preferences.get);
+  };
+  // Replay initial consent once composition exists, including reads settled before it was ready.
+  void analytics.loaded.then(refreshConsent).catch(() => {});
   // The interface language, before the window asks for it.
   let language = languageFor(await runtime.runPromise(settings.interfaceLanguage));
   applyLanguage(language);

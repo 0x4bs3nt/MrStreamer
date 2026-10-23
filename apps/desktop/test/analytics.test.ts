@@ -72,7 +72,8 @@ async function start(
     options.transport === undefined
       ? {
           async send(event: CaptureEvent) {
-            events.push(structuredClone(event));
+            // Version observations have their own complete wire/lifecycle contracts.
+            if (event.event !== "app_version_observed") events.push(structuredClone(event));
             return "accepted" as const;
           },
         }
@@ -116,7 +117,14 @@ async function captureServer(status: number | (() => number) = 200) {
   const server = createServer(async (req, res) => {
     const bytes: Buffer[] = [];
     for await (const chunk of req) bytes.push(Buffer.from(chunk));
-    payloads.push(JSON.parse(Buffer.concat(bytes).toString()));
+    const payload: unknown = JSON.parse(Buffer.concat(bytes).toString());
+    if (!(
+      typeof payload === "object" &&
+      payload !== null &&
+      "event" in payload &&
+      payload.event === "app_version_observed"
+    ))
+      payloads.push(payload);
     res.writeHead(typeof status === "number" ? status : status(), {
       Location: "https://us.i.posthog.com/i/v0/e/",
     });
@@ -552,7 +560,7 @@ describe("analytics delivery and deadlines", () => {
       transport: {
         async send(event, signal) {
           const result = await local.send(event, signal);
-          answered++;
+          if (event.event !== "app_version_observed") answered++;
           return result;
         },
       },
@@ -577,7 +585,8 @@ describe("analytics delivery and deadlines", () => {
     const store = memoryStore();
     const offline: Omit<CaptureTransport, "kind"> = {
       async send(event) {
-        events.push(structuredClone(event));
+        // Version observations have their own complete wire/lifecycle contracts.
+        if (event.event !== "app_version_observed") events.push(structuredClone(event));
         return "retry";
       },
     };
@@ -585,7 +594,8 @@ describe("analytics delivery and deadlines", () => {
       store,
       transport: {
         send(event, signal) {
-          events.push(structuredClone(event));
+          // Version observations have their own complete wire/lifecycle contracts.
+          if (event.event !== "app_version_observed") events.push(structuredClone(event));
           return new Promise((resolve) =>
             signal.addEventListener("abort", () => resolve("retry"), { once: true }),
           );
@@ -1075,7 +1085,7 @@ describe("persisted state migration", () => {
     event: {
       uuid: randomUUID(),
       distinct_id: "f157c0b7-1b97-4a60-a96b-1c2ca9e56904",
-      timestamp: "2026-10-11T12:00:00.000Z",
+      timestamp: new Date(Date.now() - 86_400_000).toISOString(),
       event,
       properties: {
         ...properties,
@@ -1194,7 +1204,8 @@ describe("persisted state migration", () => {
       transport: {
         kind: "local",
         async send(event) {
-          events.push(structuredClone(event));
+          // Version observations have their own complete wire/lifecycle contracts.
+          if (event.event !== "app_version_observed") events.push(structuredClone(event));
           return "accepted";
         },
       },

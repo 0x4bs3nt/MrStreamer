@@ -80,7 +80,7 @@ async function start(
     transport: options.transport ?? {
       kind: "local",
       send: async (event) => {
-        events.push(structuredClone(event));
+        if (event.event !== "app_version_observed") events.push(structuredClone(event));
         return "accepted";
       },
     },
@@ -597,6 +597,7 @@ describe("durable usage and logical-play summaries", () => {
     const record = await store.load();
     const durableCount = (record: AnalyticsRecord) =>
       record.pending.length +
+      (record.lifecycle?.pending.length ?? 0) +
       (record.summaries?.pending.length ?? 0) +
       Number(!!record.summaries?.usage) +
       Number(!!record.summaries?.unfinished);
@@ -694,7 +695,8 @@ async function sink(withhold: boolean) {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const body = Buffer.concat(chunks).toString();
-    bodies.push(body);
+    // This suite inspects summary/reliability receipts; version receipts are covered separately.
+    if (JSON.parse(body).event !== "app_version_observed") bodies.push(body);
     if (!withhold || JSON.parse(body).event !== "usage_window") res.end("ok");
   });
   servers.push(server);

@@ -19,22 +19,18 @@
       ]
     },
     {
-      "id": "@ark/schema@0.56.4",
+      "id": "@ark/schema@0.56.8",
       "name": "@ark/schema",
       "licence": "MIT",
-      "source": "https://registry.npmjs.org/@ark/schema/-/schema-0.56.4.tgz",
+      "source": "https://registry.npmjs.org/@ark/schema/-/schema-0.56.8.tgz",
       "facts": [
         {
           "label": "Version",
-          "value": "0.56.4"
+          "value": "0.56.8"
         },
         {
           "label": "In the app",
           "value": "JavaScript"
-        },
-        {
-          "label": "Changed by",
-          "value": "apps/ios/patches/@ark__schema@0.56.4.patch"
         }
       ],
       "notices": [
@@ -45,14 +41,14 @@
       ]
     },
     {
-      "id": "@ark/util@0.56.4",
+      "id": "@ark/util@0.56.8",
       "name": "@ark/util",
       "licence": "MIT",
-      "source": "https://registry.npmjs.org/@ark/util/-/util-0.56.4.tgz",
+      "source": "https://registry.npmjs.org/@ark/util/-/util-0.56.8.tgz",
       "facts": [
         {
           "label": "Version",
-          "value": "0.56.4"
+          "value": "0.56.8"
         },
         {
           "label": "In the app",
@@ -621,14 +617,14 @@
       ]
     },
     {
-      "id": "arkregex@0.0.10",
+      "id": "arkregex@0.0.14",
       "name": "arkregex",
       "licence": "MIT",
-      "source": "https://registry.npmjs.org/arkregex/-/arkregex-0.0.10.tgz",
+      "source": "https://registry.npmjs.org/arkregex/-/arkregex-0.0.14.tgz",
       "facts": [
         {
           "label": "Version",
-          "value": "0.0.10"
+          "value": "0.0.14"
         },
         {
           "label": "In the app",
@@ -643,14 +639,14 @@
       ]
     },
     {
-      "id": "arktype@2.2.5",
+      "id": "arktype@2.2.9",
       "name": "arktype",
       "licence": "MIT",
-      "source": "https://registry.npmjs.org/arktype/-/arktype-2.2.5.tgz",
+      "source": "https://registry.npmjs.org/arktype/-/arktype-2.2.9.tgz",
       "facts": [
         {
           "label": "Version",
-          "value": "2.2.5"
+          "value": "2.2.9"
         },
         {
           "label": "In the app",

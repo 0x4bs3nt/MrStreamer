@@ -16,15 +16,26 @@
 // marketing-capture.json is replaced, with its own provenance, as soon as the master is written,
 // so a stage that fails later leaves no stale hash. A run of every capture then writes the whole
 // manifest again under one provenance.
+// --linux-listing --linux-tools <extracted prefix> instead writes unedited whole X11 windows
+// under docs/assets/linux-listing, in its own Xvfb/Openbox session. See linux-listing-capture.md.
 //
 // Linux draws the app in the system's sans-serif font; the captures use Inter, which must be
 // installed. Nothing here reaches a real provider: the app's images are answered from the demo
 // through the page's DevTools session, and any other remote image is refused.
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import sharp from "sharp";
@@ -44,9 +55,9 @@ import {
   type CaptureName,
 } from "./marketing-captures.ts";
 import { cacheDirectory, prepareMedia, startMarketingDemo } from "./marketing-demo.ts";
+import { startLinuxListing, verifyLinuxSources } from "./linux-listing.ts";
 
 const desktop = join(import.meta.dirname, "..");
-const assets = join(desktop, "../../docs/assets");
 /** The window's size, and how many pixels a capture holds for each of its points. */
 const WINDOW = { width: 1280, height: 800 };
 const SCALE = 2;
@@ -57,15 +68,30 @@ if (!episode || !nextEpisode) throw new Error("The manifest lists no two episode
 const [, line] = featured.subtitles.eng;
 if (!line) throw new Error("The manifest lists no second subtitle.");
 const { values: options } = parseArgs({
-  options: { "cache-dir": { type: "string" }, only: { type: "string" } },
+  options: {
+    "cache-dir": { type: "string" },
+    only: { type: "string" },
+    "linux-listing": { type: "boolean", default: false },
+    "linux-tools": { type: "string" },
+  },
 });
+const linuxListing = options["linux-listing"];
+if (linuxListing && (process.platform !== "linux" || !options["linux-tools"]))
+  throw new Error("--linux-listing requires Linux and --linux-tools <extracted prefix>.");
+if (!linuxListing && options["linux-tools"])
+  throw new Error("--linux-tools requires --linux-listing.");
+const assets = join(desktop, "../../docs/assets", linuxListing ? "linux-listing" : "");
+mkdirSync(assets, { recursive: true });
 const only = parseOnly(options.only);
 const plan = capturePlan(only);
 const { wanted } = plan;
-const manifestFile = join(assets, "marketing-capture.json");
+const manifestFile = join(assets, linuxListing ? "manifest.json" : "marketing-capture.json");
 
 const root = join(desktop, "../..");
-const evidenceRoot = join(root, ".local/marketing-captures");
+const evidenceRoot = join(
+  root,
+  linuxListing ? ".local/verification/linux-listing" : ".local/marketing-captures",
+);
 mkdirSync(evidenceRoot, { recursive: true });
 const evidence = mkdtempSync(join(evidenceRoot, "capture-"));
 const executable = await electronExecutable();
@@ -87,7 +113,7 @@ const proof: Record<string, unknown> = {
   system:
     process.platform === "darwin"
       ? execFileSync("sw_vers", { encoding: "utf8" })
-      : execFileSync("uname", ["-a"], { encoding: "utf8" }),
+      : execFileSync("uname", ["-srm"], { encoding: "utf8" }),
   appVersion: JSON.parse(readFileSync(join(desktop, "package.json"), "utf8")).version,
   mainSha256: hash(readFileSync(join(desktop, "out/main/index.js"))),
   manifestSha256: hash(readFileSync(join(root, "docs/assets/marketing-demo-sources.json"))),
@@ -108,10 +134,33 @@ let demo: Awaited<ReturnType<typeof startMarketingDemo>> | undefined;
 let page: Page | undefined;
 let windowId: number | undefined;
 let cuaStarted = false;
+let linux: Awaited<ReturnType<typeof startLinuxListing>> | undefined;
 let log = "";
 try {
+  if (linuxListing) {
+    proof["buildFiles"] = Object.fromEntries(
+      [
+        "out/main/index.js",
+        "out/preload/index.cjs",
+        "out/renderer/index.html",
+        ...readdirSync(join(desktop, "out/renderer/assets")).map(
+          (file) => `out/renderer/assets/${file}`,
+        ),
+      ].map((file) => [file, hash(readFileSync(join(desktop, file)))]),
+    );
+    proof["fixtureFiles"] = Object.fromEntries(
+      [
+        "scripts/marketing-demo.ts",
+        "scripts/marketing-captures.ts",
+        "test/fake-provider.ts",
+        "test/fake-tmdb.ts",
+      ].map((file) => [file, hash(readFileSync(join(desktop, file)))]),
+    );
+    proof["analytics"] =
+      "Unpackaged automated isolated profile; ambient MR_STREAMER_* overrides removed, no analytics endpoint configured. Build command and hashes retained separately.";
+  }
   // Linux alone needs fontconfig. macOS uses its real system font.
-  if (process.platform === "linux") {
+  if (process.platform === "linux" && !linuxListing) {
     const fonts = join(profile, "fonts.conf");
     writeFileSync(
       fonts,
@@ -132,16 +181,24 @@ try {
     Object.entries(media).map(([name, paths]) => [
       name,
       (Array.isArray(paths) ? paths : [paths]).map((file: string) => ({
-        file,
+        file: linuxListing ? basename(file) : file,
         sha256: hash(readFileSync(file)),
         bytes: readFileSync(file).length,
       })),
     ]),
   );
   demo = await startMarketingDemo(media);
+  if (linuxListing) {
+    proof["sources"] = await verifyLinuxSources(cache);
+    linux = await startLinuxListing(options["linux-tools"]!, evidence);
+    proof["nativeSession"] = linux.identity;
+    proof["limitations"] = [...(proof["limitations"] as string[]), ...linux.identity.limitations];
+    // This directory is separate from every marketing master. A partial run keeps other entries.
+    if (!existsSync(manifestFile)) writeFileSync(manifestFile, JSON.stringify({ captures: [] }));
+  }
   const port = await freePort();
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(
+    Object.entries(linux?.env ?? process.env).filter(
       ([name]) => !name.startsWith("MR_STREAMER_") && name !== "ELECTRON_RUN_AS_NODE",
     ),
   );
@@ -166,6 +223,7 @@ try {
       MR_STREAMER_UPDATE_CHECKS: "off",
       MR_STREAMER_TMDB_API: demo.tmdbApi,
       MR_STREAMER_TMDB_KEY: "marketing-capture",
+      ...(linuxListing ? { LANG: "en_US.UTF-8", LANGUAGE: "en" } : {}),
     },
   });
   for (const stream of [app.stdout, app.stderr])
@@ -212,13 +270,17 @@ try {
     if (!windowId) throw new Error("No owned native window.");
   }
   await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
-  await page.send("Emulation.setDeviceMetricsOverride", {
-    ...WINDOW,
-    deviceScaleFactor: SCALE,
-    mobile: false,
-  });
-  // Scroll bars stay out of the picture, as on a Mac, where they show only while scrolling.
-  await page.send("Emulation.setScrollbarsHidden", { hidden: true });
+  if (linux && app.pid) {
+    proof["windowBounds"] = await linux.resize(app.pid);
+  } else {
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      ...WINDOW,
+      deviceScaleFactor: SCALE,
+      mobile: false,
+    });
+    // Scroll bars stay out of the picture, as on a Mac, where they show only while scrolling.
+    await page.send("Emulation.setScrollbarsHidden", { hidden: true });
+  }
   // Images come from the demo; a remote image it doesn't know is refused.
   page.on("Fetch.requestPaused", (params) => {
     const { requestId, request } = params as { requestId: string; request: { url: string } };
@@ -318,7 +380,7 @@ try {
     await shows(page, [
       "Favourites",
       "Recently watched",
-      ...manifest.channels.flatMap((channel) => channel.programmes.slice(0, 2)),
+      ...manifest.channels.flatMap((channel) => channel.programmes.slice(0, linuxListing ? 1 : 2)),
     ]);
     if (wanted("live-tv"))
       await capture(page, "live-tv", { fullScreen: true, video: true, pictures: "img" });
@@ -383,7 +445,7 @@ try {
     );
   }
   // Every capture was taken: one provenance for the whole manifest.
-  if (!only)
+  if (!only && !linuxListing)
     writeFileSync(manifestFile, JSON.stringify({ ...provenance(), captures }, null, 2) + "\n");
   proof["status"] = "passed";
 } catch (error) {
@@ -400,12 +462,14 @@ try {
     proof["cleanup"] = {
       appExited: !app || app.exitCode !== null || app.signalCode !== null,
       profileRemoved: !existsSync(profile),
+      ...(linuxListing ? { fixturesClosed: true } : {}),
     };
     if (cuaStarted) {
       proof["windowsAfterExit"] = cua("list_windows", { pid: app?.pid });
       cua("end_session", {});
     }
   } finally {
+    if (linux) proof["nativeCleanup"] = await linux.close();
     writeFileSync(join(evidence, "electron.log"), log);
     writeFileSync(join(evidence, "proof.json"), JSON.stringify(proof, null, 2));
   }
@@ -503,7 +567,7 @@ async function capture(
     readonly holds?: () => Promise<boolean>;
   },
 ): Promise<boolean> {
-  if (wanted.fullScreen) await fullScreen(page, true);
+  if (wanted.fullScreen && !linuxListing) await fullScreen(page, true);
   if (wanted.pictures) {
     await waitFor(() =>
       page.evaluate<boolean>(`(() => {
@@ -525,25 +589,73 @@ async function capture(
 
   const image = sharp(Buffer.from((reply.result as { data: string }).data, "base64"));
   const { width, height } = await image.metadata();
-  const expected = { width: WINDOW.width * SCALE, height: WINDOW.height * SCALE };
+  const scale = linux ? 1 : SCALE;
+  const expected = linux
+    ? await page.evaluate<{ width: number; height: number }>(
+        "({ width: innerWidth, height: innerHeight })",
+      )
+    : { width: WINDOW.width * SCALE, height: WINDOW.height * SCALE };
   if (width !== expected.width || height !== expected.height) {
     throw new Error(`${name} is ${width} × ${height}, not ${expected.width} × ${expected.height}.`);
   }
   if (box) {
-    const left = Math.max(Math.round(box.left * SCALE), 0);
-    const top = Math.max(Math.round(box.top * SCALE), 0);
+    const left = Math.max(Math.round(box.left * scale), 0);
+    const top = Math.max(Math.round(box.top * scale), 0);
     const stats = await image
       .clone()
       .extract({
         left,
         top,
-        width: Math.min(Math.round(box.width * SCALE), expected.width - left),
-        height: Math.min(Math.round(box.height * SCALE), expected.height - top),
+        width: Math.min(Math.round(box.width * scale), expected.width - left),
+        height: Math.min(Math.round(box.height * scale), expected.height - top),
       })
       .stats();
     // A picture that didn't reach the capture is one flat colour.
     const spread = Math.max(...stats.channels.map((channel) => channel.stdev));
     if (spread < 10) throw new Error(`${name} shows no picture where the video is.`);
+  }
+  if (linux) {
+    if (!app?.pid) throw new Error("No owned app PID.");
+    const file = `${name}.png`;
+    const native = await linux.capture(app.pid, name);
+    if (wanted.holds && !(await wanted.holds())) return false;
+    copyFileSync(native.raw, join(assets, file));
+    const entry: CaptureEntry = {
+      name,
+      file,
+      width: native.width,
+      height: native.height,
+      bytes: native.bytes,
+      sha256: native.sha256,
+      videoBox: wanted.video ? await videoBox(page) : null,
+    };
+    captures.push(entry);
+    recordCapture(manifestFile, entry, {
+      ...provenance(),
+      status: "candidate, pending final visual and listing acceptance",
+      method: "Unedited whole X11 window, ImageMagick import -window <owned XID> -frame",
+      nativeSession: { ...linux.identity, tools: "Portable Openbox and X11 tools" },
+      evidence: `.local/verification/linux-listing/${basename(evidence)}`,
+      language: "en",
+      caption: {
+        home: "Home with live preview and Continue watching",
+        "live-tv": "Live channels with current programmes",
+        "tv-guide": "Programme guide with catch-up controls",
+        watching: "An episode with English subtitles and track selection",
+        library: "Series details and cast",
+      }[name],
+      sources: proof["sources"],
+      media: proof["media"],
+      buildFiles: proof["buildFiles"],
+      fixtureFiles: proof["fixtureFiles"],
+      analytics: proof["analytics"],
+      credits: ["NASA", "U.S. National Park Service"],
+      limitations: proof["limitations"],
+      linuxCaptureScriptSha256: hash(readFileSync(join(desktop, "scripts/linux-listing.ts"))),
+    });
+    await retain(page, name, Buffer.from((reply.result as { data: string }).data, "base64"));
+    console.log(`Wrote Linux candidate ${join(assets, file)}`);
+    return true;
   }
   const file = join(assets, `marketing-${name}.png`);
   // Lossless: every pixel as the window drew it, without the alpha channel it never uses.

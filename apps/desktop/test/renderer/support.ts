@@ -26,6 +26,15 @@ import {
 } from "@mrstreamer/contracts/preferences";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 
+// The tests provide row and viewport heights through offsetHeight. The virtualizer now reads
+// clientHeight for its viewport; happy-dom has no layout to give it the same test geometry.
+Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+  configurable: true,
+  get(this: HTMLElement) {
+    return this.offsetHeight;
+  },
+});
+
 /** The subscription the tests' channels, titles and episodes are listed by. */
 export const SUBSCRIPTION = "3f6c1b5e-2a47-4d0e-9c1f-7b8a5d2e4f10";
 

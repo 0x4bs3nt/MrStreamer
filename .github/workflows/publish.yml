@@ -130,7 +130,7 @@ jobs:
         with:
           node-version: 24
       # The installers of every platform, and the sources that go with them.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*-${{ inputs.version }}
           path: release
@@ -320,7 +320,7 @@ jobs:
           [ "$ACTION" != status ] && args+=(--package)
           node scripts/store-release.ts release "${args[@]}"
       # Another run's artifact needs the token; this run's own doesn't.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.release.outputs.run-id != ''
         with:
           name: msix-${{ inputs.version }}
@@ -439,7 +439,7 @@ jobs:
           MR_STREAMER_SITE_ANALYTICS_HOST: ${{ vars.POSTHOG_HOST }}
           MR_STREAMER_SITE_ANALYTICS_PROJECT_TOKEN: ${{ vars.POSTHOG_PROJECT_TOKEN }}
         run: pnpm --filter mrstreamer-marketing build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: marketing-output
           path: apps/marketing/.vercel/output/
@@ -448,7 +448,7 @@ jobs:
           retention-days: 1
           if-no-files-found: error
       # Dependency-free notifier from the same checked build, never executed beside owner secrets.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: marketing-indexnow
           path: apps/marketing/scripts/indexnow.ts
@@ -526,7 +526,7 @@ jobs:
             echo "::error::Couldn't compare $BUILT with main, so this run publishes nothing."
             exit 1
           fi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.newest.outputs.superseded != 'true'
         with:
           name: marketing-output
@@ -564,11 +564,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: marketing-output
           path: marketing-output
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: marketing-indexnow
           path: marketing-indexnow

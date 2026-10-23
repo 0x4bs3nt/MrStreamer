@@ -165,6 +165,14 @@ function ownProperties(event: CaptureEvent) {
         watch_duration_seconds: event.properties.watch_duration_seconds,
         end_reason: event.properties.end_reason,
       };
+    case "app_version_observed":
+      return event.properties.observation_kind === "transition"
+        ? {
+            observation_kind: event.properties.observation_kind,
+            previous_app_version: event.properties.previous_app_version,
+            previous_build_channel: event.properties.previous_build_channel,
+          }
+        : { observation_kind: event.properties.observation_kind };
     case "app_active_day":
       return { activity_date: event.properties.activity_date };
     case "stream_started":

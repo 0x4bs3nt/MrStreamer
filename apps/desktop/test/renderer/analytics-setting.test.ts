@@ -8,6 +8,7 @@ import type { Locale } from "@mrstreamer/contracts/language";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
 import { setLanguage, t } from "@mrstreamer/core/i18n";
 import { PrivacySection } from "../../src/renderer/src/features/settings/GeneralSection.tsx";
+import { syncPreferences } from "../../src/renderer/src/lib/preferences.ts";
 
 let unmount = () => {};
 beforeEach(() => {
@@ -27,6 +28,7 @@ async function render(locale: Locale = "en-US", enabled = true) {
   ipc.prefer({ analyticsEnabled: enabled });
   setLanguage({ locale, formats: locale });
   const client = new QueryClient();
+  const detach = syncPreferences(client, () => {});
   const container = document.createElement("div");
   const root = createRoot(container);
   await act(async () =>
@@ -35,6 +37,7 @@ async function render(locale: Locale = "en-US", enabled = true) {
   await settle();
   unmount = () =>
     act(() => {
+      detach();
       root.unmount();
       client.clear();
     });
@@ -85,4 +88,51 @@ describe("Settings statistics preference", () => {
     expect(checkbox.getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).toContain("Analytics preference could not be saved.");
   });
+
+  it.each([false, true])(
+    "clears an obsolete consent save error only when a published value matches the request, initially %s",
+    async (initial) => {
+      const { container, checkbox } = await render("en-US", initial);
+      const changed = ipc.hold("preferences.update");
+      await act(() => checkbox.click());
+      await act(async () =>
+        changed.reject({ kind: "unexpected", detail: "Analytics preference could not be saved." }),
+      );
+      await settle();
+      expect(checkbox.getAttribute("aria-checked")).toBe(String(initial));
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Analytics preference could not be saved.",
+      );
+      // An unrelated accepted edit cannot claim the rejected consent write succeeded.
+      await act(() =>
+        ipc.emit(
+          "preferences.changed",
+          ipc.snapshot({
+            ...defaultPreferences,
+            analyticsEnabled: initial,
+            muted: true,
+          }),
+        ),
+      );
+      await settle();
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Analytics preference could not be saved.",
+      );
+      await act(() =>
+        ipc.emit(
+          "preferences.changed",
+          ipc.snapshot({
+            ...defaultPreferences,
+            analyticsEnabled: !initial,
+            muted: true,
+          }),
+        ),
+      );
+      await settle();
+      expect(checkbox.getAttribute("aria-checked")).toBe(String(!initial));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(ipc.argsOf("preferences.get")).toHaveLength(1);
+      expect(ipc.argsOf("preferences.update")).toEqual([{ analyticsEnabled: !initial }]);
+    },
+  );
 });

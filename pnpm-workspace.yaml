@@ -8,6 +8,11 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   sharp: true
+
+# Reviewed patch releases; keep age exceptions specific to the selected versions.
+minimumReleaseAgeExclude:
+  - "@tanstack/react-virtual@3.14.22"
+  - "@tanstack/virtual-core@3.19.7"
 # Keep accepted app notarization single-shot; retry only CloudKit ticket download during stapling.
 patchedDependencies:
   "@electron/notarize@2.5.0": patches/@electron__notarize@2.5.0.patch
