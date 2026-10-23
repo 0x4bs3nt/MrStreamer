@@ -4,7 +4,7 @@ import type { LiveCatalogue, OnDemandCatalogue, ProviderTitle } from "@mrstreame
 import { Window, type HTMLInputElement } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
-import type { Channel, Library } from "../src/library.ts";
+import { buildLibrary, type Channel, type Library } from "../src/library.ts";
 
 // Search over the tabs: what it finds opens where it belongs and closes Search first, the query
 // stays for the session, every movie and series that matches can be reached a page at a time, and
@@ -763,6 +763,56 @@ describe("Search over the tabs", () => {
   });
   const notice = () => container.querySelector('[data-testid="dismiss-provider-notice"]');
 
+  it("keeps inline recovery for globally filtered-empty channels and published title collections", async () => {
+    const rawLive: LiveCatalogue = {
+      categories: [{ id: "adult", name: "Adult" }],
+      channels: [{ ...liveLists.channels[0]!, categoryIds: ["adult"] }],
+    };
+    const hidden = { ...titled("movie", "hidden", "Restricted", 1)[0]!, adult: true };
+    const rawTitles = lists([hidden], [{ ...hidden, container: null }]);
+    const derived = buildLibrary([{ subscriptionId: "a", label: "Northwind", catalogue: rawLive }]);
+    expect(derived.channels).toHaveLength(0);
+    await subscriptions([
+      member("a", "Northwind", { live: failedLive(rawLive), titles: failedTitles(rawTitles) }),
+    ]);
+    scenario.catalogue = { kind: "ready", library: derived, failing: scenario.members };
+    await open();
+    await type("unmatched");
+    expect(text()).toContain("Couldn't update channels, movies and series from Northwind.");
+    expect(text()).toContain("RetrySettings");
+    expect(notice()).toBeNull();
+    expect(placed()).toBe("results");
+    expect(scenario.did).toEqual([]);
+  });
+
+  it.each(["movie", "series"] as const)(
+    "keeps compact notices with usable %s collections even when the query has no matches",
+    async (kind) => {
+      const visible = titled(kind, "visible", "Dune", 1);
+      const hidden = [
+        {
+          ...titled(kind === "movie" ? "series" : "movie", "hidden", "Restricted", 1)[0]!,
+          adult: true,
+        },
+      ];
+      const raw = kind === "movie" ? lists(visible, hidden) : lists(hidden, visible);
+      await subscriptions([
+        member("a", "Northwind", { live: failedLive(emptyLive), titles: failedTitles(raw) }),
+      ]);
+      scenario.catalogue = { kind: "ready", library: buildLibrary([]), failing: scenario.members };
+      await open();
+      await type("zzq-unmatched");
+      expect(text()).not.toContain("Dune 1");
+      expect(text()).toContain("Northwind unavailable");
+      expect(notice()).not.toBeNull();
+      await press("dismiss-provider-notice");
+      expect(text()).not.toContain("Northwind unavailable");
+      expect(notice()).toBeNull();
+      expect(scenario.members[0]!.titles.kind).toBe("failed");
+      expect(scenario.did).toEqual([]);
+    },
+  );
+
   it("keeps an acknowledged failure quiet through navigation, rename and retry without changing provider state", async () => {
     const failed = member("a", "Northwind", { live: failedLive() }, duneOnly());
     await subscriptions([failed]);
@@ -908,6 +958,7 @@ describe("Search over the tabs", () => {
     await open();
     await type("dune");
     await press("dismiss-provider-notice");
+    scenario.catalogue = { kind: "ready", library: buildLibrary([]), failing: scenario.members };
     await subscriptions([
       member("a", "Northwind", { live: failedLive(emptyLive), titles: failedTitles(lists([])) }),
     ]);

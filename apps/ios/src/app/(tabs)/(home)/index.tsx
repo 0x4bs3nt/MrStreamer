@@ -32,6 +32,7 @@ import {
   named,
   titlesWorkedOut,
   useCollections,
+  useHasTitles,
   useMetadataVersion,
   useTitleLists,
 } from "../../../titles.ts";
@@ -59,10 +60,13 @@ const MOVIES = 20;
 export default function Home() {
   const catalogue = useCatalogue();
   const roster = useRoster();
+  const hasMovies = useHasTitles("movie");
   // A failure with no channels at all has its own notice below the Stage.
   const status = libraryStatus(roster.kind === "ready" ? roster.members : [], {
     channels: catalogue.kind !== "failed",
     titles: true,
+    usableContent:
+      (catalogue.kind === "ready" && catalogue.library.channels.length > 0) || hasMovies,
     retry: retryProvider,
     settings: openSettings,
   });

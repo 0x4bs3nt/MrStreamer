@@ -335,7 +335,12 @@ observes the public roster and keeps session acknowledgements by provider id, th
 and unchanged retries. A failed source must answer successfully before its incident resets; removal
 clears it too. Password-needed incidents are distinct. Empty/first-load failures keep their explanation
 and recovery inline. Dismissal never changes account errors or lists. A list that loads again while
-its last one shows says nothing. Hosts such as Search must compose progress with `libraryStatus` and resolve
+its last one shows says nothing. `libraryStatus` requires `usableContent` from the existing owners: derived Live channels and
+published title collections of the screen's kind, before query or collection filters. Saved raw
+provider rows do not establish that content can show. Home counts channels and movies; Search
+counts channels, movies and series through the pure `useHasTitles` snapshot. This reads the
+collections already made without starting collection work. Hosts such as Search must compose
+progress with `libraryStatus` and resolve
 `useProviderStatus` before announcements and placement, so dismissing a provider failure keeps other
 status text, actions and progress.
 

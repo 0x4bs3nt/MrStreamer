@@ -1,4 +1,7 @@
 import * as React from "react";
+import { indexCatalogue, kindOf } from "@mrstreamer/core/ondemand/catalogue";
+import type { LiveCatalogue, ProviderTitle, OnDemandCatalogue } from "@mrstreamer/core/provider";
+import { buildLibrary } from "../src/library.ts";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
@@ -98,6 +101,7 @@ vi.mock("react-native", async () => {
     ScrollView,
     Text: ({ children }: Props) => createElement("span", null, children),
     Image: () => null,
+    TextInput: () => null,
     Pressable: ({
       children,
       testID,
@@ -219,6 +223,7 @@ vi.mock("../src/viewing.ts", () => ({ useViewing: () => null }));
 vi.mock("../src/tab-bar.ts", () => ({ useFixedTabBar: () => undefined }));
 
 const { default: Live } = await import("../src/app/(tabs)/live/index.tsx");
+const { DiscoverScreen } = await import("../src/live-discover.tsx");
 const { TitlesHome } = await import("../src/titles-screen.tsx");
 const { Placeholders, Shape, StatusLine, libraryStatus, useProviderStatus } =
   await import("../src/loading.tsx");
@@ -278,6 +283,8 @@ const nothingMade = {
   services: () => [],
   list: () => [],
 };
+
+const usableMade = { ...nothingMade, size: () => 1 };
 
 let container: ReturnType<typeof document.createElement>;
 let root: Root;
@@ -484,7 +491,7 @@ describe("Movies while its lists load", () => {
       }),
     ];
     scenario.lists = { kind: "ready", index: {} } as TitleLists;
-    scenario.made = nothingMade;
+    scenario.made = usableMade;
     open(React.createElement(TitlesHome, { kind: "movie" }));
     expect(line()).toBe("Harbor unavailable. Loading movies and series from Northwind.Details");
     expect(has("movie-for-you")).toBe(true);
@@ -500,7 +507,7 @@ describe("provider notice incidents", () => {
     scenario.members = members;
     scenario.catalogue = { kind: "ready", library, failing: members };
     scenario.lists = { kind: "ready", index: {} } as TitleLists;
-    scenario.made = nothingMade;
+    scenario.made = usableMade;
   };
 
   it("dismisses across tabs, resume, renamed labels and an unchanged retry without clearing the error or lists", () => {
@@ -611,6 +618,7 @@ describe("provider notice incidents", () => {
     ]);
     open(React.createElement(Live));
     press("Dismiss provider notice");
+    scenario.made = null;
     draw(React.createElement(TitlesHome, { kind: "movie" }));
     expect(line()).toBe("Couldn't load movies and series from Northwind.RetrySettings");
     expect(has("dismiss-provider-notice")).toBe(false);
@@ -625,6 +633,8 @@ describe("provider notice incidents", () => {
       const provider = libraryStatus(scenario.members, {
         channels: true,
         titles: true,
+        usableContent:
+          scenario.catalogue.kind === "ready" && scenario.catalogue.library.channels.length > 0,
         retry: () => {},
         settings: () => scenario.did.push("settings"),
       });
@@ -657,6 +667,132 @@ describe("provider notice incidents", () => {
     expect(scenario.did).toEqual(["settings", "stop"]);
     expect(scenario.said).toEqual(["Northwind unavailable. Searching. ", "Searching. "]);
   });
+});
+
+describe("usable content reported by the existing catalogue owners", () => {
+  const failureState = (last: LiveCatalogue): Member["live"] => ({
+    kind: "failed",
+    error: failure,
+    last,
+    since: 0,
+  });
+  const restricted = (mode: "flag" | "category"): LiveCatalogue => ({
+    categories: [{ id: "restricted", name: "Adult" }],
+    channels: [
+      {
+        id: "only",
+        name: "Restricted",
+        number: null,
+        logoUrl: null,
+        categoryIds: mode === "category" ? ["restricted"] : [],
+        guideId: null,
+        adult: mode === "flag",
+        catchupDays: null,
+      },
+    ],
+  });
+  const publish = (raw: LiveCatalogue) => {
+    scenario.members = [member("a", "Northwind", { live: failureState(raw) })];
+    const library = buildLibrary([{ subscriptionId: "a", label: "Northwind", catalogue: raw }]);
+    scenario.catalogue = { kind: "ready", library, failing: scenario.members };
+    return library;
+  };
+
+  it.each(["flag", "category"] as const)(
+    "keeps recovery for %s-filtered retained channels, including after acknowledgement",
+    (mode) => {
+      const raw = restricted(mode);
+      const mixed = {
+        ...raw,
+        channels: [
+          ...raw.channels,
+          { ...raw.channels[0]!, id: "visible", name: "News", categoryIds: [], adult: false },
+        ],
+      };
+      expect(publish(mixed).channels).toHaveLength(1);
+      open(React.createElement(Live));
+      expect(line()).toBe("Northwind unavailableDetails");
+      press("Dismiss provider notice");
+      expect(line()).toBeNull();
+      expect(publish(raw).channels).toHaveLength(0);
+      draw(React.createElement(Live));
+      expect(text()).toContain("No live channels");
+      expect(line()).toBe(
+        "Couldn't update channels from Northwind. Showing the last list.RetrySettings",
+      );
+      expect(has("dismiss-provider-notice")).toBe(false);
+      press("Retry");
+      press("Settings");
+      expect(scenario.did).toEqual(["retry a", "push /live/settings"]);
+      // Discover uses the same whole derived library, rather than its query's matches.
+      draw(React.createElement(DiscoverScreen));
+      expect(line()).toContain("RetrySettings");
+      expect(has("dismiss-provider-notice")).toBe(false);
+    },
+  );
+
+  it("keeps failure recovery while the derived channel owner is still pending", () => {
+    publish({ categories: [], channels: [{ ...restricted("flag").channels[0]!, adult: false }] });
+    scenario.catalogue = { kind: "loading" };
+    open(React.createElement(Live));
+    expect(line()).toContain("RetrySettings");
+    expect(has("dismiss-provider-notice")).toBe(false);
+    expect(has("placeholder-rows")).toBe(true);
+  });
+
+  it.each(["movie", "series"] as const)(
+    "keeps recovery when the published %s collection filters every retained title",
+    async (kind) => {
+      const { collections } = await vi.importActual<
+        typeof import("@mrstreamer/core/ondemand/collections")
+      >("@mrstreamer/core/ondemand/collections");
+      const providerTitle: ProviderTitle = {
+        id: "hidden",
+        name: "Restricted",
+        adult: true,
+        posterUrl: null,
+        backdropUrl: null,
+        rating: null,
+        addedAt: null,
+        releaseDate: null,
+        categoryIds: [],
+        container: null,
+      };
+      const raw: OnDemandCatalogue = {
+        movieCategories: [],
+        movies: [providerTitle],
+        seriesCategories: [],
+        series: [providerTitle],
+      };
+      const index = indexCatalogue([{ subscriptionId: "a", catalogue: raw }], "en");
+      scenario.made = collections({
+        kind,
+        titles: kindOf(index, kind).titles,
+        language: "en",
+        metadata: () => null,
+        names: () => null,
+        services: [],
+        now: Date.now(),
+      });
+      scenario.members = [
+        member("a", "Northwind", {
+          titles: { kind: "failed", error: failure, last: raw, since: 0 },
+        }),
+      ];
+      scenario.lists = { kind: "ready", index };
+      open(React.createElement(TitlesHome, { kind }));
+      expect(line()).toBe(
+        "Couldn't update movies and series from Northwind. Showing the last list.RetrySettings",
+      );
+      expect(has("dismiss-provider-notice")).toBe(false);
+      press("Retry");
+      press("Settings");
+      expect(scenario.did).toEqual([
+        "reload titles a",
+        kind === "movie" ? "push /films/settings" : "push /live/settings",
+      ]);
+    },
+  );
 });
 
 describe("the shapes' highlight", () => {

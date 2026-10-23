@@ -119,6 +119,8 @@ export function libraryStatus(
   shows: {
     readonly channels?: boolean;
     readonly titles?: boolean;
+    /** Existing catalogue owners report usable content for this screen's scope, before query/view filters. */
+    readonly usableContent: boolean;
     readonly retry: (subscriptionId: string) => void;
     readonly settings: () => void;
   },
@@ -163,27 +165,7 @@ export function libraryStatus(
     ...passwords,
   ];
   if (sentences.length === 0) return null;
-  const hasContent =
-    failures.length > 0 &&
-    members.some((member) => {
-      const live =
-        member.live.kind === "ready"
-          ? member.live.value
-          : member.live.kind === "idle"
-            ? null
-            : member.live.last;
-      const titles =
-        member.titles.kind === "ready"
-          ? member.titles.value
-          : member.titles.kind === "idle"
-            ? null
-            : member.titles.last;
-      return (
-        (shows.channels && !!live?.channels.length) ||
-        (shows.titles && !!titles && (titles.movies.length > 0 || titles.series.length > 0))
-      );
-    });
-  if (failures.length > 0 && hasContent) {
+  if (failures.length > 0 && shows.usableContent) {
     return {
       text: [...(groups.get("loading") ?? [])]
         .map(([what, from]) =>

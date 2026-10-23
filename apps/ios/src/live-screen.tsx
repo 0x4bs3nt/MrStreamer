@@ -171,7 +171,12 @@ function Channels({
   const status =
     catalogue.kind === "failed"
       ? null
-      : libraryStatus(providers, { channels: true, retry, settings: openSettings });
+      : libraryStatus(providers, {
+          channels: true,
+          usableContent: catalogue.kind === "ready" && catalogue.library.channels.length > 0,
+          retry,
+          settings: openSettings,
+        });
   if (catalogue.kind === "loading") {
     return (
       <Docked status={status ?? loadingStatus("channels")}>

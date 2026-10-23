@@ -394,6 +394,13 @@ export function useCollections(
   return kept?.collections ?? null;
 }
 
+/** Whether the published collections have usable titles, without requesting new collections. */
+export function useHasTitles(...kinds: readonly TitleKind[]): boolean {
+  return useSyncExternalStore(shown.subscribe, () =>
+    kinds.some((kind) => (shown.get().made?.[kind].collections.size("all") ?? 0) > 0),
+  );
+}
+
 /**
  * Has `kind`'s collections made again if time has moved past what they hold (`collect`), as the
  * screen opens and whenever one of `reads` changes: what it reads them by, such as the title For

@@ -42,6 +42,7 @@ import {
   searchTitlesSteps,
   titleCount,
   useMetadataVersion,
+  useHasTitles,
   useTitleLists,
   type TitleLists,
 } from "../titles.ts";
@@ -235,6 +236,7 @@ export default function Search() {
   const roster = useRoster();
   const catalogue = useCatalogue();
   const lists = useTitleLists();
+  const hasTitles = useHasTitles("movie", "series");
   const metadata = useMetadataVersion();
   const { phase } = usePlayback();
   const height = useRowHeight();
@@ -356,7 +358,14 @@ export default function Search() {
   const playing = channelStatus(phase);
   const searching = searched !== "";
   const pending = movies.pending || series.pending || channels.pending;
-  const providers = libraryStatus(members, { channels: true, titles: true, retry, settings });
+  const providers = libraryStatus(members, {
+    channels: true,
+    titles: true,
+    usableContent:
+      (catalogue.kind === "ready" && catalogue.library.channels.length > 0) || hasTitles,
+    retry,
+    settings,
+  });
   const line = useProviderStatus(
     searchLine(searching ? status : null, searching ? providers : null, pending),
   );

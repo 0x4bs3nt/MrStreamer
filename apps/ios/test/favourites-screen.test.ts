@@ -1,8 +1,16 @@
 import * as React from "react";
+import type { TitleKind } from "@mrstreamer/contracts/ondemand";
+import { indexCatalogue, kindOf } from "@mrstreamer/core/ondemand/catalogue";
+import { collections, type Collections } from "@mrstreamer/core/ondemand/collections";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Window } from "happy-dom";
-import type { LiveCatalogue, ProviderChannel } from "@mrstreamer/core/provider";
+import type {
+  LiveCatalogue,
+  ProviderChannel,
+  OnDemandCatalogue,
+  ProviderTitle,
+} from "@mrstreamer/core/provider";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
 import { buildLibrary, type Channel } from "../src/library.ts";
@@ -29,6 +37,8 @@ interface Shown {
 
 const scenario = vi.hoisted(() => ({
   members: [] as Member[],
+  rosterChanged: () => undefined as void,
+  made: { movie: null, series: null } as Record<TitleKind, Collections | null>,
   catalogue: { kind: "loading" } as Catalogue,
   /** What the screens did, in order. */
   did: [] as string[],
@@ -37,10 +47,19 @@ const scenario = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
-  const { createElement, Fragment, isValidElement } = await import("react");
+  const { createElement, Fragment, isValidElement, useEffect } = await import("react");
   type Props = { children?: React.ReactNode; testID?: string; accessibilityLabel?: string };
   const box = ({ children, testID, accessibilityLabel }: Props) =>
     createElement("div", { "data-testid": testID, "aria-label": accessibilityLabel }, children);
+  const View = ({
+    onLayout,
+    ...props
+  }: Props & {
+    onLayout?: (event: { nativeEvent: { layout: { width: number; height: number } } }) => void;
+  }) => {
+    useEffect(() => onLayout?.({ nativeEvent: { layout: { width: 390, height: 600 } } }), []);
+    return box(props);
+  };
   const node = (part: unknown) =>
     part === undefined || part === null
       ? null
@@ -48,7 +67,7 @@ vi.mock("react-native", async () => {
         ? part
         : createElement(part as React.ComponentType);
   return {
-    View: box,
+    View,
     ScrollView: box,
     Text: ({ children }: Props) => createElement("span", null, children),
     Image: () => null,
@@ -135,7 +154,10 @@ vi.mock("../src/header.tsx", () => ({
 }));
 vi.mock("../src/account.ts", () => ({
   currentRoster: () => ({ kind: "ready", members: scenario.members }),
-  onRoster: () => () => {},
+  onRoster: (listener: () => void) => {
+    scenario.rosterChanged = listener;
+    return () => {};
+  },
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   members: () => scenario.members,
   useCatalogue: () => scenario.catalogue,
@@ -163,7 +185,9 @@ vi.mock("../src/titles.ts", () => ({
   useTitleLists: () => ({ kind: "failed" }),
   titlesWorkedOut: () => false,
   useMetadataVersion: () => 0,
-  useCollections: () => null,
+  useCollections: (kind: TitleKind) => scenario.made[kind],
+  useHasTitles: (...kinds: readonly TitleKind[]) =>
+    kinds.some((kind) => (scenario.made[kind]?.size("all") ?? 0) > 0),
   named: <T>(title: T) => title,
 }));
 // The still rows while channels first load are decoration this window doesn't animate.
@@ -257,7 +281,10 @@ function open(component: React.ComponentType) {
   if (root) React.act(() => root!.unmount());
   container = document.createElement("div");
   root = createRoot(container);
-  React.act(() => root!.render(React.createElement(component)));
+  React.act(() => {
+    scenario.rosterChanged();
+    root!.render(React.createElement(component));
+  });
 }
 const find = (testID: string) => container.querySelector(`[data-testid="${testID}"]`);
 const text = (testID: string) => find(testID)?.textContent ?? "";
@@ -299,8 +326,11 @@ async function starred(...keys: string[]) {
 }
 
 beforeEach(async () => {
+  scenario.members = [];
+  scenario.rosterChanged();
   Object.assign(scenario, {
     members: [member("a", "Home"), member("b", "Cabin")],
+    made: { movie: null, series: null },
     catalogue: { kind: "ready", library, failing: [] },
     did: [],
     alerts: [],
@@ -688,4 +718,69 @@ describe("Find countries or categories with no channel list", () => {
       expect(scenario.did).toEqual(["retry channels"]);
     });
   }
+});
+
+describe("Home provider recovery follows the content it shows", () => {
+  it.each(["series-only", "movie", "channels"] as const)(
+    "uses channels and movies for %s content",
+    (usable) => {
+      const hidden: ProviderTitle = {
+        id: "hidden",
+        name: "Restricted",
+        adult: true,
+        posterUrl: null,
+        backdropUrl: null,
+        rating: null,
+        addedAt: null,
+        releaseDate: null,
+        categoryIds: [],
+        container: null,
+      };
+      const visible: ProviderTitle = { ...hidden, id: "visible", name: "Dune", adult: false };
+      const rawTitles: OnDemandCatalogue = {
+        movieCategories: [],
+        movies: [usable === "movie" ? visible : hidden],
+        seriesCategories: [],
+        series: [visible],
+      };
+      const index = indexCatalogue([{ subscriptionId: "a", catalogue: rawTitles }], "en");
+      for (const kind of ["movie", "series"] as const) {
+        scenario.made[kind] = collections({
+          kind,
+          titles: kindOf(index, kind).titles,
+          language: "en",
+          metadata: () => null,
+          names: () => null,
+          services: [],
+          now: Date.now(),
+        });
+      }
+      const rawLive = listing({ ...NOS_HD, adult: usable !== "channels" });
+      const derived = buildLibrary([
+        { subscriptionId: "a", label: "Northwind", catalogue: rawLive },
+      ]);
+      const failure = { kind: "unexpected", detail: "" } as const;
+      scenario.members = [
+        {
+          ...member("a", "Northwind"),
+          live: { kind: "failed", error: failure, last: rawLive, since: 0 },
+          titles: { kind: "failed", error: failure, last: rawTitles, since: 0 },
+        },
+      ];
+      scenario.catalogue = { kind: "ready", library: derived, failing: scenario.members };
+      open(Home);
+      const status = text("status-line");
+      if (usable === "series-only") {
+        expect(scenario.made.movie!.size("all")).toBe(0);
+        expect(scenario.made.series!.size("all")).toBe(1);
+        expect(status).toContain("Couldn't update channels, movies and series from Northwind.");
+        expect(status).toContain("RetrySettings");
+        expect(find("dismiss-provider-notice")).toBeNull();
+      } else {
+        expect(status).toContain("Northwind unavailable");
+        expect(status).toContain("Details");
+        expect(find("dismiss-provider-notice")).not.toBeNull();
+      }
+    },
+  );
 });

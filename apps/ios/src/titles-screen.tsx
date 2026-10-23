@@ -54,10 +54,11 @@ export const collectionHref = (kind: TitleKind, id: CollectionId) =>
  * The status line for a kind's screens: each provider's movie and series lists, Retry reading a
  * failed one's again, Settings on the kind's own tab.
  */
-function useTitlesStatus(kind: TitleKind): Status | null {
+function useTitlesStatus(kind: TitleKind, usableContent: boolean): Status | null {
   const roster = useRoster();
   return libraryStatus(roster.kind === "ready" ? roster.members : [], {
     titles: true,
+    usableContent,
     retry: reloadTitles,
     settings: () => router.push(tabHref(kind === "movie" ? "films" : "series", "settings")),
   });
@@ -67,7 +68,7 @@ function useTitlesStatus(kind: TitleKind): Status | null {
 export function TitlesHome({ kind }: { kind: TitleKind }) {
   const lists = useTitleLists();
   const made = useCollections(kind);
-  const status = useTitlesStatus(kind);
+  const status = useTitlesStatus(kind, (made?.size("all") ?? 0) > 0);
   if (lists.kind === "failed") {
     return (
       <View style={styles.screen}>
@@ -287,7 +288,7 @@ function Featured({ title }: { title: Title }) {
 /** A collection pushed over its tab: a row's All, a genre or a service. */
 export function CollectionScreen({ kind, id }: { kind: TitleKind; id: CollectionId }) {
   const made = useCollections(kind, [id]);
-  const status = useTitlesStatus(kind);
+  const status = useTitlesStatus(kind, (made?.size("all") ?? 0) > 0);
   useFixedTabBar(true);
   const found = useMemo(
     () => (made ? { name: made.name(id) ?? "", titles: made.list(id) } : null),

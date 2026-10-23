@@ -62,6 +62,7 @@ vi.mock("../src/titles.ts", () => ({
   titlesWorkedOut: () => true,
   useMetadataVersion: () => 0,
   useCollections: () => null,
+  useHasTitles: () => false,
   named: (title: Title) => title,
 }));
 vi.mock("../src/resume.ts", () => ({
