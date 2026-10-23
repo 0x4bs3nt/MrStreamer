@@ -130,11 +130,12 @@ export type Catalogue =
 const roster = store<Roster>({ kind: "restoring" });
 const catalogue = store<Catalogue>({ kind: "loading" });
 /**
- * The saved lists a launch is still reading, by `kind|id`, each with the login it reads them for.
- * One goes once its read has shown its list or found none, once its login is replaced, and at once
- * when its subscription is removed: a read the disk never answers holds nothing else up.
+ * Saved lists a launch is still establishing, by `kind|id`: null reserves a possible read while
+ * its password is pending; a Source means that login's saved list is being read. All reservations
+ * are registered before any password can publish. One ends when its list shows or is absent,
+ * its password is missing/refused, its login is replaced, or its subscription is removed.
  */
-const reading = store<ReadonlyMap<string, Source>>(new Map());
+const reading = store<ReadonlyMap<string, Source | null>>(new Map());
 
 export const useRoster = () => useStore(roster);
 export const useCatalogue = () => useStore(catalogue);
@@ -142,13 +143,13 @@ export const useCatalogue = () => useStore(catalogue);
 export const currentCatalogue = () => catalogue.get();
 /** Calls `listener` whenever every subscription's channels change. */
 export const onCatalogue = (listener: () => void) => catalogue.subscribe(listener);
-/** Whether a launch still reads a saved list from the phone: of `kind` and `id`, when given. */
+/** Whether launch still establishes a saved list, including its password: by `kind`/`id` if given. */
 export const readingSaved = (kind?: Kind, id?: string) =>
   [...reading.get().keys()].some((key) => {
     const at = key.indexOf("|");
     return (!kind || key.slice(0, at) === kind) && (!id || key.slice(at + 1) === id);
   });
-/** Calls `listener` whenever a saved list's read at launch starts or ends. */
+/** Calls `listener` when launch password/list reservations or reads change. */
 export const onReadingSaved = (listener: () => void) => reading.subscribe(listener);
 /** The saved subscriptions as they stand, for owners outside React. */
 export const members = (): readonly Member[] => {
@@ -249,13 +250,13 @@ function syncRoster() {
 
 /**
  * Ends the reads at launch of `id`'s saved lists: with `kind` and `source`, that one alone, while
- * it is still read for that login.
+ * it is still read for that login; null ends only a pending password reservation.
  */
-function stopReading(id: string, kind?: Kind, source?: Source) {
+function stopReading(id: string, kind?: Kind, source?: Source | null) {
   const now = reading.get();
   const keys = (kind ? [kind] : (["live", "titles"] as const))
     .map((each) => `${each}|${id}`)
-    .filter((key) => now.has(key) && (!source || now.get(key) === source));
+    .filter((key) => now.has(key) && (source === undefined || now.get(key) === source));
   if (keys.length === 0) return;
   const next = new Map(now);
   for (const key of keys) next.delete(key);
@@ -500,8 +501,13 @@ function signIn(
     login: [entry.username, password],
   };
   setSource(id, source);
-  // A read at launch for the login before ends: this one's lists come from its provider.
-  stopReading(id);
+  if (checked === null) {
+    // Replace password reservations without briefly releasing the titles' launch batch.
+    reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
+  } else {
+    // A replaced login's launch reads end: this one's lists come from its provider.
+    stopReading(id);
+  }
   setMember(id, (member) => ({
     ...member,
     needsSecret: false,
@@ -517,7 +523,6 @@ function signIn(
     reloadTitles(id);
     return;
   }
-  reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
   void fromSaved(id, "live", source).then((load) => {
     if (load && currentSource(id) === source) reloadChannels(id);
   });
@@ -558,23 +563,37 @@ async function restorePassword(entry: SubscriptionEntry): Promise<void> {
       !sameAccount(now, entry) ||
       currentSource(id) !== before ||
       dropped.get(id) !== deleted
-    )
+    ) {
+      stopReading(id, undefined, null);
       return;
+    }
     if (password) signIn(now, password, null);
-    else setMember(id, (member) => ({ ...member, needsSecret: true }));
+    else {
+      setMember(id, (member) => ({ ...member, needsSecret: true }));
+      stopReading(id, undefined, null);
+    }
   });
 }
 
 /**
  * At launch: publishes the saved registry before waiting on Keychain or cleanup, then restores
- * each password independently. Resolves once those reads finish, not provider authentication or
- * saved lists. The first launch clears secrets from an earlier install before accepting new ones;
- * beta 2's state migrates once, keeping its subscription id. Cleanup stays serialized with edits.
+ * each password independently. Resolves once those reads finish or are superseded, not provider
+ * authentication or saved lists. The first launch clears secrets from an earlier install before
+ * accepting new ones; beta 2's state migrates once, keeping its subscription id. Cleanup stays
+ * serialized with edits.
  */
 export function restore(): Promise<void> {
   return serially(async () => {
     const saved = readRegistry();
     registry = saved ?? migrated(readState());
+    reading.set(
+      new Map(
+        registry.subscriptions.flatMap(({ id }) => [
+          [`live|${id}`, null],
+          [`titles|${id}`, null],
+        ]),
+      ),
+    );
     // Registry readiness chooses the real routes. It never grants credentials or cache access.
     syncRoster();
     if (!saved && firstLaunch()) {
@@ -594,9 +613,24 @@ export function restore(): Promise<void> {
     pruneLists(ids);
     pruneDetails(ids);
     return registry.subscriptions;
-  }).then(async (entries) => {
-    await Promise.all(entries.map(restorePassword));
-  });
+  }).then(
+    (entries) =>
+      new Promise<void>((resolve, reject) => {
+        // A superseded Keychain request may never answer. Its reservation, not that obsolete
+        // promise, decides whether launch is still waiting for a password.
+        const settle = () => {
+          if ([...reading.get().values()].some((source) => source === null)) return;
+          stop();
+          resolve();
+        };
+        const stop = reading.subscribe(settle);
+        void Promise.all(entries.map(restorePassword)).then(settle, (cause: unknown) => {
+          stop();
+          reject(cause);
+        });
+        settle();
+      }),
+  );
 }
 
 /** A name as typed: none when empty, unchanged when not given. */

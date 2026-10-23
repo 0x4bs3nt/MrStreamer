@@ -295,8 +295,8 @@ export function titlesWorkedOut(): boolean {
  * failed or load again keep what they had. Until one has lists, the state says whether any is
  * still loading or why they failed, after every change of the subscriptions. A subscription the
  * lists that show were made of and that lists none now takes them with it at once. While a launch
- * still reads saved titles (`readingSaved`), until the app opens (`batching`), nothing is indexed,
- * so they are indexed once.
+ * still establishes saved titles, including pending launch passwords (`readingSaved`), until
+ * the app opens (`batching`), nothing is indexed, so they are indexed once.
  */
 function relist() {
   const all = members();
@@ -321,8 +321,8 @@ function relist() {
   }
   if (gone) shown.set({ lists: { kind: "loading" }, made: null });
   else if (sameLists(listed, indexed)) return;
-  // While a launch still reads saved titles, those already read wait for them: all are indexed
-  // together once, not again as each subscription's arrive.
+  // Pending launch passwords reserve their possible title reads too. Those already read wait
+  // for them until the app opens, including its deadline; late answers join normally after that.
   if (batching && readingSaved("titles")) {
     indexed = [];
     indexing?.abort();
