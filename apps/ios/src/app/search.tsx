@@ -210,7 +210,12 @@ function searchStatus(
     (member) =>
       !member.needsSecret && (member.live.kind === "failed" || member.titles.kind === "failed"),
   );
-  if (sentences.length === 0 && failed.length === 0) return null;
+  if (
+    sentences.length === 0 &&
+    failed.length === 0 &&
+    !members.some((member) => member.needsSecret)
+  )
+    return null;
   const channels = catalogue.kind === "ready";
   const titles = lists.kind === "ready";
   if (channels || titles) sentences.push(`${kinds(channels, titles)} searched.`);

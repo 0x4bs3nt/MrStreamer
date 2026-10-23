@@ -989,6 +989,31 @@ describe("Search over the tabs", () => {
     expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
   });
 
+  it("keeps the searched status after dismissing a password notice for an unmatched query", async () => {
+    await subscriptions([
+      member("a", "Northwind", {
+        needsSecret: true,
+        live: { kind: "idle" },
+        titles: { kind: "idle" },
+      }),
+      member("b", "Southwind", {}, duneOnly()),
+    ]);
+    await open();
+    await type("zzq");
+    expect(text()).toContain("Northwind needs a password");
+    await press("dismiss-provider-notice");
+    expect(text()).toContain("Movies, series and channels searched.");
+    expect(notice()).toBeNull();
+    expect(text()).not.toMatch(/Retry|Nothing named/);
+    await type("zzx");
+    expect(text()).toContain("Movies, series and channels searched.");
+    expect(scenario.did).toEqual([]);
+    // With every remaining provider available, an unmatched query can be conclusive again.
+    await subscriptions([member("b", "Southwind", {}, duneOnly())]);
+    expect(text()).toContain('Nothing named "zzx".');
+    expect(text()).toContain("Searched 2 channels, 1 movie and 0 series.");
+  });
+
   it("says nothing has the name only with everything in, and how much it looked through", async () => {
     await open();
     await type("zzq");
