@@ -4,7 +4,6 @@ import type { AccountStatus } from "@mrstreamer/contracts/subscription";
 import { formatDate } from "@mrstreamer/core/i18n";
 import Constants from "expo-constants";
 import { router } from "expo-router";
-import { isPictureInPictureSupported } from "expo-video";
 import { SymbolView } from "expo-symbols";
 import {
   ActionSheetIOS,
@@ -40,7 +39,7 @@ const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
 
 /**
  * Settings as one list: the providers first, each a row with Add provider under them, then
- * Downloads, a row with what they take that opens them, Playback, Privacy with the privacy policy
+ * Downloads, a row with what they take that opens them, Privacy with the privacy policy
  * in the browser, and About with Licences. M3U playlists and guide sources come here as they come
  * to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and notice, as
  * the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and what it
@@ -69,12 +68,6 @@ export default function Settings() {
 
       <Section name="Downloads" />
       <DownloadsLink onPress={() => router.push(tabHref(tab, "downloads"))} />
-
-      <Section name="Playback" />
-      <Line
-        label="Picture in Picture"
-        value={isPictureInPictureSupported() ? "Supported" : "Not on this iPhone"}
-      />
 
       <Section name="Privacy" />
       <View style={styles.toggle}>
