@@ -134,6 +134,8 @@ vi.mock("../src/header.tsx", () => ({
   tabHref: (_tab: string, screen: string) => `/live/${screen}`,
 }));
 vi.mock("../src/account.ts", () => ({
+  currentRoster: () => ({ kind: "ready", members: scenario.members }),
+  onRoster: () => () => {},
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   members: () => scenario.members,
   useCatalogue: () => scenario.catalogue,
@@ -233,15 +235,20 @@ async function refresh(next: ReturnType<typeof buildLibrary>) {
 }
 let shown: React.ComponentType | null = null;
 
-const member = (id: string, label: string, needsSecret = false): Member =>
-  ({
-    entry: { id, server: "http://example.test" },
-    label,
-    account: null,
-    needsSecret,
-    live: { kind: "ready", value: {}, from: "provider", fetchedAt: 0, took: 1 },
-    titles: { kind: "idle" },
-  }) as Member;
+const member = (id: string, label: string, needsSecret = false): Member => ({
+  entry: { id, kind: "xtream", server: "http://example.test", username: "fixture", name: null },
+  label,
+  account: null,
+  needsSecret,
+  live: {
+    kind: "ready",
+    value: listing(id === "a" ? NOS_HD : RTL),
+    from: "provider",
+    fetchedAt: 0,
+    took: 1,
+  },
+  titles: { kind: "idle" },
+});
 
 let container: ReturnType<typeof document.createElement>;
 let root: Root | null = null;

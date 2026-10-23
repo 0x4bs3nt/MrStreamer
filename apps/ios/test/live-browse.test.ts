@@ -124,6 +124,8 @@ vi.mock("../src/header.tsx", () => ({
   tabHref: (_tab: string, screen: string) => `/live/${screen}`,
 }));
 vi.mock("../src/account.ts", () => ({
+  currentRoster: () => ({ kind: "ready", members: scenario.members }),
+  onRoster: () => () => {},
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   useCatalogue: () => scenario.catalogue,
   playChannel: (channel: Channel, _place: string, { watch }: { watch: boolean }) =>
@@ -198,15 +200,26 @@ const withoutBelgium = buildLibrary([
   { subscriptionId: "b", label: "Cabin", catalogue: cabin },
 ]);
 
-const member = (id: string, label: string): Member =>
-  ({
-    entry: { id, server: "http://example.test" },
-    label,
-    account: null,
-    needsSecret: false,
-    live: { kind: "ready", value: {}, from: "provider", fetchedAt: 0, took: 1 },
-    titles: { kind: "ready", value: {}, from: "provider", fetchedAt: 0, took: 1 },
-  }) as Member;
+const member = (id: string, label: string): Member => ({
+  entry: { id, kind: "xtream", server: "http://example.test", username: "fixture", name: null },
+  label,
+  account: null,
+  needsSecret: false,
+  live: {
+    kind: "ready",
+    value: id === "a" ? home : cabin,
+    from: "provider",
+    fetchedAt: 0,
+    took: 1,
+  },
+  titles: {
+    kind: "ready",
+    value: { movieCategories: [], movies: [], seriesCategories: [], series: [] },
+    from: "provider",
+    fetchedAt: 0,
+    took: 1,
+  },
+});
 
 const ready = (library: Library): Catalogue => ({ kind: "ready", library, failing: [] });
 

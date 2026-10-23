@@ -328,9 +328,15 @@ gives each its place among what plays now as its `id`, and selects by it.
 Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
 `titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them
 while the screen is in front, the app active and Reduce Motion off, and a status line in glass at
-the bottom of the screen naming what loads for the first time or failed by provider, with Retry
-and Settings, over content that stays usable. A list that loads again while its last one shows
-says nothing.
+the bottom of the screen naming what loads for the first time. Over usable lists, provider failures
+get a compact notice with Details opening Settings and a labelled close button. `provider-notice.ts`
+observes the public roster and keeps session acknowledgements by provider id, through tabs, resume
+and unchanged retries. A failed source must answer successfully before its incident resets; removal
+clears it too. Password-needed incidents are distinct. Empty/first-load failures keep their explanation
+and recovery inline. Dismissal never changes account errors or lists. A list that loads again while
+its last one shows says nothing. Hosts such as Search must compose progress with `libraryStatus` and resolve
+`useProviderStatus` before announcements and placement, so dismissing a provider failure keeps other
+status text, actions and progress.
 
 Live channels are asked for as HLS, which AVPlayer plays and panels serve beside MPEG-TS. On the
 simulator the fixture channels showed what that covers: H.264 with AAC or AC-3 plays; MPEG-2 fails
