@@ -71,12 +71,17 @@ export function TitlesHome({ kind }: { kind: TitleKind }) {
   const status = useTitlesStatus(kind, (made?.size("all") ?? 0) > 0);
   if (lists.kind === "failed") {
     return (
-      <View style={styles.screen}>
+      // Like the loading and ready lists, recovery must clear the native header and tab bar.
+      <ScrollView
+        style={styles.screen}
+        contentInsetAdjustmentBehavior="automatic"
+        contentContainerStyle={styles.content}
+      >
         <Message
           text={describeError(lists.error)}
           action={{ label: "Try again", onPress: retryTitles }}
         />
-      </View>
+      </ScrollView>
     );
   }
   // Loading too while the lists' collections are first made.
