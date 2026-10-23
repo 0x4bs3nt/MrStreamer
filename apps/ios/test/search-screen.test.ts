@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import type { LiveCatalogue, OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
 import { Window, type HTMLInputElement } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 
 const scenario = vi.hoisted(() => ({
   dismissed: 0,
+  opened: [] as Title[],
   presses: new Map<string, () => void>(),
   members: [] as Member[],
   /** Who listens to the subscriptions changing: the title owner. */
@@ -227,8 +228,10 @@ vi.mock("@mrstreamer/core/metadata/store", () => ({
   },
 }));
 vi.mock("../src/resume.ts", () => ({
-  openDetails: (title: { kind: TitleKind; id: string }) =>
-    scenario.did.push(`details ${title.kind} ${title.id}`),
+  openDetails: (title: Title) => {
+    scenario.opened.push(title);
+    scenario.did.push(`details ${title.kind} ${title.id}`);
+  },
 }));
 vi.mock("../src/playback.ts", () => ({
   usePlayback: () => ({ phase: { kind: "idle" } }),
@@ -428,7 +431,14 @@ async function press(testID: string) {
 const text = () => container.textContent ?? "";
 
 beforeEach(async () => {
-  Object.assign(scenario, { catalogue: ready, did: [], said: [], fontScale: 1, dismissed: 0 });
+  Object.assign(scenario, {
+    catalogue: ready,
+    did: [],
+    opened: [],
+    said: [],
+    fontScale: 1,
+    dismissed: 0,
+  });
   scenario.presses.clear();
   scenario.keyboard.clear();
   scenario.tmdbNames.clear();
@@ -549,12 +559,11 @@ describe("Search over the tabs", () => {
     expect(panel.textContent).toContain("DetailsRetry");
     expect(text()).toContain("Dune");
     await press("text-Retry");
-    await press("text-Details");
-    expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
-
-    // With the keyboard down the line has its room again.
+    // With the keyboard down the line has its room again, before Details closes Search.
     keyboardDown();
     expect(placed()).toBe(open600);
+    await press("text-Details");
+    expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
   });
 
   it("leads the results with its line where the bottom can't show a whole line of it", async () => {
@@ -573,8 +582,6 @@ describe("Search over the tabs", () => {
     );
     expect(text()).toContain("Dune");
     await press("text-Retry");
-    await press("text-Details");
-    expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
     // A keyboard over the whole area still leaves the line, and the results, in the one scroll.
     keyboardTo(200);
     expect(placed()).toBe("results");
@@ -583,6 +590,8 @@ describe("Search over the tabs", () => {
     keyboardDown();
     expect(placed()).toMatch(/^bottom \d/);
     expect(scenario.said).toHaveLength(1);
+    await press("text-Details");
+    expect(scenario.did).toEqual(["retry a", "dismiss 1", "push /live/settings"]);
   });
 
   it("says it is searching until the current text has results", async () => {
@@ -650,6 +659,7 @@ describe("Search over the tabs", () => {
     expect(scenario.did).toEqual([]);
     expect(field().value).toBe("dune");
     expect(text()).toContain("Searching.");
+    expect(text()).not.toContain("Dune");
     await React.act(async () => {
       await vi.runAllTimersAsync();
     });
@@ -1185,5 +1195,194 @@ describe("Every movie and series that matches", () => {
     expect(text()).toContain("Movies · 41");
     expect(moreButtons("movie")).toEqual([]);
     expect(scenario.did).toEqual([]);
+  });
+});
+
+describe("Same-query Search continuity", () => {
+  const titleRows = () => container.querySelectorAll('[data-testid^="search-title-"]').length;
+  const movieRows = () => container.querySelectorAll('[data-testid^="search-title-m"]').length;
+  const seriesRows = () => container.querySelectorAll('[data-testid^="search-title-s"]').length;
+
+  /** Publish the real title owner's replacement index, leaving Search's next task pending. */
+  async function replaceLists(members: Member[]) {
+    scenario.members = members;
+    React.act(() => {
+      for (const listener of [...scenario.roster]) listener();
+      render();
+    });
+    for (let attempt = 0; !titlesWorkedOut(); attempt++) {
+      if (attempt === 100) throw new Error("Replacement lists did not settle");
+      await React.act(async () => {
+        vi.runOnlyPendingTimers();
+      });
+    }
+    React.act(render);
+  }
+
+  it("retains both sections through Show more and ignores a repeated retained footer tap", async () => {
+    await subscriptions([
+      member(
+        "a",
+        "Northwind",
+        {},
+        lists(titled("movie", "m", "Ocean", 60), titled("series", "s", "Ocean", 60)),
+      ),
+    ]);
+    await open();
+    await type("ocean");
+    expect([movieRows(), seriesRows()]).toEqual([20, 20]);
+    vi.useFakeTimers();
+    startPress("text-Show 20 more movies");
+    expect([movieRows(), seriesRows()]).toEqual([20, 20]);
+    expect(text()).toContain("Searching.");
+    startPress("text-Show 20 more movies");
+    // Series stays independently actionable while only Movies is being replaced.
+    startPress("text-Show 20 more series");
+    expect([movieRows(), seriesRows()]).toEqual([20, 20]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect([movieRows(), seriesRows()]).toEqual([40, 40]);
+    expect(text()).not.toContain("Searching.");
+    expect(scenario.did).toEqual([]);
+  });
+
+  it("retains Dune during a metadata notice, blocking its current and delayed old taps", async () => {
+    await open();
+    await type("dune");
+    const oldTap = scenario.presses.get("search-title-7")!;
+    vi.useFakeTimers();
+    React.act(() => scenario.notify?.({ content: true }));
+    expect(text()).toContain("Dune");
+    expect(text()).toContain("Searching.");
+    startPress("search-title-7");
+    expect(scenario.did).toEqual([]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).toContain("Dune");
+    expect(text()).not.toContain("Searching.");
+    React.act(oldTap);
+    expect(scenario.did).toEqual([]);
+    startPress("search-title-7");
+    expect(scenario.did).toEqual(["back", "details movie 7"]);
+  });
+
+  it("keeps retained metadata rows and their footer inert without requesting another page", async () => {
+    await subscriptions([member("a", "Northwind", {}, lists(titled("movie", "m", "Dune", 60)))]);
+    await open();
+    await type("dune");
+    vi.useFakeTimers();
+    React.act(() => scenario.notify?.({ content: true }));
+    expect(movieRows()).toBe(20);
+    startPress("search-title-m1");
+    startPress("text-Show 20 more movies");
+    expect(scenario.did).toEqual([]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(movieRows()).toBe(20);
+    startPress("text-Show 20 more movies");
+    expect(movieRows()).toBe(20);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(movieRows()).toBe(40);
+  });
+
+  it("retains removed title rows inert through a catalogue refresh, then shows only current rows", async () => {
+    const old = { ...duneOnly().movies[0]!, id: "8", name: "Dune Old" };
+    await subscriptions([member("a", "Northwind", {}, lists([...duneOnly().movies, old]))]);
+    await open();
+    await type("dune");
+    expect(titleRows()).toBe(2);
+    const oldTap = scenario.presses.get("search-title-7")!;
+    vi.useFakeTimers();
+    const revised = { ...duneOnly().movies[0]!, name: "Dune Revised" };
+    await replaceLists([member("a", "Northwind", {}, lists([revised]))]);
+    expect(text()).toContain("Searching.");
+    expect(titleRows()).toBe(2);
+    expect(text()).toContain("Dune Old");
+    expect(text()).not.toContain("Dune Revised");
+    startPress("search-title-7");
+    startPress("search-title-8");
+    expect(scenario.did).toEqual([]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(titleRows()).toBe(1);
+    expect(text()).toContain("Dune Revised");
+    expect(text()).not.toContain("Dune Old");
+    React.act(oldTap);
+    expect(scenario.did).toEqual([]);
+    startPress("search-title-7");
+    expect(scenario.opened.map((title) => [title.subscriptionId, title.id, title.name])).toEqual([
+      ["a", "7", "Dune Revised"],
+    ]);
+  });
+
+  it("blocks stale same-query rows when a replacement provider reuses the title id", async () => {
+    await open();
+    await type("dune");
+    const oldTap = scenario.presses.get("search-title-7")!;
+    vi.useFakeTimers();
+    await replaceLists([member("b", "Southwind", {}, duneOnly())]);
+    expect(text()).toContain("Dune");
+    expect(text()).toContain("Searching.");
+    startPress("search-title-7");
+    expect(scenario.did).toEqual([]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    React.act(oldTap);
+    expect(scenario.did).toEqual([]);
+    startPress("search-title-7");
+    expect(scenario.opened.map((title) => [title.subscriptionId, title.id])).toEqual([["b", "7"]]);
+  });
+
+  it("retains a removed channel inert until the current library publishes its matches", async () => {
+    await open();
+    await type("npo");
+    vi.useFakeTimers();
+    scenario.catalogue = { ...ready, library: { ...library, channels: [] } };
+    React.act(render);
+    expect(text()).toContain("NPO 1");
+    expect(text()).toContain("Searching.");
+    startPress("channel-a:1");
+    expect(scenario.did).toEqual([]);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(container.querySelector('[data-testid="channel-a:1"]')).toBeNull();
+    expect(text()).toContain('Nothing named "npo".');
+    expect(scenario.did).toEqual([]);
+  });
+
+  it("clears retained rows immediately on close or when a request has no source", async () => {
+    await open();
+    await type("npo");
+    vi.useFakeTimers();
+    scenario.catalogue = { kind: "loading" };
+    React.act(render);
+    expect(container.querySelector('[data-testid="channel-a:1"]')).toBeNull();
+    scenario.catalogue = ready;
+    React.act(render);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    startType("dune");
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    React.act(() => scenario.notify?.({ content: true }));
+    expect(text()).toContain("Dune");
+    startPress("text-Cancel");
+    expect(text()).not.toMatch(/Dune|Nothing named|Searching\./);
+    await React.act(async () => {
+      await vi.runAllTimersAsync();
+    });
+    expect(text()).not.toContain("Dune");
+    expect(scenario.did).toEqual(["back"]);
+    expect(scenario.dismissed).toBe(1);
   });
 });

@@ -120,7 +120,7 @@ interface Request {
   readonly steps: () => Steps<Found | null>;
 }
 
-/** Each section publishes independently, only for its current text, lists, names and page. */
+/** Same-query rows stay visible during replacement; only the current publication can act. */
 function useSection(request: Request | null, session: RefObject<SearchSession>) {
   const latest = useRef(request);
   latest.current = request;
@@ -145,12 +145,18 @@ function useSection(request: Request | null, session: RefObject<SearchSession>) 
     };
   }, [request, session]);
   return {
-    found: finished && finished.request === request ? finished.found : null,
-    pending: request !== null && finished?.request !== request,
+    found:
+      !session.current.closed &&
+      request !== null &&
+      finished?.request.generation === request.generation
+        ? finished.found
+        : null,
+    pending: !session.current.closed && request !== null && finished?.request !== request,
     current: () =>
       mounted.current &&
       request !== null &&
       latest.current === request &&
+      finished?.request === request &&
       !session.current.closed &&
       session.current.generation === request.generation,
   };
@@ -331,6 +337,7 @@ export default function Search() {
     if (session.current.closed) return false;
     session.current.closed = true;
     session.current.generation++;
+    setEntry({ text: input.current, generation: session.current.generation });
     Keyboard.dismiss();
     return true;
   };
@@ -356,7 +363,7 @@ export default function Search() {
   };
 
   const playing = channelStatus(phase);
-  const searching = searched !== "";
+  const searching = !session.current.closed && searched !== "";
   const pending = movies.pending || series.pending || channels.pending;
   const providers = libraryStatus(members, {
     channels: true,
