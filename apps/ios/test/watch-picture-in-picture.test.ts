@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
 import type { DownloadList } from "@mrstreamer/contracts/downloads";
 import { Window } from "happy-dom";
@@ -48,7 +49,7 @@ const native = vi.hoisted(() => ({
   /** Whether Watch answered while its restore handler still ran. */
   answeredInHandler: false,
   /** The player's listeners, to fail what plays. */
-  listeners: new Map<string, (event: object) => void>(),
+  port: null as ReturnType<typeof nativePlayer> | null,
   /** Whether the iPhone has Picture in Picture, and whether asking for it starts it. */
   pictureInPicture: { supported: false, starts: true },
   /** Set, the native answer to starting Picture in Picture waits until the test calls it. */
@@ -64,6 +65,11 @@ const native = vi.hoisted(() => ({
   catalogue: { kind: "loading" } as Catalogue,
   /** The system alerts shown, by title and message. */
   alerts: [] as string[][],
+  sheets: [] as Array<{
+    options: readonly string[];
+    message?: string;
+    pick: (index: number) => void;
+  }>,
 }));
 
 vi.mock("../src/downloads.ts", () => ({ useDownloads: () => native.downloads }));
@@ -128,17 +134,20 @@ vi.mock("expo-video", async () => {
     VideoView,
     VideoAirPlayButton: () => null,
     isPictureInPictureSupported: () => native.pictureInPicture.supported,
-    createVideoPlayer: () => ({
-      muted: true,
-      timeUpdateEventInterval: 0,
-      currentTime: 0,
-      duration: 0,
-      addListener: (name: string, listener: (event: object) => void) =>
-        native.listeners.set(name, listener),
-      replaceAsync: async () => void native.player.push("replace"),
-      play: () => void native.player.push("play"),
-      pause: () => void native.player.push("pause"),
-    }),
+    createVideoPlayer: () => {
+      const port = nativePlayer(() => {
+        native.player.push("replace");
+      });
+      port.duration = 0;
+      port.play.mockImplementation(() => {
+        native.player.push("play");
+      });
+      port.pause.mockImplementation(() => {
+        native.player.push("pause");
+      });
+      native.port = port;
+      return port;
+    },
   };
 });
 vi.mock("react-native", async () => {
@@ -156,7 +165,14 @@ vi.mock("react-native", async () => {
     StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {} },
     Keyboard: { dismiss: () => undefined },
     PanResponder: { create: () => ({ panHandlers: {} }) },
-    ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
+    ActionSheetIOS: {
+      showActionSheetWithOptions: (
+        options: { options: readonly string[]; message?: string },
+        pick: (index: number) => void,
+      ) => {
+        native.sheets.push({ ...options, pick });
+      },
+    },
     Alert: { alert: (title: string, message: string) => void native.alerts.push([title, message]) },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
   };
@@ -214,7 +230,7 @@ const inWatch = { watch: true, login: [] } as const;
 const { act } = React;
 
 /** The player fails, as AVPlayer reports. */
-const failure = () => native.listeners.get("statusChange")?.({ status: "error" });
+const failure = () => native.port?.failure();
 /** Watch's answers reach the native view, in the order Watch sent them. */
 function deliver() {
   while (native.calls.length) native.calls.shift()?.();
@@ -237,6 +253,7 @@ const offline = { index: 1, routes: [{ name: "connect" }, { name: "offline" }] }
 let unmount = () => {};
 beforeEach(() => {
   stop();
+  if (native.port) native.port.tracks = null;
   Object.assign(native, {
     views: [],
     calls: [],
@@ -250,6 +267,7 @@ beforeEach(() => {
     root: onLive,
     pathname: "/live",
     alerts: [],
+    sheets: [],
     downloads: { items: [], bytes: 0, free: null, ended: 0 },
   });
 });
@@ -391,8 +409,7 @@ async function watching(item: Playing, opens = open, { playing = true } = {}) {
   };
 }
 /** The player reports it plays, or stopped playing. */
-const started = (isPlaying = true) =>
-  act(() => native.listeners.get("playingChange")?.({ isPlaying }));
+const started = (isPlaying = true) => act(() => native.port?.state(isPlaying));
 const channel = (id: string): Playing => ({ ...movie(id), title: "A channel", live: true });
 
 describe("Downloads and Settings from Watch", () => {
@@ -747,6 +764,7 @@ describe("Watch set aside when the tabs go", () => {
     const watch = await watching(copy());
     await watch.press("watch-settings");
     started(false);
+    act(() => togglePause());
     started();
     native.player.length = 0;
     providersGone();
@@ -848,4 +866,109 @@ describe("the star of the channel playing", () => {
     const gone = await watching(live);
     expect(() => gone.press("watch-favourite")).toThrow("No watch-favourite");
   });
+});
+
+describe("Watch's asynchronous track menus", () => {
+  it("queries native facts on opening and hands back the exact record", async () => {
+    const watch = await watching(movie("1"));
+    const port = native.port!;
+    const track = {
+      ...port.identity(),
+      id: "0",
+      revision: 1,
+      group: "audio" as const,
+      isPlayable: true,
+      isDefault: true,
+      label: "Native display name",
+    };
+    port.tracks = {
+      ...port.identity(),
+      revision: 1,
+      audio: { state: "ready", options: [track] },
+      subtitles: { state: "ready", options: [] },
+      subtitleOffAllowed: true,
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+    };
+    port.getObservedTracksAsync.mockClear();
+    port.selectObservedTrackAsync.mockClear();
+    await watch.press("watch-audio");
+    await act(async () => undefined);
+    expect(port.getObservedTracksAsync).toHaveBeenCalledOnce();
+    expect(native.sheets[0]?.options).toEqual(["✓ Native display name", "Cancel"]);
+    native.sheets[0]?.pick(0);
+    await act(async () => undefined);
+    expect(port.selectObservedTrackAsync.mock.calls[0]?.[2].track).toBe(track);
+  });
+
+  it.each(["close", "navigation", "replacement"] as const)(
+    "does not show an asynchronously opened sheet after %s",
+    async (change) => {
+      const watch = await watching(movie("1"));
+      const port = native.port!;
+      let resolve!: (snapshot: { kind: "stale" }) => void;
+      port.getObservedTracksAsync.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      await watch.press("watch-audio");
+      await act(async () => undefined);
+      await act(async () => {
+        if (change === "close") {
+          await closeWatch();
+          openWatch();
+        } else if (change === "navigation")
+          (await import("../src/playback.ts")).onScreen("/settings");
+        else await play(movie("2"), open, inWatch);
+        resolve({ kind: "stale" });
+      });
+      expect(native.sheets).toEqual([]);
+    },
+  );
+
+  it("refuses a held sheet choice after Close and another item", async () => {
+    const watch = await watching(movie("1"));
+    const port = native.port!;
+    port.selectObservedTrackAsync.mockClear();
+    await watch.press("watch-subtitles");
+    await act(async () => undefined);
+    expect(native.sheets[0]?.options).toEqual(["✓ Off", "Cancel"]);
+    await act(async () => {
+      await closeWatch();
+      await play(movie("2"), open, inWatch);
+    });
+    native.sheets[0]?.pick(0);
+    await act(async () => undefined);
+    expect(port.selectObservedTrackAsync).not.toHaveBeenCalled();
+  });
+});
+
+it("does not describe a real lone subtitle as missing when Off is forbidden", async () => {
+  const watch = await watching(movie("subtitle"));
+  const port = native.port!;
+  const track = {
+    ...port.identity(),
+    id: "0",
+    revision: 1,
+    group: "subtitles" as const,
+    isPlayable: true,
+    isDefault: true,
+    forcedOnly: false,
+    label: "Off",
+  };
+  port.tracks = {
+    ...port.identity(),
+    revision: 1,
+    audio: { state: "ready", options: [] },
+    subtitles: { state: "ready", options: [track] },
+    subtitleOffAllowed: false,
+    selectedAudioId: null,
+    selectedSubtitleId: "0",
+  };
+  await watch.press("watch-subtitles");
+  await act(async () => undefined);
+  expect(native.sheets[0]?.options).toEqual(["✓ Off", "Cancel"]);
+  expect(native.sheets[0]?.message).toBeUndefined();
 });

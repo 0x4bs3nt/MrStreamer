@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Where Picture in Picture leaves the viewer, as Watch reports its native events to playback:
@@ -5,14 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Home's preview is silent. The native player is a stand-in, and screens read playback's state
 // as React would, at the moment they ask.
 
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  addListener: () => undefined,
-  replaceAsync: async () => undefined,
-  play: () => undefined,
-  pause: () => undefined,
-};
+const fakePlayer = nativePlayer();
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 vi.mock("../src/store.ts", async (original) => ({
   ...(await original<typeof import("../src/store.ts")>()),

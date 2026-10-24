@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import type { Episode, SeriesDetails, Title, TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { SeriesViewing, TitleProgress } from "@mrstreamer/contracts/viewing";
 import type { ContinueEntry } from "@mrstreamer/core/viewing/continue";
@@ -13,24 +14,9 @@ const SUB = "xtream-test";
 
 /** Each source the player was given, by its address, in order. */
 const sources: string[] = [];
-const listeners = new Map<string, (payload: never) => void>();
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  staysActiveInBackground: false,
-  currentTime: 0,
-  duration: 600,
-  addListener: (event: string, listener: (payload: never) => void) => {
-    listeners.set(event, listener);
-  },
-  replaceAsync: vi.fn(async (source: { uri: string } | null) => {
-    if (source) sources.push(source.uri);
-  }),
-  play: vi.fn(),
-  pause: vi.fn(),
-  seekBy: vi.fn(),
-};
-const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
+const fakePlayer = nativePlayer((source) => {
+  sources.push(source.uri);
+});
 
 const pushed: string[] = [];
 type Answer<T> = { resolve: (value: T) => void; reject: (cause: unknown) => void };
@@ -164,7 +150,7 @@ function holdNextSave() {
 
 /** The player is ready and seeks to where the play starts; answers where that is. */
 function startsAt() {
-  emit("statusChange", { status: "readyToPlay" });
+  fakePlayer.ready();
   return fakePlayer.currentTime;
 }
 
@@ -308,7 +294,7 @@ describe("Next episode", () => {
   it("reads the record once where this episode got to is saved", async () => {
     playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     fakePlayer.currentTime = 590;
     // The save Next asks for waits for the test; later ones answer at once.
     let saved = () => {};
@@ -330,7 +316,7 @@ describe("Next episode", () => {
   it("stays on the episode when its save was refused, reading nothing", async () => {
     playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     fakePlayer.currentTime = 590;
     const answer = holdNextSave();
     playNext();
@@ -382,7 +368,7 @@ describe("resuming right after Close", () => {
   async function closedAt(position: number) {
     playMovie(title("movie", "m1"), m1, 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     fakePlayer.currentTime = position;
     const answer = holdNextSave();
     void closeWatch();
@@ -435,7 +421,7 @@ describe("resuming right after Close", () => {
     const details = seriesDetails("s1");
     playEpisode(details, episode("s1", 1), 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     fakePlayer.currentTime = 400;
     const saved = holdNextSave();
     void closeWatch();
@@ -456,11 +442,11 @@ describe("a version that fails", () => {
     const version = { subscriptionId: SUB, id: "m1" };
     playMovie(title("movie", "m1", ["m1", "m2"]), version, 0, () => undefined);
     await settle();
-    emit("statusChange", { status: "error", error: { message: "Cannot Open" } });
+    fakePlayer.failure();
     expect(failureOf("movie", version)).toBe("file");
     playMovie(title("movie", "m1", ["m1", "m2"]), version, 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     expect(failureOf("movie", version)).toBeUndefined();
   });
 
@@ -469,7 +455,7 @@ describe("a version that fails", () => {
     const details = seriesDetails("s1", ["s1", "s9"]);
     playEpisode(details, episode("s1", 1), 0, shown);
     await settle();
-    emit("statusChange", { status: "error", error: { message: "Cannot Open" } });
+    fakePlayer.failure();
     expect(failureOf("series", { subscriptionId: SUB, id: "s1" })).toBe("episode");
     expect(failureOf("series", { subscriptionId: SUB, id: "s1e1" })).toBeUndefined();
     showVersions();
@@ -480,11 +466,11 @@ describe("a version that fails", () => {
     const shared = { subscriptionId: SUB, id: "x1" };
     playMovie(title("movie", "x1", ["x1", "x2"]), shared, 0, () => undefined);
     await settle();
-    emit("statusChange", { status: "error", error: { message: "Cannot Open" } });
+    fakePlayer.failure();
     // A series listed under the same id plays an episode: the movie's failure stands.
     playEpisode(seriesDetails("x1"), episode("x1", 1), 0, () => undefined);
     await settle();
-    emit("playingChange", { isPlaying: true });
+    fakePlayer.state(true);
     expect(failureOf("movie", shared)).toBe("file");
     expect(failureOf("series", shared)).toBeUndefined();
   });

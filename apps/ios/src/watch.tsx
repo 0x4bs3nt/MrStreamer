@@ -24,6 +24,8 @@ import { DownloadStatusButton } from "./download-status.tsx";
 import { openOnTabs, useTabs, type TabScreen } from "./header.tsx";
 import {
   closeWatch,
+  playbackState,
+  request,
   onEndPictureInPicture,
   onProgressRefused,
   pictureInPicture,
@@ -457,8 +459,24 @@ function Scrubber() {
 
 /** Audio, Subtitles and Next episode: what a title adds to the panel. */
 function TitleButtons({ next }: { next: boolean }) {
-  const choose = (of: "audio" | "subtitles") => {
-    const choices = trackChoices(of);
+  const menu = useRef(0);
+  useEffect(
+    () => () => {
+      menu.current++;
+    },
+    [],
+  );
+  const choose = async (of: "audio" | "subtitles") => {
+    const mine = ++menu.current;
+    const asked = request();
+    const item = playingItem(playbackState.get().phase);
+    const stands = () =>
+      menu.current === mine &&
+      asked.stands() &&
+      playbackState.get().watch &&
+      playingItem(playbackState.get().phase) === item;
+    const choices = await trackChoices(of);
+    if (!stands()) return;
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: of === "audio" ? "Audio" : "Subtitles",
@@ -467,17 +485,23 @@ function TitleButtons({ next }: { next: boolean }) {
           "Cancel",
         ],
         cancelButtonIndex: choices.length,
-        ...(choices.length === 0 || (of === "subtitles" && choices.length === 1)
+        ...(choices.length === 0 || (choices.length === 1 && choices[0]?.kind === "off")
           ? { message: "None in this file." }
           : {}),
       },
-      (index) => choices[index]?.choose(),
+      (index) => {
+        if (stands()) void choices[index]?.choose();
+      },
     );
   };
   return (
     <View style={styles.titleButtons}>
-      <TextControl label="Audio" onPress={() => choose("audio")} testID="watch-audio" />
-      <TextControl label="Subtitles" onPress={() => choose("subtitles")} testID="watch-subtitles" />
+      <TextControl label="Audio" onPress={() => void choose("audio")} testID="watch-audio" />
+      <TextControl
+        label="Subtitles"
+        onPress={() => void choose("subtitles")}
+        testID="watch-subtitles"
+      />
       {next ? <TextControl label="Next episode" onPress={playNext} testID="watch-next" /> : null}
     </View>
   );

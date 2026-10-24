@@ -182,9 +182,9 @@ export function playEpisode(
 /**
  * Plays from where `read` says a title got to, read once every save of progress asked before
  * ended (`progressSettled`); from `shown`, what the screen showed, when the record can't be read.
- * Anything the viewer asks meanwhile, playing, Stop, removing a subscription or another screen,
- * cancels it (`request`), as does `owner`, the caller's own word, no longer standing: details
- * showing another version, or gone.
+ * Playing, Stop, removing a subscription, another screen, Close, setting Watch aside or Picture
+ * in Picture changes cancel it (`request`), as does `owner`, the caller's own word, no longer
+ * standing: details showing another version, or gone.
  */
 function resumeWith<P>(
   read: () => Promise<P>,

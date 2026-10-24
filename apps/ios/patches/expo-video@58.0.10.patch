@@ -1,8 +1,91 @@
+diff --git a/build/VideoPlayer.js b/build/VideoPlayer.js
+index b822fe0ab3287008e68a193ecf760db8cfc7af12..8303f75dbfada79ba4d605c9cde41deea43e78a2 100644
+--- a/build/VideoPlayer.js
++++ b/build/VideoPlayer.js
+@@ -14,6 +14,37 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
+ NativeVideoModule.VideoPlayer.prototype.replaceAsync = function(source) {
+     return replaceAsync.call(this, parseSource(source));
+ };
++
++// Expo's native property setter closures cannot throw. Shadow only this managed instance's
++// legacy track setters and ask native admission state before forwarding any legacy write.
++function assertLegacyPlayback(player) {
++  try { player._assertLegacyPlayback?.(); }
++  catch {
++    throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++  }
++}
++const observedReplace = NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync;
++if (observedReplace) {
++  NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync = function (source, attemptId) {
++    for (const key of ['audioTrack', 'subtitleTrack']) {
++      if (Object.hasOwn(this, key)) continue;
++      const descriptor = Object.getOwnPropertyDescriptor(NativeVideoModule.VideoPlayer.prototype, key);
++      if (!descriptor?.get || !descriptor.set) throw new Error('ERR_OBSERVED_BINDING');
++      Object.defineProperty(this, key, {
++        get: () => descriptor.get.call(this),
++        set: (value) => {
++          try { this._assertLegacyPlayback(); }
++          catch {
++            throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++          }
++          descriptor.set.call(this, value);
++        },
++      });
++    }
++    return observedReplace.call(this, source, attemptId);
++  };
++}
++
+ /**
+  * Creates a direct instance of `VideoPlayer` that doesn't release automatically.
+  *
+@@ -40,14 +71,22 @@ NativeVideoModule.VideoPlayer.prototype.replaceAsync = function(source) {
+             setup?.(player);
+             return player;
+         },
+-        shouldRecreate: (_player, { previousDependencies, dependencies })=>{
++        shouldRecreate: (player, { previousDependencies, dependencies })=>{
+             // Recreate if builder options ([1]) changed or if replaceAsync failed ([2]).
+-            return previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2];
++            const recreate = previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2];
++            // A legacy fallback may have been scheduled before native managed admission.
++            if (recreate) assertLegacyPlayback(player);
++            return recreate;
+         },
+         update: (player, { previousDependencies, dependencies })=>{
+             // Source ([0]) changed — use replaceAsync; fall back to recreate on failure.
+             if (previousDependencies[0] !== dependencies[0]) {
++                try { assertLegacyPlayback(player); }
++                catch {
++                    return Promise.reject(Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' }));
++                }
+                 return player.replaceAsync(parsedSource).catch(()=>{
++                    assertLegacyPlayback(player);
+                     setForceRecreateCount((c)=>c + 1);
+                 });
+             }
 diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
-index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..83781ae41c782708f3834dfdef5b73ce8941088b 100644
+index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..127f88a7cd0cbbb1a25a765b671725e16366055d 100644
 --- a/build/VideoPlayer.types.d.ts
 +++ b/build/VideoPlayer.types.d.ts
-@@ -516,6 +516,7 @@ export type SubtitleTrack = {
+@@ -5,6 +5,15 @@ import type { VideoThumbnail } from './VideoThumbnail';
+  * A class that represents an instance of the video player.
+  */
+ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
++  /** Opt-in iOS contract on this existing player. Check this before admitting managed sources. */
++  readonly mrStreamerPlaybackContract: 1;
++  /** Managed v1 accepts clear sources only. A DRM record rejects before admission with ERR_OBSERVED_DRM_UNSUPPORTED. */
++  replaceObservedAsync(source: VideoSourceObject & { uri: string }, attemptId: number): Promise<ObservedOpenResult>;
++  detachObservedAsync(attemptId: number): Promise<ObservedDetachResult>;
++  getObservedTracksAsync(expectedItem: ObservedItemIdentity): Promise<ObservedTrackSnapshot | { readonly kind: 'stale' }>;
++  selectObservedTrackAsync(expectedItem: ObservedItemIdentity, revision: number, exactRecord: ObservedTrackSelection): Promise<{ readonly kind: 'requested' | 'stale' | 'unavailable' }>;
++
++
+     /**
+      * Boolean value whether the player is currently playing.
+      * > Use `play` and `pause` methods to control the playback.
+@@ -516,6 +525,7 @@ export type SubtitleTrack = {
       * A string used by `expo-video` to identify the subtitle track.
       *
       * @platform android
@@ -10,7 +93,7 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..83781ae41c782708f3834dfdef5b73ce
       */
      id?: string;
      /**
-@@ -614,6 +615,7 @@ export type AudioTrack = {
+@@ -614,6 +624,7 @@ export type AudioTrack = {
      /**
       * A string used by expo-video to identify the audio track.
       * @platform android
@@ -18,6 +101,71 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..83781ae41c782708f3834dfdef5b73ce
       */
      id?: string;
      /**
+@@ -763,3 +774,49 @@ export type PlayerBuilderOptions = {
+  * - `pq`: Perceptual Quantizer - Formats like HDR10 and Dolby Vision
+  */
+ export type VideoRange = 'sdr' | 'hlg' | 'pq';
++
++/** Native identities belong to this player, never a URL, provider or persisted preference. */
++export type ObservedItemIdentity = Readonly<{ attemptId: number; itemId: number }>;
++export type ObservedSystemCode = Readonly<{
++  domain: 'avfoundation' | 'url' | 'coremedia' | 'other'; code: number;
++}>;
++export type ObservedFailure = Readonly<{
++  kind: 'auth' | 'missing' | 'rate-limit' | 'http' | 'network' | 'decode' | 'unsupported' | 'unknown';
++  evidence: Readonly<{ kind: 'system'; origin: 'asset' | 'item' | 'player' | 'error-log';
++    code: ObservedSystemCode; underlying: readonly ObservedSystemCode[] }> | null;
++}>;
++type ObservedTrackIdentity = ObservedItemIdentity & Readonly<{ id: string; revision: number; isDefault: boolean; isPlayable: boolean }>;
++export type ObservedAudioTrack = Omit<AudioTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'audio'; language?: string }>;
++export type ObservedSubtitleTrack = Omit<SubtitleTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; language?: string; forcedOnly: boolean }>;
++export type ObservedTrackGroup<T> = Readonly<{
++  /** Absent is an observed nil group. Ready with no options is distinct from loading or failed discovery. */
++  state: 'loading' | 'absent' | 'ready' | 'unavailable'; options: readonly T[];
++}>;
++export type ObservedTrackSnapshot = ObservedItemIdentity & Readonly<{
++  revision: number; audio: ObservedTrackGroup<ObservedAudioTrack>;
++  subtitles: ObservedTrackGroup<ObservedSubtitleTrack>; subtitleOffAllowed: boolean;
++  selectedAudioId: string | null; selectedSubtitleId: string | null;
++}>;
++export type ObservedTrackSelection =
++  | Readonly<{ kind: 'audio'; track: ObservedAudioTrack }>
++  | Readonly<{ kind: 'subtitles'; track: ObservedSubtitleTrack | null }>;
++/** Local app work settled. This does not acknowledge in-flight network or provider slot release. */
++export type ObservedDetachReceipt = Readonly<{
++  kind: 'detached'; attemptId: number; itemId: number | null;
++  localItemExcluded: true; appWorkDrained: true; providerDisconnect: 'unobservable';
++}>;
++export type ObservedDetachResult = ObservedDetachReceipt | Readonly<{ kind: 'obsolete'; attemptId: number }>;
++export type ObservedOpenResult =
++  | (ObservedItemIdentity & Readonly<{ kind: 'attached' }>)
++  | Readonly<{ kind: 'cancelled'; attemptId: number }>
++  | Readonly<{ kind: 'failed'; attemptId: number; itemId: number | null; failure: ObservedFailure }>;
++export type PlaybackObservation = Readonly<{ version: 1; sequence: number; attemptId: number }> & (
++  | Readonly<{ kind: 'attached'; itemId: number }>
++  | Readonly<{ kind: 'ready'; itemId: number; durationSeconds: number | null }>
++  | Readonly<{ kind: 'state'; itemId: number; timeControl: 'paused' | 'waiting' | 'playing'; mediaTimeSeconds: number; bufferEmpty: boolean; likelyToKeepUp: boolean }>
++  | Readonly<{ kind: 'ended'; itemId: number }>
++  | Readonly<{ kind: 'failure'; itemId: number | null; terminal: boolean; failure: ObservedFailure }>
++  | Readonly<{ kind: 'media-services-reset'; itemId: number | null }>
++  | Readonly<{ kind: 'tracks'; itemId: number; tracks: ObservedTrackSnapshot }>
++  | Readonly<{ kind: 'detached'; itemId: number | null; receipt: ObservedDetachReceipt }>
++);
+diff --git a/build/VideoPlayerEvents.types.d.ts b/build/VideoPlayerEvents.types.d.ts
+index 9c7eaeaf9f27ef6735b2e356ec724af5d5ae58f3..2c4ede83199d4df1c93c5d9ecef10c54081312bd 100644
+--- a/build/VideoPlayerEvents.types.d.ts
++++ b/build/VideoPlayerEvents.types.d.ts
+@@ -1,8 +1,10 @@
++import type { PlaybackObservation } from './VideoPlayer.types';
+ import type { PlayerError, SubtitleTrack, VideoPlayerStatus, VideoSource, VideoTrack, AudioTrack } from './VideoPlayer.types';
+ /**
+  * Handlers for events which can be emitted by the player.
+  */
+ export type VideoPlayerEvents = {
++  playbackObservation(payload: PlaybackObservation): void;
+     /**
+      * Handler for an event emitted when the status of the player changes.
+      */
 diff --git a/build/VideoView.d.ts b/build/VideoView.d.ts
 index 04960571a7e48738769ab3729d70f620c5d63627..ebf38bed119644412e58865c868feaf789d194be 100644
 --- a/build/VideoView.d.ts
@@ -199,8 +347,21 @@ index 71766387e6e661c112a05cf32c19723508e8ffa8..0fba324eb3a74c2f642616a239eafb77
 +    return "\(failure.domain) \(failure.code)\(cause)"
 +  }
 +}
+diff --git a/ios/VideoManager.swift b/ios/VideoManager.swift
+index f60b131f794d9fcac9bf11b9674813e55954cbf8..e8b44cd7f51dcceca5d7037e76000a2ac478e1d3 100644
+--- a/ios/VideoManager.swift
++++ b/ios/VideoManager.swift
+@@ -65,7 +65,7 @@ class VideoManager {
+     reloadPlayers { $0.reloadCurrentSource() }
+   }
+ 
+-  private func reloadPlayers(_ reload: @escaping (VideoPlayer) -> Void) {
++  private func reloadPlayers(_ reload: @escaping @MainActor (VideoPlayer) -> Void) {
+     Self.managerQueue.async { [weak self] in
+       guard let self else {
+         return
 diff --git a/ios/VideoModule.swift b/ios/VideoModule.swift
-index a34afc4a755cb3a0fbe43878c89b9f1174c511a2..ef71946ed4d6c8fd04f88f674ba02349f87d7a8e 100644
+index a34afc4a755cb3a0fbe43878c89b9f1174c511a2..ff80bd61731518a4ff88f93278409a740bc4e1ec 100644
 --- a/ios/VideoModule.swift
 +++ b/ios/VideoModule.swift
 @@ -31,6 +31,7 @@ public final class VideoModule: Module {
@@ -222,11 +383,143 @@ index a34afc4a755cb3a0fbe43878c89b9f1174c511a2..ef71946ed4d6c8fd04f88f674ba02349
      }
  
      View(VideoAirPlayButtonView.self) {
+@@ -153,6 +158,29 @@ public final class VideoModule: Module {
+         return videoPlayer
+       }
+ 
++      // Expo's Property.set is nonthrowing. The existing JS binding calls this synchronous
++      // assertion from per-instance setters; the native setters also refuse managed writes.
++      Function("_assertLegacyPlayback") { (player: VideoPlayer) in try player.requireLegacyPlayback() }
++
++      Property("mrStreamerPlaybackContract") { (_: VideoPlayer) -> Int in 1 }
++
++      AsyncFunction("replaceObservedAsync") { (player: VideoPlayer, source: [String: Any], attemptId: Double) in
++        guard let context = player.appContext else { throw ObservedPlaybackException("ERR_OBSERVED_RELEASED") }
++        let videoSource: VideoSource
++        do { videoSource = try VideoSource(from: source, appContext: context) }
++        catch { throw ObservedPlaybackException("ERR_OBSERVED_SOURCE") }
++        return try await player.replaceObserved(source: videoSource, attemptId: attemptId)
++      }
++      AsyncFunction("detachObservedAsync") { (player: VideoPlayer, attemptId: Double) in
++        try await player.detachObserved(attemptId: attemptId)
++      }
++      AsyncFunction("getObservedTracksAsync") { (player: VideoPlayer, expected: ObservedItemIdentity) in
++        await player.getObservedTracks(expected)
++      }
++      AsyncFunction("selectObservedTrackAsync") { (player: VideoPlayer, expected: ObservedItemIdentity, revision: Double, selection: [String: Any]) in
++        await player.selectObservedTrack(expected, revision: revision, selection: selection)
++      }
++
+       Property("playing") { player -> Bool in
+         return player.isPlaying
+       }
+@@ -298,6 +326,7 @@ public final class VideoModule: Module {
+         return player.subtitles.currentSubtitleTrack
+       }
+       .set { player, subtitleTrack in
++        guard !player.usesObservedPlayback else { return }
+         player.subtitles.selectSubtitleTrack(subtitleTrack: subtitleTrack)
+       }
+ 
+@@ -309,6 +338,7 @@ public final class VideoModule: Module {
+         return player.audioTracks.currentAudioTrack
+       }
+       .set { player, audioTrack in
++        guard !player.usesObservedPlayback else { return }
+         player.audioTracks.selectAudioTrack(audioTrack: audioTrack)
+       }
+ 
 diff --git a/ios/VideoPlayer.swift b/ios/VideoPlayer.swift
-index 3c2fde463a10c78546947dacd8c0fda67f0494c7..3b6d520985d5af1038414fda3aafbd27ea2aa212 100644
+index 3c2fde463a10c78546947dacd8c0fda67f0494c7..ceb10898958fbadc5cb03eb9576bba8c4f1c2d07 100644
 --- a/ios/VideoPlayer.swift
 +++ b/ios/VideoPlayer.swift
-@@ -301,7 +301,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+@@ -6,6 +6,29 @@ import ExpoModulesCore
+ 
+ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObserverDelegate {
+   let videoSourceLoader = VideoSourceLoader()
++  // The existing player owns managed admission, item identity and work settlement.
++  let observedState = ObservedPlayerState()
++  private let observedMode = Mutex(false)
++  var usesObservedPlayback: Bool { observedMode.withLock { $0 } }
++  @MainActor
++  func beginObservedPlayback() {
++    observedMode.withLock { $0 = true }
++    videoSourceLoader.cancelCurrentTask()
++    tracksLoadingTask?.cancel()
++    dangerousPropertiesStore.reset()
++    dangerousPropertiesStore.ownerIsReplacing = false
++  }
++
++  @MainActor
++  func updateObservedPlayerProperties() {
++    let changedPlaying = isPlaying != (ref.timeControlStatus == .playing)
++    isPlaying = ref.timeControlStatus == .playing
++    if ref.currentItem == nil { status = .idle }
++    else if ref.status == .failed || ref.currentItem?.status == .failed { status = .error }
++    else if ref.currentItem?.status == .readyToPlay { status = .readyToPlay }
++    else { status = .loading }
++    if changedPlaying { VideoManager.shared.setAppropriateAudioSessionOrWarn() }
++  }
+   lazy var contentKeyManager = ContentKeyManager()
+   var observer: VideoPlayerObserver?
+   lazy var subtitles: VideoPlayerSubtitles = VideoPlayerSubtitles(owner: self)
+@@ -176,7 +199,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       try replaceCurrentItem(with: initialSource)
+     } else {
+       Task {
+-        try await replaceCurrentItem(with: initialSource)
++        if !usesObservedPlayback { try await replaceCurrentItem(with: initialSource) }
+       }
+     }
+   }
+@@ -205,6 +228,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func replaceCurrentItem(with videoSource: VideoSource?) throws {
++    try requireLegacyPlayback()
+     dangerousPropertiesStore.ownerIsReplacing = true
+     videoSourceLoader.cancelCurrentTask()
+     guard
+@@ -232,7 +256,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+     // sometimes the KVOs will try to deliver updates after the item has been changed or player deallocated,
+     // which causes crashes.
+     DispatchQueue.main.async { [weak self] in
+-      guard let self, !self.hasBeenReleased else {
++      guard let self, !self.hasBeenReleased, !self.usesObservedPlayback else {
+         return
+       }
+       self.ref.replaceCurrentItem(with: playerItem)
+@@ -245,6 +269,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+    * Replaces the current item, while loading the AVAsset on a different thread. The synchronous version can lock the main thread for extended periods of time.
+    */
+   func replaceCurrentItem(with videoSource: VideoSource?) async throws {
++    try requireLegacyPlayback()
+     guard let videoSource, videoSource.uri != nil else {
+       clearCurrentItem()
+       return
+@@ -269,7 +294,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+     // sometimes the KVOs will try to deliver updates after the item has been changed or player deallocated,
+     // which causes crashes.
+     DispatchQueue.main.async { [weak self] in
+-      guard let self, !self.hasBeenReleased else {
++      guard let self, !self.hasBeenReleased, !self.usesObservedPlayback else {
+         return
+       }
+       self.ref.replaceCurrentItem(with: playerItem)
+@@ -281,7 +306,12 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   /**
+    * Reloads the current source on the existing `AVPlayer`, preserving the playhead and play state.
+    */
++  @MainActor
+   func reloadCurrentSource() {
++    if usesObservedPlayback {
++      observedMediaServicesReset()
++      return
++    }
+     guard let videoSource = (ref.currentItem as? VideoPlayerItem)?.videoSource else {
+       return
+     }
+@@ -301,7 +331,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
        do {
          try await self.replaceCurrentItem(with: videoSource)
        } catch {
@@ -235,21 +528,181 @@ index 3c2fde463a10c78546947dacd8c0fda67f0494c7..3b6d520985d5af1038414fda3aafbd27
          return
        }
  
+@@ -313,7 +343,15 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+     }
+   }
+ 
++  @MainActor
+   func reloadIfFailed() {
++    if usesObservedPlayback {
++      if let attempt = observedState.current {
++        observeManagedItemState(attempt)
++        Task { @MainActor in _ = await self.refreshObservedTracks(attempt) }
++      }
++      return
++    }
+     if ref.status == .failed || ref.currentItem?.status == .failed {
+       reloadCurrentSource()
+     }
+@@ -322,7 +360,8 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   private func clearCurrentItem() {
+     videoSourceLoader.cancelCurrentTask()
+ 
+-    DispatchQueue.main.async { [ref, dangerousPropertiesStore] in
++    DispatchQueue.main.async { [weak self, ref, dangerousPropertiesStore] in
++      guard self?.usesObservedPlayback == false else { return }
+       ref.replaceCurrentItem(with: nil)
+       dangerousPropertiesStore.reset()
+       dangerousPropertiesStore.ownerIsReplacing = false
+@@ -341,6 +380,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       return
+     }
+ 
++    observedState.current?.cancel()
+     observer?.notifyPlayerDeinit(player: self)
+     observer?.cleanup()
+     observer = nil
+@@ -359,7 +399,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+     }
+   }
+ 
+-  private var hasBeenReleased: Bool {
++  var hasBeenReleased: Bool {
+     return didRelease.withLock { $0 }
+   }
+ 
+@@ -382,6 +422,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   // MARK: - VideoPlayerObserverDelegate
+ 
+   func onStatusChanged(player: AVPlayer, oldStatus: PlayerStatus?, newStatus: PlayerStatus, error: Exception?) {
++    guard !usesObservedPlayback else { return }
+     let errorRecord = error != nil ? PlaybackError(message: error?.description) : nil
+     let payload = StatusChangedEventPayload(status: newStatus, oldStatus: oldStatus, error: errorRecord)
+     safeEmit(event: "statusChange", payload: payload)
+@@ -389,6 +430,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onIsPlayingChanged(player: AVPlayer, oldIsPlaying: Bool?, newIsPlaying: Bool) {
++    guard !usesObservedPlayback else { return }
+     let payload = IsPlayingEventPayload(isPlaying: newIsPlaying, oldIsPlaying: oldIsPlaying)
+     safeEmit(event: "playingChange", payload: payload)
+     isPlaying = newIsPlaying
+@@ -418,6 +460,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onPlayedToEnd(player: AVPlayer) {
++    guard !usesObservedPlayback else { return }
+     safeEmit(event: "playToEnd")
+     if loop {
+       seeker.seek(to: .zero)
+@@ -426,6 +469,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onItemChanged(player: AVPlayer, oldVideoPlayerItem: VideoPlayerItem?, newVideoPlayerItem: VideoPlayerItem?) {
++    guard !usesObservedPlayback else { return }
+     let payload = SourceChangedEventPayload(
+       source: newVideoPlayerItem?.videoSource,
+       oldSource: oldVideoPlayerItem?.videoSource
+@@ -436,10 +480,12 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onTimeUpdate(player: AVPlayer, timeUpdate: TimeUpdate) {
++    guard !usesObservedPlayback else { return }
+     safeEmit(event: "timeUpdate", payload: timeUpdate)
+   }
+ 
+   func onLoadedPlayerItem(player: AVPlayer, playerItem: AVPlayerItem?) {
++    guard !usesObservedPlayback else { return }
+     guard !hasBeenReleased else {
+       return
+     }
+@@ -451,7 +497,10 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+       let subtitlesChangePayload = await self.subtitles.onNewPlayerItemLoaded(playerItem: playerItem)
+       let videoPlayerItem: VideoPlayerItem? = playerItem as? VideoPlayerItem
+ 
+-      availableVideoTracks = await videoPlayerItem?.videoTracks ?? []
++      let loadedVideoTracks = await videoPlayerItem?.videoTracks ?? []
++      await MainActor.run {
++        if !self.usesObservedPlayback { self.availableVideoTracks = loadedVideoTracks }
++      }
+ 
+       guard !Task.isCancelled else {
+         return
+@@ -472,6 +521,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onSubtitleSelectionChanged(player: AVPlayer, playerItem: AVPlayerItem?, subtitleTrack: SubtitleTrack?) {
++    guard !usesObservedPlayback else { return }
+     let oldTrack = subtitles.currentSubtitleTrack
+     subtitles.onNewSubtitleTrackSelected(subtitleTrack: subtitleTrack)
+     let payload = SubtitleTrackChangedEventPayload(subtitleTrack: subtitles.currentSubtitleTrack, oldSubtitleTrack: oldTrack)
+@@ -479,6 +529,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onAudioTrackSelectionChanged(player: AVPlayer, playerItem: AVPlayerItem?, audioTrack: AudioTrack?) {
++    guard !usesObservedPlayback else { return }
+     let oldTrack = audioTracks.currentAudioTrack
+     audioTracks.onNewAudioTrackSelected(audioTrack: audioTrack)
+     let payload = AudioTrackChangedEventPayload(audioTrack: audioTracks.currentAudioTrack, oldAudioTrack: oldTrack)
+@@ -486,6 +537,7 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func onVideoTrackChanged(player: AVPlayer, oldVideoTrack: VideoTrack?, newVideoTrack: VideoTrack?) {
++    guard !usesObservedPlayback else { return }
+     currentVideoTrack = newVideoTrack
+   }
+ 
+@@ -498,6 +550,11 @@ internal final class VideoPlayer: SharedRef<AVPlayer>, Hashable, VideoPlayerObse
+   }
+ 
+   func safeEmit(event: String, payload: Record? = nil) {
++    if usesObservedPlayback && [
++      "sourceChange", "sourceLoad", "statusChange", "playingChange", "playToEnd", "timeUpdate",
++      "videoTrackChange", "subtitleTrackChange", "audioTrackChange",
++      "availableSubtitleTracksChange", "availableAudioTracksChange"
++    ].contains(event) { return }
+     if self.appContext != nil {
+       self.emit(event: event, payload: payload?.toDictionary(appContext: appContext))
+     }
 diff --git a/ios/VideoPlayerAudioTracks.swift b/ios/VideoPlayerAudioTracks.swift
-index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..c09f5f4daddb409b1b64aafc2b2d1d14afc5b667 100644
+index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..3b65e168210bd8251cd987331a3a1883d1f2809f 100644
 --- a/ios/VideoPlayerAudioTracks.swift
 +++ b/ios/VideoPlayerAudioTracks.swift
-@@ -24,8 +24,7 @@ class VideoPlayerAudioTracks {
+@@ -21,15 +21,28 @@ class VideoPlayerAudioTracks {
+   func onNewPlayerItemLoaded(playerItem: AVPlayerItem?) async -> AudioTracksChangedEventPayload {
+     let oldAvailableAudioTracks = availableAudioTracks
+ 
++    let loaded: [AudioTrack]
      do {
-       availableAudioTracks = try await Self.findAvailableAudioTracks(for: playerItem)
+-      availableAudioTracks = try await Self.findAvailableAudioTracks(for: playerItem)
++      loaded = try await Self.findAvailableAudioTracks(for: playerItem)
      } catch {
 -      let uri = (playerItem as? VideoPlayerItem)?.videoSource.uri?.absoluteString ?? "the current source"
 -      owner?.appContext?.jsLogger.warn("Failed to load available audio tracks for \(uri). Error: \(error)")
-+      owner?.appContext?.jsLogger.warn("Failed to load available audio tracks: \(error.withoutAddress)")
-       availableAudioTracks = []
+-      availableAudioTracks = []
++      if owner?.usesObservedPlayback != true {
++        owner?.appContext?.jsLogger.warn("Failed to load available audio tracks: \(error.withoutAddress)")
++      }
++      await MainActor.run {
++        if self.owner?.usesObservedPlayback != true { self.availableAudioTracks = [] }
++      }
++      await selectDefaultAudioTrackIfNeeded(for: playerItem)
++      return AudioTracksChangedEventPayload(
++        availableAudioTracks: availableAudioTracks,
++        oldAvailableAudioTracks: oldAvailableAudioTracks
++      )
++    }
++    await MainActor.run {
++      guard self.owner?.usesObservedPlayback != true else { return }
++      self.availableAudioTracks = loaded
      }
  
-@@ -43,8 +42,8 @@ class VideoPlayerAudioTracks {
+-    await Self.selectDefaultAudioTrackIfNeeded(for: playerItem)
++    await selectDefaultAudioTrackIfNeeded(for: playerItem)
+ 
+     return AudioTracksChangedEventPayload(
+       availableAudioTracks: availableAudioTracks,
+@@ -43,8 +56,8 @@ class VideoPlayerAudioTracks {
      }
  
      if let group = currentItem.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
@@ -260,11 +713,75 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..c09f5f4daddb409b1b64aafc2b2d1d14
        }
        currentItem.select(option, in: group)
      }
+@@ -77,7 +90,7 @@ class VideoPlayerAudioTracks {
+     return availableAudioTracks
+   }
+ 
+-  private static func selectDefaultAudioTrackIfNeeded(for playerItem: AVPlayerItem?) async {
++  private func selectDefaultAudioTrackIfNeeded(for playerItem: AVPlayerItem?) async {
+     guard let playerItem,
+       let audioGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible) else {
+       return
+@@ -90,6 +103,7 @@ class VideoPlayerAudioTracks {
+ 
+     if let audioOption = audioGroup.defaultOption ?? audioGroup.options.first {
+       await MainActor.run {
++        guard self.owner?.usesObservedPlayback != true else { return }
+         playerItem.select(audioOption, in: audioGroup)
+       }
+     }
 diff --git a/ios/VideoPlayerItem.swift b/ios/VideoPlayerItem.swift
-index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..e57285c6721905431e1ff44370b67bc3429e9fc0 100644
+index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..755a8795f509b49f461105093ccfa62c49bd4be0 100644
 --- a/ios/VideoPlayerItem.swift
 +++ b/ios/VideoPlayerItem.swift
-@@ -135,7 +135,7 @@ class VideoPlayerItem: AVPlayerItem {
+@@ -29,7 +29,7 @@ class VideoPlayerItem: AVPlayerItem {
+   }
+ 
+   @VideoLoadingActor
+-  init?(videoSource: VideoSource, urlOverride: URL? = nil) async throws {
++  init?(videoSource: VideoSource, urlOverride: URL? = nil, observedLoad: ObservedAssetLoad? = nil) async throws {
+     try Task.checkCancellation()
+ 
+     guard let url = urlOverride ?? videoSource.uri else {
+@@ -40,10 +40,12 @@ class VideoPlayerItem: AVPlayerItem {
+     let asset = VideoAsset(url: url, videoSource: videoSource)
+     self.urlAsset = asset
+     self.isHls = asset.effectivePlaybackURL.isHLS || asset.effectiveContentType == .hls
++    try observedLoad?.register(asset)
+     // We can ignore any exceptions thrown during the load. The asset will be assigned to the `VideoPlayer` anyways
+     // and cause it to go into .error state triggering the `onStatusChange` event.
+     do {
+       try await asset.prepareForLoadingIfNeeded()
++      try observedLoad?.check()
+       let (_, _, _, _, _, characteristics) = try await asset.load(
+         .duration,
+         .preferredTransform,
+@@ -52,18 +54,23 @@ class VideoPlayerItem: AVPlayerItem {
+         .tracks,
+         .availableMediaCharacteristicsWithMediaSelectionOptions
+       )
++      try observedLoad?.check()
+       for characteristic in characteristics {
+         _ = try await asset.loadMediaSelectionGroup(for: characteristic)
++        try observedLoad?.check()
+       }
+     } catch {
++      if observedLoad != nil { asset.transportError = asset.transportError ?? error }
+       // Asset errors are surfaced through the player status, but cancellation must stop obsolete work.
+       try Task.checkCancellation()
+     }
+ 
+     try Task.checkCancellation()
+     super.init(asset: urlAsset, automaticallyLoadedAssetKeys: nil)
++    observedLoad?.registerItem(self)
+     try Task.checkCancellation()
+-    self.createTracksLoadingTask()
++    // Managed snapshots use media selection groups, never independent playlist discovery.
++    if observedLoad == nil { self.createTracksLoadingTask() }
+   }
+ 
+   deinit {
+@@ -135,7 +142,7 @@ class VideoPlayerItem: AVPlayerItem {
      do {
        return try await self.fetchHlsVideoTracks()
      } catch {
@@ -273,21 +790,720 @@ index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..e57285c6721905431e1ff44370b67bc3
        return []
      }
    }
+diff --git a/ios/VideoPlayerObservation.swift b/ios/VideoPlayerObservation.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..66a09d4cd83a721c866d625a0248132d46f4bc2f
+--- /dev/null
++++ b/ios/VideoPlayerObservation.swift
+@@ -0,0 +1,397 @@
++import AVFoundation
++import ExpoModulesCore
++import Foundation
++
++internal final class ObservedPlaybackException: Exception {
++  private let fixedCode: String
++  init(_ fixedCode: String) { self.fixedCode = fixedCode; super.init() }
++  override var reason: String { fixedCode }
++  override var code: String { fixedCode }
++}
++
++internal struct ObservedItemIdentity: Record {
++  @Field var attemptId: Double = 0
++  @Field var itemId: Double = 0
++}
++
++internal final class ObservedAttempt {
++  let id: Double
++  let load = ObservedAssetLoad()
++  var loading: Task<VideoPlayerItem?, Error>?
++  var tracksLoading: Task<ObservedGroups, Never>?
++  var tracksReadId = 0
++  var closing: Task<[String: Any], Error>?
++  var retired = false
++  var attached = false
++  var item: VideoPlayerItem?
++  var itemId: Double?
++  var readySent = false
++  var terminalSent = false
++  var revision: Double = 0
++  var audio: AVMediaSelectionGroup?
++  var subtitles: AVMediaSelectionGroup?
++  var audioOptions: [AVMediaSelectionOption] = []
++  var subtitleOptions: [AVMediaSelectionOption] = []
++  var facts: NSDictionary?
++  var snapshot: [String: Any]?
++  var lastSnapshot: NSDictionary?
++
++  init(id: Double) { self.id = id }
++  func cancel() {
++    retired = true
++    load.cancel()
++    loading?.cancel()
++    tracksLoading?.cancel()
++  }
++}
++
++// Accessed only on main. One admission remains held until its real drain task settles.
++internal final class ObservedPlayerState {
++  var highWatermark: Double = 0
++  var retiredThrough: Double = 0
++  var nextItemId: Double = 0
++  var sequence: Double = 0
++  var current: ObservedAttempt?
++  var settlements: [Double: Task<[String: Any], Error>] = [:]
++}
++
++internal struct ObservedGroups {
++  let audio: AVMediaSelectionGroup?
++  let subtitles: AVMediaSelectionGroup?
++  let audioState: String
++  let subtitleState: String
++
++  @VideoLoadingActor
++  static func load(_ item: AVPlayerItem, ticket: ObservedAssetLoad) async -> ObservedGroups {
++    var audio: AVMediaSelectionGroup?
++    var subtitles: AVMediaSelectionGroup?
++    var audioState = "unavailable"
++    var subtitleState = "unavailable"
++    do {
++      try ticket.check()
++      audio = try await item.asset.loadMediaSelectionGroup(for: .audible)
++      try ticket.check()
++      audioState = audio == nil ? (item.status == .unknown ? "loading" : "absent") : "ready"
++      subtitles = try await item.asset.loadMediaSelectionGroup(for: .legible)
++      try ticket.check()
++      subtitleState = subtitles == nil ? (item.status == .unknown ? "loading" : "absent") : "ready"
++    } catch {
++      // A failed read is unknown availability, never proof of an empty group.
++    }
++    return ObservedGroups(audio: audio, subtitles: subtitles, audioState: audioState, subtitleState: subtitleState)
++  }
++}
++
++internal extension VideoPlayer {
++  func requireLegacyPlayback() throws {
++    if usesObservedPlayback { throw ObservedPlaybackException("ERR_OBSERVED_LEGACY_WRITE") }
++  }
++
++  @MainActor
++  func isObservedCurrent(_ attempt: ObservedAttempt) -> Bool {
++    observedState.current === attempt && !attempt.retired && !hasBeenReleased &&
++      attempt.attached && attempt.item != nil && ref.currentItem === attempt.item
++  }
++
++  @MainActor
++  func emitObserved(_ attempt: ObservedAttempt, kind: String, values: [String: Any] = [:]) {
++    observedState.sequence += 1
++    var event = values
++    event["version"] = 1
++    event["sequence"] = observedState.sequence
++    event["attemptId"] = attempt.id
++    event["itemId"] = attempt.itemId.map { $0 as Any } ?? NSNull()
++    event["kind"] = kind
++    if appContext != nil { emit(event: "playbackObservation", payload: event) }
++  }
++
++  @MainActor
++  func replaceObserved(source: VideoSource, attemptId: Double) async throws -> [String: Any] {
++    try validateObservedId(attemptId)
++    if attemptId <= observedState.retiredThrough {
++      return ["kind": "cancelled", "attemptId": attemptId]
++    }
++    guard attemptId > observedState.highWatermark else {
++      throw ObservedPlaybackException("ERR_OBSERVED_ATTEMPT_ORDER")
++    }
++    // V1 owns clear-source loading only, not legacy content-key requests or their logs.
++    guard source.drm == nil else { throw ObservedPlaybackException("ERR_OBSERVED_DRM_UNSUPPORTED") }
++    guard observedState.current == nil, ref.currentItem == nil, !videoSourceLoader.isLoading, !hasBeenReleased else {
++      throw ObservedPlaybackException("ERR_OBSERVED_NOT_DRAINED")
++    }
++    guard source.uri != nil else { throw ObservedPlaybackException("ERR_OBSERVED_SOURCE") }
++    beginObservedPlayback()
++    ref.pause()
++    observedState.highWatermark = attemptId
++    let attempt = ObservedAttempt(id: attemptId)
++    observedState.current = attempt
++    let loading = Task { @VideoLoadingActor [videoSourceLoader] in
++      try await videoSourceLoader.loadObserved(videoSource: source, load: attempt.load)
++    }
++    attempt.loading = loading
++    do {
++      let item = try await loading.value
++      bindObservedConstructedItem(attempt)
++      // This continuation and the attachment write both execute on main without another suspension.
++      guard observedState.current === attempt, !attempt.retired, !hasBeenReleased else {
++        return ["kind": "cancelled", "attemptId": attemptId]
++      }
++      guard let item, attempt.item === item else { throw ObservedPlaybackException("ERR_OBSERVED_SOURCE") }
++      item.audioTimePitchAlgorithm = preservesPitch ? .spectral : .varispeed
++      item.preferredForwardBufferDuration = bufferOptions.preferredForwardBufferDuration
++      item.preferredMaximumResolution = maxResolution?.toCGSize() ?? .zero
++      ref.appliesMediaSelectionCriteriaAutomatically = false
++      ref.replaceCurrentItem(with: item)
++      guard ref.currentItem === item else { throw ObservedPlaybackException("ERR_OBSERVED_ATTACH") }
++      attempt.attached = true
++      updateObservedPlayerProperties()
++      // Synchronous replace KVO cannot publish ready/tracks before this commit.
++      emitObserved(attempt, kind: "attached")
++      let initialTracks: [String: Any] = [
++        "attemptId": attempt.id, "itemId": attempt.itemId!, "revision": 0,
++        "audio": ["state": "loading", "options": [] as [[String: Any]]],
++        "subtitles": ["state": "loading", "options": [] as [[String: Any]]],
++        "subtitleOffAllowed": false, "selectedAudioId": NSNull(), "selectedSubtitleId": NSNull()
++      ]
++      emitObserved(attempt, kind: "tracks", values: ["tracks": initialTracks])
++      observer?.observeManagedItem(attempt)
++      observeManagedItemState(attempt)
++      return ["kind": "attached", "attemptId": attemptId, "itemId": attempt.itemId!]
++    } catch {
++      bindObservedConstructedItem(attempt)
++      if attempt.retired || observedState.current !== attempt || error is CancellationError {
++        return ["kind": "cancelled", "attemptId": attemptId]
++      }
++      let failure = ObservedFailure.system(error, origin: "asset")
++      emitObserved(attempt, kind: "failure", values: ["terminal": true, "failure": failure])
++      return ["kind": "failed", "attemptId": attemptId,
++        "itemId": attempt.itemId.map { $0 as Any } ?? NSNull(), "failure": failure]
++    }
++  }
++
++  @MainActor
++  func detachObserved(attemptId: Double) async throws -> [String: Any] {
++    try validateObservedId(attemptId)
++    // Retirement precedes any await, including an open call not yet delivered by the bridge.
++    observedState.retiredThrough = max(observedState.retiredThrough, attemptId)
++    if let closed = observedState.settlements[attemptId] {
++      return try await closed.value
++    }
++    guard let attempt = observedState.current, attempt.id == attemptId else {
++      if attemptId > observedState.highWatermark {
++        // No admission ever owned this token, so its app-work set is already empty.
++        let receipt = detachReceipt(attemptId: attemptId, itemId: nil)
++        let closed = Task<[String: Any], Error> { receipt }
++        observedState.settlements[attemptId] = closed
++        emitObserved(ObservedAttempt(id: attemptId), kind: "detached", values: ["receipt": receipt])
++        return receipt
++      }
++      return ["kind": "obsolete", "attemptId": attemptId]
++    }
++    if let closing = attempt.closing { return try await closing.value }
++    attempt.cancel()
++    observer?.stopManagedItemObservations()
++    ref.pause()
++    if ref.currentItem === attempt.item, attempt.item != nil {
++      ref.replaceCurrentItem(with: nil)
++    }
++    let closing = Task { @MainActor [self, attempt] () async throws -> [String: Any] in
++      // Neither nil currentItem nor a timer proves that owned async operations have settled.
++      _ = try? await attempt.loading?.value
++      bindObservedConstructedItem(attempt)
++      _ = await attempt.tracksLoading?.value
++      guard attempt.item == nil || ref.currentItem !== attempt.item else {
++        throw ObservedPlaybackException("ERR_OBSERVED_DETACH_UNCERTAIN")
++      }
++      self.updateObservedPlayerProperties()
++      let receipt = detachReceipt(attemptId: attempt.id, itemId: attempt.itemId)
++      emitObserved(attempt, kind: "detached", values: ["receipt": receipt])
++      if observedState.current === attempt { observedState.current = nil }
++      return receipt
++    }
++    attempt.closing = closing
++    observedState.settlements[attemptId] = closing
++    return try await closing.value
++  }
++
++  @MainActor
++  func observeManagedItemState(_ attempt: ObservedAttempt) {
++    guard isObservedCurrent(attempt), let item = attempt.item else { return }
++    if item.status == .readyToPlay && !attempt.readySent {
++      attempt.readySent = true
++      observer?.notifyManagedItemReady(attempt)
++      let duration = item.duration.seconds
++      emitObserved(attempt, kind: "ready", values: ["durationSeconds": duration.isFinite ? duration as Any : NSNull()])
++      Task { @MainActor in _ = await self.refreshObservedTracks(attempt) }
++    }
++    if !attempt.terminalSent && (item.status == .failed || ref.status == .failed) {
++      attempt.terminalSent = true
++      // A terminal native error takes precedence over an earlier asset/group load error.
++      let itemError = item.status == .failed ? item.error : nil
++      let playerFailed = ref.status == .failed && itemError == nil
++      let error = itemError ?? (playerFailed ? ref.error : item.urlAsset.transportError)
++      emitObserved(attempt, kind: "failure", values: ["terminal": true,
++        "failure": ObservedFailure.system(error, origin: playerFailed ? "player" : "item")])
++    }
++    updateObservedPlayerProperties()
++    let time = ref.currentTime().seconds
++    emitObserved(attempt, kind: "state", values: [
++      "timeControl": ref.timeControlStatus == .playing ? "playing" : ref.timeControlStatus == .paused ? "paused" : "waiting",
++      "mediaTimeSeconds": time.isFinite ? time : 0,
++      "bufferEmpty": item.isPlaybackBufferEmpty, "likelyToKeepUp": item.isPlaybackLikelyToKeepUp
++    ])
++  }
++
++  @MainActor
++  func observedMediaServicesReset() {
++    guard let attempt = observedState.current, !attempt.retired else { return }
++    emitObserved(attempt, kind: "media-services-reset")
++  }
++
++  @MainActor
++  func getObservedTracks(_ expected: ObservedItemIdentity) async -> [String: Any] {
++    guard let attempt = expectedObservedAttempt(expected) else { return ["kind": "stale"] }
++    return await refreshObservedTracks(attempt)
++  }
++
++  @MainActor
++  func refreshObservedTracks(_ attempt: ObservedAttempt) async -> [String: Any] {
++    guard isObservedCurrent(attempt), let item = attempt.item else { return ["kind": "stale"] }
++    let loading: Task<ObservedGroups, Never>
++    let readId: Int
++    if let existing = attempt.tracksLoading {
++      loading = existing
++      readId = attempt.tracksReadId
++    } else {
++      attempt.tracksReadId += 1
++      readId = attempt.tracksReadId
++      loading = Task { @VideoLoadingActor in await ObservedGroups.load(item, ticket: attempt.load) }
++      attempt.tracksLoading = loading
++    }
++    let groups = await loading.value
++    guard isObservedCurrent(attempt), attempt.item === item else { return ["kind": "stale"] }
++    guard readId == attempt.tracksReadId else { return attempt.snapshot ?? ["kind": "stale"] }
++    attempt.tracksLoading = nil
++    let audioFacts = groupFacts(groups.audio, group: "audio")
++    let subtitleFacts = groupFacts(groups.subtitles, group: "subtitles")
++    let facts: NSDictionary = ["audio": audioFacts, "subtitles": subtitleFacts,
++      "audioState": groups.audioState, "subtitleState": groups.subtitleState,
++      "offAllowed": groups.subtitles?.allowsEmptySelection ?? false]
++    let groupsChanged = attempt.audio != groups.audio || attempt.subtitles != groups.subtitles ||
++      !sameObservedOptions(attempt.audioOptions, groups.audio?.options ?? []) ||
++      !sameObservedOptions(attempt.subtitleOptions, groups.subtitles?.options ?? [])
++    if groupsChanged || attempt.facts != facts {
++      attempt.revision += 1
++      attempt.facts = facts
++    }
++    attempt.audio = groups.audio
++    attempt.subtitles = groups.subtitles
++    attempt.audioOptions = groups.audio?.options ?? []
++    attempt.subtitleOptions = groups.subtitles?.options ?? []
++    let snapshot: [String: Any] = [
++      "attemptId": attempt.id, "itemId": attempt.itemId!, "revision": attempt.revision,
++      "audio": ["state": groups.audioState, "options": stampObservedTracks(audioFacts, attempt: attempt)],
++      "subtitles": ["state": groups.subtitleState, "options": stampObservedTracks(subtitleFacts, attempt: attempt)],
++      "subtitleOffAllowed": groups.subtitles?.allowsEmptySelection ?? false,
++      "selectedAudioId": selectedObservedId(item, group: groups.audio),
++      "selectedSubtitleId": selectedObservedId(item, group: groups.subtitles)
++    ]
++    attempt.snapshot = snapshot
++    let dictionary = snapshot as NSDictionary
++    if attempt.lastSnapshot != dictionary {
++      attempt.lastSnapshot = dictionary
++      emitObserved(attempt, kind: "tracks", values: ["tracks": snapshot])
++    }
++    return snapshot
++  }
++
++  @MainActor
++  func selectObservedTrack(_ expected: ObservedItemIdentity, revision: Double, selection: [String: Any]) async -> [String: Any] {
++    guard let attempt = expectedObservedAttempt(expected) else { return ["kind": "stale"] }
++    _ = await refreshObservedTracks(attempt)
++    guard isObservedCurrent(attempt), attempt.revision == revision, let item = attempt.item else {
++      return ["kind": "stale"]
++    }
++    guard let kind = selection["kind"] as? String, kind == "audio" || kind == "subtitles" else {
++      return ["kind": "unavailable"]
++    }
++    let group = kind == "audio" ? attempt.audio : attempt.subtitles
++    guard let group else { return ["kind": "unavailable"] }
++    if selection["track"] is NSNull {
++      guard kind == "subtitles", group.allowsEmptySelection else { return ["kind": "unavailable"] }
++      if item.currentMediaSelection.selectedMediaOption(in: group) != nil { item.select(nil, in: group) }
++    } else {
++      guard let record = selection["track"] as? [String: Any],
++        let snapshotGroup = attempt.snapshot?[kind] as? [String: Any],
++        let records = snapshotGroup["options"] as? [[String: Any]],
++        let index = records.firstIndex(where: { NSDictionary(dictionary: $0).isEqual(to: record) }),
++        group.options.indices.contains(index), group.options[index].isPlayable else {
++        return ["kind": "unavailable"]
++      }
++      let option = (kind == "audio" ? attempt.audioOptions : attempt.subtitleOptions)[index]
++      guard group.options[index] == option else { return ["kind": "stale"] }
++      if item.currentMediaSelection.selectedMediaOption(in: group) != option { item.select(option, in: group) }
++    }
++    // Acknowledges the request only. Selection notifications/query supply actual readback.
++    return ["kind": "requested"]
++  }
++
++  @MainActor
++  private func bindObservedConstructedItem(_ attempt: ObservedAttempt) {
++    guard attempt.item == nil, let item = attempt.load.constructedItem as? VideoPlayerItem else { return }
++    observedState.nextItemId += 1
++    attempt.item = item
++    attempt.itemId = observedState.nextItemId
++  }
++
++  @MainActor
++  private func expectedObservedAttempt(_ expected: ObservedItemIdentity) -> ObservedAttempt? {
++    guard let attempt = observedState.current, attempt.id == expected.attemptId,
++      attempt.itemId == expected.itemId, isObservedCurrent(attempt) else { return nil }
++    return attempt
++  }
++}
++
++private func validateObservedId(_ id: Double) throws {
++  guard id.isFinite, id > 0, id <= 9_007_199_254_740_991, id.rounded(.towardZero) == id else {
++    throw ObservedPlaybackException("ERR_OBSERVED_ATTEMPT_ID")
++  }
++}
++
++private func detachReceipt(attemptId: Double, itemId: Double?) -> [String: Any] {
++  ["kind": "detached", "attemptId": attemptId, "itemId": itemId.map { $0 as Any } ?? NSNull(),
++    "localItemExcluded": true, "appWorkDrained": true, "providerDisconnect": "unobservable"]
++}
++
++private func groupFacts(_ group: AVMediaSelectionGroup?, group kind: String) -> [[String: Any]] {
++  guard let group else { return [] }
++  return group.options.enumerated().map { index, option in
++    var record: [String: Any] = ["id": String(index), "group": kind,
++      "label": option.displayName, "isDefault": group.defaultOption == option,
++      "isPlayable": option.isPlayable, "autoSelect": !option.hasMediaCharacteristic(.isAuxiliaryContent)]
++    if let language = option.extendedLanguageTag ?? option.locale?.identifier { record["language"] = language }
++    if let name = option.commonMetadata.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue { record["name"] = name }
++    if kind == "subtitles" { record["forcedOnly"] = option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
++    return record
++  }
++}
++
++private func stampObservedTracks(_ records: [[String: Any]], attempt: ObservedAttempt) -> [[String: Any]] {
++  records.map { record in
++    var record = record
++    record["attemptId"] = attempt.id
++    record["itemId"] = attempt.itemId!
++    record["revision"] = attempt.revision
++    return record
++  }
++}
++
++private func sameObservedOptions(_ lhs: [AVMediaSelectionOption], _ rhs: [AVMediaSelectionOption]) -> Bool {
++  lhs == rhs
++}
++
++private func selectedObservedId(_ item: AVPlayerItem, group: AVMediaSelectionGroup?) -> Any {
++  guard let group, let option = item.currentMediaSelection.selectedMediaOption(in: group),
++    let id = group.trackId(of: option) else { return NSNull() }
++  return id
++}
+diff --git a/ios/VideoPlayerObservationFacts.swift b/ios/VideoPlayerObservationFacts.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..e374220b2b6490d601eb2401e72f436b58b52994
+--- /dev/null
++++ b/ios/VideoPlayerObservationFacts.swift
+@@ -0,0 +1,100 @@
++import AVFoundation
++import Foundation
++
++/// The asset is registered before its first load. Retirement also cancels a late registration.
++internal final class ObservedAssetLoad: @unchecked Sendable {
++  private let lock = NSLock()
++  private var retired = false
++  private var asset: AVAsset?
++  private var item: AVPlayerItem?
++
++  var constructedItem: AVPlayerItem? {
++    lock.lock()
++    defer { lock.unlock() }
++    return item
++  }
++
++  func registerItem(_ item: AVPlayerItem) {
++    lock.lock()
++    self.item = item
++    lock.unlock()
++  }
++
++  func register(_ asset: AVAsset) throws {
++    lock.lock()
++    self.asset = asset
++    let cancelled = retired
++    lock.unlock()
++    if cancelled { asset.cancelLoading(); throw CancellationError() }
++  }
++
++  func check() throws {
++    lock.lock()
++    let cancelled = retired
++    lock.unlock()
++    if cancelled || Task.isCancelled { throw CancellationError() }
++  }
++
++  func cancel() {
++    lock.lock()
++    retired = true
++    let asset = asset
++    lock.unlock()
++    asset?.cancelLoading()
++  }
++}
++
++internal enum ObservedFailure {
++  static func safeCode(domain: String, code: Int) -> [String: Any] {
++    let safeDomain: String
++    switch domain {
++    case AVFoundationErrorDomain: safeDomain = "avfoundation"
++    case NSURLErrorDomain: safeDomain = "url"
++    case "CoreMediaErrorDomain": safeDomain = "coremedia"
++    default: safeDomain = "other"
++    }
++    return ["domain": safeDomain, "code": code]
++  }
++
++  static func system(_ error: Error?, origin: String) -> [String: Any] {
++    guard let error else { return ["kind": "unknown", "evidence": NSNull()] }
++    let root = error as NSError
++    var underlying: [[String: Any]] = []
++    var visited: Set<ObjectIdentifier> = [ObjectIdentifier(root)]
++    var next = root.userInfo[NSUnderlyingErrorKey] as? NSError
++    while let child = next, underlying.count < 4, visited.insert(ObjectIdentifier(child)).inserted {
++      underlying.append(safeCode(domain: child.domain, code: child.code))
++      next = child.userInfo[NSUnderlyingErrorKey] as? NSError
++    }
++    var kind = "unknown"
++    if root.domain == NSURLErrorDomain {
++      switch root.code {
++      case URLError.Code.userAuthenticationRequired.rawValue: kind = "auth"
++      case URLError.Code.timedOut.rawValue, URLError.Code.networkConnectionLost.rawValue,
++        URLError.Code.notConnectedToInternet.rawValue, URLError.Code.dataNotAllowed.rawValue,
++        URLError.Code.cannotFindHost.rawValue, URLError.Code.dnsLookupFailed.rawValue,
++        URLError.Code.cannotConnectToHost.rawValue, URLError.Code.secureConnectionFailed.rawValue,
++        URLError.Code.serverCertificateUntrusted.rawValue: kind = "network"
++      default: break
++      }
++    } else if root.domain == AVFoundationErrorDomain {
++      switch root.code {
++      case AVError.Code.decodeFailed.rawValue, AVError.Code.decoderNotFound.rawValue: kind = "decode"
++      case AVError.Code.fileFormatNotRecognized.rawValue: kind = "unsupported"
++      default: break
++      }
++    }
++    return ["kind": kind, "evidence": [
++      "kind": "system", "origin": origin,
++      "code": safeCode(domain: root.domain, code: root.code), "underlying": underlying
++    ]]
++  }
++
++  static func errorLog(domain: String?, code: Int) -> [String: Any] {
++    // errorStatusCode is an opaque error identifier. Even 401/404/429 are not HTTP evidence.
++    ["kind": "unknown", "evidence": [
++      "kind": "system", "origin": "error-log", "code": safeCode(domain: domain ?? "", code: code),
++      "underlying": [] as [[String: Any]]
++    ]]
++  }
++}
+diff --git a/ios/VideoPlayerObserver.swift b/ios/VideoPlayerObserver.swift
+index adf5820b4848be7da35d212d9cff91172aacdb2a..7928cda74341d44743c86b2cbb9f7161183a030b 100644
+--- a/ios/VideoPlayerObserver.swift
++++ b/ios/VideoPlayerObserver.swift
+@@ -365,6 +365,70 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+     }
+   }
+ 
++  @MainActor
++  func observeManagedItem(_ attempt: ObservedAttempt) {
++    invalidateCurrentPlayerItemObservers()
++    guard let item = attempt.item else { return }
++    let deliver: () -> Void = { [weak self, weak attempt] in
++      Task { @MainActor in
++        guard let owner = self?.owner, let attempt else { return }
++        owner.observeManagedItemState(attempt)
++      }
++    }
++    playerStatusObserver?.invalidate()
++    playerTimeControlStatusObserver?.invalidate()
++    playerStatusObserver = player?.observe(\.status, options: [.new]) { _, _ in deliver() }
++    playerTimeControlStatusObserver = player?.observe(\.timeControlStatus, options: [.new]) { _, _ in deliver() }
++    playerItemStatusObserver = item.observe(\.status, options: [.new]) { _, _ in deliver() }
++    playbackBufferEmptyObserver = item.observe(\.isPlaybackBufferEmpty) { _, _ in deliver() }
++    playbackLikelyToKeepUpObserver = item.observe(\.isPlaybackLikelyToKeepUp) { _, _ in deliver() }
++    tracksObserver = item.observe(\.tracks) { [weak self, weak attempt] _, _ in
++      Task { @MainActor in
++        guard let owner = self?.owner, let attempt else { return }
++        _ = await owner.refreshObservedTracks(attempt)
++      }
++    }
++    currentAudioTracksObserver = NotificationCenter.default.addObserver(
++      forName: AVPlayerItem.mediaSelectionDidChangeNotification, object: item, queue: .main
++    ) { [weak self, weak attempt] _ in
++      Task { @MainActor in
++        guard let owner = self?.owner, let attempt else { return }
++        _ = await owner.refreshObservedTracks(attempt)
++      }
++    }
++    currentSubtitlesObserver = NotificationCenter.default.addObserver(
++      forName: AVPlayerItem.newErrorLogEntryNotification, object: item, queue: .main
++    ) { [weak self, weak attempt] _ in
++      Task { @MainActor in
++        guard let owner = self?.owner, let attempt, owner.isObservedCurrent(attempt),
++          let entry = attempt.item?.errorLog()?.events.last else { return }
++        owner.emitObserved(attempt, kind: "failure", values: [
++          "terminal": false,
++          "failure": ObservedFailure.errorLog(domain: entry.errorDomain, code: entry.errorStatusCode)
++        ])
++      }
++    }
++    playerItemObserver = NotificationCenter.default.addObserver(
++      forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main
++    ) { [weak self, weak attempt] _ in
++      Task { @MainActor in
++        guard let owner = self?.owner, let attempt, owner.isObservedCurrent(attempt) else { return }
++        owner.emitObserved(attempt, kind: "ended")
++      }
++    }
++  }
++
++  @MainActor
++  func notifyManagedItemReady(_ attempt: ObservedAttempt) {
++    guard let owner, owner.isObservedCurrent(attempt) else { return }
++    delegates.forEach {
++      $0.value?.onPlayerItemStatusChanged(player: owner.ref, oldStatus: nil, newStatus: .readyToPlay)
++    }
++  }
++
++  @MainActor
++  func stopManagedItemObservations() { invalidateCurrentPlayerItemObservers() }
++
+   private func invalidateCurrentPlayerItemObservers() {
+     playbackLikelyToKeepUpObserver?.invalidate()
+     playbackBufferEmptyObserver?.invalidate()
+@@ -388,6 +452,12 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+       guard let self, let player, let owner else {
+         return
+       }
++      if owner.usesObservedPlayback {
++        MainActor.assumeIsolated {
++          if let attempt = owner.observedState.current { owner.observeManagedItemState(attempt) }
++        }
++        return
++      }
+       let update = TimeUpdate(
+         currentTime: player.currentTime().seconds,
+         currentLiveTimestamp: owner.currentLiveTimestamp,
+@@ -411,6 +481,15 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+   // MARK: - VideoPlayerObserverDelegate
+ 
+   private func onPlayerCurrentItemChanged(_ player: AVPlayer, _ change: NSKeyValueObservedChange<AVPlayerItem?>) {
++    if owner?.usesObservedPlayback == true {
++      invalidateCurrentPlayerItemObservers()
++      let previous = currentItem
++      currentItem = change.newValue?.flatMap { $0 } as? VideoPlayerItem
++      delegates.forEach {
++        $0.value?.onItemChanged(player: player, oldVideoPlayerItem: previous, newVideoPlayerItem: currentItem)
++      }
++      return
++    }
+     // Unwraps Optional<Optional<AVPlayerItem>> into Optional<AVPlayerItem>
+     let newPlayerItem = change.newValue?.flatMap({ $0 })
+ 
+@@ -457,6 +536,7 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+   }
+ 
+   private func onItemStatusChanged(_ playerItem: AVPlayerItem, _ change: NSKeyValueObservedChange<AVPlayerItem.Status>) {
++    guard owner?.usesObservedPlayback != true else { return }
+     if player?.status != .failed {
+       error = nil
+     }
+@@ -486,6 +566,11 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+   }
+ 
+   private func onPlayerStatusChanged(_ player: AVPlayer, _ change: NSKeyValueObservedChange<AVPlayer.Status>) {
++    if owner?.usesObservedPlayback == true {
++      // Player-level callbacks capture the admission before crossing to main.
++      // Item state is sampled only by its own captured item observations.
++      return
++    }
+     if player.currentItem?.status != .failed {
+       error = nil
+     }
+@@ -497,6 +582,11 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+   }
+ 
+   private func onTimeControlStatusChanged(_ player: AVPlayer, _ change: NSKeyValueObservedChange<AVPlayer.TimeControlStatus>) {
++    if owner?.usesObservedPlayback == true {
++      // Player-level callbacks capture the admission before crossing to main.
++      // Item state is sampled only by its own captured item observations.
++      return
++    }
+     // iOS changes timeControlStatus after an error, so we need to check for errors.
+     if player.status == .failed || player.currentItem?.status == .failed {
+       isPlaying = false
+@@ -525,12 +615,14 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+   }
+ 
+   private func onIsBufferEmptyChanged(_ playerItem: AVPlayerItem, _ change: NSKeyValueObservedChange<Bool>) {
++    guard owner?.usesObservedPlayback != true else { return }
+     if playerItem.isPlaybackBufferEmpty {
+       status = .loading
+     }
+   }
+ 
+   private func onPlayerLikelyToKeepUpChanged(_ playerItem: AVPlayerItem, _ change: NSKeyValueObservedChange<Bool>) {
++    guard owner?.usesObservedPlayback != true else { return }
+     if !playerItem.isPlaybackLikelyToKeepUp && playerItem.isPlaybackBufferEmpty {
+       status = .loading
+     } else if playerItem.isPlaybackLikelyToKeepUp {
+@@ -579,16 +671,19 @@ class VideoPlayerObserver: VideoSourceLoaderListener {
+ 
+   // MARK: - VideoSourceLoaderListener
+   func onLoadingStarted(loader: VideoSourceLoader, videoSource: VideoSource?) {
++    guard owner?.usesObservedPlayback != true else { return }
+     isLoadingAsynchronously = true
+     status = .loading
+   }
+ 
+   func onLoadingCancelled(loader: VideoSourceLoader, videoSource: VideoSource?) {
++    guard owner?.usesObservedPlayback != true else { return }
+     isLoadingAsynchronously = false
+     status = .idle
+   }
+ 
+   func onLoadingFinished(loader: VideoSourceLoader, videoSource: VideoSource?, result: VideoPlayerItem?) {
++    guard owner?.usesObservedPlayback != true else { return }
+     isLoadingAsynchronously = false
+   }
+ }
 diff --git a/ios/VideoPlayerSubtitles.swift b/ios/VideoPlayerSubtitles.swift
-index ab8464c918cf43c08b72dba12c366eaf658ba83e..36c386770ace1694de98014befa5baf8e90371ed 100644
+index ab8464c918cf43c08b72dba12c366eaf658ba83e..27caf1feaa26fa74f173750a5baee19542897b2b 100644
 --- a/ios/VideoPlayerSubtitles.swift
 +++ b/ios/VideoPlayerSubtitles.swift
-@@ -24,8 +24,7 @@ class VideoPlayerSubtitles {
+@@ -21,12 +21,24 @@ class VideoPlayerSubtitles {
+   func onNewPlayerItemLoaded(playerItem: AVPlayerItem?) async -> SubtitleTracksChangedEventPayload {
+     let oldAvailableSubtitleTracks = availableSubtitleTracks
+ 
++    let loaded: [SubtitleTrack]
      do {
-       availableSubtitleTracks = try await Self.findAvailableSubtitleTracks(for: playerItem)
+-      availableSubtitleTracks = try await Self.findAvailableSubtitleTracks(for: playerItem)
++      loaded = try await Self.findAvailableSubtitleTracks(for: playerItem)
      } catch {
 -      let uri = (playerItem as? VideoPlayerItem)?.videoSource.uri?.absoluteString ?? "the current source"
 -      owner?.appContext?.jsLogger.warn("Failed to load available subtitle tracks for \(uri). Error: \(error)")
-+      owner?.appContext?.jsLogger.warn("Failed to load available subtitle tracks: \(error.withoutAddress)")
-       availableSubtitleTracks = []
+-      availableSubtitleTracks = []
++      if owner?.usesObservedPlayback != true {
++        owner?.appContext?.jsLogger.warn("Failed to load available subtitle tracks: \(error.withoutAddress)")
++      }
++      await MainActor.run {
++        if self.owner?.usesObservedPlayback != true { self.availableSubtitleTracks = [] }
++      }
++      return SubtitleTracksChangedEventPayload(
++        availableSubtitleTracks: availableSubtitleTracks,
++        oldAvailableSubtitleTracks: oldAvailableSubtitleTracks
++      )
++    }
++    await MainActor.run {
++      guard self.owner?.usesObservedPlayback != true else { return }
++      self.availableSubtitleTracks = loaded
      }
  
-@@ -41,8 +40,8 @@ class VideoPlayerSubtitles {
+     return SubtitleTracksChangedEventPayload(
+@@ -41,8 +53,8 @@ class VideoPlayerSubtitles {
      }
  
      if let group = currentItem.asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
@@ -298,6 +1514,34 @@ index ab8464c918cf43c08b72dba12c366eaf658ba83e..36c386770ace1694de98014befa5baf8
        }
        currentItem.select(option, in: group)
      }
+diff --git a/ios/VideoSourceLoader.swift b/ios/VideoSourceLoader.swift
+index 56223b6e5e1b15574f7deaa992d2dee07457671e..6d22c7c8b5e6353f4f30e77b5a88b4b3fe4bf8ce 100644
+--- a/ios/VideoSourceLoader.swift
++++ b/ios/VideoSourceLoader.swift
+@@ -109,6 +109,23 @@ internal class VideoSourceLoader {
+     return loadingResult.value
+   }
+ 
++  @VideoLoadingActor
++  func loadObserved(videoSource: VideoSource, load: ObservedAssetLoad) async throws -> VideoPlayerItem? {
++    try load.check()
++    guard let url = videoSource.uri else { return nil }
++    var resolved: URL?
++    var resolutionError: Error?
++    do { resolved = try await url.toUrlWithPermissions() } catch {
++      try load.check()
++      resolutionError = error
++    }
++    try load.check()
++    let item = try await VideoPlayerItem(videoSource: videoSource, urlOverride: resolved, observedLoad: load)
++    try load.check()
++    if let resolutionError { item?.urlAsset.transportError = resolutionError }
++    return item
++  }
++
+   func cancelCurrentTask() {
+     cancelCurrentTask(close: false)
+   }
 diff --git a/ios/VideoView.swift b/ios/VideoView.swift
 index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b92d1df549 100644
 --- a/ios/VideoView.swift
@@ -366,11 +1610,97 @@ index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b9
    public override func didMoveToWindow() {
      // TV is doing a normal view controller present, so we should not execute
      // this code
+diff --git a/src/VideoPlayer.tsx b/src/VideoPlayer.tsx
+index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..deae1e4e65644c07bccc5374364531a0cb07561b 100644
+--- a/src/VideoPlayer.tsx
++++ b/src/VideoPlayer.tsx
+@@ -24,6 +24,38 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
+ NativeVideoModule.VideoPlayer.prototype.replaceAsync = function (source: VideoSource) {
+   return replaceAsync.call(this, parseSource(source));
+ };
++
++// Expo's native property setter closures cannot throw. Shadow only this managed instance's
++// legacy track setters and ask native admission state before forwarding any legacy write.
++type ObservedNativeBinding = VideoPlayer & { _assertLegacyPlayback(): void };
++function assertLegacyPlayback(player: VideoPlayer): void {
++  try { (player as Partial<ObservedNativeBinding>)._assertLegacyPlayback?.(); }
++  catch {
++    throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++  }
++}
++const observedReplace = NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync;
++if (observedReplace) {
++  NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync = function (this: ObservedNativeBinding, source, attemptId) {
++    for (const key of ['audioTrack', 'subtitleTrack'] as const) {
++      if (Object.hasOwn(this, key)) continue;
++      const descriptor = Object.getOwnPropertyDescriptor(NativeVideoModule.VideoPlayer.prototype, key);
++      if (!descriptor?.get || !descriptor.set) throw new Error('ERR_OBSERVED_BINDING');
++      Object.defineProperty(this, key, {
++        get: () => descriptor.get?.call(this),
++        set: (value: VideoPlayer[typeof key]) => {
++          try { this._assertLegacyPlayback(); }
++          catch {
++            throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++          }
++          descriptor.set?.call(this, value);
++        },
++      });
++    }
++    return observedReplace.call(this, source, attemptId);
++  };
++}
++
+ /**
+  * Creates a direct instance of `VideoPlayer` that doesn't release automatically.
+  *
+@@ -62,16 +94,24 @@ export function useVideoPlayer(
+         setup?.(player);
+         return player;
+       },
+-      shouldRecreate: (_player, { previousDependencies, dependencies }) => {
++      shouldRecreate: (player, { previousDependencies, dependencies }) => {
+         // Recreate if builder options ([1]) changed or if replaceAsync failed ([2]).
+-        return (
++        const recreate = (
+           previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2]
+         );
++        // A legacy fallback may have been scheduled before native managed admission.
++        if (recreate) assertLegacyPlayback(player);
++        return recreate;
+       },
+       update: (player, { previousDependencies, dependencies }) => {
+         // Source ([0]) changed — use replaceAsync; fall back to recreate on failure.
+         if (previousDependencies[0] !== dependencies[0]) {
++          try { assertLegacyPlayback(player); }
++          catch {
++            return Promise.reject(Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' }));
++          }
+           return player.replaceAsync(parsedSource).catch(() => {
++            assertLegacyPlayback(player);
+             setForceRecreateCount((c) => c + 1);
+           });
+         }
 diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
-index 07a2cdf7ca129d069102d05071713d5aa4db5004..eea8dc14ddfd5affe80115da89ddf7d1abf558c9 100644
+index 07a2cdf7ca129d069102d05071713d5aa4db5004..1fcaee0544aba33b97c4754dd4bef05d22f096c0 100644
 --- a/src/VideoPlayer.types.ts
 +++ b/src/VideoPlayer.types.ts
-@@ -592,6 +592,7 @@ export type SubtitleTrack = {
+@@ -7,6 +7,15 @@ import type { VideoThumbnail } from './VideoThumbnail';
+  * A class that represents an instance of the video player.
+  */
+ export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
++  /** Opt-in iOS contract on this existing player. Check this before admitting managed sources. */
++  readonly mrStreamerPlaybackContract: 1;
++  /** Managed v1 accepts clear sources only. A DRM record rejects before admission with ERR_OBSERVED_DRM_UNSUPPORTED. */
++  replaceObservedAsync(source: VideoSourceObject & { uri: string }, attemptId: number): Promise<ObservedOpenResult>;
++  detachObservedAsync(attemptId: number): Promise<ObservedDetachResult>;
++  getObservedTracksAsync(expectedItem: ObservedItemIdentity): Promise<ObservedTrackSnapshot | { readonly kind: 'stale' }>;
++  selectObservedTrackAsync(expectedItem: ObservedItemIdentity, revision: number, exactRecord: ObservedTrackSelection): Promise<{ readonly kind: 'requested' | 'stale' | 'unavailable' }>;
++
++
+   /**
+    * Boolean value whether the player is currently playing.
+    * > Use `play` and `pause` methods to control the playback.
+@@ -592,6 +601,7 @@ export type SubtitleTrack = {
     * A string used by `expo-video` to identify the subtitle track.
     *
     * @platform android
@@ -378,7 +1708,7 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..eea8dc14ddfd5affe80115da89ddf7d1
     */
    id?: string;
  
-@@ -707,6 +708,7 @@ export type AudioTrack = {
+@@ -707,6 +717,7 @@ export type AudioTrack = {
    /**
     * A string used by expo-video to identify the audio track.
     * @platform android
@@ -386,6 +1716,73 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..eea8dc14ddfd5affe80115da89ddf7d1
     */
    id?: string;
  
+@@ -872,3 +883,49 @@ export type PlayerBuilderOptions = {
+  * - `pq`: Perceptual Quantizer - Formats like HDR10 and Dolby Vision
+  */
+ export type VideoRange = 'sdr' | 'hlg' | 'pq';
++
++/** Native identities belong to this player, never a URL, provider or persisted preference. */
++export type ObservedItemIdentity = Readonly<{ attemptId: number; itemId: number }>;
++export type ObservedSystemCode = Readonly<{
++  domain: 'avfoundation' | 'url' | 'coremedia' | 'other'; code: number;
++}>;
++export type ObservedFailure = Readonly<{
++  kind: 'auth' | 'missing' | 'rate-limit' | 'http' | 'network' | 'decode' | 'unsupported' | 'unknown';
++  evidence: Readonly<{ kind: 'system'; origin: 'asset' | 'item' | 'player' | 'error-log';
++    code: ObservedSystemCode; underlying: readonly ObservedSystemCode[] }> | null;
++}>;
++type ObservedTrackIdentity = ObservedItemIdentity & Readonly<{ id: string; revision: number; isDefault: boolean; isPlayable: boolean }>;
++export type ObservedAudioTrack = Omit<AudioTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'audio'; language?: string }>;
++export type ObservedSubtitleTrack = Omit<SubtitleTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; language?: string; forcedOnly: boolean }>;
++export type ObservedTrackGroup<T> = Readonly<{
++  /** Absent is an observed nil group. Ready with no options is distinct from loading or failed discovery. */
++  state: 'loading' | 'absent' | 'ready' | 'unavailable'; options: readonly T[];
++}>;
++export type ObservedTrackSnapshot = ObservedItemIdentity & Readonly<{
++  revision: number; audio: ObservedTrackGroup<ObservedAudioTrack>;
++  subtitles: ObservedTrackGroup<ObservedSubtitleTrack>; subtitleOffAllowed: boolean;
++  selectedAudioId: string | null; selectedSubtitleId: string | null;
++}>;
++export type ObservedTrackSelection =
++  | Readonly<{ kind: 'audio'; track: ObservedAudioTrack }>
++  | Readonly<{ kind: 'subtitles'; track: ObservedSubtitleTrack | null }>;
++/** Local app work settled. This does not acknowledge in-flight network or provider slot release. */
++export type ObservedDetachReceipt = Readonly<{
++  kind: 'detached'; attemptId: number; itemId: number | null;
++  localItemExcluded: true; appWorkDrained: true; providerDisconnect: 'unobservable';
++}>;
++export type ObservedDetachResult = ObservedDetachReceipt | Readonly<{ kind: 'obsolete'; attemptId: number }>;
++export type ObservedOpenResult =
++  | (ObservedItemIdentity & Readonly<{ kind: 'attached' }>)
++  | Readonly<{ kind: 'cancelled'; attemptId: number }>
++  | Readonly<{ kind: 'failed'; attemptId: number; itemId: number | null; failure: ObservedFailure }>;
++export type PlaybackObservation = Readonly<{ version: 1; sequence: number; attemptId: number }> & (
++  | Readonly<{ kind: 'attached'; itemId: number }>
++  | Readonly<{ kind: 'ready'; itemId: number; durationSeconds: number | null }>
++  | Readonly<{ kind: 'state'; itemId: number; timeControl: 'paused' | 'waiting' | 'playing'; mediaTimeSeconds: number; bufferEmpty: boolean; likelyToKeepUp: boolean }>
++  | Readonly<{ kind: 'ended'; itemId: number }>
++  | Readonly<{ kind: 'failure'; itemId: number | null; terminal: boolean; failure: ObservedFailure }>
++  | Readonly<{ kind: 'media-services-reset'; itemId: number | null }>
++  | Readonly<{ kind: 'tracks'; itemId: number; tracks: ObservedTrackSnapshot }>
++  | Readonly<{ kind: 'detached'; itemId: number | null; receipt: ObservedDetachReceipt }>
++);
+diff --git a/src/VideoPlayerEvents.types.ts b/src/VideoPlayerEvents.types.ts
+index c53b0821c46601d52d52bab17e2b81d3a2bc22a9..1312a35fb13b929749ccd5e86459827552924021 100644
+--- a/src/VideoPlayerEvents.types.ts
++++ b/src/VideoPlayerEvents.types.ts
+@@ -1,3 +1,4 @@
++import type { PlaybackObservation } from './VideoPlayer.types';
+ import type {
+   PlayerError,
+   SubtitleTrack,
+@@ -11,6 +12,7 @@ import type {
+  * Handlers for events which can be emitted by the player.
+  */
+ export type VideoPlayerEvents = {
++  playbackObservation(payload: PlaybackObservation): void;
+   /**
+    * Handler for an event emitted when the status of the player changes.
+    */
 diff --git a/src/VideoView.tsx b/src/VideoView.tsx
 index 33849e854dd8989186d1af84e0a141075070a5ec..78aab27fe686b48fa06da139b65c2379a43de9b1 100644
 --- a/src/VideoView.tsx

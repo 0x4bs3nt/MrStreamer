@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { AppFailure } from "@mrstreamer/contracts/errors";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
@@ -7,21 +8,9 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 // Close and Stop resolve once theirs ended, saying whether it was kept. The native player is a
 // stand-in that reports what the app told it; the AVPlayer itself is not run here.
 
-const listeners = new Map<string, (payload: never) => void>();
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  staysActiveInBackground: false,
-  currentTime: 0,
-  duration: 600,
-  addListener: (event: string, listener: (payload: never) => void) => {
-    listeners.set(event, listener);
-  },
-  replaceAsync: vi.fn(async () => undefined),
-  play: vi.fn(),
-  pause: vi.fn(),
-};
-const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
+const fakePlayer = nativePlayer();
+const emit = fakePlayer.emit;
+
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 
 const {
@@ -68,7 +57,7 @@ const saverOf = (id: string) => (position: number) => {
 };
 const progress = saverOf("m1");
 /** The player reports it plays, or stopped playing. */
-const playing = (isPlaying = true) => emit("playingChange", { isPlaying });
+const playing = (isPlaying = true) => fakePlayer.state(isPlaying);
 
 /** A movie playing in Watch at `position` seconds; what the player was told so far is cleared. */
 async function watching(position = 120) {
@@ -116,11 +105,12 @@ describe("Close", () => {
     source.resolve({ url: "file:m1", container: "mp4" });
     await starting;
     expect(fakePlayer.pause).not.toHaveBeenCalled();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
     playing();
     expect(fakePlayer.pause).toHaveBeenCalledOnce();
     playing(false);
     expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, watch: false });
-    expect(fakePlayer.play).toHaveBeenCalledOnce();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
   });
 
   it("leaves a paused title paused, where it was saved", async () => {
