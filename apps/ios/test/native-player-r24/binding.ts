@@ -2,7 +2,7 @@
 // this check covers the nonthrowing Expo setter workaround, not Swift behavior.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import { SourceTextModule, SyntheticModule } from "node:vm";
 
 const require = createRequire(import.meta.url);
@@ -11,6 +11,10 @@ let recreations = 0;
 let hookDefinition:
   | {
       factory(): NativePlayer;
+      shouldRecreate(
+        player: NativePlayer,
+        context: { previousDependencies: unknown[]; dependencies: unknown[] },
+      ): boolean;
       update(
         player: NativePlayer,
         context: { previousDependencies: unknown[]; dependencies: unknown[] },
@@ -22,7 +26,12 @@ class NativePlayer {
   audio: unknown = null;
   subtitles: unknown = null;
   replace(): void {}
-  async replaceAsync(): Promise<void> {}
+  rejectReplacement: ((error: Error) => void) | undefined;
+  replaceAsync(): Promise<void> {
+    return new Promise((_resolve, reject) => {
+      this.rejectReplacement = reject;
+    });
+  }
   async replaceObservedAsync(): Promise<{ kind: "attached" }> {
     this.managed = true;
     return { kind: "attached" };
@@ -50,8 +59,15 @@ for (const [key, field] of [
     },
   });
 }
+const sourceBinding = process.argv.includes("--source");
+const bindingCode = readFileSync(
+  require.resolve(
+    sourceBinding ? "expo-video/src/VideoPlayer.tsx" : "expo-video/build/VideoPlayer.js",
+  ),
+  "utf8",
+);
 const module = new SourceTextModule(
-  readFileSync(require.resolve("expo-video/build/VideoPlayer.js"), "utf8"),
+  sourceBinding ? stripTypeScriptTypes(bindingCode) : bindingCode,
 );
 const boundary = (exports: Record<string, unknown>) =>
   new SyntheticModule(Object.keys(exports), function () {
@@ -101,6 +117,7 @@ assert.equal(writes, 2);
 const useVideoPlayer: unknown = Reflect.get(module.namespace, "useVideoPlayer");
 assert.equal(typeof useVideoPlayer, "function");
 if (typeof useVideoPlayer !== "function") throw new Error("fixture-hook-missing");
+const createHookPlayer = useVideoPlayer;
 const hookPlayer: unknown = useVideoPlayer(null);
 assert.ok(hookPlayer instanceof NativePlayer);
 await hookPlayer.replaceObservedAsync();
@@ -112,4 +129,93 @@ const update = hookDefinition.update(hookPlayer, {
 assert.ok(update);
 await assert.rejects(update, { code: "ERR_OBSERVED_LEGACY_WRITE" });
 assert.equal(recreations, 0);
-console.log("Installed binding: managed setters reject; legacy instances keep native accessors.");
+
+const results: Array<{ case: string; passed: boolean }> = [];
+const failures: unknown[] = [];
+async function control(name: string, test: () => void | Promise<void>) {
+  try {
+    await test();
+    results.push({ case: name, passed: true });
+  } catch (error) {
+    results.push({ case: name, passed: false });
+    failures.push(error);
+  }
+}
+function hook() {
+  const player: unknown = createHookPlayer(null);
+  assert.ok(player instanceof NativePlayer);
+  assert.ok(hookDefinition);
+  return { player, definition: hookDefinition };
+}
+const sourceChange = {
+  previousDependencies: ["old", "builder", 0],
+  dependencies: ["new", "builder", 0],
+};
+const fallbackChange = {
+  previousDependencies: ["old", "builder", 0],
+  dependencies: ["old", "builder", 1],
+};
+const builderChange = {
+  previousDependencies: ["old", "old-builder", 0],
+  dependencies: ["old", "new-builder", 0],
+};
+
+await control("managed after preflight rejects without scheduling fallback", async () => {
+  const { player, definition } = hook();
+  const before = recreations;
+  const pending = definition.update(player, sourceChange);
+  assert.ok(pending);
+  assert.ok(player.rejectReplacement);
+  await player.replaceObservedAsync();
+  // The outer rejection code does not describe current native admission state.
+  player.rejectReplacement(
+    Object.assign(new Error("synthetic load failure"), { code: "ERR_FUNCTION_CALL" }),
+  );
+  await assert.rejects(pending, { code: "ERR_OBSERVED_LEGACY_WRITE" });
+  assert.equal(recreations, before);
+});
+
+await control("managed after fallback scheduled refuses eventual recreation", async () => {
+  const { player, definition } = hook();
+  const before = recreations;
+  const pending = definition.update(player, sourceChange);
+  assert.ok(pending);
+  assert.ok(player.rejectReplacement);
+  player.rejectReplacement(new Error("synthetic legacy failure"));
+  await pending;
+  assert.equal(recreations, before + 1);
+  await player.replaceObservedAsync();
+  assert.throws(() => definition.shouldRecreate(player, fallbackChange), {
+    code: "ERR_OBSERVED_LEGACY_WRITE",
+  });
+  assert.throws(() => definition.shouldRecreate(player, fallbackChange), {
+    code: "ERR_OBSERVED_LEGACY_WRITE",
+  });
+  assert.equal(recreations, before + 1, "render-time decisions must not schedule state changes");
+});
+
+await control("legacy failures and builder options retain recreation", async () => {
+  const { player, definition } = hook();
+  const before = recreations;
+  const pending = definition.update(player, sourceChange);
+  assert.ok(pending);
+  assert.ok(player.rejectReplacement);
+  player.rejectReplacement(new Error("synthetic legacy failure"));
+  await pending;
+  assert.equal(recreations, before + 1);
+  assert.equal(definition.shouldRecreate(player, fallbackChange), true);
+  assert.equal(definition.shouldRecreate(player, builderChange), true);
+  assert.equal(definition.shouldRecreate(player, sourceChange), false);
+});
+
+await control("managed builder changes cannot recreate the player", async () => {
+  const { player, definition } = hook();
+  await player.replaceObservedAsync();
+  assert.throws(() => definition.shouldRecreate(player, builderChange), {
+    code: "ERR_OBSERVED_LEGACY_WRITE",
+  });
+});
+
+console.log(JSON.stringify({ binding: sourceBinding ? "source" : "build", results }));
+if (failures.length) throw new AggregateError(failures, "Production binding controls failed");
+console.log("Installed production binding controls passed; native scheduling is not exercised.");

@@ -1,14 +1,20 @@
 diff --git a/build/VideoPlayer.js b/build/VideoPlayer.js
-index b822fe0ab3287008e68a193ecf760db8cfc7af12..9b3f3bb938866fe3accec04c706e7d747361da5f 100644
+index b822fe0ab3287008e68a193ecf760db8cfc7af12..8303f75dbfada79ba4d605c9cde41deea43e78a2 100644
 --- a/build/VideoPlayer.js
 +++ b/build/VideoPlayer.js
-@@ -14,6 +14,31 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
+@@ -14,6 +14,37 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
  NativeVideoModule.VideoPlayer.prototype.replaceAsync = function(source) {
      return replaceAsync.call(this, parseSource(source));
  };
 +
 +// Expo's native property setter closures cannot throw. Shadow only this managed instance's
 +// legacy track setters and ask native admission state before forwarding any legacy write.
++function assertLegacyPlayback(player) {
++  try { player._assertLegacyPlayback?.(); }
++  catch {
++    throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++  }
++}
 +const observedReplace = NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync;
 +if (observedReplace) {
 +  NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync = function (source, attemptId) {
@@ -34,27 +40,42 @@ index b822fe0ab3287008e68a193ecf760db8cfc7af12..9b3f3bb938866fe3accec04c706e7d74
  /**
   * Creates a direct instance of `VideoPlayer` that doesn't release automatically.
   *
-@@ -47,6 +72,10 @@ NativeVideoModule.VideoPlayer.prototype.replaceAsync = function(source) {
+@@ -40,14 +71,22 @@ NativeVideoModule.VideoPlayer.prototype.replaceAsync = function(source) {
+             setup?.(player);
+             return player;
+         },
+-        shouldRecreate: (_player, { previousDependencies, dependencies })=>{
++        shouldRecreate: (player, { previousDependencies, dependencies })=>{
+             // Recreate if builder options ([1]) changed or if replaceAsync failed ([2]).
+-            return previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2];
++            const recreate = previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2];
++            // A legacy fallback may have been scheduled before native managed admission.
++            if (recreate) assertLegacyPlayback(player);
++            return recreate;
+         },
          update: (player, { previousDependencies, dependencies })=>{
              // Source ([0]) changed — use replaceAsync; fall back to recreate on failure.
              if (previousDependencies[0] !== dependencies[0]) {
-+                try { player._assertLegacyPlayback?.(); }
++                try { assertLegacyPlayback(player); }
 +                catch {
 +                    return Promise.reject(Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' }));
 +                }
                  return player.replaceAsync(parsedSource).catch(()=>{
++                    assertLegacyPlayback(player);
                      setForceRecreateCount((c)=>c + 1);
                  });
+             }
 diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
-index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a026fc9f56256865d5f4115e37f54451e3877fc7 100644
+index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..127f88a7cd0cbbb1a25a765b671725e16366055d 100644
 --- a/build/VideoPlayer.types.d.ts
 +++ b/build/VideoPlayer.types.d.ts
-@@ -5,6 +5,14 @@ import type { VideoThumbnail } from './VideoThumbnail';
+@@ -5,6 +5,15 @@ import type { VideoThumbnail } from './VideoThumbnail';
   * A class that represents an instance of the video player.
   */
  export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
 +  /** Opt-in iOS contract on this existing player. Check this before admitting managed sources. */
 +  readonly mrStreamerPlaybackContract: 1;
++  /** Managed v1 accepts clear sources only. A DRM record rejects before admission with ERR_OBSERVED_DRM_UNSUPPORTED. */
 +  replaceObservedAsync(source: VideoSourceObject & { uri: string }, attemptId: number): Promise<ObservedOpenResult>;
 +  detachObservedAsync(attemptId: number): Promise<ObservedDetachResult>;
 +  getObservedTracksAsync(expectedItem: ObservedItemIdentity): Promise<ObservedTrackSnapshot | { readonly kind: 'stale' }>;
@@ -64,7 +85,7 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a026fc9f56256865d5f4115e37f54451
      /**
       * Boolean value whether the player is currently playing.
       * > Use `play` and `pause` methods to control the playback.
-@@ -516,6 +524,7 @@ export type SubtitleTrack = {
+@@ -516,6 +525,7 @@ export type SubtitleTrack = {
       * A string used by `expo-video` to identify the subtitle track.
       *
       * @platform android
@@ -72,7 +93,7 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a026fc9f56256865d5f4115e37f54451
       */
      id?: string;
      /**
-@@ -614,6 +623,7 @@ export type AudioTrack = {
+@@ -614,6 +624,7 @@ export type AudioTrack = {
      /**
       * A string used by expo-video to identify the audio track.
       * @platform android
@@ -80,7 +101,7 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a026fc9f56256865d5f4115e37f54451
       */
      id?: string;
      /**
-@@ -763,3 +773,49 @@ export type PlayerBuilderOptions = {
+@@ -763,3 +774,49 @@ export type PlayerBuilderOptions = {
   * - `pq`: Perceptual Quantizer - Formats like HDR10 and Dolby Vision
   */
  export type VideoRange = 'sdr' | 'hlg' | 'pq';
@@ -771,10 +792,10 @@ index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..755a8795f509b49f461105093ccfa62c
    }
 diff --git a/ios/VideoPlayerObservation.swift b/ios/VideoPlayerObservation.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..35e9dc33c369edb14e796cd354e3f2f4df73510b
+index 0000000000000000000000000000000000000000..66a09d4cd83a721c866d625a0248132d46f4bc2f
 --- /dev/null
 +++ b/ios/VideoPlayerObservation.swift
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,397 @@
 +import AVFoundation
 +import ExpoModulesCore
 +import Foundation
@@ -891,6 +912,8 @@ index 0000000000000000000000000000000000000000..35e9dc33c369edb14e796cd354e3f2f4
 +    guard attemptId > observedState.highWatermark else {
 +      throw ObservedPlaybackException("ERR_OBSERVED_ATTEMPT_ORDER")
 +    }
++    // V1 owns clear-source loading only, not legacy content-key requests or their logs.
++    guard source.drm == nil else { throw ObservedPlaybackException("ERR_OBSERVED_DRM_UNSUPPORTED") }
 +    guard observedState.current == nil, ref.currentItem == nil, !videoSourceLoader.isLoading, !hasBeenReleased else {
 +      throw ObservedPlaybackException("ERR_OBSERVED_NOT_DRAINED")
 +    }
@@ -912,10 +935,6 @@ index 0000000000000000000000000000000000000000..35e9dc33c369edb14e796cd354e3f2f4
 +        return ["kind": "cancelled", "attemptId": attemptId]
 +      }
 +      guard let item, attempt.item === item else { throw ObservedPlaybackException("ERR_OBSERVED_SOURCE") }
-+      if let drm = source.drm {
-+        try drm.type.assertIsSupported()
-+        contentKeyManager.addContentKeyRequest(videoSource: source, asset: item.urlAsset)
-+      }
 +      item.audioTimePitchAlgorithm = preservesPitch ? .spectral : .varispeed
 +      item.preferredForwardBufferDuration = bufferOptions.preferredForwardBufferDuration
 +      item.preferredMaximumResolution = maxResolution?.toCGSize() ?? .zero
@@ -1592,10 +1611,10 @@ index 152c74e72c65a447e01e468b137ea8d193771faf..cbe4665218c3ba5ff7aacc79c2d7f8b9
      // TV is doing a normal view controller present, so we should not execute
      // this code
 diff --git a/src/VideoPlayer.tsx b/src/VideoPlayer.tsx
-index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..84414c5f47d31bedd9edf98504ef6b1001cfe094 100644
+index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..deae1e4e65644c07bccc5374364531a0cb07561b 100644
 --- a/src/VideoPlayer.tsx
 +++ b/src/VideoPlayer.tsx
-@@ -24,6 +24,32 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
+@@ -24,6 +24,38 @@ const replaceAsync = NativeVideoModule.VideoPlayer.prototype.replaceAsync;
  NativeVideoModule.VideoPlayer.prototype.replaceAsync = function (source: VideoSource) {
    return replaceAsync.call(this, parseSource(source));
  };
@@ -1603,6 +1622,12 @@ index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..84414c5f47d31bedd9edf98504ef6b10
 +// Expo's native property setter closures cannot throw. Shadow only this managed instance's
 +// legacy track setters and ask native admission state before forwarding any legacy write.
 +type ObservedNativeBinding = VideoPlayer & { _assertLegacyPlayback(): void };
++function assertLegacyPlayback(player: VideoPlayer): void {
++  try { (player as Partial<ObservedNativeBinding>)._assertLegacyPlayback?.(); }
++  catch {
++    throw Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' });
++  }
++}
 +const observedReplace = NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync;
 +if (observedReplace) {
 +  NativeVideoModule.VideoPlayer.prototype.replaceObservedAsync = function (this: ObservedNativeBinding, source, attemptId) {
@@ -1628,27 +1653,44 @@ index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..84414c5f47d31bedd9edf98504ef6b10
  /**
   * Creates a direct instance of `VideoPlayer` that doesn't release automatically.
   *
-@@ -71,6 +97,10 @@ export function useVideoPlayer(
+@@ -62,16 +94,24 @@ export function useVideoPlayer(
+         setup?.(player);
+         return player;
+       },
+-      shouldRecreate: (_player, { previousDependencies, dependencies }) => {
++      shouldRecreate: (player, { previousDependencies, dependencies }) => {
+         // Recreate if builder options ([1]) changed or if replaceAsync failed ([2]).
+-        return (
++        const recreate = (
+           previousDependencies[1] !== dependencies[1] || previousDependencies[2] !== dependencies[2]
+         );
++        // A legacy fallback may have been scheduled before native managed admission.
++        if (recreate) assertLegacyPlayback(player);
++        return recreate;
+       },
        update: (player, { previousDependencies, dependencies }) => {
          // Source ([0]) changed — use replaceAsync; fall back to recreate on failure.
          if (previousDependencies[0] !== dependencies[0]) {
-+          try { (player as Partial<ObservedNativeBinding>)._assertLegacyPlayback?.(); }
++          try { assertLegacyPlayback(player); }
 +          catch {
 +            return Promise.reject(Object.assign(new Error('ERR_OBSERVED_LEGACY_WRITE'), { code: 'ERR_OBSERVED_LEGACY_WRITE' }));
 +          }
            return player.replaceAsync(parsedSource).catch(() => {
++            assertLegacyPlayback(player);
              setForceRecreateCount((c) => c + 1);
            });
+         }
 diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
-index 07a2cdf7ca129d069102d05071713d5aa4db5004..1386952fea89e15ac54169c8cd224cc509eb768c 100644
+index 07a2cdf7ca129d069102d05071713d5aa4db5004..1fcaee0544aba33b97c4754dd4bef05d22f096c0 100644
 --- a/src/VideoPlayer.types.ts
 +++ b/src/VideoPlayer.types.ts
-@@ -7,6 +7,14 @@ import type { VideoThumbnail } from './VideoThumbnail';
+@@ -7,6 +7,15 @@ import type { VideoThumbnail } from './VideoThumbnail';
   * A class that represents an instance of the video player.
   */
  export declare class VideoPlayer extends SharedObject<VideoPlayerEvents> {
 +  /** Opt-in iOS contract on this existing player. Check this before admitting managed sources. */
 +  readonly mrStreamerPlaybackContract: 1;
++  /** Managed v1 accepts clear sources only. A DRM record rejects before admission with ERR_OBSERVED_DRM_UNSUPPORTED. */
 +  replaceObservedAsync(source: VideoSourceObject & { uri: string }, attemptId: number): Promise<ObservedOpenResult>;
 +  detachObservedAsync(attemptId: number): Promise<ObservedDetachResult>;
 +  getObservedTracksAsync(expectedItem: ObservedItemIdentity): Promise<ObservedTrackSnapshot | { readonly kind: 'stale' }>;
@@ -1658,7 +1700,7 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..1386952fea89e15ac54169c8cd224cc5
    /**
     * Boolean value whether the player is currently playing.
     * > Use `play` and `pause` methods to control the playback.
-@@ -592,6 +600,7 @@ export type SubtitleTrack = {
+@@ -592,6 +601,7 @@ export type SubtitleTrack = {
     * A string used by `expo-video` to identify the subtitle track.
     *
     * @platform android
@@ -1666,7 +1708,7 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..1386952fea89e15ac54169c8cd224cc5
     */
    id?: string;
  
-@@ -707,6 +716,7 @@ export type AudioTrack = {
+@@ -707,6 +717,7 @@ export type AudioTrack = {
    /**
     * A string used by expo-video to identify the audio track.
     * @platform android
@@ -1674,7 +1716,7 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..1386952fea89e15ac54169c8cd224cc5
     */
    id?: string;
  
-@@ -872,3 +882,49 @@ export type PlayerBuilderOptions = {
+@@ -872,3 +883,49 @@ export type PlayerBuilderOptions = {
   * - `pq`: Perceptual Quantizer - Formats like HDR10 and Dolby Vision
   */
  export type VideoRange = 'sdr' | 'hlg' | 'pq';

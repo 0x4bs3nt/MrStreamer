@@ -35,6 +35,25 @@ private final class HeldTransport: VideoAssetTransportProvider {
   }
 }
 
+private final class DrmAdmissionProbe: VideoAssetTransportProvider {
+  let identifier = "mrstreamer-native-r47-drm"
+  let priority = Int.max
+  private let lock = NSLock()
+  private var resolutions = 0
+  var resolutionCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return resolutions
+  }
+  func makeLoadPlan(for source: VideoAssetSourceDescriptor) -> VideoAssetLoadPlan? {
+    guard source.url.scheme == "mr-r47" else { return nil }
+    lock.lock()
+    resolutions += 1
+    lock.unlock()
+    return VideoAssetLoadPlan(assetURL: URL(fileURLWithPath: "/dev/null"))
+  }
+}
+
 @MainActor
 final class ObservedPlayerContractTests: XCTestCase {
   private func player() throws -> VideoPlayer {
@@ -55,6 +74,45 @@ final class ObservedPlayerContractTests: XCTestCase {
     XCTAssertEqual(result["kind"] as? String, "cancelled")
     XCTAssertNil(player.ref.currentItem)
     player.sharedObjectWillRelease()
+  }
+
+  func testManagedDrmRejectsBeforeAdmissionWithoutChangingCurrentOwnership() async throws {
+    let probe = DrmAdmissionProbe()
+    VideoAssetTransportRegistry.registerProvider(probe)
+    defer { VideoAssetTransportRegistry.unregisterProvider(withId: probe.identifier) }
+    let player = try player()
+    defer { player.sharedObjectWillRelease() }
+    var encrypted = VideoSource()
+    encrypted.uri = URL(string: "mr-r47://fixture/drm")!
+    // No key/certificate endpoints are configured. Managed v1 must not resolve this asset.
+    encrypted.drm = DRMOptions()
+    do {
+      _ = try await player.replaceObserved(source: encrypted, attemptId: 1)
+      XCTFail("Managed DRM must reject before admission")
+    } catch {
+      XCTAssertEqual((error as? ObservedPlaybackException)?.code, "ERR_OBSERVED_DRM_UNSUPPORTED")
+    }
+    XCTAssertEqual(probe.resolutionCount, 0)
+    XCTAssertNil(player.ref.currentItem)
+    XCTAssertNoThrow(try player.requireLegacyPlayback(), "Rejected DRM must not latch managed mode")
+
+    var clear = VideoSource()
+    clear.uri = URL(fileURLWithPath: "/dev/null")
+    let first = try await player.replaceObserved(source: clear, attemptId: 1)
+    XCTAssertEqual(first["kind"] as? String, "attached", "Rejected DRM must not consume the ID")
+    let current = player.ref.currentItem
+    do {
+      _ = try await player.replaceObserved(source: encrypted, attemptId: 2)
+      XCTFail("DRM must also reject while another attempt owns the player")
+    } catch {
+      XCTAssertEqual((error as? ObservedPlaybackException)?.code, "ERR_OBSERVED_DRM_UNSUPPORTED")
+    }
+    XCTAssertTrue(player.ref.currentItem === current)
+    XCTAssertEqual(probe.resolutionCount, 0)
+    _ = try await player.detachObserved(attemptId: 1)
+    let next = try await player.replaceObserved(source: clear, attemptId: 2)
+    XCTAssertEqual(next["kind"] as? String, "attached")
+    _ = try await player.detachObserved(attemptId: 2)
   }
 
   func testHeldLoadRetainsClosingUntilRealSettlementAndCannotAttachOverB() async throws {

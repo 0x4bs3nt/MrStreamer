@@ -109,6 +109,9 @@ actual item objects. The first admission latches managed mode; legacy replacemen
 setters then refuse writes with `ERR_OBSERVED_LEGACY_WRITE`. Expo's native property setters
 cannot throw, so the package's existing binding installs instance setters that call a synchronous
 native assertion. Native setters also refuse the write. The existing player remains the owner.
+Managed v1 accepts clear sources only. Any nonnil `source.drm` is rejected with
+`ERR_OBSERVED_DRM_UNSUPPORTED` before admission, without consuming its attempt ID or starting
+asset/key work. The legacy DRM path is unchanged.
 
 Detach retires immediately and awaits owned asset/track loads before returning its local receipt.
 `providerDisconnect: "unobservable"` cannot confirm a server connection has closed. A failed or
