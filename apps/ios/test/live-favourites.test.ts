@@ -1,3 +1,4 @@
+import "./native-guide.ts";
 import type { Episode } from "@mrstreamer/contracts/ondemand";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";

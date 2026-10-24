@@ -66,6 +66,8 @@ export interface LiveSource {
 /** One subscription's channels and categories, without those for adults: its part of a library. */
 export interface Part {
   readonly subscriptionId: string;
+  /** Ordered trusted spellings, by canonical channel ID. Adult channels have no entry. */
+  readonly guideIds: ReadonlyMap<string, readonly string[]>;
   /** In the provider's order. */
   readonly channels: readonly Channel[];
   /** By the provider's channel id and the id of each of its streams. */
@@ -95,11 +97,14 @@ export function* partSteps({
   );
   const byId = new Map<string, Channel>();
   const channels: Channel[] = [];
-  for (const listed of (yield* liveChannelSteps(streams)).channels) {
+  const normalized = yield* liveChannelSteps(streams);
+  const guideIds = new Map<string, readonly string[]>();
+  for (const listed of normalized.channels) {
     if (due()) yield;
     if (listed.variants.some((variant) => adultStreams.has(variant.id))) continue;
     const channel = { ...listed, subscriptionId, key: ownedKey({ subscriptionId, id: listed.id }) };
     channels.push(channel);
+    guideIds.set(channel.id, normalized.guideIds.get(channel.id) ?? []);
     byId.set(channel.id, channel);
     // A channel can have thousands of streams.
     for (const variant of channel.variants) {
@@ -125,6 +130,7 @@ export function* partSteps({
   }
   return {
     subscriptionId,
+    guideIds,
     channels,
     byId,
     categories: categories.flatMap((category) => {

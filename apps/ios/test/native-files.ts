@@ -1,3 +1,4 @@
+import "./native-guide.ts";
 import {
   existsSync,
   mkdirSync,

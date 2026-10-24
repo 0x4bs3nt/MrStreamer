@@ -145,6 +145,15 @@ export type LiveGuide =
    */
   | { readonly kind: "none" };
 
+/** Private native transport capability. Never put this descriptor in public state or storage. */
+export type GuideRequest =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "request";
+      readonly url: string;
+      readonly headers: Readonly<Record<string, string>>;
+    };
+
 /**
  * One connected subscription. Adapters translate a provider's API into the catalogue model and
  * throw `AppFailure` with a specific error when the provider refuses or cannot be reached.
@@ -179,6 +188,7 @@ export interface Provider {
    * for it, so a guide its publisher added, moved or dropped since is found.
    */
   liveGuide(signal?: AbortSignal): Promise<LiveGuide>;
+  liveGuideRequest?(signal?: AbortSignal): Promise<GuideRequest>;
   onDemandCatalogue(signal?: AbortSignal): Promise<OnDemandCatalogue>;
   movieDetails(id: string, signal?: AbortSignal): Promise<ProviderDetails>;
   seriesDetails(id: string, signal?: AbortSignal): Promise<ProviderDetails>;
@@ -230,21 +240,48 @@ export function providerFetch(fetchImpl: typeof fetch, login: readonly string[])
         const location = REDIRECTS.has(response.status) ? response.headers.get("location") : null;
         if (location === null) return response;
         void response.body?.cancel().catch(() => {});
-        if (redirects === MAX_REDIRECTS) throw new TypeError(t("It redirected too many times."));
-        const next = new URL(location, target);
-        if (exposesLogin(start, next, login)) {
-          throw new TypeError(
-            t(
-              "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.",
-            ),
-          );
-        }
-        target = next;
+        target = new URL(
+          nextProviderRedirect({
+            original: start.href,
+            current: target.href,
+            location,
+            followed: redirects,
+            login,
+          }),
+        );
       }
     } catch (cause) {
       throw withoutAddress(cause);
     }
   };
+}
+
+/** One closed GET hop, shared with native transports that disable automatic redirects. */
+export function nextProviderRedirect(input: {
+  readonly original: string;
+  readonly current: string;
+  readonly location: string;
+  readonly followed: number;
+  readonly login: readonly string[];
+}): string {
+  if (input.followed >= MAX_REDIRECTS) throw new TypeError(t("It redirected too many times."));
+  let start: URL;
+  let next: URL;
+  try {
+    start = new URL(input.original);
+    next = new URL(input.location, input.current);
+  } catch {
+    throw new TypeError(t("The server address is not a valid URL."));
+  }
+  if (!["http:", "https:"].includes(next.protocol)) {
+    throw new TypeError(t("The server address must start with http or https."));
+  }
+  if (exposesLogin(start, next, input.login)) {
+    throw new TypeError(
+      t("It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped."),
+    );
+  }
+  return next.href;
 }
 
 /**

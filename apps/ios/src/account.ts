@@ -8,6 +8,7 @@ import Constants from "expo-constants";
 import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
 import { dropTitles, pruneDetails } from "./details-cache.ts";
 import { appError, hostOf } from "./errors.ts";
+import { guide } from "./guide.ts";
 import {
   combine,
   combineSteps,
@@ -303,9 +304,9 @@ function save(id: string, source: Source, saved: Saved) {
  * Deletes `id`'s saved lists and details once what reads or writes them has finished; from now on
  * none of a login signed in before is saved again. Answers whether they are all gone.
  */
-async function dropSaved(id: string): Promise<boolean> {
+async function dropSaved(id: string, guideGone = guide.forget(id)): Promise<boolean> {
   dropped.set(id, revisions);
-  const gone = await Promise.all([dropLists(id), dropTitles(id)]);
+  const gone = await Promise.all([guideGone, dropLists(id), dropTitles(id)]);
   return gone.every(Boolean);
 }
 
@@ -501,6 +502,7 @@ function signIn(
     login: [entry.username, password],
   };
   setSource(id, source);
+  void guide.attach(id);
   if (checked === null) {
     // Replace password reservations without briefly releasing the titles' launch batch.
     reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
@@ -610,6 +612,7 @@ export function restore(): Promise<void> {
     for (const id of registry.pendingSecrets) await settleSecret(id).catch(() => undefined);
     for (const id of registry.erasing) await eraseHistory(id).catch(() => undefined);
     const ids = registry.subscriptions.map((entry) => entry.id);
+    await guide.restore(ids);
     pruneLists(ids);
     pruneDetails(ids);
     return registry.subscriptions;
@@ -809,7 +812,8 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
     dropSource(id);
     // After any write of them under way. What the disk refuses goes at the next launch, or before
     // the account added again takes the id back.
-    void dropSaved(id);
+    const forgetting = guide.forget(id);
+    void dropSaved(id, forgetting);
     // A request waiting to play, such as a series' resume, lapses; with none left, so does Watch,
     // unless it shows a downloaded copy, which needs no subscription.
     const { phase } = playbackState.get();
@@ -819,6 +823,8 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
     // The roster without it ends its unfinished downloads (downloads.ts); finished copies stay.
     syncRoster();
     noteAction("playlist_removed");
+    // The committed removal stands on failure. Re-add cannot reuse its cache until erase works.
+    await forgetting;
     await keychainSecrets
       .remove(id)
       .then(() =>
@@ -1018,6 +1024,7 @@ async function work() {
       // Checked again: an answer may have changed the roster since the last slice.
       if (!library || !wanted()) continue;
       parts.set(source.subscriptionId, { catalogue: source.catalogue, part });
+      guide.setPart(part);
       // Shown as joined unless the roster changed meanwhile; `libraryOf` joins it again then.
       joined = { parts: shown, library };
       publish();
