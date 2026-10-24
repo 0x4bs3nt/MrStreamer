@@ -278,7 +278,7 @@ function SubscriptionRow({
           aria-expanded={expanded}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <ChevronRight
             className={cn("size-4 flex-none text-muted-foreground", expanded && "rotate-90")}
@@ -577,6 +577,7 @@ function Edit({
       <div className="space-y-4">
         <Field label={t("Name")}>
           <Input
+            compact
             value={name}
             onChange={(event) => setName(event.target.value)}
             placeholder={hostOf(subscription.server)}
@@ -589,6 +590,7 @@ function Edit({
         </div>
         <Field label={playlist ? t("M3U link") : t("Password")} hint={t("leave empty to keep")}>
           <Input
+            compact
             type={playlist ? "text" : "password"}
             value={secret}
             onChange={(event) => setSecret(event.target.value)}
@@ -611,13 +613,13 @@ function Edit({
         <p className="mt-4 text-sm text-destructive">{describeError(appError(update.error))}</p>
       )}
       <div className="mt-6 flex items-center gap-3">
-        <Button type="submit" variant="primary" disabled={update.isPending}>
+        <Button type="submit" variant="primary" size="sm" disabled={update.isPending}>
           {update.isPending ? t("Saving…") : t("Save")}
         </Button>
-        <Button variant="ghost" disabled={update.isPending} onClick={onDone}>
+        <Button variant="ghost" size="sm" disabled={update.isPending} onClick={onDone}>
           {t("Cancel")}
         </Button>
-        <Button variant="ghost" className="ml-auto" onClick={onRemove}>
+        <Button variant="ghost" size="sm" className="ml-auto" onClick={onRemove}>
           {t("Remove")}
         </Button>
       </div>
@@ -647,6 +649,7 @@ function Secret({
       </p>
       <Field label={playlist ? t("M3U link") : t("Password")}>
         <Input
+          compact
           type={playlist ? "text" : "password"}
           value={secret}
           onChange={(event) => setSecret(event.target.value)}
@@ -661,6 +664,7 @@ function Secret({
       <Button
         type="submit"
         variant="primary"
+        size="sm"
         className="mt-5"
         disabled={update.isPending || !secret}
       >
@@ -794,10 +798,15 @@ function Remove({
         {t("Also delete favourites, watchlist, history and progress")}
       </label>
       <div className="flex gap-3">
-        <Button variant="destructive" disabled={remove.isPending} onClick={() => remove.mutate()}>
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={remove.isPending}
+          onClick={() => remove.mutate()}
+        >
           {t("Remove")}
         </Button>
-        <Button variant="ghost" disabled={remove.isPending} onClick={onKeep}>
+        <Button variant="ghost" size="sm" disabled={remove.isPending} onClick={onKeep}>
           {t("Keep")}
         </Button>
       </div>

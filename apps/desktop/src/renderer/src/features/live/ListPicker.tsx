@@ -1,9 +1,10 @@
 // Shared topic rail and Provider lists picker for the guide sidebar and Watch overlay.
-import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Fragment, useEffect, useRef } from "react";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { formatNumber, t } from "@mrstreamer/core/i18n";
 import { sameList, type ChannelList } from "../../app/ui-store.ts";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { cn } from "../../lib/utils.ts";
 import { PROVIDER_LISTS, type ListPickerState } from "./lists.ts";
 
@@ -109,35 +110,34 @@ export function ListPicker({
         }
       }}
     >
-      <div className="mb-2 flex h-9 flex-none items-center gap-2 border-b border-border px-2 focus-within:border-white/50">
-        <Search className="size-3.5 flex-none text-muted-foreground" />
-        <input
-          ref={field}
-          type="text"
-          aria-label={t("Find a category")}
-          placeholder={t("Find")}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        />
-        {query !== "" && (
-          <button
-            aria-label={t("Clear category search")}
-            onClick={() => {
-              setQuery("");
-              field.current?.focus();
-            }}
-            className="grid size-6 place-items-center"
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
-      </div>
+      <SearchField
+        ref={field}
+        type="text"
+        aria-label={t("Find a category")}
+        placeholder={t("Find")}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        className="mb-2 flex-none"
+        end={
+          query !== "" && (
+            <button
+              aria-label={t("Clear category search")}
+              onClick={() => {
+                setQuery("");
+                field.current?.focus();
+              }}
+              className="-mr-1 grid size-6 flex-none place-items-center rounded-full text-muted-foreground hover:bg-white/10 hover:text-white"
+            >
+              <X className="size-3.5" />
+            </button>
+          )
+        }
+      />
       {group !== null && query.trim() === "" && (
         <button
           aria-label={group === PROVIDER_LISTS ? t("Back to topics") : t("Back to countries")}
           onClick={back}
-          className="mb-1 flex h-9 flex-none items-center gap-2 px-3 text-left text-sm font-semibold hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70"
+          className="mb-1 flex h-9 flex-none items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70"
         >
           <ChevronLeft className="size-3.5 flex-none" />
           <span className="min-w-0 flex-1 truncate" title={group}>
@@ -171,7 +171,7 @@ export function ListPicker({
                 onFocus={() => setEntry(index)}
                 onClick={() => pick(index)}
                 className={cn(
-                  "flex h-9 w-full items-center gap-2 px-3 text-left text-sm text-white hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:outline-offset-[-2px]",
+                  "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-white hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:outline-offset-[-2px]",
                   current && "bg-white/10",
                   highlight === index && "ring-2 ring-white/70 ring-inset",
                   group === null && query.trim() === "" && index === 3 && "mt-3",

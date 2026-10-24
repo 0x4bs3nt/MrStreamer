@@ -8,6 +8,8 @@ import { updatesInApp, type UpdateStatus } from "@mrstreamer/contracts/updates";
 import { formatPercent, t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
+import { menuSurface } from "../../components/ui/menu.ts";
+import { cn } from "../../lib/utils.ts";
 import { noteItems } from "./notes.ts";
 import { useUpdates } from "./use-updates.ts";
 
@@ -87,7 +89,12 @@ export function UpdateNotice({ compact = false }: { compact?: boolean }) {
       </Tooltip>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={8} className="z-[60]">
-          <Popover.Popup className="no-drag w-[22rem] rounded-2xl bg-popover p-5 text-[0.9375rem] shadow-2xl ring-1 ring-white/12 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0">
+          <Popover.Popup
+            className={cn(
+              menuSurface,
+              "no-drag w-[22rem] p-5 text-[0.9375rem] transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            )}
+          >
             <UpdatePanel status={status} />
           </Popover.Popup>
         </Popover.Positioner>

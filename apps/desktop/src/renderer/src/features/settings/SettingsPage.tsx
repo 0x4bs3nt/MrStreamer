@@ -21,7 +21,7 @@ import {
   PrivacySection,
 } from "./GeneralSection.tsx";
 import { UpdatesSection } from "../updates/UpdatesSection.tsx";
-import { Input } from "../../components/ui/input.tsx";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { queries } from "../../lib/queries.ts";
 import { SaveFeedback } from "./SaveFeedback.tsx";
 import {
@@ -195,13 +195,13 @@ export function SettingsPage() {
           className="flex w-60 max-w-[32%] flex-none flex-col border-r border-border px-3 pt-3"
         >
           <h1 className="mb-3 px-2 text-2xl font-semibold tracking-tight">{t("Settings")}</h1>
-          <Input
+          <SearchField
             ref={search}
             type="search"
             aria-label={t("Find a setting")}
             placeholder={t("Find a setting")}
             value={query}
-            className="mb-2 h-9 rounded-none border-0 border-b bg-transparent px-2"
+            className="mb-3 flex-none"
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape" && query) {
@@ -228,7 +228,7 @@ export function SettingsPage() {
                   </p>
                 )}
                 <button
-                  className="w-full px-2 py-2 text-left text-sm underline underline-offset-4"
+                  className="w-full rounded-lg px-2 py-2 text-left text-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   onClick={() => {
                     setQuery("");
                     search.current?.focus();
@@ -241,7 +241,7 @@ export function SettingsPage() {
                     data-setting-result
                     key={control.id}
                     onClick={() => navigate(control.section, control.id)}
-                    className="block w-full px-2 py-2 text-left text-sm break-words outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                    className="block w-full rounded-lg px-2 py-2 text-left text-sm break-words outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     {t(control.label)}
                     <span className="block text-xs text-muted-foreground">
@@ -259,7 +259,7 @@ export function SettingsPage() {
                   aria-current={section.id === shownTab ? "page" : undefined}
                   onClick={() => navigate(section.id)}
                   className={cn(
-                    "block w-full px-2 py-2 text-left text-[0.9375rem] break-words outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    "block w-full rounded-lg px-2 py-2 text-left text-[0.9375rem] break-words outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                     section.id === shownTab
                       ? "bg-white/10 text-white"
                       : "text-muted-foreground hover:bg-white/5 hover:text-white",

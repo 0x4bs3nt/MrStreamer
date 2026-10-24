@@ -184,11 +184,24 @@ const ONE_SOURCE = ["guide-index.*.sqlite", "sources.json"];
 /** The folder the app keeps the sources in. */
 const sourcesIn = (dataDir: string) => join(dataDir, "guides");
 
-/** Every file under `dir` as text, to look for what must not be written anywhere. */
+/**
+ * Every file under `dir` as text, to look for what must not be written anywhere. The app may
+ * still be writing: what it writes whole goes to <name>.<id>.tmp, then takes <name>, so such a
+ * file gone by the time it is read is read as <name>. Any other failure fails the test.
+ */
 async function written(dir: string): Promise<string> {
   const parts: string[] = [];
   for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
-    if (entry.isFile()) parts.push(await readFile(join(entry.parentPath, entry.name), "latin1"));
+    if (!entry.isFile()) continue;
+    const path = join(entry.parentPath, entry.name);
+    parts.push(
+      await readFile(path, "latin1").catch((cause: unknown) => {
+        const named = /^(.+)\.[0-9a-f-]{36}\.tmp$/.exec(path)?.[1];
+        const gone = cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+        if (!named || !gone) throw cause;
+        return readFile(named, "latin1");
+      }),
+    );
   }
   return parts.join("\n");
 }
@@ -1199,6 +1212,8 @@ describe("a source's name", () => {
     await run(guide.renameSource(source.id, "United Kingdom"));
     expect((await sources())[0]?.label).toBe("United Kingdom");
 
+    // The download's own file goes when the download ends, so the disk is read once it has.
+    await run(guide.refreshSource(source.id));
     const disk = await written(dataDir);
     expect(disk).toContain('"label":"United Kingdom"');
     expect(disk).not.toContain(GUIDE_KEY);

@@ -64,7 +64,7 @@ export function ChannelOverlay({
           <button
             onMouseDown={(event) => event.preventDefault()}
             onClick={onTogglePicking}
-            className="flex min-w-0 items-center gap-1.5 px-2 py-1 text-xl font-semibold tracking-tight hover:bg-white/8"
+            className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xl font-semibold tracking-tight hover:bg-white/8"
           >
             <span className="truncate">{listTitle(list, categories)}</span>
             <ChevronDown className={cn("size-4 flex-none", picking && "rotate-180")} />
@@ -212,7 +212,7 @@ function Row({
       onMouseDown={(event) => event.preventDefault()}
       onClick={onPlay}
       className={cn(
-        "group absolute inset-x-0 flex items-center gap-3.5 px-3 hover:bg-white/8",
+        "group absolute inset-x-0 flex items-center gap-3.5 rounded-lg px-3 hover:bg-white/8",
         playing && "bg-white/6",
         selected && "ring-2 ring-white/70 ring-inset",
       )}

@@ -20,6 +20,7 @@ import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import type { EpisodeState } from "@mrstreamer/core/viewing/episodes";
 import { t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { menuItem, menuSurface } from "../../components/ui/menu.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries } from "../../lib/queries.ts";
@@ -178,7 +179,9 @@ export function EpisodeMenu({
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="end" sideOffset={8} className="z-[60]">
-          <Menu.Popup className="w-max min-w-[15rem] max-w-[26rem] rounded-2xl bg-popover p-2 text-[0.9375rem] shadow-2xl ring-1 ring-white/12 outline-none">
+          <Menu.Popup
+            className={cn(menuSurface, "w-max min-w-[15rem] max-w-[26rem] text-[0.9375rem]")}
+          >
             <MarkItem
               disabled={marks.busy || state === "watched"}
               source={source}
@@ -217,7 +220,10 @@ function MarkItem({
     <Menu.Item
       disabled={disabled}
       onClick={onPick}
-      className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-foreground/80 outline-none data-disabled:text-muted-foreground/60 data-highlighted:bg-white/6 data-highlighted:text-white"
+      className={cn(
+        menuItem,
+        "flex w-full items-center gap-2 px-2 py-1.5 text-foreground/80 data-disabled:text-muted-foreground/60 data-highlighted:text-white",
+      )}
     >
       {children}
       {source && (

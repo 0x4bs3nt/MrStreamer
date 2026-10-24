@@ -58,7 +58,7 @@ const expect = (ok: boolean, message: string) => {
  */
 export async function airedProgramme(d: Driver, category: string, channel: string) {
   const row = `[...document.querySelectorAll('[data-index]')].find(r => r.querySelector('[title]')?.firstElementChild?.textContent.includes(${JSON.stringify(channel)}))`;
-  const lines = `[...(${row})?.querySelectorAll('.rounded-b-xl > button') ?? []]`;
+  const lines = `[...(${row})?.querySelectorAll('.rounded-b-lg > button') ?? []]`;
   const playback = () =>
     d.evaluate<{ time: number; width: number; ended: boolean; audio: number; watching: boolean }>(
       video,

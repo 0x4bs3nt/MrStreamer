@@ -24,7 +24,7 @@ import { useSearchUsage } from "../../app/analytics.ts";
 //   The lists hold every saved subscription's channels. One that can't be reached keeps the
 // channels it loaded, and a line under the title says so, with Retry.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Search, Volume2, VolumeX, X } from "lucide-react";
+import { Play, Volume2, VolumeX, X } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -46,6 +46,7 @@ import { CatalogueNotice, catalogueState } from "../../components/CatalogueNotic
 import { ChannelLogo } from "../../components/ChannelLogo.tsx";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { useNow } from "../../lib/clock.ts";
 import { appError, describeError } from "../../lib/errors.ts";
@@ -692,7 +693,7 @@ export function GuidePage({ active }: { active: boolean }) {
                       </Button>
                     )}
                     {(channels.length > 0 || searching) && (
-                      <SearchField
+                      <ListSearch
                         field={field}
                         list={title}
                         value={text}
@@ -883,7 +884,7 @@ function SourceNotices() {
  * The field at the end of the list's title, which searches that list. Down or Enter hands the
  * keys to the channels found; Escape clears it and does the same.
  */
-function SearchField({
+function ListSearch({
   field,
   list,
   value,
@@ -898,41 +899,39 @@ function SearchField({
   onLeave: () => void;
 }) {
   return (
-    <label className="group flex h-9 w-[17rem] flex-none items-center gap-2 rounded-full bg-white/8 px-3.5 focus-within:bg-white/12">
-      <Search className="size-4 flex-none text-muted-foreground" />
-      <input
-        ref={field}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          // Enter that ends a composition, as for Japanese, is the text's.
-          if (event.nativeEvent.isComposing) return;
-          if (event.key === "Escape") onChange("");
-          else if (event.key !== "ArrowDown" && event.key !== "Enter") return;
-          event.currentTarget.blur();
-          onLeave();
-          event.preventDefault();
-        }}
-        placeholder={t("Search {list}", { list })}
-        aria-label={t("Search {list}", { list })}
-        spellCheck={false}
-        className="min-w-0 flex-1 truncate bg-transparent text-[0.875rem] text-foreground outline-none placeholder:text-muted-foreground"
-      />
-      {value ? (
-        <button
-          aria-label={t("Clear search")}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => onChange("")}
-          className="-mr-1 grid size-6 flex-none place-items-center rounded-full text-muted-foreground hover:bg-white/10 hover:text-white"
-        >
-          <X className="size-3.5" />
-        </button>
-      ) : (
-        <kbd className="flex-none rounded border border-white/15 px-1.5 font-sans text-xs leading-5 text-muted-foreground group-focus-within:hidden">
-          /
-        </kbd>
-      )}
-    </label>
+    <SearchField
+      ref={field}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        // Enter that ends a composition, as for Japanese, is the text's.
+        if (event.nativeEvent.isComposing) return;
+        if (event.key === "Escape") onChange("");
+        else if (event.key !== "ArrowDown" && event.key !== "Enter") return;
+        event.currentTarget.blur();
+        onLeave();
+        event.preventDefault();
+      }}
+      placeholder={t("Search {list}", { list })}
+      aria-label={t("Search {list}", { list })}
+      className="w-[17rem] flex-none"
+      end={
+        value ? (
+          <button
+            aria-label={t("Clear search")}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => onChange("")}
+            className="-mr-1 grid size-6 flex-none place-items-center rounded-full text-muted-foreground hover:bg-white/10 hover:text-white"
+          >
+            <X className="size-3.5" />
+          </button>
+        ) : (
+          <kbd className="flex-none rounded border border-white/15 px-1.5 font-sans text-xs leading-5 text-muted-foreground group-focus-within:hidden">
+            /
+          </kbd>
+        )
+      }
+    />
   );
 }
 

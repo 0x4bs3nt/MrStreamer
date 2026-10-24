@@ -9,6 +9,7 @@ import type {
 import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
 import { t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { NativeCheckbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { call } from "../../lib/ipc.ts";
 import type { SettingsControl } from "./catalogue.ts";
@@ -83,8 +84,7 @@ export function OnlineSubtitlesSection() {
         )}
       </p>
       <Row id="online-subtitles" label={t("Online search")}>
-        <input
-          type="checkbox"
+        <NativeCheckbox
           aria-label={t("Online subtitle search")}
           checked={saved?.enabled ?? false}
           disabled={!saved}
@@ -118,9 +118,8 @@ export function OnlineSubtitlesSection() {
         <legend className="pt-3">{t("Languages")}</legend>
         <div className="grid grid-cols-3 gap-2 pt-2">
           {TITLE_LANGUAGES.map(({ code, name }) => (
-            <label key={code} lang={code} className="flex gap-2 text-sm">
-              <input
-                type="checkbox"
+            <label key={code} lang={code} className="flex items-center gap-2 text-sm">
+              <NativeCheckbox
                 checked={saved?.languages.includes(code) ?? false}
                 onChange={(event) => {
                   if (!saved) return;
@@ -200,6 +199,7 @@ export function OnlineSubtitlesSection() {
                     )}
               </p>
               <Input
+                compact
                 readOnly={update.isPending}
                 aria-disabled={update.isPending}
                 type="password"
@@ -214,6 +214,7 @@ export function OnlineSubtitlesSection() {
               {service === "opensubtitles" && (
                 <div className="mt-2 space-y-2">
                   <Input
+                    compact
                     readOnly={update.isPending}
                     aria-disabled={update.isPending}
                     aria-label={t("OpenSubtitles username")}
@@ -222,6 +223,7 @@ export function OnlineSubtitlesSection() {
                     onChange={(event) => setUsername(event.currentTarget.value)}
                   />
                   <Input
+                    compact
                     readOnly={update.isPending}
                     aria-disabled={update.isPending}
                     type="password"

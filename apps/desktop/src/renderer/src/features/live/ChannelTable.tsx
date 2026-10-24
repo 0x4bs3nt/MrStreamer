@@ -429,9 +429,9 @@ function ChannelRow({
               },
             })}
         className={cn(
-          "group flex h-[3.5rem] items-center gap-4 px-3 outline-none hover:bg-white/8",
+          "group flex h-[3.5rem] items-center gap-4 rounded-lg px-3 outline-none hover:bg-white/8",
           expanded && "rounded-b-none bg-white/8",
-          searchRow && "rounded-none text-white",
+          searchRow && "text-white",
           searchRow?.copy && "ml-8",
           playing && !expanded && "bg-white/5",
           selected && "ring-2 ring-white/70 ring-inset",
@@ -687,7 +687,7 @@ function Schedule({
     ];
   }, [schedule.data, now, today, midnight, remote, channel.catchupDays]);
   return (
-    <div className="rounded-b-xl bg-white/5 py-2 pr-4 pl-[17.5rem]">
+    <div className="rounded-b-lg bg-white/5 py-2 pr-4 pl-[17.5rem]">
       {programmes.map((programme) => (
         <ScheduleLine
           key={programme.start}

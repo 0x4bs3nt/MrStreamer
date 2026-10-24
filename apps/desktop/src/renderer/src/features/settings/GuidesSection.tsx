@@ -113,7 +113,8 @@ export function GuidesSection() {
           aria-label={t("Address of an XMLTV guide")}
           placeholder={t("Address of an XMLTV guide, .xml or .xml.gz")}
           autoComplete="off"
-          className="h-9 flex-1 rounded-lg px-3 text-[0.9375rem]"
+          compact
+          className="flex-1"
         />
         <Input
           value={label}
@@ -124,7 +125,8 @@ export function GuidesSection() {
           aria-label={t("Name of the guide")}
           placeholder={t("Name, optional")}
           autoComplete="off"
-          className="h-9 w-44 flex-none rounded-lg px-3 text-[0.9375rem]"
+          compact
+          className="w-44 flex-none"
         />
         <Button type="submit" size="sm" disabled={!typed || add.isPending}>
           {t("Add")}
@@ -377,7 +379,7 @@ function RenameField({
       placeholder={hostOf(source.origin)}
       autoComplete="off"
       autoFocus
-      className="h-7 rounded-md px-2 text-[0.9375rem]"
+      compact
     />
   );
 }

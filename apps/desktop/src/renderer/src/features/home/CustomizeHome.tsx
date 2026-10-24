@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
 import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
-import { ArrowDown, ArrowUp, Check } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { t, type PlainKey } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { NativeCheckbox } from "../../components/ui/checkbox.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { updatePreferences } from "../../lib/preferences.ts";
 import { cn } from "../../lib/utils.ts";
@@ -98,27 +99,18 @@ export function CustomizeHome() {
                 {index + 1}
               </span>
               <label className="flex min-w-0 flex-1 items-center gap-3">
-                <span className="relative flex size-4 flex-none">
-                  <input
-                    type="checkbox"
-                    className="peer size-4 appearance-none rounded-[0.25rem] shadow-[inset_0_0_0_1.5px_rgb(255_255_255/45%)] outline-none checked:bg-white checked:shadow-none focus-visible:ring-2 focus-visible:ring-ring"
-                    checked={row.visible}
-                    disabled={!preferences.data}
-                    aria-disabled={busy}
-                    onChange={(event) =>
-                      persist((rows) =>
-                        rows.map((each) =>
-                          each.id === row.id ? { ...each, visible: event.target.checked } : each,
-                        ),
-                      )
-                    }
-                  />
-                  <Check
-                    aria-hidden
-                    className="pointer-events-none absolute inset-0 m-auto hidden size-3 text-black peer-checked:block"
-                    strokeWidth={3}
-                  />
-                </span>
+                <NativeCheckbox
+                  checked={row.visible}
+                  disabled={!preferences.data}
+                  aria-disabled={busy}
+                  onChange={(event) =>
+                    persist((rows) =>
+                      rows.map((each) =>
+                        each.id === row.id ? { ...each, visible: event.target.checked } : each,
+                      ),
+                    )
+                  }
+                />
                 <span className={cn("truncate", !row.visible && "text-muted-foreground")}>
                   {label}
                 </span>

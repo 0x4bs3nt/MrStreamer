@@ -7,7 +7,9 @@ import {
 } from "@mrstreamer/contracts/live-browse";
 import { formatLanguageName, formatNumber, t } from "@mrstreamer/core/i18n";
 import { useUi, type ChannelList } from "../../app/ui-store.ts";
+import { menuSurface } from "../../components/ui/menu.ts";
 import { subscriptionName, useSubscriptions } from "../../lib/queries.ts";
+import { cn } from "../../lib/utils.ts";
 
 const DIMENSIONS = ["countries", "languages", "subscriptions"] as const;
 const LABELS = {
@@ -130,7 +132,7 @@ export function BrowseFilters({
               aria-haspopup="menu"
               aria-expanded={open === dimension}
               onClick={() => setOpen(open === dimension ? null : dimension)}
-              className="flex max-w-52 items-center gap-1 py-1 text-left focus-visible:outline-2 focus-visible:outline-white"
+              className="-mx-2 flex h-7 max-w-52 items-center gap-1 rounded-lg px-2 text-left outline-none hover:bg-white/8 focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span className="text-muted-foreground">{t(LABELS[dimension])}</span>
               <span className="truncate">{text}</span>
@@ -141,7 +143,10 @@ export function BrowseFilters({
                 ref={menu}
                 role="menu"
                 aria-label={t(LABELS[dimension])}
-                className="absolute top-full left-0 z-30 max-h-72 w-max min-w-48 max-w-[min(24rem,calc(100vw-1rem))] overflow-y-auto border border-white/25 bg-black py-1 shadow-xl"
+                className={cn(
+                  menuSurface,
+                  "absolute top-full left-0 z-30 mt-1 max-h-72 w-max min-w-48 max-w-[min(24rem,calc(100vw-1rem))] overflow-y-auto",
+                )}
               >
                 <button
                   role="menuitemcheckbox"
@@ -150,7 +155,7 @@ export function BrowseFilters({
                     change({ ...filters, [dimension]: [] });
                     close();
                   }}
-                  className="flex h-8 w-full items-center gap-2 px-3 text-left hover:bg-white/10 focus:bg-white/10 focus:outline-none"
+                  className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-white/10 focus:bg-white/10 focus:outline-none"
                 >
                   <span className="flex-1">{t("Any")}</span>
                   {result && (
@@ -173,7 +178,7 @@ export function BrowseFilters({
                           : [...selected, value],
                       })
                     }
-                    className="flex h-8 w-full items-center gap-3 px-3 text-left hover:bg-white/10 focus:bg-white/10 focus:outline-none"
+                    className="flex h-8 w-full items-center gap-3 rounded-lg px-2 text-left hover:bg-white/10 focus:bg-white/10 focus:outline-none"
                   >
                     <span className="min-w-0 flex-1 truncate" title={label(dimension, value)}>
                       {label(dimension, value)}

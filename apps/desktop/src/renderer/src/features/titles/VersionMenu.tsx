@@ -7,6 +7,7 @@ import { languageName } from "@mrstreamer/core/ondemand/tracks";
 import { versionOptions, type VersionOptionGroup } from "@mrstreamer/core/ondemand/version-options";
 import { formatDate, t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { menuItem, menuSurface } from "../../components/ui/menu.ts";
 import { useSubscriptionNames, useSubscriptions } from "../../lib/queries.ts";
 import { usePickVersion } from "../../lib/titles.ts";
 import { cn } from "../../lib/utils.ts";
@@ -90,7 +91,8 @@ export function VersionMenu({
         value={ownedKey(version)}
         closeOnClick
         className={cn(
-          "flex w-full items-start gap-2 px-2 py-2 text-white/70 outline-none data-checked:text-white data-highlighted:bg-white/10",
+          menuItem,
+          "flex w-full items-start gap-2 px-2 py-2 text-white/70 data-checked:text-white",
           ordinal !== undefined && "pl-6",
         )}
         aria-label={[
@@ -147,7 +149,12 @@ export function VersionMenu({
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="start" sideOffset={8} className="z-[60]">
-          <Menu.Popup className="max-h-[min(60vh,var(--available-height))] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto bg-black p-2 text-[0.875rem] text-white ring-1 ring-white/15 outline-none">
+          <Menu.Popup
+            className={cn(
+              menuSurface,
+              "max-h-[min(60vh,var(--available-height))] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto text-[0.875rem] text-white",
+            )}
+          >
             <Menu.RadioGroup
               value={picked ? ownedKey(picked) : AUTOMATIC}
               onValueChange={(value: string) => {
@@ -161,7 +168,7 @@ export function VersionMenu({
                 <Menu.RadioItem
                   value={AUTOMATIC}
                   closeOnClick
-                  className="flex items-start gap-2 px-2 py-2 outline-none data-highlighted:bg-white/10"
+                  className={cn(menuItem, "flex items-start gap-2 px-2 py-2")}
                 >
                   <span className="mt-1 grid size-1.5 flex-none">
                     <Menu.RadioItemIndicator className="size-1.5 rounded-full bg-white" />
@@ -199,7 +206,10 @@ export function VersionMenu({
                           expand(group.key, event.key === "ArrowRight");
                         }
                       }}
-                      className="flex w-full items-baseline gap-2 px-2 py-2 text-white/70 outline-none data-highlighted:bg-white/10"
+                      className={cn(
+                        menuItem,
+                        "flex w-full items-baseline gap-2 px-2 py-2 text-white/70",
+                      )}
                     >
                       <span className="grid size-1.5 flex-none">
                         {picked && group.versions.some((version) => sameOwned(version, picked)) && (

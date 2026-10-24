@@ -14,9 +14,11 @@ import { t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { menuItem, menuSurface } from "../../components/ui/menu.ts";
 import { downloadOf, downloadsQuery, transferred } from "../../lib/downloads.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
+import { cn } from "../../lib/utils.ts";
 import { episodeRef } from "../../player/title-player.ts";
 import { DownloadPill } from "./DownloadControls.tsx";
 
@@ -204,7 +206,7 @@ export function SeriesDownload({
         titles.length
       : 0;
   const scope = details.seasons.map((season) => season.name).join(", ");
-  const itemClass = "px-2 py-2 outline-none data-highlighted:bg-white/10 data-disabled:opacity-40";
+  const itemClass = cn(menuItem, "px-2 py-2 data-disabled:opacity-40");
   return (
     <>
       <Menu.Root>
@@ -234,7 +236,12 @@ export function SeriesDownload({
         </DownloadPill>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="start" sideOffset={8} className="z-[60]">
-            <Menu.Popup className="max-h-[min(60vh,var(--available-height))] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto bg-black p-2 text-sm text-white ring-1 ring-white/20 outline-none">
+            <Menu.Popup
+              className={cn(
+                menuSurface,
+                "max-h-[min(60vh,var(--available-height))] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto text-sm text-white",
+              )}
+            >
               <div className="px-2 pt-1 pb-3">
                 <p className="font-semibold">{scope}</p>
                 <p className="mt-1 text-xs text-white/60">{version}</p>

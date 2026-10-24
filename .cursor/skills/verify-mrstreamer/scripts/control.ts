@@ -29,6 +29,7 @@ import {
 } from "./live-categories.ts";
 import { languageScenario } from "./language.ts";
 import { settingsScenario } from "./settings.ts";
+import { controlsScenario } from "./controls.ts";
 import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
 import { nextEpisodeScenario } from "./next-episode.ts";
@@ -75,6 +76,7 @@ const scenarios = [
   "language",
   "preferences",
   "settings",
+  "controls",
 ] as const;
 type Scenario = (typeof scenarios)[number];
 const [command, selected] = process.argv.slice(2);
@@ -659,13 +661,20 @@ async function run(scenario: Scenario) {
       observed["subscriptionRows"] = await livePage.evaluate<number>(
         "[...document.querySelectorAll('li')].filter(row => row.querySelector('button')?.textContent.includes(' · ')).length",
       );
-    } else if (scenario === "language" || scenario === "preferences" || scenario === "settings") {
+    } else if (
+      scenario === "language" ||
+      scenario === "preferences" ||
+      scenario === "settings" ||
+      scenario === "controls"
+    ) {
       await (
         scenario === "language"
           ? languageScenario
           : scenario === "settings"
             ? settingsScenario
-            : preferencesScenario
+            : scenario === "controls"
+              ? controlsScenario
+              : preferencesScenario
       )({
         profile: ownedProfile,
         observed,

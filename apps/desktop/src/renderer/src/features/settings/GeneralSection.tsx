@@ -497,7 +497,8 @@ function EpisodeDelay({
       max={60}
       step={1}
       value={value}
-      className="h-9 w-20 rounded-none px-2 text-right tabular-nums"
+      compact
+      className="w-20 text-right tabular-nums"
       onChange={(event) => {
         editing.current = true;
         setValue(event.target.value);
@@ -623,7 +624,8 @@ function Tmdb() {
             onChange={(event) => setKey(event.target.value)}
             placeholder={t("Your own key or read access token")}
             aria-label={t("Your own TMDB key")}
-            className="h-9 min-w-0 flex-1"
+            compact
+            className="min-w-0 flex-1"
             onKeyDown={(event) => {
               if (event.key === "Escape") {
                 event.preventDefault();

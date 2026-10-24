@@ -22,9 +22,11 @@ import { formatBytes, formatPercent, t } from "@mrstreamer/core/i18n";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { menuItem, menuSurface } from "../../components/ui/menu.ts";
 import { describeFailure, transferred, useDownloadOf, watchOffline } from "../../lib/downloads.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
+import { cn } from "../../lib/utils.ts";
 
 /** What happens to a version's download from its details, and why the last of it failed. */
 function useDownload(title: TitleRef) {
@@ -245,11 +247,11 @@ function MovieState({
             </Menu.Trigger>
             <Menu.Portal>
               <Menu.Positioner side="bottom" align="start" sideOffset={8} className="z-[60]">
-                <Menu.Popup className="bg-black p-2 text-[0.875rem] text-white ring-1 ring-white/15 outline-none">
+                <Menu.Popup className={cn(menuSurface, "text-[0.875rem] text-white")}>
                   <Menu.Item
                     closeOnClick
                     onClick={() => remove(id)}
-                    className="px-2 py-2 outline-none data-highlighted:bg-white/10"
+                    className={cn(menuItem, "px-2 py-2")}
                   >
                     {t("Delete download")}
                   </Menu.Item>

@@ -155,19 +155,25 @@ export async function guidesScenario(
     return lines;
   };
 
-  /** Live TV's rows of the sourced channels and the provider's own: what each shows on now. */
   /** A channel's name as Live TV's rows draw it, without the "TEST | " its category shares. */
   const drawn = (name: string) => name.replace(/^TEST \| /, "");
-  const liveTv = async () => {
+  /**
+   * Live TV's rows of the sourced channels and the provider's own: what each shows on now, read
+   * once each row draws what `expected` says. Rows arrive before their listings, and a changed
+   * guide redraws them; the last rows read stay in `liveTvSeen` should that never happen.
+   */
+  const liveTv = async (expected: Readonly<Record<string, string | RegExp>>) => {
     // Settings lies over the app with a header of its own: its Back is the last.
     const back =
       "[...document.querySelectorAll('header button')].findLast(b => b.textContent.trim() === 'Back')";
     if (await d.exists(back)) await d.click("Leave Settings", back);
     await d.click("Open Live TV", byText("header button", "Live TV"));
-    await d.click(
-      "Open TEST | Formats and failures",
-      `[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('TEST | Formats'))`,
-    );
+    const category = `[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('TEST | Formats'))`;
+    // The topic rail lists provider categories under Provider lists, unless it is still open.
+    const providerLists = `[...document.querySelectorAll('[role=navigation] button')].find(b => b.title === 'Provider lists')`;
+    await d.wait(async () => (await d.exists(category)) || (await d.exists(providerLists)));
+    if (!(await d.exists(category))) await d.click("Open Provider lists", providerLists);
+    await d.click("Open TEST | Formats and failures", category);
     const names = [
       "TEST | H.264 + AAC",
       SOURCED.north.name,
@@ -182,7 +188,14 @@ export async function guidesScenario(
         ]))`);
     await d.wait(async () => {
       const shown = await read();
-      return names.every((name) => drawn(name) in shown);
+      d.observed["liveTvSeen"] = shown;
+      return (
+        names.every((name) => drawn(name) in shown) &&
+        Object.entries(expected).every(([name, want]) => {
+          const text = shown[drawn(name)] ?? "";
+          return typeof want === "string" ? text.includes(want) : want.test(text);
+        })
+      );
     });
     const shown = await read();
     return (name: string) => shown[drawn(name)] ?? "";
@@ -226,7 +239,12 @@ export async function guidesScenario(
   await d.capture("guides-ready");
 
   // The merged guide: the own guide first, then North, then South.
-  let now = await liveTv();
+  let now = await liveTv({
+    "TEST | H.264 + AAC": / News \d+/,
+    [SOURCED.north.name]: "North north.src",
+    [SOURCED.south.name]: "South south.src",
+    [SOURCED.shared.name]: "North shared.src",
+  });
   d.observed["liveTvBefore"] = Object.fromEntries(
     [SOURCED.north, SOURCED.south, SOURCED.shared].map(({ name }) => [name, now(name)]),
   );
@@ -257,7 +275,10 @@ export async function guidesScenario(
   );
   await d.wait(async () => (await rows())[0]?.host === hostName(hosts.south));
   await d.capture("guides-south-first");
-  now = await liveTv();
+  now = await liveTv({
+    [SOURCED.shared.name]: "South shared.src",
+    [SOURCED.north.name]: "North north.src",
+  });
   d.observed["liveTvAfter"] = Object.fromEntries(
     [SOURCED.north, SOURCED.south, SOURCED.shared].map(({ name }) => [name, now(name)]),
   );
@@ -306,7 +327,7 @@ export async function guidesScenario(
   await width(1280);
   await d.capture("subscriptions-guide-1280");
 
-  now = await liveTv();
+  now = await liveTv({ [SOURCED.north.name]: "North north.src" });
   expect(now(SOURCED.north.name).includes("North north.src"), "North's failure dropped its guide");
   await d.capture("live-tv-1280");
   await width(900);

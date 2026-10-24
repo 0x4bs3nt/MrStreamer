@@ -2,6 +2,7 @@
 // its control or value on the right, like the system's own settings.
 import type { FormEvent, ReactNode, Ref } from "react";
 import type { SettingsControl } from "./catalogue.ts";
+import { NativeSelect } from "../../components/ui/select.tsx";
 import { cn } from "../../lib/utils.ts";
 
 /** A titled list of rows. */
@@ -51,7 +52,8 @@ export function Row({
       tabIndex={focusLabel ? -1 : undefined}
       className={cn(
         "flex min-h-13 flex-wrap items-center gap-x-6 gap-y-2 border-b border-white/8 py-2",
-        focusLabel && "outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        focusLabel &&
+          "outline-none focus-visible:rounded-lg focus-visible:ring-2 focus-visible:ring-ring",
       )}
     >
       <div className="min-w-32 flex-1 break-words">
@@ -83,7 +85,7 @@ export function RowForm({ onSubmit, children }: { onSubmit: () => void; children
   );
 }
 
-/** A choice from a short list, on the right of its row. */
+/** A choice from a short list, on the right of its row, in the system's own list. */
 export function Select<T extends string>({
   label,
   value,
@@ -104,7 +106,7 @@ export function Select<T extends string>({
   wide?: boolean;
 }) {
   return (
-    <select
+    <NativeSelect
       aria-label={label}
       disabled={disabled}
       aria-disabled={busy || undefined}
@@ -114,16 +116,13 @@ export function Select<T extends string>({
         const picked = options.find((option) => option.value === event.target.value);
         if (picked) onChange(picked.value);
       }}
-      className={cn(
-        "h-9 max-w-full truncate rounded-none bg-white/6 px-3 ring-1 ring-input outline-none focus:ring-2 focus:ring-ring",
-        wide ? "w-64" : "w-56",
-      )}
+      className={wide ? "w-64" : "w-56"}
     >
       {options.map((option) => (
         <option key={option.value} value={option.value} lang={option.lang}>
           {option.label}
         </option>
       ))}
-    </select>
+    </NativeSelect>
   );
 }

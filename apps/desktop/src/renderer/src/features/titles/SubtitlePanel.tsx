@@ -12,6 +12,7 @@ import { regionalLanguageName } from "@mrstreamer/core/ondemand/tracks";
 import { type PlainKey, t } from "@mrstreamer/core/i18n";
 import { openOnlineSubtitleSettings, useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
+import { NativeSelect } from "../../components/ui/select.tsx";
 import { comingTime } from "../../lib/format.ts";
 import { onlineSubtitles, useOnlineSubtitles } from "../../player/online-subtitles.ts";
 import { titlePlayer, useSubtitleNote, useTitlePlayer } from "../../player/title-player.ts";
@@ -168,9 +169,8 @@ export function SubtitlePanel({ open, onClose }: { open: boolean; onClose: () =>
         >
           {settings.data?.enabled && (
             <div className="flex flex-wrap items-center gap-2">
-              <select
+              <NativeSelect
                 aria-label={t("Subtitle search language")}
-                className="h-8 rounded-lg border border-white/30 bg-black px-1 text-[0.8125rem]"
                 value={language}
                 onChange={(event) => setLanguage(event.currentTarget.value)}
               >
@@ -180,7 +180,7 @@ export function SubtitlePanel({ open, onClose }: { open: boolean; onClose: () =>
                     {name}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
               <Button
                 data-item
                 variant="secondary"

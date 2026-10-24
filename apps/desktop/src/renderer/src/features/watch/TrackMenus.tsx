@@ -9,6 +9,7 @@ import { useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { AudioTrack, SubtitleFormat, SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { t } from "@mrstreamer/core/i18n";
 import { Button } from "../../components/ui/button.tsx";
+import { menuSurface } from "../../components/ui/menu.ts";
 import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { cn } from "../../lib/utils.ts";
 import { SubtitleSettingRows } from "./SubtitleSettings.tsx";
@@ -225,7 +226,10 @@ export function Menu({
               onKeyDown?.(event);
               if (!event.defaultPrevented) moveFocus(event);
             }}
-            className="max-h-[60vh] w-[18rem] overflow-y-auto rounded-2xl bg-popover p-2 text-[0.9375rem] shadow-2xl ring-1 ring-white/12 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0"
+            className={cn(
+              menuSurface,
+              "max-h-[60vh] w-[18rem] overflow-y-auto text-[0.9375rem] transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            )}
           >
             {children}
           </Popover.Popup>

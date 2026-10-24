@@ -7,6 +7,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
 import type { ThirdPartyNotice } from "@mrstreamer/contracts/licences";
 import { t } from "@mrstreamer/core/i18n";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { queries } from "../../lib/queries.ts";
 import { useRem } from "../../lib/use-rem.ts";
@@ -37,13 +38,12 @@ export function Licences() {
       )}
       <div className="flex min-h-0 flex-1 gap-6">
         <div className="flex w-72 flex-none flex-col">
-          <input
+          <SearchField
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("Search")}
             aria-label={t("Search the licences")}
-            spellCheck={false}
-            className="mb-2 h-9 rounded-lg bg-white/6 px-3 text-[0.875rem] outline-none placeholder:text-muted-foreground/70 focus:bg-white/10"
+            className="mb-2 flex-none"
           />
           <div className="min-h-0 flex-1 overflow-y-auto pb-6">
             {shown.map((notice) => (

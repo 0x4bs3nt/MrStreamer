@@ -7,7 +7,7 @@ import { useSearchUsage } from "../../app/analytics.ts";
 //   The field at the end of the tabs searches this kind only, by any of a title's names, and
 // shows what it finds in place of the tab; Escape clears it. ⌘K searches everything for the same.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Play, Search } from "lucide-react";
+import { ChevronRight, Play } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import {
@@ -26,6 +26,7 @@ import { isMac, isTyping } from "../../app/platform.ts";
 import { openDetails, openView, useUi } from "../../app/ui-store.ts";
 import { Artwork, PosterTile, StillTile } from "../../components/TitleArt.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { queries, useSubscriptions, useSubscriptionPreferences } from "../../lib/queries.ts";
@@ -211,7 +212,7 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
                 </button>
               );
             })}
-            <SearchField kind={kind} value={place.query} onChange={(query) => go({ query })} />
+            <TitleSearch kind={kind} value={place.query} onChange={(query) => go({ query })} />
           </nav>
           {failure ? (
             <div className="px-10 text-[0.9375rem]">
@@ -271,7 +272,7 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
  * The field at the end of the tabs. Down or Enter hands the keys to the results, Escape clears
  * it and returns to the tab.
  */
-function SearchField({
+function TitleSearch({
   kind,
   value,
   onChange,
@@ -281,23 +282,19 @@ function SearchField({
   onChange: (query: string) => void;
 }) {
   return (
-    <label className="ml-auto flex h-9 w-[17rem] items-center gap-2 rounded-full bg-white/8 px-3.5 focus-within:bg-white/12">
-      <Search className="size-4 flex-none text-muted-foreground" />
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onChange("");
-          else if (event.key !== "ArrowDown" && event.key !== "Enter") return;
-          event.currentTarget.blur();
-          event.preventDefault();
-        }}
-        placeholder={kind === "movie" ? t("Search movies") : t("Search series")}
-        aria-label={kind === "movie" ? t("Search movies") : t("Search series")}
-        spellCheck={false}
-        className="min-w-0 flex-1 bg-transparent text-[0.875rem] text-foreground outline-none placeholder:text-muted-foreground"
-      />
-    </label>
+    <SearchField
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") onChange("");
+        else if (event.key !== "ArrowDown" && event.key !== "Enter") return;
+        event.currentTarget.blur();
+        event.preventDefault();
+      }}
+      placeholder={kind === "movie" ? t("Search movies") : t("Search series")}
+      aria-label={kind === "movie" ? t("Search movies") : t("Search series")}
+      className="ml-auto w-[17rem]"
+    />
   );
 }
 

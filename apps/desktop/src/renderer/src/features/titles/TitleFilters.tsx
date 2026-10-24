@@ -12,8 +12,10 @@ import {
 } from "@mrstreamer/contracts/title-filters";
 import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
 import { formatLanguageName, t } from "@mrstreamer/core/i18n";
+import { menuItem, menuSurface } from "../../components/ui/menu.ts";
 import { queries } from "../../lib/queries.ts";
 import { appError, describeError } from "../../lib/errors.ts";
+import { cn } from "../../lib/utils.ts";
 
 const QUALITIES: Record<QualityHint, string> = {
   "4k": "4K",
@@ -84,7 +86,7 @@ export function TitleChoiceMenu<V extends string>({
         <Menu.Trigger
           disabled={disabled}
           aria-label={[label, selected?.label].filter(Boolean).join(": ")}
-          className="flex h-8 max-w-full items-center gap-2 rounded px-2 text-white/70 outline-none hover:bg-white/8 hover:text-white focus-visible:ring-1 focus-visible:ring-white disabled:opacity-40"
+          className="flex h-8 max-w-full items-center gap-2 rounded-lg px-2 text-white/70 outline-none hover:bg-white/8 hover:text-white focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
         >
           {showLabel && <span className="flex-none">{label}</span>}
           {selected && <span className="truncate font-semibold text-white">{selected.label}</span>}
@@ -95,7 +97,10 @@ export function TitleChoiceMenu<V extends string>({
           <Menu.Positioner side="bottom" align="start" sideOffset={8} className="z-[60]">
             <Menu.Popup
               aria-label={label}
-              className="max-h-[min(60vh,var(--available-height))] w-[min(18rem,calc(100vw-2rem))] overflow-y-auto bg-black p-2 text-[0.8125rem] text-white ring-1 ring-white/20 outline-none"
+              className={cn(
+                menuSurface,
+                "max-h-[min(60vh,var(--available-height))] w-[min(18rem,calc(100vw-2rem))] overflow-y-auto text-[0.8125rem] text-white",
+              )}
               onKeyDown={(event) => {
                 if (event.key === "Escape") event.stopPropagation();
                 else stopGridKeys(event);
@@ -113,7 +118,10 @@ export function TitleChoiceMenu<V extends string>({
                       key={choice.value}
                       value={choice.value}
                       closeOnClick
-                      className="flex items-center gap-2 px-2 py-2 text-white/70 outline-none data-checked:font-semibold data-checked:text-white data-highlighted:bg-white/10"
+                      className={cn(
+                        menuItem,
+                        "flex items-center gap-2 px-2 py-2 text-white/70 data-checked:font-semibold data-checked:text-white",
+                      )}
                     >
                       <span className="grid size-4 flex-none">
                         <Menu.RadioItemIndicator>
@@ -237,7 +245,7 @@ export function TitleFilterBar({
         {Object.keys(filters).length > 0 && (
           <button
             onClick={() => onFilters({})}
-            className="ml-2 rounded px-2 py-1 underline underline-offset-4 focus-visible:outline-white"
+            className="ml-2 rounded-lg px-2 py-1 underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {t("Reset")}
           </button>

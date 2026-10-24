@@ -7,7 +7,7 @@ import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { formatNumber, type PlainKey, t } from "@mrstreamer/core/i18n";
 import { Sheet } from "../../components/Sheet.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import { Input } from "../../components/ui/input.tsx";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries, subscriptionName } from "../../lib/queries.ts";
@@ -74,11 +74,12 @@ export function PlaylistMap({
         )}
         <div className="mt-6 grid min-h-0 flex-1 grid-cols-[minmax(12rem,1fr)_2fr] gap-8">
           <div className="flex min-h-0 flex-col">
-            <Input
+            <SearchField
               aria-label={t("Search playlist groups")}
               placeholder={t("Search groups")}
               value={text}
               onChange={(event) => setText(event.target.value)}
+              className="flex-none"
             />
             <div className="mt-3 flex-1 overflow-y-auto" aria-label={t("Playlist groups")}>
               {groups.data?.groups.map((group) => (
@@ -87,8 +88,8 @@ export function PlaylistMap({
                   onClick={() => setSelected(group.group)}
                   aria-pressed={picked?.group === group.group}
                   className={cn(
-                    "flex w-full items-center justify-between gap-4 border-b border-white/10 px-2 py-3 text-left text-sm",
-                    picked?.group === group.group && "bg-white/10",
+                    "flex w-full items-center justify-between gap-4 rounded-lg px-2.5 py-3 text-left text-sm",
+                    picked?.group === group.group ? "bg-white/10" : "hover:bg-white/5",
                   )}
                 >
                   <span className="min-w-0 truncate">{group.name}</span>

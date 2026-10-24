@@ -15,7 +15,6 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Search } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -39,6 +38,7 @@ import { searchWords } from "@mrstreamer/core/text";
 import { formatNumber, type PlainKey, t } from "@mrstreamer/core/i18n";
 import { Sheet } from "../../components/Sheet.tsx";
 import { Button } from "../../components/ui/button.tsx";
+import { SearchField } from "../../components/ui/search-field.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
 import { hostOf } from "../../lib/format.ts";
 import { guideName } from "../../lib/guide-names.ts";
@@ -132,7 +132,7 @@ export function GuideMap({
                 onChange={setFilter}
               />
             </div>
-            <SearchField
+            <ListSearch
               label={t("Search channels")}
               value={text}
               onChange={setText}
@@ -313,7 +313,7 @@ function Picker({
           {t("Guide for {name}", { name: channel.title })}
         </h3>
       </div>
-      <SearchField
+      <ListSearch
         field={field}
         label={t("Search guide channels")}
         value={text}
@@ -422,7 +422,7 @@ function Choice({
 }
 
 /** A search field over a list. Down hands the keyboard to the list. */
-function SearchField({
+function ListSearch({
   field,
   label,
   value,
@@ -436,25 +436,21 @@ function SearchField({
   onDown: () => void;
 }) {
   return (
-    <label className="mb-2 flex h-9 flex-none items-center gap-2 rounded-full bg-white/8 px-3.5 focus-within:bg-white/12">
-      <Search className="size-4 flex-none text-muted-foreground" />
-      <input
-        ref={field}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          // Enter that ends a composition, as for Japanese, is the text's.
-          if (event.nativeEvent.isComposing) return;
-          if (event.key !== "ArrowDown" && event.key !== "Enter") return;
-          onDown();
-          event.preventDefault();
-        }}
-        placeholder={label}
-        aria-label={label}
-        spellCheck={false}
-        className="min-w-0 flex-1 truncate bg-transparent text-[0.875rem] text-foreground outline-none placeholder:text-muted-foreground"
-      />
-    </label>
+    <SearchField
+      ref={field}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        // Enter that ends a composition, as for Japanese, is the text's.
+        if (event.nativeEvent.isComposing) return;
+        if (event.key !== "ArrowDown" && event.key !== "Enter") return;
+        onDown();
+        event.preventDefault();
+      }}
+      placeholder={label}
+      aria-label={label}
+      className="mb-2 flex-none"
+    />
   );
 }
 

@@ -11,7 +11,7 @@ Source of truth for desktop and website verification paths. Run the relevant bas
 | [Watchlist](watchlist.md)             | `watchlist`                                   | Toggle removal, Home entry, restart persistence, keyboard, unavailable titles                   |
 | [Downloads](downloads.md)             | `downloads`                                   | Preemption, cancel/retry/delete, offline restart, removed subscription, network record          |
 | [Interface language](language.md)     | `language`                                    | Five languages, keyboard pick, restart, System default, unknown saved value, player and titles  |
-| [Settings](settings.md)               | `settings`                                    | Local search, eleven sections, focus, drafts, failed save/retry, text scaling and restart       |
+| [Settings](settings.md)               | `settings`                                    | Local search, eleven sections, focus, drafts, failed retry, text scaling, restart, `controls`   |
 | [Viewing preferences](preferences.md) | `preferences`                                 | Settings/player track publication, independent edits, drafts, ordering and restart              |
 | [Basic usage statistics](privacy.md)  | `node apps/desktop/test/e2e/analytics-app.ts` | Settings opt-out/restart, loopback payload inspection; lifecycle and offline service contracts  |
 | [Marketing website](website.md)       | `pnpm verify:website`                         | Responsive routes, download choices, guides, releases, privacy; live feed and Safari separately |
