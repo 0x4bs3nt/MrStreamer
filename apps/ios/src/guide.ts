@@ -34,6 +34,8 @@ export interface DayPage {
 }
 interface Entry {
   activation: Activation;
+  /** Cached reads may stand while attach is pending, but its old lease cannot refresh. */
+  activating?: true;
   readonly source: Source | undefined;
   part?: Part;
   generation: Generation | null;
@@ -137,7 +139,7 @@ export function createGuide(
   };
   async function refresh(key: string, explicit = true): Promise<void> {
     const entry = entries.get(key);
-    if (!entry || !entry.source || !stands(key, entry) || !foreground) return;
+    if (!entry || entry.activating || !entry.source || !stands(key, entry) || !foreground) return;
     if (entry.refresh) return entry.refresh;
     if (!explicit && now() - entry.failedAt < 15 * 60_000) return;
     const source = entry.source;
@@ -260,7 +262,7 @@ export function createGuide(
     value.entry.jobs.add(job);
     if (!native.begin(value.entry.activation.lease, job)) {
       value.entry.jobs.delete(job);
-      throw new GuideFault("busy");
+      return null;
     }
     const cancel = () => {
       void native.cancel(job);
@@ -360,6 +362,7 @@ export function createGuide(
         cancelEntry(before);
         pending = {
           activation: before.activation,
+          activating: true,
           source,
           generation: before.generation,
           failedAt: -Infinity,
@@ -384,6 +387,7 @@ export function createGuide(
         invalidate(entry);
         entry.activation = activation;
         entry.generation = activation.generation;
+        delete entry.activating;
         const part = parts.get(key);
         if (part) entry.part = part;
         entries.set(key, entry);

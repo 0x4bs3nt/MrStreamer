@@ -54,9 +54,11 @@ export function guideFixture() {
       revoked.delete(id);
       return true;
     },
-    begin(_lease, job) {
+    begin(lease, job) {
       calls.push(`begin:${job}`);
-      return true;
+      return [...activations].some(
+        ([id, activation]) => !revoked.has(id) && activation.lease === lease,
+      );
     },
     async cancel(job) {
       cancelled.add(job);

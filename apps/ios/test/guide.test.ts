@@ -276,6 +276,122 @@ describe("native transport adapter", () => {
 });
 
 describe("guide control and publication lifecycle", () => {
+  it("discards unadmitted reads without losing another provider's programmes", async () => {
+    const { owner, native, control } = setup();
+    control.activations.set("b", {
+      lease: "other",
+      generation: { id: "db-b", fetchedAt: at, until: at + 86400_000 },
+    });
+    await owner.restore(["a", "b"]);
+    owner.setPart(part());
+    owner.setPart(part("b"));
+    control.query = async () => ({
+      kind: "ok",
+      value: { guideId: "trusted.tv", rows: [programme], more: false },
+    });
+    const from = new Date(at);
+    from.setHours(0, 0, 0, 0);
+    const until = new Date(from);
+    until.setDate(until.getDate() + 1);
+    const day = { from: from.getTime(), until: until.getTime() };
+    const page = await owner.schedule("a:1", day);
+    const detail = page.programmes[0]!.detail;
+    const begin = native.begin;
+    native.begin = (lease, job) => lease !== "offline" && begin(lease, job);
+    const result = await owner.listings(["a:1", "b:1"]);
+    expect(result.get("a:1")).toEqual({ now: null, next: null });
+    expect(result.get("b:1")?.now).toEqual(programme);
+    expect(await owner.schedule("a:1", day)).toEqual(empty);
+    expect(await owner.programme(detail)).toBeNull();
+    native.begin = begin;
+    expect((await owner.listings(["a:1"])).get("a:1")?.now).toEqual(programme);
+  });
+
+  it("discards the old lease after native attach commits but before JS receives it", async () => {
+    const { owner, native, control, sources } = setup();
+    control.activations.set("b", {
+      lease: "other",
+      generation: { id: "db-b", fetchedAt: at, until: at + 86400_000 },
+    });
+    await owner.restore(["a", "b"]);
+    owner.setPart(part());
+    owner.setPart(part("b"));
+    control.query = async () => ({
+      kind: "ok",
+      value: { guideId: "trusted.tv", rows: [programme], more: false },
+    });
+    const committed = deferred<void>(),
+      ack = deferred<void>();
+    const attach = native.attach;
+    native.attach = async (...args) => {
+      const result = await attach(...args);
+      committed.resolve();
+      await ack.promise;
+      return result;
+    };
+    sources.set("a", source);
+    const activating = owner.attach("a");
+    try {
+      await committed.promise;
+      const result = await owner.listings(["a:1", "b:1"]);
+      expect(result.get("a:1")).toEqual({ now: null, next: null });
+      expect(result.get("b:1")?.now).toEqual(programme);
+    } finally {
+      ack.resolve();
+      await activating;
+    }
+    expect((await owner.listings(["a:1"])).get("a:1")?.now).toEqual(programme);
+  });
+
+  it.each(["before", "after"] as const)(
+    "waits for activation before refreshing when native attach is held %s its lease replacement",
+    async (phase) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(at);
+      const { owner, native, control, sources } = setup();
+      control.activations.set("a", {
+        lease: "offline",
+        generation: { id: "db", fetchedAt: at - 6 * 3600_000, until: at + 86400_000 },
+      });
+      await owner.restore(["a"]);
+      owner.setPart(part());
+      const gate = deferred<void>(),
+        committed = deferred<void>();
+      const attach = native.attach;
+      native.attach = async (...args) => {
+        if (phase === "before") await gate.promise;
+        const result = await attach(...args);
+        committed.resolve();
+        if (phase === "after") await gate.promise;
+        return result;
+      };
+      const prepares: string[] = [];
+      native.prepare = async (lease) => {
+        prepares.push(lease);
+        return { kind: "failed", error: "network" };
+      };
+      sources.set("a", source);
+      const activating = owner.attach("a");
+      try {
+        if (phase === "after") await committed.promise;
+        owner.foreground();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(prepares).toEqual([]);
+        expect(owner.status("a").error).toBeNull();
+        gate.resolve();
+        await activating;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(prepares).toEqual([control.activations.get("a")?.lease]);
+      } finally {
+        gate.resolve();
+        await activating;
+        owner.background();
+        await vi.advanceTimersByTimeAsync(0);
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("keeps the authorized cache readable while a replacement activation is pending", async () => {
     const { owner, native, control, sources } = setup();
     await owner.restore(["a"]);
