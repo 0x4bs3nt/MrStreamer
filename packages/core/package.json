@@ -68,7 +68,7 @@
   },
   "dependencies": {
     "@mrstreamer/contracts": "workspace:*",
-    "arktype": "2.2.5",
+    "arktype": "2.2.9",
     "effect": "4.0.0-rc.118"
   }
 }

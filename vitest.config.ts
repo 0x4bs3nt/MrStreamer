@@ -14,7 +14,8 @@ process.env["NODE_COMPILE_CACHE"] ??= join(
 // Its tests run the app's own TypeScript with the native modules mocked, so the shared packages,
 // React, ArkType and Effect it imports resolve from the desktop app's install instead: one copy of
 // each, as the app's Metro resolves the shared packages' imports from the app
-// (apps/ios/metro.config.cjs). The iOS app pins the same versions of them as the desktop.
+// (apps/ios/metro.config.cjs). ArkType and Effect stay aligned between installs; React Native
+// pins the iOS app's React separately.
 // Vite names modules by path with forward slashes, on Windows too (its normalizePath).
 const ios = `${join(import.meta.dirname, "apps/ios").replaceAll("\\", "/")}/`;
 const desktop = join(import.meta.dirname, "apps/desktop/package.json").replaceAll("\\", "/");

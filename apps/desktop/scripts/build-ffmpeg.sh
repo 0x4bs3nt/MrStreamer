@@ -23,8 +23,8 @@ target=${1:?usage: scripts/build-ffmpeg.sh mac-arm64|linux-x64|win-x64}
 FFMPEG_VERSION=9.0.2
 FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55
-DAV1D_VERSION=1.5.3
-DAV1D_SHA256=732010aa5ef461fa93355ed2c6c5fedb48ddc4b74e697eaabe8907eaeb943011
+DAV1D_VERSION=1.5.4
+DAV1D_SHA256=686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=${XDG_CACHE_HOME:-$HOME/.cache}/mr-streamer/ffmpeg-build/$target

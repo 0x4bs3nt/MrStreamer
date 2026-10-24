@@ -1,0 +1,514 @@
+{
+  "captures": [
+    {
+      "name": "library",
+      "file": "library.png",
+      "width": 1000,
+      "height": 700,
+      "bytes": 257772,
+      "sha256": "da52907fe90299549a367d73eb3519844cb0dfb4d05f2ad43afcc0d21ab5b73d",
+      "videoBox": null,
+      "provenance": {
+        "capturedAt": "2026-10-23T08:21:03.617Z",
+        "appSource": "384840f83b4be4fd6fd8d8693a8578d426418279",
+        "appVersion": "0.0.18",
+        "platform": "linux",
+        "architecture": "x64",
+        "system": "Linux 6.8.0-147-generic x86_64\n",
+        "electron": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.18 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36",
+        "mainSha256": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+        "demoManifestSha256": "7ffc0d37fd28c5cc2bbced859fe97f6d2057368a8ddd1717b263ccd9b5a19f0c",
+        "captureScriptSha256": "60f093aba76c55595c1db8eb95d0dc960ab16be2ba970bf64e494167bd53d5cc",
+        "status": "candidate, pending final visual and listing acceptance",
+        "method": "Unedited whole X11 window, ImageMagick import -window <owned XID> -frame",
+        "nativeSession": {
+          "display": ":0",
+          "xvfbPid": 2285831,
+          "wmPid": 2285837,
+          "windowManager": "Openbox 3.6.1\nCopyright (c) 2004   Mikael Magnusson\nCopyright (c) 2002   Dana Jansens\n\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder certain conditions. See the file COPYING for details.",
+          "screen": "1400x1000x24",
+          "compositor": "none",
+          "tools": "Portable Openbox and X11 tools",
+          "toolsSha256": {
+            "openbox": "941e69bf5479d77805bdeae7a6dee17142ff429b8db9e7d0c1b579e9c70a0b52",
+            "xprop": "f48d1acc43444538a8a43ec3b76babf3371ac3220cc4a373a702faf2ceeee260",
+            "xwininfo": "4b3a8b4c4f95942d579f667f52d192372303312265346fbde604b51b673404d2"
+          },
+          "importVersion": "Version: ImageMagick 6.9.12-98 Q16 x86_64 18038 https://legacy.imagemagick.org\nCopyright: (C) 1999 ImageMagick Studio LLC\nLicense: https://imagemagick.org/script/license.php\nFeatures: Cipher DPC Modules OpenMP(4.5) \nDelegates (built-in): bzlib djvu fftw fontconfig freetype heic jbig jng jp2 jpeg lcms lqr ltdl lzma openexr pangocairo png raw tiff webp wmf x xml zlib\n",
+          "limitations": [
+            "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+          ]
+        },
+        "evidence": ".local/verification/linux-listing/capture-9m9nVu",
+        "language": "en",
+        "caption": "Series details and cast",
+        "sources": [
+          {
+            "name": "earth",
+            "file": "nasa-earth-views-large.mp4",
+            "url": "https://images-assets.nasa.gov/video/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4~large.mp4",
+            "credit": "NASA",
+            "bytes": 2040459091,
+            "sha256": "935e06af45042466475bbf910b04c2eb2dc27362b1fe070ca2171cff448c8bf8"
+          },
+          {
+            "name": "canyon",
+            "file": "nps-grca-south-rim-summer.mp4",
+            "url": "https://www.nps.gov/nps-audiovideo/audiovideo/49968ade-360e-4946-bfee-facd5086245d1080p.mp4",
+            "credit": "U.S. National Park Service",
+            "bytes": 33836539,
+            "sha256": "71c418f8b24aa6f34c1c42c9c7b1539d41202bdbfb58454766fb338d7031f4fc"
+          }
+        ],
+        "media": {
+          "earth": [
+            {
+              "file": "earth-loop.ts",
+              "sha256": "c54364ae1a55ee1cecc8ccdda26578724f2456caa6d4fca6cfcb8da66583834f",
+              "bytes": 65712016
+            }
+          ],
+          "canyon": [
+            {
+              "file": "canyon-hours.mkv",
+              "sha256": "4972511781a6b48995e860f81bc0400d67656628e7cf130b249da9492fd5ffc2",
+              "bytes": 30343388
+            }
+          ],
+          "backdrop": [
+            {
+              "file": "canyon-backdrop.jpg",
+              "sha256": "a5b7d614d09b28e668ee3cac65768ae36fc47d81f641a56627a80625bdd9ef7c",
+              "bytes": 137337
+            }
+          ],
+          "poster": [
+            {
+              "file": "canyon-poster.jpg",
+              "sha256": "a5037009001d52f33e957604d64e9d62e2a63417f0ad0488718c6ee6977c58a9",
+              "bytes": 61806
+            }
+          ],
+          "stills": [
+            {
+              "file": "canyon-still-26.jpg",
+              "sha256": "be8078657b991c2104d4a909abc0e7e1ae630a5c456f56ee6cdcb80f684025e6",
+              "bytes": 68271
+            },
+            {
+              "file": "canyon-still-39.jpg",
+              "sha256": "871d0b10cadb9c908787319e5da2a8bd6092f9ace19ea472d59c6883bb6540fa",
+              "bytes": 63467
+            }
+          ]
+        },
+        "buildFiles": {
+          "out/main/index.js": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+          "out/preload/index.cjs": "63cb1905282657a47667543e01f5cf8e79722ad3fe1ed7e349c3e151d7120883",
+          "out/renderer/index.html": "e7cdbaf3e3dd7881851f3a325397b4daa82f3494b6074d94b951c260a9abd2b3",
+          "out/renderer/assets/index-Cs0pTt9U.css": "16c16b9eb6ce25830a2cc49592d8303c699df6d368e0d903e6cb684dc5242033",
+          "out/renderer/assets/index-IdlLgqKO.js": "6cab79f55e128712b6ba5aa27c130dd6a46ca7deaefa8fde0441dbadf2184cc9"
+        },
+        "fixtureFiles": {
+          "scripts/marketing-demo.ts": "a6c26c477cb31c55be6f3f8a8748ece9f100d872288b68c1c86445615f78b4cd",
+          "scripts/marketing-captures.ts": "0505e757aae80e54c63e61d667d12ecd0eea5fb52d633003d55ad002da4f104a",
+          "test/fake-provider.ts": "1a36716a78fc4368b1d871a25ce855392ad32689c0599ca36f4a4c474f5f57a4",
+          "test/fake-tmdb.ts": "38ea9619f94406a1e3080f030e2fb970361a8fb523dcd2c734560f11868b117f"
+        },
+        "analytics": "Unpackaged automated isolated profile; ambient MR_STREAMER_* overrides removed, no analytics endpoint configured. Build command and hashes retained separately.",
+        "credits": ["NASA", "U.S. National Park Service"],
+        "limitations": [
+          "Native source build, not an installed or signed release.",
+          "No audible audio, GPU, receiver, real-provider, mapped-M3U or locale acceptance is inferred.",
+          "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+        ],
+        "linuxCaptureScriptSha256": "221daa221ec4774c3d2308e3a4371d22313dfa47e9768920029573860226ea1e"
+      }
+    },
+    {
+      "name": "watching",
+      "file": "watching.png",
+      "width": 1000,
+      "height": 700,
+      "bytes": 466860,
+      "sha256": "844dbb47515c1b056b1ab12c07f03e65e745f2732eaff75e20177287e91a74b1",
+      "videoBox": {
+        "left": 0,
+        "top": 52,
+        "width": 1000,
+        "height": 648
+      },
+      "provenance": {
+        "capturedAt": "2026-10-23T08:21:30.165Z",
+        "appSource": "384840f83b4be4fd6fd8d8693a8578d426418279",
+        "appVersion": "0.0.18",
+        "platform": "linux",
+        "architecture": "x64",
+        "system": "Linux 6.8.0-147-generic x86_64\n",
+        "electron": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.18 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36",
+        "mainSha256": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+        "demoManifestSha256": "7ffc0d37fd28c5cc2bbced859fe97f6d2057368a8ddd1717b263ccd9b5a19f0c",
+        "captureScriptSha256": "60f093aba76c55595c1db8eb95d0dc960ab16be2ba970bf64e494167bd53d5cc",
+        "status": "candidate, pending final visual and listing acceptance",
+        "method": "Unedited whole X11 window, ImageMagick import -window <owned XID> -frame",
+        "nativeSession": {
+          "display": ":0",
+          "xvfbPid": 2285831,
+          "wmPid": 2285837,
+          "windowManager": "Openbox 3.6.1\nCopyright (c) 2004   Mikael Magnusson\nCopyright (c) 2002   Dana Jansens\n\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder certain conditions. See the file COPYING for details.",
+          "screen": "1400x1000x24",
+          "compositor": "none",
+          "tools": "Portable Openbox and X11 tools",
+          "toolsSha256": {
+            "openbox": "941e69bf5479d77805bdeae7a6dee17142ff429b8db9e7d0c1b579e9c70a0b52",
+            "xprop": "f48d1acc43444538a8a43ec3b76babf3371ac3220cc4a373a702faf2ceeee260",
+            "xwininfo": "4b3a8b4c4f95942d579f667f52d192372303312265346fbde604b51b673404d2"
+          },
+          "importVersion": "Version: ImageMagick 6.9.12-98 Q16 x86_64 18038 https://legacy.imagemagick.org\nCopyright: (C) 1999 ImageMagick Studio LLC\nLicense: https://imagemagick.org/script/license.php\nFeatures: Cipher DPC Modules OpenMP(4.5) \nDelegates (built-in): bzlib djvu fftw fontconfig freetype heic jbig jng jp2 jpeg lcms lqr ltdl lzma openexr pangocairo png raw tiff webp wmf x xml zlib\n",
+          "limitations": [
+            "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+          ]
+        },
+        "evidence": ".local/verification/linux-listing/capture-9m9nVu",
+        "language": "en",
+        "caption": "An episode with English subtitles and track selection",
+        "sources": [
+          {
+            "name": "earth",
+            "file": "nasa-earth-views-large.mp4",
+            "url": "https://images-assets.nasa.gov/video/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4~large.mp4",
+            "credit": "NASA",
+            "bytes": 2040459091,
+            "sha256": "935e06af45042466475bbf910b04c2eb2dc27362b1fe070ca2171cff448c8bf8"
+          },
+          {
+            "name": "canyon",
+            "file": "nps-grca-south-rim-summer.mp4",
+            "url": "https://www.nps.gov/nps-audiovideo/audiovideo/49968ade-360e-4946-bfee-facd5086245d1080p.mp4",
+            "credit": "U.S. National Park Service",
+            "bytes": 33836539,
+            "sha256": "71c418f8b24aa6f34c1c42c9c7b1539d41202bdbfb58454766fb338d7031f4fc"
+          }
+        ],
+        "media": {
+          "earth": [
+            {
+              "file": "earth-loop.ts",
+              "sha256": "c54364ae1a55ee1cecc8ccdda26578724f2456caa6d4fca6cfcb8da66583834f",
+              "bytes": 65712016
+            }
+          ],
+          "canyon": [
+            {
+              "file": "canyon-hours.mkv",
+              "sha256": "4972511781a6b48995e860f81bc0400d67656628e7cf130b249da9492fd5ffc2",
+              "bytes": 30343388
+            }
+          ],
+          "backdrop": [
+            {
+              "file": "canyon-backdrop.jpg",
+              "sha256": "a5b7d614d09b28e668ee3cac65768ae36fc47d81f641a56627a80625bdd9ef7c",
+              "bytes": 137337
+            }
+          ],
+          "poster": [
+            {
+              "file": "canyon-poster.jpg",
+              "sha256": "a5037009001d52f33e957604d64e9d62e2a63417f0ad0488718c6ee6977c58a9",
+              "bytes": 61806
+            }
+          ],
+          "stills": [
+            {
+              "file": "canyon-still-26.jpg",
+              "sha256": "be8078657b991c2104d4a909abc0e7e1ae630a5c456f56ee6cdcb80f684025e6",
+              "bytes": 68271
+            },
+            {
+              "file": "canyon-still-39.jpg",
+              "sha256": "871d0b10cadb9c908787319e5da2a8bd6092f9ace19ea472d59c6883bb6540fa",
+              "bytes": 63467
+            }
+          ]
+        },
+        "buildFiles": {
+          "out/main/index.js": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+          "out/preload/index.cjs": "63cb1905282657a47667543e01f5cf8e79722ad3fe1ed7e349c3e151d7120883",
+          "out/renderer/index.html": "e7cdbaf3e3dd7881851f3a325397b4daa82f3494b6074d94b951c260a9abd2b3",
+          "out/renderer/assets/index-Cs0pTt9U.css": "16c16b9eb6ce25830a2cc49592d8303c699df6d368e0d903e6cb684dc5242033",
+          "out/renderer/assets/index-IdlLgqKO.js": "6cab79f55e128712b6ba5aa27c130dd6a46ca7deaefa8fde0441dbadf2184cc9"
+        },
+        "fixtureFiles": {
+          "scripts/marketing-demo.ts": "a6c26c477cb31c55be6f3f8a8748ece9f100d872288b68c1c86445615f78b4cd",
+          "scripts/marketing-captures.ts": "0505e757aae80e54c63e61d667d12ecd0eea5fb52d633003d55ad002da4f104a",
+          "test/fake-provider.ts": "1a36716a78fc4368b1d871a25ce855392ad32689c0599ca36f4a4c474f5f57a4",
+          "test/fake-tmdb.ts": "38ea9619f94406a1e3080f030e2fb970361a8fb523dcd2c734560f11868b117f"
+        },
+        "analytics": "Unpackaged automated isolated profile; ambient MR_STREAMER_* overrides removed, no analytics endpoint configured. Build command and hashes retained separately.",
+        "credits": ["NASA", "U.S. National Park Service"],
+        "limitations": [
+          "Native source build, not an installed or signed release.",
+          "No audible audio, GPU, receiver, real-provider, mapped-M3U or locale acceptance is inferred.",
+          "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+        ],
+        "linuxCaptureScriptSha256": "221daa221ec4774c3d2308e3a4371d22313dfa47e9768920029573860226ea1e"
+      }
+    },
+    {
+      "name": "tv-guide",
+      "file": "tv-guide.png",
+      "width": 1000,
+      "height": 700,
+      "bytes": 159980,
+      "sha256": "9b4f0325c30cf943c545d3430f34f23ae42e468c8250e279a8a6c740a9ac5f2d",
+      "videoBox": null,
+      "provenance": {
+        "capturedAt": "2026-10-23T08:21:39.769Z",
+        "appSource": "384840f83b4be4fd6fd8d8693a8578d426418279",
+        "appVersion": "0.0.18",
+        "platform": "linux",
+        "architecture": "x64",
+        "system": "Linux 6.8.0-147-generic x86_64\n",
+        "electron": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.18 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36",
+        "mainSha256": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+        "demoManifestSha256": "7ffc0d37fd28c5cc2bbced859fe97f6d2057368a8ddd1717b263ccd9b5a19f0c",
+        "captureScriptSha256": "60f093aba76c55595c1db8eb95d0dc960ab16be2ba970bf64e494167bd53d5cc",
+        "status": "candidate, pending final visual and listing acceptance",
+        "method": "Unedited whole X11 window, ImageMagick import -window <owned XID> -frame",
+        "nativeSession": {
+          "display": ":0",
+          "xvfbPid": 2285831,
+          "wmPid": 2285837,
+          "windowManager": "Openbox 3.6.1\nCopyright (c) 2004   Mikael Magnusson\nCopyright (c) 2002   Dana Jansens\n\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder certain conditions. See the file COPYING for details.",
+          "screen": "1400x1000x24",
+          "compositor": "none",
+          "tools": "Portable Openbox and X11 tools",
+          "toolsSha256": {
+            "openbox": "941e69bf5479d77805bdeae7a6dee17142ff429b8db9e7d0c1b579e9c70a0b52",
+            "xprop": "f48d1acc43444538a8a43ec3b76babf3371ac3220cc4a373a702faf2ceeee260",
+            "xwininfo": "4b3a8b4c4f95942d579f667f52d192372303312265346fbde604b51b673404d2"
+          },
+          "importVersion": "Version: ImageMagick 6.9.12-98 Q16 x86_64 18038 https://legacy.imagemagick.org\nCopyright: (C) 1999 ImageMagick Studio LLC\nLicense: https://imagemagick.org/script/license.php\nFeatures: Cipher DPC Modules OpenMP(4.5) \nDelegates (built-in): bzlib djvu fftw fontconfig freetype heic jbig jng jp2 jpeg lcms lqr ltdl lzma openexr pangocairo png raw tiff webp wmf x xml zlib\n",
+          "limitations": [
+            "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+          ]
+        },
+        "evidence": ".local/verification/linux-listing/capture-9m9nVu",
+        "language": "en",
+        "caption": "Programme guide with catch-up controls",
+        "sources": [
+          {
+            "name": "earth",
+            "file": "nasa-earth-views-large.mp4",
+            "url": "https://images-assets.nasa.gov/video/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4~large.mp4",
+            "credit": "NASA",
+            "bytes": 2040459091,
+            "sha256": "935e06af45042466475bbf910b04c2eb2dc27362b1fe070ca2171cff448c8bf8"
+          },
+          {
+            "name": "canyon",
+            "file": "nps-grca-south-rim-summer.mp4",
+            "url": "https://www.nps.gov/nps-audiovideo/audiovideo/49968ade-360e-4946-bfee-facd5086245d1080p.mp4",
+            "credit": "U.S. National Park Service",
+            "bytes": 33836539,
+            "sha256": "71c418f8b24aa6f34c1c42c9c7b1539d41202bdbfb58454766fb338d7031f4fc"
+          }
+        ],
+        "media": {
+          "earth": [
+            {
+              "file": "earth-loop.ts",
+              "sha256": "c54364ae1a55ee1cecc8ccdda26578724f2456caa6d4fca6cfcb8da66583834f",
+              "bytes": 65712016
+            }
+          ],
+          "canyon": [
+            {
+              "file": "canyon-hours.mkv",
+              "sha256": "4972511781a6b48995e860f81bc0400d67656628e7cf130b249da9492fd5ffc2",
+              "bytes": 30343388
+            }
+          ],
+          "backdrop": [
+            {
+              "file": "canyon-backdrop.jpg",
+              "sha256": "a5b7d614d09b28e668ee3cac65768ae36fc47d81f641a56627a80625bdd9ef7c",
+              "bytes": 137337
+            }
+          ],
+          "poster": [
+            {
+              "file": "canyon-poster.jpg",
+              "sha256": "a5037009001d52f33e957604d64e9d62e2a63417f0ad0488718c6ee6977c58a9",
+              "bytes": 61806
+            }
+          ],
+          "stills": [
+            {
+              "file": "canyon-still-26.jpg",
+              "sha256": "be8078657b991c2104d4a909abc0e7e1ae630a5c456f56ee6cdcb80f684025e6",
+              "bytes": 68271
+            },
+            {
+              "file": "canyon-still-39.jpg",
+              "sha256": "871d0b10cadb9c908787319e5da2a8bd6092f9ace19ea472d59c6883bb6540fa",
+              "bytes": 63467
+            }
+          ]
+        },
+        "buildFiles": {
+          "out/main/index.js": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+          "out/preload/index.cjs": "63cb1905282657a47667543e01f5cf8e79722ad3fe1ed7e349c3e151d7120883",
+          "out/renderer/index.html": "e7cdbaf3e3dd7881851f3a325397b4daa82f3494b6074d94b951c260a9abd2b3",
+          "out/renderer/assets/index-Cs0pTt9U.css": "16c16b9eb6ce25830a2cc49592d8303c699df6d368e0d903e6cb684dc5242033",
+          "out/renderer/assets/index-IdlLgqKO.js": "6cab79f55e128712b6ba5aa27c130dd6a46ca7deaefa8fde0441dbadf2184cc9"
+        },
+        "fixtureFiles": {
+          "scripts/marketing-demo.ts": "a6c26c477cb31c55be6f3f8a8748ece9f100d872288b68c1c86445615f78b4cd",
+          "scripts/marketing-captures.ts": "0505e757aae80e54c63e61d667d12ecd0eea5fb52d633003d55ad002da4f104a",
+          "test/fake-provider.ts": "1a36716a78fc4368b1d871a25ce855392ad32689c0599ca36f4a4c474f5f57a4",
+          "test/fake-tmdb.ts": "38ea9619f94406a1e3080f030e2fb970361a8fb523dcd2c734560f11868b117f"
+        },
+        "analytics": "Unpackaged automated isolated profile; ambient MR_STREAMER_* overrides removed, no analytics endpoint configured. Build command and hashes retained separately.",
+        "credits": ["NASA", "U.S. National Park Service"],
+        "limitations": [
+          "Native source build, not an installed or signed release.",
+          "No audible audio, GPU, receiver, real-provider, mapped-M3U or locale acceptance is inferred.",
+          "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+        ],
+        "linuxCaptureScriptSha256": "221daa221ec4774c3d2308e3a4371d22313dfa47e9768920029573860226ea1e"
+      }
+    },
+    {
+      "name": "home",
+      "file": "home.png",
+      "width": 1000,
+      "height": 700,
+      "bytes": 236815,
+      "sha256": "089cff38f6f6571bee0e2f11140bea5c98ce3083ce121ec4fe68c8054e80cf2e",
+      "videoBox": {
+        "left": 35,
+        "top": 111.5,
+        "width": 480.46875,
+        "height": 270.25
+      },
+      "provenance": {
+        "capturedAt": "2026-10-23T08:21:48.116Z",
+        "appSource": "384840f83b4be4fd6fd8d8693a8578d426418279",
+        "appVersion": "0.0.18",
+        "platform": "linux",
+        "architecture": "x64",
+        "system": "Linux 6.8.0-147-generic x86_64\n",
+        "electron": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Mr.Streamer/0.0.18 Chrome/152.0.7977.167 Electron/44.9.3 Safari/537.36",
+        "mainSha256": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+        "demoManifestSha256": "7ffc0d37fd28c5cc2bbced859fe97f6d2057368a8ddd1717b263ccd9b5a19f0c",
+        "captureScriptSha256": "60f093aba76c55595c1db8eb95d0dc960ab16be2ba970bf64e494167bd53d5cc",
+        "status": "candidate, pending final visual and listing acceptance",
+        "method": "Unedited whole X11 window, ImageMagick import -window <owned XID> -frame",
+        "nativeSession": {
+          "display": ":0",
+          "xvfbPid": 2285831,
+          "wmPid": 2285837,
+          "windowManager": "Openbox 3.6.1\nCopyright (c) 2004   Mikael Magnusson\nCopyright (c) 2002   Dana Jansens\n\nThis program comes with ABSOLUTELY NO WARRANTY.\nThis is free software, and you are welcome to redistribute it\nunder certain conditions. See the file COPYING for details.",
+          "screen": "1400x1000x24",
+          "compositor": "none",
+          "tools": "Portable Openbox and X11 tools",
+          "toolsSha256": {
+            "openbox": "941e69bf5479d77805bdeae7a6dee17142ff429b8db9e7d0c1b579e9c70a0b52",
+            "xprop": "f48d1acc43444538a8a43ec3b76babf3371ac3220cc4a373a702faf2ceeee260",
+            "xwininfo": "4b3a8b4c4f95942d579f667f52d192372303312265346fbde604b51b673404d2"
+          },
+          "importVersion": "Version: ImageMagick 6.9.12-98 Q16 x86_64 18038 https://legacy.imagemagick.org\nCopyright: (C) 1999 ImageMagick Studio LLC\nLicense: https://imagemagick.org/script/license.php\nFeatures: Cipher DPC Modules OpenMP(4.5) \nDelegates (built-in): bzlib djvu fftw fontconfig freetype heic jbig jng jp2 jpeg lcms lqr ltdl lzma openexr pangocairo png raw tiff webp wmf x xml zlib\n",
+          "limitations": [
+            "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+          ]
+        },
+        "evidence": ".local/verification/linux-listing/capture-9m9nVu",
+        "language": "en",
+        "caption": "Home with live preview and Continue watching",
+        "sources": [
+          {
+            "name": "earth",
+            "file": "nasa-earth-views-large.mp4",
+            "url": "https://images-assets.nasa.gov/video/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4/jsc2021m000138_4K_Earth_Views_Extended_Cut_for_Earth_Day_%202021_210422-4KMP4~large.mp4",
+            "credit": "NASA",
+            "bytes": 2040459091,
+            "sha256": "935e06af45042466475bbf910b04c2eb2dc27362b1fe070ca2171cff448c8bf8"
+          },
+          {
+            "name": "canyon",
+            "file": "nps-grca-south-rim-summer.mp4",
+            "url": "https://www.nps.gov/nps-audiovideo/audiovideo/49968ade-360e-4946-bfee-facd5086245d1080p.mp4",
+            "credit": "U.S. National Park Service",
+            "bytes": 33836539,
+            "sha256": "71c418f8b24aa6f34c1c42c9c7b1539d41202bdbfb58454766fb338d7031f4fc"
+          }
+        ],
+        "media": {
+          "earth": [
+            {
+              "file": "earth-loop.ts",
+              "sha256": "c54364ae1a55ee1cecc8ccdda26578724f2456caa6d4fca6cfcb8da66583834f",
+              "bytes": 65712016
+            }
+          ],
+          "canyon": [
+            {
+              "file": "canyon-hours.mkv",
+              "sha256": "4972511781a6b48995e860f81bc0400d67656628e7cf130b249da9492fd5ffc2",
+              "bytes": 30343388
+            }
+          ],
+          "backdrop": [
+            {
+              "file": "canyon-backdrop.jpg",
+              "sha256": "a5b7d614d09b28e668ee3cac65768ae36fc47d81f641a56627a80625bdd9ef7c",
+              "bytes": 137337
+            }
+          ],
+          "poster": [
+            {
+              "file": "canyon-poster.jpg",
+              "sha256": "a5037009001d52f33e957604d64e9d62e2a63417f0ad0488718c6ee6977c58a9",
+              "bytes": 61806
+            }
+          ],
+          "stills": [
+            {
+              "file": "canyon-still-26.jpg",
+              "sha256": "be8078657b991c2104d4a909abc0e7e1ae630a5c456f56ee6cdcb80f684025e6",
+              "bytes": 68271
+            },
+            {
+              "file": "canyon-still-39.jpg",
+              "sha256": "871d0b10cadb9c908787319e5da2a8bd6092f9ace19ea472d59c6883bb6540fa",
+              "bytes": 63467
+            }
+          ]
+        },
+        "buildFiles": {
+          "out/main/index.js": "052717e8fd398ac81076168fe375f0b4ea3c297d1500f1912b80de54364a7970",
+          "out/preload/index.cjs": "63cb1905282657a47667543e01f5cf8e79722ad3fe1ed7e349c3e151d7120883",
+          "out/renderer/index.html": "e7cdbaf3e3dd7881851f3a325397b4daa82f3494b6074d94b951c260a9abd2b3",
+          "out/renderer/assets/index-Cs0pTt9U.css": "16c16b9eb6ce25830a2cc49592d8303c699df6d368e0d903e6cb684dc5242033",
+          "out/renderer/assets/index-IdlLgqKO.js": "6cab79f55e128712b6ba5aa27c130dd6a46ca7deaefa8fde0441dbadf2184cc9"
+        },
+        "fixtureFiles": {
+          "scripts/marketing-demo.ts": "a6c26c477cb31c55be6f3f8a8748ece9f100d872288b68c1c86445615f78b4cd",
+          "scripts/marketing-captures.ts": "0505e757aae80e54c63e61d667d12ecd0eea5fb52d633003d55ad002da4f104a",
+          "test/fake-provider.ts": "1a36716a78fc4368b1d871a25ce855392ad32689c0599ca36f4a4c474f5f57a4",
+          "test/fake-tmdb.ts": "38ea9619f94406a1e3080f030e2fb970361a8fb523dcd2c734560f11868b117f"
+        },
+        "analytics": "Unpackaged automated isolated profile; ambient MR_STREAMER_* overrides removed, no analytics endpoint configured. Build command and hashes retained separately.",
+        "credits": ["NASA", "U.S. National Park Service"],
+        "limitations": [
+          "Native source build, not an installed or signed release.",
+          "No audible audio, GPU, receiver, real-provider, mapped-M3U or locale acceptance is inferred.",
+          "Openbox is noncomposited: no compositor shadow, transparent padding or rounded outer corners are supplied. Flathub quality acceptance remains open."
+        ],
+        "linuxCaptureScriptSha256": "221daa221ec4774c3d2308e3a4371d22313dfa47e9768920029573860226ea1e"
+      }
+    }
+  ]
+}

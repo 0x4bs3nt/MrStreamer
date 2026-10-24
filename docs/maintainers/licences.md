@@ -105,6 +105,12 @@ electron-builder:
 
 Update the versions this page quotes. Then finish with `pnpm build`, `node apps/desktop/scripts/release-sources.ts <folder>` and a [dry run](releasing.md#dry-runs).
 
+### Current reviewed inputs
+
+The 23 October 2026 review covers Electron 44.9.3, Chromium 152.0.7977.167 and electron-builder 26.15.7. Chromium's FFmpeg revision, LGPL configurations, Electron's FFmpeg patch, codec arguments and build instructions are unchanged. The Windows archive still carries the two Microsoft DLLs at the versions above; `dxcompiler.dll` remains the open-source Google Dawn build. The reviewed Electron commit and Chromium version are in `licences.config.json`.
+
+Builder retains NSIS 3.0.4.1 and nsis-resources 3.4.1 at their previous checksums. A locally generated setup using the repository's NSIS options passed `installer-plugins.ts` with the six setup and four uninstaller plug-ins unchanged. This toolset review used stock Electron as its payload and builder's own `UninstallerReader` to extract the uninstaller on Linux after bundled Wine failed to load. It verifies installer plug-in bytes; the actual candidate still needs its Windows package, installation and update checks in the release dry run.
+
 ## Microsoft Store
 
 - Only stable releases go to the Store, so every Store package has a release with its sources. The package carries the same notices as the direct download, and they link that release.

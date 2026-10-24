@@ -1,0 +1,428 @@
+{
+  "schemaVersion": 1,
+  "status": "Applied on 23 October 2026 with explicit approval. Original proposed inputs, preconditions and rollback are retained below; application records returned IDs.",
+  "projectId": 178919,
+  "dashboardId": 1013890,
+  "projectTimezone": "Europe/Brussels, unchanged",
+  "variables": [
+    {
+      "key": "desktop_build_channel",
+      "tool": "sql-variables-create",
+      "input": {
+        "name": "Desktop build channel",
+        "type": "String",
+        "default_value": "all"
+      }
+    },
+    {
+      "key": "desktop_distribution",
+      "tool": "sql-variables-create",
+      "input": {
+        "name": "Desktop distribution",
+        "type": "String",
+        "default_value": "all"
+      }
+    },
+    {
+      "key": "desktop_target_version",
+      "tool": "sql-variables-create",
+      "input": {
+        "name": "Desktop target version",
+        "type": "String",
+        "default_value": "0.0.19"
+      }
+    }
+  ],
+  "updates": [
+    {
+      "tool": "insight-update",
+      "precondition": {
+        "id": "EIcg9B7w",
+        "last_modified_at": "2026-10-16T14:13:20.510994Z",
+        "definition_sha256": "568ec80de881654f1e934f22cd653e4ab9021d36705ffed8cb53ebb3cf02ac88"
+      },
+      "input": {
+        "id": "EIcg9B7w",
+        "name": "Desktop / Initial profile origins over time",
+        "description": "Distinct desktop profiles first observed in each project-calendar week, split by the permanent initial profile origin. Existing-profile origin is not a completed upgrade. Fresh profiles can include cleared data; unopened or opted-out installs are absent."
+      },
+      "rollback": {
+        "id": "EIcg9B7w",
+        "name": "Desktop / Fresh installs vs upgrades over time",
+        "description": "Trend of new (fresh) vs upgrading installations over time, broken down by profile_origin.",
+        "query": {
+          "kind": "InsightVizNode",
+          "source": {
+            "kind": "TrendsQuery",
+            "series": [
+              {
+                "kind": "EventsNode",
+                "math": "dau",
+                "event": "installation_observed",
+                "custom_name": "Installs by origin"
+              }
+            ],
+            "version": 4,
+            "interval": "week",
+            "dateRange": {
+              "date_from": "-90d",
+              "explicitDate": false,
+              "excludeIncompletePeriods": false
+            },
+            "properties": [
+              {
+                "key": "app_version",
+                "type": "event",
+                "value": "is_set",
+                "operator": "is_set"
+              },
+              {
+                "key": "os",
+                "type": "event",
+                "value": ["windows", "linux", "macos"],
+                "operator": "exact"
+              }
+            ],
+            "trendsFilter": {
+              "display": "ActionsBar",
+              "showLegend": true,
+              "hideWeekends": false,
+              "metricSummary": "total",
+              "legendPosition": "bottom",
+              "yAxisScaleType": "linear",
+              "showAnnotations": true,
+              "metricShowChange": true,
+              "yAxisStartAtZero": true,
+              "showMultipleYAxes": false,
+              "showLabelsOnSeries": false,
+              "showValuesOnSeries": true,
+              "smoothingIntervals": 1,
+              "showPercentStackView": false,
+              "stackBreakdownValues": false,
+              "aggregationAxisFormat": "numeric",
+              "resultCustomizationBy": "value",
+              "excludeBoxPlotOutliers": true,
+              "metricColorByDirection": false,
+              "showAlertThresholdLines": false
+            },
+            "breakdownFilter": {
+              "breakdowns": [
+                {
+                  "type": "event",
+                  "property": "profile_origin"
+                }
+              ],
+              "breakdown_type": "event",
+              "breakdown_limit": 10
+            },
+            "filterTestAccounts": true
+          }
+        }
+      }
+    },
+    {
+      "tool": "insight-update",
+      "precondition": {
+        "id": "oUEkrHlD",
+        "last_modified_at": "2026-10-16T14:13:23.159615Z",
+        "definition_sha256": "29a1bdeab11dfa9d9689838468c704b1498c17b8c1f42b9923082c3694610428"
+      },
+      "input": {
+        "id": "oUEkrHlD",
+        "name": "Desktop / Active installations in the selected period",
+        "description": "Distinct foreground-active desktop installations across the selected project-calendar period. The default -7d includes partial today and can span eight calendar dates. Use the linked UTC reports for exactly seven completed UTC dates. These are retained profile UUIDs, not people."
+      },
+      "rollback": {
+        "id": "oUEkrHlD",
+        "name": "Desktop / Rolling 7-day active installations",
+        "description": "Unique active installations in the last 7 days.",
+        "query": {
+          "kind": "InsightVizNode",
+          "source": {
+            "kind": "TrendsQuery",
+            "series": [
+              {
+                "kind": "EventsNode",
+                "math": "dau",
+                "event": "app_active_day",
+                "custom_name": "Active installations"
+              }
+            ],
+            "version": 4,
+            "interval": "day",
+            "dateRange": {
+              "date_from": "-7d",
+              "explicitDate": false,
+              "excludeIncompletePeriods": false
+            },
+            "properties": [
+              {
+                "key": "app_version",
+                "type": "event",
+                "value": "is_set",
+                "operator": "is_set"
+              },
+              {
+                "key": "os",
+                "type": "event",
+                "value": ["windows", "linux", "macos"],
+                "operator": "exact"
+              }
+            ],
+            "trendsFilter": {
+              "display": "BoldNumber",
+              "showLegend": false,
+              "hideWeekends": false,
+              "metricSummary": "total",
+              "legendPosition": "bottom",
+              "yAxisScaleType": "linear",
+              "showAnnotations": true,
+              "metricShowChange": true,
+              "yAxisStartAtZero": true,
+              "showMultipleYAxes": false,
+              "showLabelsOnSeries": false,
+              "showValuesOnSeries": true,
+              "smoothingIntervals": 1,
+              "showPercentStackView": false,
+              "stackBreakdownValues": false,
+              "aggregationAxisFormat": "numeric",
+              "resultCustomizationBy": "value",
+              "excludeBoxPlotOutliers": true,
+              "metricColorByDirection": false,
+              "showAlertThresholdLines": false
+            },
+            "filterTestAccounts": true
+          }
+        }
+      }
+    }
+  ],
+  "creates": [
+    {
+      "key": "fresh-total",
+      "tool": "insight-create",
+      "input": {
+        "name": "Desktop / Observed new profiles since tracking began",
+        "description": "Distinct desktop installation UUIDs with installation_observed and fresh initial origin, since tracking began on 12 October 2026. Retained reinstalls keep identity. Cleared or separate profiles can count again; unopened and opted-out installations are absent. This is not a people or installer-download total.",
+        "query": {
+          "kind": "InsightVizNode",
+          "source": {
+            "kind": "TrendsQuery",
+            "series": [
+              {
+                "kind": "EventsNode",
+                "event": "installation_observed",
+                "math": "dau",
+                "custom_name": "Observed fresh profiles"
+              }
+            ],
+            "dateRange": {
+              "date_from": "all"
+            },
+            "interval": "day",
+            "properties": [
+              {
+                "key": "os",
+                "type": "event",
+                "operator": "exact",
+                "value": ["windows", "macos", "linux"]
+              },
+              {
+                "key": "profile_origin",
+                "type": "event",
+                "operator": "exact",
+                "value": ["fresh"]
+              }
+            ],
+            "filterTestAccounts": true,
+            "trendsFilter": {
+              "display": "BoldNumber"
+            }
+          }
+        }
+      },
+      "standalone": true
+    },
+    {
+      "key": "fresh-period",
+      "tool": "insight-create",
+      "input": {
+        "name": "Desktop / Observed new profiles in the selected period",
+        "description": "Distinct desktop profiles first observed as fresh during the selected project-calendar period. Existing-profile and unknown origins remain separate in the initial-origin report. Retained reinstalls keep identity; cleared profiles can count again. All build channels are included unless filtered.",
+        "query": {
+          "kind": "InsightVizNode",
+          "source": {
+            "kind": "TrendsQuery",
+            "series": [
+              {
+                "kind": "EventsNode",
+                "event": "installation_observed",
+                "math": "dau",
+                "custom_name": "Observed fresh profiles"
+              }
+            ],
+            "dateRange": {
+              "date_from": "-30d"
+            },
+            "interval": "day",
+            "properties": [
+              {
+                "key": "os",
+                "type": "event",
+                "operator": "exact",
+                "value": ["windows", "macos", "linux"]
+              },
+              {
+                "key": "profile_origin",
+                "type": "event",
+                "operator": "exact",
+                "value": ["fresh"]
+              }
+            ],
+            "filterTestAccounts": true,
+            "trendsFilter": {
+              "display": "BoldNumber"
+            }
+          }
+        }
+      }
+    },
+    {
+      "key": "utc-headlines",
+      "tool": "insight-create",
+      "standalone": true,
+      "input": {
+        "name": "Desktop / Completed UTC activity and partial today",
+        "description": "Foreground-active installation UUIDs: yesterday DAU, the union across the seven completed UTC dates ending yesterday, and partial today DAU. Uses activity_date. Standalone SQL controls select build channel and distribution; source date filter stays all-time. No people, background-use or exact-once claim.",
+        "query": {
+          "kind": "DataVisualizationNode",
+          "display": "ActionsTable",
+          "source": {
+            "kind": "HogQLQuery",
+            "query": "WITH toDate(formatDateTime(now(), '%Y-%m-%d', 'UTC')) AS utc_today\nSELECT\n    toString(addDays(utc_today, -1)) AS completed_utc_day,\n    uniqExactIf(distinct_id, toDate(properties.activity_date) = addDays(utc_today, -1)) AS dau_completed_day,\n    toString(addDays(utc_today, -7)) AS wau_first_utc_day,\n    uniqExactIf(distinct_id, toDate(properties.activity_date) >= addDays(utc_today, -7) AND toDate(properties.activity_date) < utc_today) AS wau_seven_completed_days,\n    toString(utc_today) AS partial_utc_day,\n    uniqExactIf(distinct_id, toDate(properties.activity_date) = utc_today) AS dau_partial_today\nFROM events\nWHERE event = 'app_active_day'\n  AND timestamp >= toDateTime(concat(toString(addDays(utc_today, -7)), ' 00:00:00'), 'UTC')\n  AND timestamp < toDateTime(concat(toString(addDays(utc_today, 1)), ' 00:00:00'), 'UTC')\n  AND properties.os IN ('windows', 'macos', 'linux')\n  AND ({variables.desktop_build_channel} = 'all' OR properties.build_channel = {variables.desktop_build_channel})\n  AND ({variables.desktop_distribution} = 'all' OR properties.distribution = {variables.desktop_distribution})\n  AND {filters}\n",
+            "filters": {
+              "dateRange": {
+                "date_from": "all"
+              },
+              "filterTestAccounts": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "key": "utc-activity",
+      "tool": "insight-create",
+      "standalone": true,
+      "input": {
+        "name": "Desktop / UTC DAU and rolling WAU",
+        "description": "Daily foreground-active installation UUIDs and the union across each UTC day plus its previous six dates. Last 30 completed days and partial today. First six tracking days have partial history. Standalone SQL controls select build channel/distribution. Do not inherit dashboard date filters.",
+        "query": {
+          "kind": "DataVisualizationNode",
+          "display": "ActionsLineGraph",
+          "source": {
+            "kind": "HogQLQuery",
+            "query": "WITH toDate(formatDateTime(now(), '%Y-%m-%d', 'UTC')) AS utc_today\nSELECT\n    activity_day AS utc_activity_date,\n    if(activity_day = utc_today, 'partial today', 'complete') AS period_status,\n    if(addDays(activity_day, -6) < toDate('2026-10-12'), 'partial tracking history', 'available tracking history') AS wau_history,\n    uniqExactIf(installation_id, active_that_day AND installation_id != '') AS dau,\n    uniqExactIf(installation_id, installation_id != '') AS wau\nFROM (\n    SELECT\n        addDays(toDate(properties.activity_date), offset) AS activity_day,\n        distinct_id AS installation_id,\n        offset = 0 AS active_that_day\n    FROM events\n    ARRAY JOIN range(7) AS offset\n    WHERE event = 'app_active_day'\n      AND timestamp >= toDateTime(concat(toString(addDays(utc_today, -36)), ' 00:00:00'), 'UTC')\n      AND timestamp < toDateTime(concat(toString(addDays(utc_today, 1)), ' 00:00:00'), 'UTC')\n      AND properties.os IN ('windows', 'macos', 'linux')\n      AND ({variables.desktop_build_channel} = 'all' OR properties.build_channel = {variables.desktop_build_channel})\n      AND ({variables.desktop_distribution} = 'all' OR properties.distribution = {variables.desktop_distribution})\n      AND {filters}\n    UNION ALL\n    SELECT addDays(utc_today, -offset) AS activity_day, '' AS installation_id, false AS active_that_day\n    FROM (SELECT arrayJoin(range(31)) AS offset)\n)\nWHERE activity_day >= addDays(utc_today, -30)\n  AND activity_day <= utc_today\n  AND activity_day >= toDate('2026-10-12')\nGROUP BY activity_day\nORDER BY activity_day\nLIMIT 31\n",
+            "filters": {
+              "dateRange": {
+                "date_from": "all"
+              },
+              "filterTestAccounts": true
+            }
+          },
+          "chartSettings": {
+            "xAxis": {
+              "column": "utc_activity_date"
+            },
+            "yAxis": [
+              {
+                "column": "dau"
+              },
+              {
+                "column": "wau"
+              }
+            ],
+            "showLegend": true
+          }
+        }
+      }
+    },
+    {
+      "key": "release-arrivals",
+      "tool": "insight-create",
+      "standalone": true,
+      "input": {
+        "name": "Desktop / First observed arrivals by release",
+        "description": "One first arrival per installation UUID and version across retained history, split into new profile, known upgrade, downgrade, channel transition and unknown history. Original event time determines first arrival. Standalone all-time source; build channel and distribution controls apply after first arrival. Ratios use all arrivals, including unknown history.",
+        "query": {
+          "kind": "DataVisualizationNode",
+          "display": "ActionsTable",
+          "source": {
+            "kind": "HogQLQuery",
+            "query": "WITH source AS (\nSELECT\n    toString(uuid) AS event_uuid,\n    distinct_id AS installation_id,\n    timestamp AS observed_at,\n    toString(properties.app_version) AS app_version,\n    toString(properties.build_channel) AS build_channel,\n    toString(properties.distribution) AS distribution,\n    toString(properties.os) AS os,\n    toString(properties.observation_kind) AS observation_kind,\n    coalesce(toString(properties.previous_app_version), '') AS previous_app_version,\n    coalesce(toString(properties.previous_build_channel), '') AS previous_build_channel\nFROM events\nWHERE event = 'app_version_observed'\n  AND timestamp >= toDateTime('2026-10-12 00:00:00', 'UTC')\n  AND timestamp < now() + INTERVAL 1 DAY\n  AND properties.os IN ('windows', 'macos', 'linux')\n  AND {filters}\n), deduplicated AS (\n    SELECT event_uuid,\n        argMin(tuple(installation_id, observed_at, app_version, build_channel, distribution, os,\n                     observation_kind, previous_app_version, previous_build_channel), observed_at) AS observation\n    FROM source\n    GROUP BY event_uuid\n), first_arrivals AS (\n    SELECT tupleElement(observation, 1) AS installation_id,\n        tupleElement(observation, 3) AS app_version,\n        argMin(observation, tuple(tupleElement(observation, 2), event_uuid)) AS first_observation\n    FROM deduplicated\n    GROUP BY installation_id, app_version\n), classified AS (\n    SELECT installation_id, app_version,\n        tupleElement(first_observation, 2) AS first_observed_at,\n        tupleElement(first_observation, 4) AS build_channel,\n        tupleElement(first_observation, 5) AS distribution,\n        tupleElement(first_observation, 6) AS os,\n        tupleElement(first_observation, 7) AS observation_kind,\n        tupleElement(first_observation, 8) AS previous_app_version,\n        tupleElement(first_observation, 9) AS previous_build_channel,\n        match(app_version, '^[0-9]+[.][0-9]+[.][0-9]+(-nightly[.][0-9]{8}[.][0-9]+)?$') AS version_known,\n        match(previous_app_version, '^[0-9]+[.][0-9]+[.][0-9]+(-nightly[.][0-9]{8}[.][0-9]+)?$') AS previous_version_known,\n        tuple(toIntOrZero(extract(app_version, '^([0-9]+)[.]')), toIntOrZero(extract(app_version, '^[0-9]+[.]([0-9]+)[.]')), toIntOrZero(extract(app_version, '^[0-9]+[.][0-9]+[.]([0-9]+)')), if(match(app_version, '-nightly[.]'), 0, 1), toIntOrZero(extract(app_version, '-nightly[.]([0-9]{8})[.]')), toIntOrZero(extract(app_version, '-nightly[.][0-9]{8}[.]([0-9]+)$'))) AS version_key,\n        tuple(toIntOrZero(extract(previous_app_version, '^([0-9]+)[.]')), toIntOrZero(extract(previous_app_version, '^[0-9]+[.]([0-9]+)[.]')), toIntOrZero(extract(previous_app_version, '^[0-9]+[.][0-9]+[.]([0-9]+)')), if(match(previous_app_version, '-nightly[.]'), 0, 1), toIntOrZero(extract(previous_app_version, '-nightly[.]([0-9]{8})[.]')), toIntOrZero(extract(previous_app_version, '-nightly[.][0-9]{8}[.]([0-9]+)$'))) AS previous_version_key,\n        multiIf(\n            observation_kind = 'new_profile' AND version_known, 'new profile',\n            observation_kind != 'transition' OR NOT version_known OR NOT previous_version_known\n                OR build_channel = 'unknown' OR previous_build_channel IN ('', 'unknown'), 'unknown history',\n            build_channel != previous_build_channel, 'channel transition',\n            version_key > previous_version_key, 'known upgrade',\n            version_key < previous_version_key, 'downgrade',\n            'unknown history'\n        ) AS arrival_category\n    FROM first_arrivals\n)\nSELECT app_version AS release,\n    count() AS total_arrivals,\n    countIf(arrival_category = 'new profile') AS new_profiles,\n    countIf(arrival_category = 'known upgrade') AS known_upgrades,\n    countIf(arrival_category = 'downgrade') AS downgrades,\n    countIf(arrival_category = 'channel transition') AS channel_transitions,\n    countIf(arrival_category = 'unknown history') AS unknown_history,\n    countIf(arrival_category = 'known upgrade') / nullIf(count(), 0) AS known_upgrade_share,\n    countIf(arrival_category = 'unknown history') / nullIf(count(), 0) AS unknown_share\nFROM classified\nWHERE ({variables.desktop_build_channel} = 'all' OR build_channel = {variables.desktop_build_channel})\n  AND ({variables.desktop_distribution} = 'all' OR distribution = {variables.desktop_distribution})\nGROUP BY app_version\nORDER BY max(version_key) DESC\nLIMIT 100\n",
+            "filters": {
+              "dateRange": {
+                "date_from": "all"
+              },
+              "filterTestAccounts": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "key": "release-upgrades",
+      "tool": "insight-create",
+      "standalone": true,
+      "input": {
+        "name": "Desktop / Known upgrade installations for a target release",
+        "description": "Up to 100 anonymous installation UUIDs whose first arrival on the target version was an explicit same-build-channel version increase. Target version, build channel and distribution are standalone SQL controls. Ordered by original event time; no named people. Unknown-history and inferred historical changes are excluded.",
+        "query": {
+          "kind": "DataVisualizationNode",
+          "display": "ActionsTable",
+          "source": {
+            "kind": "HogQLQuery",
+            "query": "WITH source AS (\nSELECT\n    toString(uuid) AS event_uuid,\n    distinct_id AS installation_id,\n    timestamp AS observed_at,\n    toString(properties.app_version) AS app_version,\n    toString(properties.build_channel) AS build_channel,\n    toString(properties.distribution) AS distribution,\n    toString(properties.os) AS os,\n    toString(properties.observation_kind) AS observation_kind,\n    coalesce(toString(properties.previous_app_version), '') AS previous_app_version,\n    coalesce(toString(properties.previous_build_channel), '') AS previous_build_channel\nFROM events\nWHERE event = 'app_version_observed'\n  AND timestamp >= toDateTime('2026-10-12 00:00:00', 'UTC')\n  AND timestamp < now() + INTERVAL 1 DAY\n  AND properties.os IN ('windows', 'macos', 'linux')\n  AND {filters}\n), deduplicated AS (\n    SELECT event_uuid,\n        argMin(tuple(installation_id, observed_at, app_version, build_channel, distribution, os,\n                     observation_kind, previous_app_version, previous_build_channel), observed_at) AS observation\n    FROM source\n    GROUP BY event_uuid\n), first_arrivals AS (\n    SELECT tupleElement(observation, 1) AS installation_id,\n        tupleElement(observation, 3) AS app_version,\n        argMin(observation, tuple(tupleElement(observation, 2), event_uuid)) AS first_observation\n    FROM deduplicated\n    GROUP BY installation_id, app_version\n), classified AS (\n    SELECT installation_id, app_version,\n        tupleElement(first_observation, 2) AS first_observed_at,\n        tupleElement(first_observation, 4) AS build_channel,\n        tupleElement(first_observation, 5) AS distribution,\n        tupleElement(first_observation, 6) AS os,\n        tupleElement(first_observation, 7) AS observation_kind,\n        tupleElement(first_observation, 8) AS previous_app_version,\n        tupleElement(first_observation, 9) AS previous_build_channel,\n        match(app_version, '^[0-9]+[.][0-9]+[.][0-9]+(-nightly[.][0-9]{8}[.][0-9]+)?$') AS version_known,\n        match(previous_app_version, '^[0-9]+[.][0-9]+[.][0-9]+(-nightly[.][0-9]{8}[.][0-9]+)?$') AS previous_version_known,\n        tuple(toIntOrZero(extract(app_version, '^([0-9]+)[.]')), toIntOrZero(extract(app_version, '^[0-9]+[.]([0-9]+)[.]')), toIntOrZero(extract(app_version, '^[0-9]+[.][0-9]+[.]([0-9]+)')), if(match(app_version, '-nightly[.]'), 0, 1), toIntOrZero(extract(app_version, '-nightly[.]([0-9]{8})[.]')), toIntOrZero(extract(app_version, '-nightly[.][0-9]{8}[.]([0-9]+)$'))) AS version_key,\n        tuple(toIntOrZero(extract(previous_app_version, '^([0-9]+)[.]')), toIntOrZero(extract(previous_app_version, '^[0-9]+[.]([0-9]+)[.]')), toIntOrZero(extract(previous_app_version, '^[0-9]+[.][0-9]+[.]([0-9]+)')), if(match(previous_app_version, '-nightly[.]'), 0, 1), toIntOrZero(extract(previous_app_version, '-nightly[.]([0-9]{8})[.]')), toIntOrZero(extract(previous_app_version, '-nightly[.][0-9]{8}[.]([0-9]+)$'))) AS previous_version_key,\n        multiIf(\n            observation_kind = 'new_profile' AND version_known, 'new profile',\n            observation_kind != 'transition' OR NOT version_known OR NOT previous_version_known\n                OR build_channel = 'unknown' OR previous_build_channel IN ('', 'unknown'), 'unknown history',\n            build_channel != previous_build_channel, 'channel transition',\n            version_key > previous_version_key, 'known upgrade',\n            version_key < previous_version_key, 'downgrade',\n            'unknown history'\n        ) AS arrival_category\n    FROM first_arrivals\n)\nSELECT installation_id, app_version, first_observed_at, previous_app_version,\n    previous_build_channel, build_channel, distribution, os\nFROM classified\nWHERE arrival_category = 'known upgrade'\n  AND app_version = {variables.desktop_target_version}\n  AND ({variables.desktop_build_channel} = 'all' OR build_channel = {variables.desktop_build_channel})\n  AND ({variables.desktop_distribution} = 'all' OR distribution = {variables.desktop_distribution})\nORDER BY first_observed_at DESC, installation_id\nLIMIT 100\n",
+            "filters": {
+              "dateRange": {
+                "date_from": "all"
+              },
+              "filterTestAccounts": true
+            }
+          }
+        }
+      }
+    }
+  ],
+  "dashboardIntegration": "After approved creation, attach the selected-period observed-new insight and add a text tile linking the standalone all-time total, UTC activity and release-arrival reports. Preserve every existing playback/weekly report and layout. Standalone reports must retain all-time source filters; do not attach them to a dashboard date override without a supported ignore-date setting and a boundary test.",
+  "validation": "Read-only native fresh total: aggregated_value 197. UTC default-literal diagnostic: 22 Oct DAU 33, 16\u201322 Oct WAU 151, 23 Oct partial DAU 9. Literal arrival fixtures: 0.0.19 total 11 = 2 new + 2 known upgrades + 2 downgrades + 1 channel transition + 4 unknown; stable-only total 10, unknown 3. Explicit upgrade drilldown returns exactly numeric and upgrade fixture UUIDs. No fixture was captured. Saved source/filter/variable readback remains a post-approval check. Added same-base nightly date/run upgrades and downgrades; literal server results classify date24.run10 after run2, date24.run2 before run10, and equal/unsupported pairs as unknown history.",
+  "applyOrder": [
+    "Refresh and compare preconditions; abort on concurrent changes.",
+    "Obtain production approval for this exact definition diff.",
+    "Create variables; verify generated code names and retain returned IDs.",
+    "Create reviewed insights and record returned IDs.",
+    "Apply rename-only updates and read back query equality.",
+    "Add native insights and link-only report tile without replacing existing dashboard content.",
+    "Read back every definition, verify boundary/filter cases and record applied revision."
+  ],
+  "rollback": "Restore only these update inputs from rollback definitions. Delete only newly created IDs from the recorded application receipt. Preserve pre-existing dashboard content, project settings and all events.",
+  "application": {
+    "projectId": 178919,
+    "dashboardId": 1013890,
+    "insights": {
+      "fresh-total": "99UimzE0",
+      "fresh-period": "vWYgPceg",
+      "utc-headlines": "bphaOVG7",
+      "utc-activity": "TCRXpm4b",
+      "release-arrivals": "DAifasdI",
+      "release-upgrades": "5WvwlOYe"
+    },
+    "variables": {
+      "desktop_build_channel": "01a1687c-d33d-0000-ef39-98acc282f2c8",
+      "desktop_distribution": "01a1687c-d491-0000-6bba-3252d24bddf9",
+      "desktop_target_version": "01a1687c-d676-0000-6e5d-be8e14963798"
+    },
+    "newDashboardTileIds": [7784239, 7784240],
+    "readback": "Exact SQL and variable bindings/defaults, source filters, standalone membership, unchanged original queries and eleven dashboard layouts verified. Unmatched filter overrides returned zero. Production client ingestion remains a rollout check."
+  }
+}

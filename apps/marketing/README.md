@@ -369,10 +369,10 @@ Never run both. Two publishers on one project overwrite each other.
 
 ## Package availability
 
-`src/packages.ts` owns approved package destinations, exact commands, supported systems/architectures and independent publication receipts. Homebrew is prepared for 0.0.18 activation; AUR stays unpublished and on hold. `scripts/pages.ts` omits unpublished or withdrawn package links and commands from built HTML. Withdrawal keeps the last verified version. The direct release feed never activates or changes package metadata.
+`src/packages.ts` owns approved package destinations, exact commands, supported systems/architectures and independent publication receipts. Homebrew is published, last verified at 0.0.19; AUR stays unpublished and on hold. `scripts/pages.ts` omits unpublished or withdrawn package links and commands from built HTML. Withdrawal keeps the last verified version. The direct release feed never activates or changes package metadata.
 
 The selected download A layout keeps the visitor's direct installer first and adds checked package alternatives to the matching system rows. OS detection selects neither an architecture nor an Arch distribution. Package links name their actual platform and architecture. Package links add no analytics collection; existing installer and Store events retain their vocabulary. The FAQ names the published route, and the public update guide explains quitting before replacement, version comparisons and reinstall limits. Never activate a route from a candidate recipe or an unpublished tap/AUR entry.
 
 Home B's small availability line beside Download and the FAQ use the same registry and omit withdrawn routes. Homebrew uses the original signed stable Apple silicon DMG, with macOS 13 or later required. This is a maintained tap, with no claim of inclusion in Homebrew's main catalogue.
 
-The 0.0.18 source activation must not ship until the maintainer verifies the public tap, exact install command and [public verification receipt](https://github.com/Mr-Streamer-OSS/homebrew-tap/blob/main/docs/verification/0.0.18.md). Preparing this patch does not establish that those public resources exist or that native release acceptance passed.
+Change a route's version and receipt only after its public install is verified on the matching project card. The [0.0.19 verification receipt](https://github.com/Mr-Streamer-OSS/homebrew-tap/blob/main/docs/verification/0.0.19.md) records Homebrew's stable artifact checks and accepted native limits.

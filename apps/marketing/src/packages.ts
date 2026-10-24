@@ -31,9 +31,9 @@ export const PACKAGE_ROUTES: PackageRoutes = {
       "The same signed DMG for macOS 13 or later. Update in the app or quit it before a Homebrew replacement.",
     publication: {
       state: "published",
-      lastVerifiedVersion: "0.0.18",
+      lastVerifiedVersion: "0.0.19",
       receipt:
-        "https://github.com/Mr-Streamer-OSS/homebrew-tap/blob/main/docs/verification/0.0.18.md",
+        "https://github.com/Mr-Streamer-OSS/homebrew-tap/blob/main/docs/verification/0.0.19.md",
     },
   },
   aur: {

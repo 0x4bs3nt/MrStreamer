@@ -75,7 +75,9 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
       "Move Continue watching up",
     "Keyboard move lost focus",
   );
-  await d.wait(() => d.evaluate<boolean>(`!${check("Watchlist")}.disabled`));
+  await d.wait(() =>
+    d.evaluate<boolean>(`${check("Watchlist")}.matches(':enabled:not([aria-disabled=true])')`),
+  );
   await d.click("Hide empty Watchlist row", check("Watchlist"));
   await d.wait(
     async () => (await prefs()).find((row) => row.id === "watchlist")?.visible === false,
@@ -88,7 +90,10 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   await d.wait(async () => (await prefs())[1]?.id === "watchlist");
   const afterHiddenMove = await prefs();
   expect(afterHiddenMove[1]?.visible === false, "Moving Watchlist restored its hidden row");
-  await d.wait(() => d.evaluate<boolean>(`!${check("New movies")}.disabled`));
+  // Saved rows can arrive before the renderer clears Saving and accepts another edit.
+  await d.wait(() =>
+    d.evaluate<boolean>(`${check("New movies")}.matches(':enabled:not([aria-disabled=true])')`),
+  );
   await d.evaluate(`${check("New movies")}.focus()`);
   await d.key(" ", 32);
   await d.wait(
@@ -128,6 +133,9 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
   const movie =
     "[...document.querySelectorAll('button[title]')].find(b => b.title.includes('Index at the end'))";
   await d.click("Open fixture movie", movie);
+  // The loading sheet's Save control moves when the movie actions arrive.
+  await d.wait(() => d.exists(byText('[role="dialog"] button', "Play")));
+  await d.capture("movie-details-before-save");
   await d.click("Save fixture movie", byText('[role="dialog"] button', "Save"));
   await d.wait(() => d.exists(byText('[role="dialog"] button', "Saved")));
   await d.click(

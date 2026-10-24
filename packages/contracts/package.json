@@ -8,6 +8,6 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "arktype": "2.2.5"
+    "arktype": "2.2.9"
   }
 }

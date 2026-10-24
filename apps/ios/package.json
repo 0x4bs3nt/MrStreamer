@@ -32,7 +32,7 @@
     "@formatjs/intl-pluralrules": "6.3.15",
     "@mrstreamer/contracts": "link:../../packages/contracts",
     "@mrstreamer/core": "link:../../packages/core",
-    "arktype": "2.2.5",
+    "arktype": "2.2.9",
     "core-js": "3.50.0",
     "effect": "4.0.0-rc.118",
     "expo": "58.0.9",

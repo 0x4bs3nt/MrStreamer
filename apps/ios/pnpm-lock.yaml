@@ -5,7 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@ark/schema@0.56.4': 5c9f5381d2dc496083992c52990cdcf0805df495584dabf8bb151e5adc5b875d
   expo-file-system@58.0.9: 1c02d446bbb5d0806e390b22cc66f8868f20b17dcaa32297470186a1f7b0515f
   expo-video@58.0.10: d1f9d0df4ce207a39834c1143eb182558c3b51c0a26f968fe8c8012864302f5d
   react-native-screens@4.29.0: 7478a45f2f5ae208c2c1c9e7ce8873ef365543dca44a849ea6a0e416301dea3e
@@ -46,8 +45,8 @@ importers:
         specifier: link:../../packages/core
         version: link:../../packages/core
       arktype:
-        specifier: 2.2.5
-        version: 2.2.5
+        specifier: 2.2.9
+        version: 2.2.9
       core-js:
         specifier: 3.50.0
         version: 3.50.0
@@ -115,11 +114,11 @@ packages:
       typescript:
         optional: true
 
-  '@ark/schema@0.56.4':
-    resolution: {integrity: sha512-nd4OqaWdKZJeGF5zNmZysDQO7NyyJ1ycl4S7i16Hj1VxqL+x72Z66lOn7ErpsoMUZtCtslAMHMjqJhuQSxciyw==}
+  '@ark/schema@0.56.8':
+    resolution: {integrity: sha512-R05TOe85oQBGFFw2zKMuZpqkXibLKuC/aJt6VwFn5Cjc4x3NkWfhvGRpRDycNkj3ddcHnOPtIsmjVowJO9Yxdw==}
 
-  '@ark/util@0.56.4':
-    resolution: {integrity: sha512-KKqwGSia44cvuuDY70jGfbiUdG2E8F2cM4npdqvJ22S5a0LknlwG6nIrfQG1nF8fzxpzP30098wp0a8ASs0prQ==}
+  '@ark/util@0.56.8':
+    resolution: {integrity: sha512-XLiQyGfpJcws1zCtp2Cva8s1oheCdFn1Rt6JSyC4NnkDrpwCJnlaiawuuOc1Z97vMH+jEzW5vyyf0xOju5wUQA==}
 
   '@babel/code-frame@7.29.7':
     resolution: {integrity: sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==}
@@ -1088,11 +1087,11 @@ packages:
   argparse@2.0.1:
     resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
 
-  arkregex@0.0.10:
-    resolution: {integrity: sha512-+iDWBYBjH8w7wqEv8VY4loBwRldFxX84KNwKbobH3FJPay/18XI9sTesmXYpKyIrgbC5z/s16+vSJYHCC9FEvQ==}
+  arkregex@0.0.14:
+    resolution: {integrity: sha512-G3I/uCtWE0IKQiPh0qqmmAFDdtjZKZQ5mNPR6gJBeAMZ7VqYCpoaDeXnLju2Zo6ywExtmxZJELeVFb0MPDjPyA==}
 
-  arktype@2.2.5:
-    resolution: {integrity: sha512-c9oqY1eBab2LceqvpWX50xae2HB8P/nJPxRhuhPVf5lEDi3WQpf7WQflJFMsyCiA3NGh6zENOlse30gWBzlwDg==}
+  arktype@2.2.9:
+    resolution: {integrity: sha512-Cja0IMEn19rB35on9da1i1z6QMasuS7ULffXbetCry09jvCGYT8Bi1KgYiqri5FymF4nQAXkM90yksYkgSK2EA==}
 
   asap@2.0.6:
     resolution: {integrity: sha512-BSHWgDSAiKs50o2Re8ppvp3seVHXSRM44cdSsT9FfNEUUZLOGWVCsiWaRPWM1Znn+mqZ1OfVZ3z3DWEzSp7hRA==}
@@ -2511,11 +2510,11 @@ snapshots:
 
   2g@0.4.4: {}
 
-  '@ark/schema@0.56.4(patch_hash=5c9f5381d2dc496083992c52990cdcf0805df495584dabf8bb151e5adc5b875d)':
+  '@ark/schema@0.56.8':
     dependencies:
-      '@ark/util': 0.56.4
+      '@ark/util': 0.56.8
 
-  '@ark/util@0.56.4': {}
+  '@ark/util@0.56.8': {}
 
   '@babel/code-frame@7.29.7':
     dependencies:
@@ -3735,15 +3734,15 @@ snapshots:
 
   argparse@2.0.1: {}
 
-  arkregex@0.0.10:
+  arkregex@0.0.14:
     dependencies:
-      '@ark/util': 0.56.4
+      '@ark/util': 0.56.8
 
-  arktype@2.2.5:
+  arktype@2.2.9:
     dependencies:
-      '@ark/schema': 0.56.4(patch_hash=5c9f5381d2dc496083992c52990cdcf0805df495584dabf8bb151e5adc5b875d)
-      '@ark/util': 0.56.4
-      arkregex: 0.0.10
+      '@ark/schema': 0.56.8
+      '@ark/util': 0.56.8
+      arkregex: 0.0.14
 
   asap@2.0.6: {}
 

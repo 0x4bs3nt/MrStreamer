@@ -13,6 +13,14 @@ const sha = "a".repeat(40);
 describe("native telemetry verification CLI", () => {
   it("requires independent installed version/source pins without changing source workload defaults", () => {
     expect(analyticsOptions([])).toMatchObject({ native: false, volume: false, rollover: false });
+    expect(analyticsOptions([]).slowStartup).toBe(false);
+    expect(analyticsOptions(["--slow-startup"])).toMatchObject({
+      native: false,
+      slowStartup: true,
+    });
+    expect(() => analyticsOptions(["--native-telemetry", "--slow-startup"])).toThrow(
+      "cannot change",
+    );
     expect(() => analyticsOptions(["/installed/app"])).toThrow("requires");
     expect(() =>
       analyticsOptions(["--expected-version=0.0.16", "--expected-source=main", "/installed/app"]),
