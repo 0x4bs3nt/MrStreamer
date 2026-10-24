@@ -460,7 +460,7 @@ describe("Downloads and Settings from Watch", () => {
       const closed = await watching(movie("1"));
       await closed.press("watch-settings");
       await act(async () => undefined);
-      act(() => closeWatch());
+      act(() => void closeWatch());
       act(() => vi.advanceTimersByTime(1000));
       expect(playbackState.get()).toMatchObject({ watch: false, aside: false });
       unmount();
@@ -530,6 +530,18 @@ describe("Downloads and Settings from Watch", () => {
     expect(playbackState.get()).toMatchObject({ phase: { kind: "failed" }, aside: true });
     act(() => openWatch());
     expect(playbackState.get()).toMatchObject({ phase: { kind: "failed" }, watch: true });
+  });
+});
+
+describe("Close", () => {
+  it("pauses what plays and shows the screen under Watch", async () => {
+    const watch = await watching(movie("1"));
+    native.player.length = 0;
+    await watch.press("watch-close");
+    expect(native.player).toEqual(["pause"]);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "playing" }, watch: false });
+    started(false);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, aside: false });
   });
 });
 
@@ -704,7 +716,7 @@ describe("Watch set aside when the tabs go", () => {
   it("brings back nothing the removed provider streamed, which its removal stopped", async () => {
     const watch = await watching(movie("1"));
     await watch.press("watch-settings");
-    act(() => stop());
+    act(() => void stop());
     providersGone();
     watch.rerender();
     expect(playbackState.get()).toMatchObject({ phase: { kind: "idle" }, watch: false });

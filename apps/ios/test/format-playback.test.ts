@@ -142,6 +142,21 @@ describe("a file AVPlayer can't open", () => {
     expect(playbackState.get().closing).toEqual([]);
   });
 
+  it("says Stop settled only once the session's request ended", async () => {
+    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    await settle();
+    sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
+    await settle();
+    let settled = false;
+    void stop().then(() => (settled = true));
+    await settle();
+    expect(sessions[0]!.closeAsked).toBe(true);
+    expect(settled).toBe(false);
+    sessions[0]!.closed.resolve();
+    await settle();
+    expect(settled).toBe(true);
+  });
+
   it("closes a session that opens after the viewer moved on, and never plays it", async () => {
     void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
     await settle();

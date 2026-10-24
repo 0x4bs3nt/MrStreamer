@@ -50,9 +50,14 @@ vi.mock("../src/titles.ts", () => ({
   useMetadataVersion: () => 0,
   useTitleLists: () => ({ kind: "idle" }),
 }));
+/** The viewing record's saves of how far an episode got, as asked. */
+const saves = vi.hoisted(() => ({ asked: [] as number[], answer: async () => undefined }));
 vi.mock("../src/viewing.ts", () => ({
   seriesViewing: () => new Promise<SeriesViewing>((resolve) => held.standing.push(resolve)),
-  recordProgress: async () => undefined,
+  recordProgress: (_title: unknown, position: number) => {
+    saves.asked.push(position);
+    return saves.answer();
+  },
   finishSeries: async () => undefined,
   useViewing: () => null,
 }));
@@ -151,6 +156,8 @@ beforeEach(() => {
   pushed.length = 0;
   held.details.length = 0;
   held.standing.length = 0;
+  saves.asked.length = 0;
+  saves.answer = async () => undefined;
   onScreen("/");
 });
 afterEach(() => stop());
@@ -244,6 +251,29 @@ describe("Next episode", () => {
     playEpisode(details, episode("s1", 1), 0, () => undefined);
     await settle();
     playNext();
+    await settle();
+    held.standing.shift()?.(nothingPlayed);
+    await settle();
+    expect(sources).toEqual(["file:episode:s1e1", "file:episode:s1e2"]);
+  });
+
+  it("reads the record once where this episode got to is saved", async () => {
+    playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
+    await settle();
+    emit("playingChange", { isPlaying: true });
+    fakePlayer.currentTime = 590;
+    // The save Next asks for waits for the test; later ones answer at once.
+    let saved = () => {};
+    saves.answer = () => {
+      saves.answer = async () => undefined;
+      return new Promise<undefined>((done) => (saved = () => done(undefined)));
+    };
+    playNext();
+    await settle();
+    expect(saves.asked).toEqual([590]);
+    expect(held.standing).toEqual([]);
+    saved();
+    await settle();
     held.standing.shift()?.(nothingPlayed);
     await settle();
     expect(sources).toEqual(["file:episode:s1e1", "file:episode:s1e2"]);
@@ -255,6 +285,7 @@ describe("Next episode", () => {
     playNext();
     onScreen("/films");
     onScreen("/");
+    await settle();
     held.standing.shift()?.(nothingPlayed);
     await settle();
     expect(sources).toEqual(["file:episode:s1e1"]);

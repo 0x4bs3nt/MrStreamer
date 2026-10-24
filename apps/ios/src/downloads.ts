@@ -1210,7 +1210,7 @@ export async function retryDownload(id: string): Promise<void> {
 /**
  * Plays a copy in Watch from where it was left, from the phone: no provider, login or network.
  * Its progress stays with the copy, and goes to its subscription's viewing record too while that
- * subscription is saved. A copy whose file is gone fails in Watch as unavailable.
+ * subscription is saved (`keepProgress`). A copy whose file is gone fails in Watch as unavailable.
  */
 export function playDownload(id: string): void {
   const record = find(id);
@@ -1255,24 +1255,26 @@ export function playDownload(id: string): void {
   );
 }
 
-function keepProgress(id: string, position: number, duration: number, since: number) {
+/**
+ * Saves how far a copy played in its record, and in its subscription's viewing record while that
+ * subscription is saved. Rejects when either refused it, each keeping what it held before; a copy
+ * removed meanwhile saves nothing.
+ */
+async function keepProgress(id: string, position: number, duration: number, since: number) {
   const record = find(id);
   if (!record) return;
-  try {
+  const copy = (async () => {
     update(id, (latest) => ({
       ...latest,
       progress: { position: Math.min(position, duration), duration, at: Date.now() },
     }));
     tell();
-  } catch {
-    // Kept at the next save.
-  }
+  })();
   const { subscriptionId } = record;
-  if (members().some((member) => member.entry.id === subscriptionId)) {
-    void recordProgress({ ...record.title, subscriptionId }, position, duration, since).catch(
-      () => undefined,
-    );
-  }
+  const viewed = members().some((member) => member.entry.id === subscriptionId)
+    ? recordProgress({ ...record.title, subscriptionId }, position, duration, since)
+    : undefined;
+  await Promise.all([copy, viewed]);
 }
 
 /**

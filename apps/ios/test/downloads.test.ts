@@ -967,9 +967,9 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(memory.played[0]?.uri).toBe(`file://${mediaFile(kept.id)!.path}`);
     memory.player!.emit("playingChange", { isPlaying: true });
     Object.assign(memory.player!, { currentTime: 40, duration: 100 });
-    app.stop();
+    await expect(app.stop()).resolves.toEqual({ saved: true });
     const copyOf = () => app.downloadList().items.find((item) => item.id === kept.id);
-    await until(() => copyOf()?.progress?.position === 40, "the copy's progress");
+    expect(copyOf()?.progress?.position).toBe(40);
     const recorded = await app.progressOf({ movies: [{ subscriptionId: a, id: kept.title.id }] });
     expect(recorded[0]?.position).toBe(40);
 
@@ -1003,10 +1003,9 @@ describe("downloads", { timeout: 30_000 }, () => {
       watch: true,
     });
     Object.assign(memory.player!, { currentTime: 70, duration: 100 });
-    app.stop();
-    await until(
-      () => app.downloadList().items.find((item) => item.id === kept.id)?.progress?.position === 70,
-      "the copy's progress",
+    await expect(app.stop()).resolves.toEqual({ saved: true });
+    expect(app.downloadList().items.find((item) => item.id === kept.id)?.progress?.position).toBe(
+      70,
     );
     expect(one.fileRequests()).toBe(requests);
     const copy: Download | undefined = app.downloadList().items[0];

@@ -11,7 +11,7 @@ import { nextEpisode } from "@mrstreamer/core/ondemand/details";
 import { resumePoint } from "@mrstreamer/core/viewing/continue";
 import { finishes, nextUnwatched } from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
-import { play, request, type Playing } from "./playback.ts";
+import { play, progressSaved, request, type Playing } from "./playback.ts";
 import { loginOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { titleFile } from "./titles.ts";
@@ -88,8 +88,7 @@ export function playMovie(title: Title, version: OwnedId, from: number, versions
     watch: true,
     login: loginOf(version.subscriptionId),
     from,
-    progress: (position, duration) =>
-      void recordProgress(ref, position, duration, since).catch(() => undefined),
+    progress: (position, duration) => recordProgress(ref, position, duration, since),
     outcome: outcomeOf("movie", version, "file"),
     versions,
   });
@@ -133,7 +132,7 @@ export function playEpisode(
     from,
     progress: (position, duration) => {
       const saved = recordProgress(ref, position, duration, since);
-      if (after !== null || finishing || !isFinished(position, duration)) return;
+      if (after !== null || finishing || !isFinished(position, duration)) return saved;
       // In the credits of an episode with none after it: once the progress is saved, the series
       // is finished if the record says no numbered episode is left to watch.
       finishing = true;
@@ -145,24 +144,27 @@ export function playEpisode(
             : (finishing = false),
         )
         .catch(() => (finishing = false));
+      return saved;
     },
     outcome: outcomeOf("series", series, "episode"),
-    // The next one not yet watched, as the record stands now, else the next in order, unless the
-    // viewer did something else while the record answered.
+    // The next one not yet watched, as the record stands once this one's progress is saved, else
+    // the next in order, unless the viewer did something else while the record answered.
     next: () => {
       const asked = request();
-      void standing().then(
-        ({ progress, marks }) => {
-          if (!asked.stands()) return;
-          const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
-          if (!upcoming) return;
-          const kept = progress.find(
-            ({ title }) => title.kind === "episode" && title.id === upcoming.id,
-          );
-          playEpisode(details, upcoming, resumePoint(kept), versions);
-        },
-        () => asked.stands() && after && playEpisode(details, after, 0, versions),
-      );
+      void progressSaved()
+        .then(standing)
+        .then(
+          ({ progress, marks }) => {
+            if (!asked.stands()) return;
+            const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
+            if (!upcoming) return;
+            const kept = progress.find(
+              ({ title }) => title.kind === "episode" && title.id === upcoming.id,
+            );
+            playEpisode(details, upcoming, resumePoint(kept), versions);
+          },
+          () => asked.stands() && after && playEpisode(details, after, 0, versions),
+        );
     },
     versions,
   });

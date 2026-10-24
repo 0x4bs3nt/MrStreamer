@@ -1,4 +1,5 @@
 import { appFailure, type AnalyticsFailure } from "@mrstreamer/contracts/analytics";
+import type { AppError } from "@mrstreamer/contracts/errors";
 import {
   createVideoPlayer,
   type AudioTrack,
@@ -23,7 +24,12 @@ import { openFormat, type FormatSession } from "./title-formats.ts";
 //
 // A title starts where it is asked to, has a length to seek in, and tells whoever played it how
 // far it got: every minute while it plays, when it pauses, and when it stops, fails or gives way
-// to something else; and once more when it plays to its end.
+// to something else; and once more when it plays to its end. Its owner saves each, one at a
+// time in the order told, whichever play told it, so a slow save never lands after a later one.
+//
+// Closing Watch pauses what plays, saving where it got to, unless Picture in Picture or AirPlay
+// already shows it, where it plays on with its sound. Stop ends it and saves. Both resolve once
+// their save ended, saying whether it was kept.
 
 /** What plays, as the screens name it. */
 export interface Playing {
@@ -86,6 +92,9 @@ export interface Source {
  */
 const THROUGH_SESSION: ReadonlySet<string> = new Set(["mkv"]);
 
+/** How the latest save of a title's progress ended: kept, or refused with what it was refused for. */
+export type Saved = { readonly saved: true } | { readonly saved: false; readonly error: AppError };
+
 /** Opens what plays; aborted when the viewer moves on first. */
 type Open = (signal: AbortSignal) => Promise<Source>;
 
@@ -96,8 +105,11 @@ export interface PlayOptions {
   readonly login: readonly string[];
   /** Seconds to start a title from. */
   readonly from?: number;
-  /** Told how far a title got, in seconds of its length. */
-  readonly progress?: (position: number, duration: number) => void;
+  /**
+   * Saves how far a title got, in seconds of its length; rejects when the save was refused, with
+   * what was saved before kept. Asked once the save before it, of any play, ended.
+   */
+  readonly progress?: (position: number, duration: number) => Promise<void>;
   /** A title played to its end. */
   readonly ended?: () => void;
   /** Whether it got as far as playing, said once: true when it first plays, false if it fails. */
@@ -241,6 +253,8 @@ function hold(closed: Promise<void>, subscriptionId: string | null) {
   });
 }
 let checkpoint: ReturnType<typeof setInterval> | null = null;
+/** Every save of progress asked so far, one after another, ending with how the latest went. */
+let saving: Promise<Saved> = Promise.resolve({ saved: true });
 /** Told each failure's category, never its message; telemetry registers it. */
 let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
@@ -252,14 +266,31 @@ let endPictureInPicture: (() => void) | null = null;
  */
 let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
 
-/** Tells a title's owner how far it got, if it got anywhere. */
+/** Tells a title's owner how far it got, if it got anywhere, after the saves asked before. */
 function report() {
-  if (!current?.loaded || current.item.live) return;
+  const save = current?.options.progress;
+  if (!current?.loaded || current.item.live || !save) return;
   const made = player();
   const duration = made.duration;
-  if (duration > 0 && Number.isFinite(duration)) {
-    current.options.progress?.(Math.min(made.currentTime, duration), duration);
-  }
+  if (!(duration > 0 && Number.isFinite(duration))) return;
+  const position = Math.min(made.currentTime, duration);
+  saving = saving.then(async (): Promise<Saved> => {
+    try {
+      await save(position, duration);
+      return { saved: true };
+    } catch (cause) {
+      return { saved: false, error: appError(cause) };
+    }
+  });
+}
+
+/**
+ * Resolves once every save of progress asked so far ended, with how the latest went, and every
+ * format session let go of has ended its request. For Stop, which let go of what streamed.
+ */
+async function settled(): Promise<Saved> {
+  const [saved] = await Promise.all([saving, Promise.allSettled(held.keys())]);
+  return saved;
 }
 
 let created: VideoPlayer | null = null;
@@ -448,10 +479,11 @@ export function retry() {
 }
 
 /**
- * Stops playing and closes Watch, Picture in Picture and the accessory. What plays next on Home
- * starts without sound again.
+ * Stops playing and closes Watch, Picture in Picture and the accessory, saving how far a title
+ * got. What plays next on Home starts without sound again. Resolves once the save and the stream's
+ * request ended (`settled`).
  */
-export function stop() {
+export function stop(): Promise<Saved> {
   requests++;
   release();
   current = null;
@@ -467,6 +499,7 @@ export function stop() {
     aside: false,
     muted: true,
   }));
+  return settled();
 }
 
 /**
@@ -570,9 +603,18 @@ export function trackChoices(of: "audio" | "subtitles"): readonly TrackChoice[] 
   ];
 }
 
-/** Plays the episode after the one playing. */
+/**
+ * Plays the episode after the one playing, saving how far this one got first: its owner reads the
+ * record once that save ended (`progressSaved`).
+ */
 export function playNext() {
+  report();
   current?.options.next?.();
+}
+
+/** Resolves once every save of progress asked so far ended, with how the latest went. */
+export function progressSaved(): Promise<Saved> {
+  return saving;
 }
 
 /** Shows the other versions of the title that failed. */
@@ -599,12 +641,27 @@ export function openWatch() {
   else if (phase.kind === "paused") player().play();
 }
 
-/** Back to the tabs. With nothing else showing it, Home's preview plays on without sound. */
-export function closeWatch() {
-  const { pip, external } = state.get();
-  const muted = !pip && !external;
-  player().muted = muted;
-  state.set((s) => ({ ...s, watch: false, aside: false, muted }));
+/**
+ * Back to the tabs at once. Picture in Picture or AirPlay already showing it plays on there, with
+ * its sound. Otherwise nothing plays unseen: what plays pauses, saving where it got to; what still
+ * loads pauses as it starts; what was paused or failed stays so. The accessory shows it as it is,
+ * and Home's preview without sound. Resolves once the save ended; a format session paused keeps
+ * its request open for Play.
+ */
+export function closeWatch(): Promise<Saved> {
+  const { pip, external, phase } = state.get();
+  const away = !pip && !external;
+  if (away) {
+    resumeOnReturn = false;
+    pauseOnStart = phase.kind === "loading";
+    if (phase.kind === "playing") {
+      player().pause();
+      report();
+    }
+  }
+  player().muted = away;
+  state.set((s) => ({ ...s, watch: false, aside: false, muted: away }));
+  return saving;
 }
 
 /**
@@ -615,7 +672,7 @@ export function closeWatch() {
  */
 export function setAside() {
   const { phase, external } = state.get();
-  if (phase.kind === "idle" || external) return closeWatch();
+  if (phase.kind === "idle" || external) return void closeWatch();
   resumeOnReturn = phase.kind === "playing" || phase.kind === "loading";
   pauseOnStart = phase.kind === "loading";
   if (phase.kind === "playing") player().pause();
