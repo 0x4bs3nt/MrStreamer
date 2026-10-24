@@ -59,12 +59,16 @@ final class GuideIndex {
     defer { sqlite3_finalize(statement) }
     sqlite3_bind_double(statement, 1, from); sqlite3_bind_double(statement, 2, until)
     if sqlite3_step(statement) != SQLITE_DONE { try job.check(); throw GuideFailure("disk") }
-    let summary = try prepare("SELECT count(*),count(DISTINCT channel),max(stop) FROM programmes"); defer { sqlite3_finalize(summary) }
-    if sqlite3_step(summary) != SQLITE_ROW { throw GuideFailure("disk") }
-    if sqlite3_column_int(summary, 0) == 0 { throw GuideFailure(count == 0 ? "empty" : "ended") }
-    if sqlite3_column_int(summary, 1) > GuideBudget.channels { throw GuideFailure("rows") }
-    let last = sqlite3_column_double(summary, 2)
-    if last <= now { throw GuideFailure("ended") }
+    let last: Double = try {
+      let summary = try prepare("SELECT count(*),count(DISTINCT channel),max(stop) FROM programmes")
+      defer { sqlite3_finalize(summary) }
+      if sqlite3_step(summary) != SQLITE_ROW { throw GuideFailure("disk") }
+      if sqlite3_column_int(summary, 0) == 0 { throw GuideFailure(count == 0 ? "empty" : "ended") }
+      if sqlite3_column_int(summary, 1) > GuideBudget.channels { throw GuideFailure("rows") }
+      let last = sqlite3_column_double(summary, 2)
+      if last <= now { throw GuideFailure("ended") }
+      return last
+    }()
     try execute("DROP TABLE raw; VACUUM; PRAGMA quick_check;")
     try guideDisk(root)
     return last
