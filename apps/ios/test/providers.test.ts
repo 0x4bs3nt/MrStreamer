@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { guideFixture } from "./native-guide.ts";
 import type { Episode, Season, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
@@ -39,15 +40,12 @@ const memory = vi.hoisted(() => ({
 
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async (source: { uri: string } | null) => {
-      if (source) memory.played.push(source.uri);
-    },
-    play: () => undefined,
-    pause: () => undefined,
-  }),
+  createVideoPlayer: () =>
+    nativePlayer((source) => {
+      memory.played.push(source.uri);
+    }),
 }));
+
 vi.mock("expo-file-system", () => {
   const pathOf = (parent: string | { readonly path: string }, name: string) =>
     `${typeof parent === "string" ? parent : parent.path}/${name}`;

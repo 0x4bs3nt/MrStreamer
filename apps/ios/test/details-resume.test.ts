@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
 import type { Episode, SeriesDetails } from "@mrstreamer/contracts/ondemand";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
@@ -177,22 +178,20 @@ vi.mock("../src/watchlist.ts", () => ({
   saveTitle: () => undefined,
   removeTitle: () => undefined,
 }));
-vi.mock("../src/sources.ts", () => ({ loginOf: () => [], currentSource: () => undefined }));
+vi.mock("../src/sources.ts", () => ({
+  loginOf: () => [],
+  currentSource: () => undefined,
+  onSignedIn: () => () => {},
+}));
 vi.mock("../src/header.tsx", () => ({ useTabs: () => null, openOnTabs: () => undefined }));
-const listeners = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
+const native = vi.hoisted(() => ({ player: null as ReturnType<typeof nativePlayer> | null }));
 vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    muted: true,
-    timeUpdateEventInterval: 0,
-    staysActiveInBackground: false,
-    currentTime: 120,
-    duration: 600,
-    addListener: (event: string, listener: (payload: unknown) => void) =>
-      void listeners.set(event, listener),
-    replaceAsync: async () => undefined,
-    play: () => undefined,
-    pause: () => undefined,
-  }),
+  createVideoPlayer: () => {
+    const port = nativePlayer();
+    port.currentTime = 120;
+    native.player = port;
+    return port;
+  },
 }));
 
 const playback = await import("../src/playback.ts");
@@ -354,9 +353,9 @@ async function closedWithSaveGoing() {
     login: [],
     progress: () => save.promise,
   });
-  listeners.get("playingChange")?.({ isPlaying: true });
+  native.player?.state(true);
   void playback.closeWatch();
-  listeners.get("playingChange")?.({ isPlaying: false });
+  native.player?.state(false);
   return () => save.resolve();
 }
 

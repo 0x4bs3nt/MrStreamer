@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,17 +37,8 @@ vi.mock("expo-secure-store", () => ({
   setItemAsync: async (key: string, value: string) => void scenario.keychain.set(key, value),
   deleteItemAsync: async (key: string) => void scenario.keychain.delete(key),
 }));
-vi.mock("expo-video", () => ({
-  VideoView: () => null,
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async (source: { uri: string } | null) => {
-      if (source) scenario.played.push(source.uri);
-    },
-    play: () => undefined,
-    pause: () => undefined,
-  }),
-}));
+vi.mock("expo-video", () => ({ createVideoPlayer: () => nativePlayer() }));
+
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
 vi.mock("react-native", async () => {
   const { createElement, Fragment } = await import("react");

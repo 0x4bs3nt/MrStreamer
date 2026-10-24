@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Titles in files AVPlayer can't open play through a format session: the native module reads the
@@ -6,22 +7,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // says. The native player and the native module are stand-ins.
 
 const given: Array<{ uri: string; contentType?: string } | null> = [];
-const listeners = new Map<string, (payload: never) => void>();
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  currentTime: 0,
-  duration: 600,
-  addListener: (event: string, listener: (payload: never) => void) => {
-    listeners.set(event, listener);
-  },
-  replaceAsync: vi.fn(async (source: { uri: string; contentType?: string } | null) => {
-    given.push(source);
-  }),
-  play: vi.fn(),
-  pause: vi.fn(),
-};
-const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
+const fakePlayer = nativePlayer((source) => {
+  given.push(source);
+});
+
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 
 function deferred<T>() {
@@ -102,7 +91,10 @@ const options = { watch: true, login: ["user", "pass"] };
 
 beforeEach(async () => {
   stop();
-  for (const each of sessions) each.closed.resolve();
+  for (const each of sessions) {
+    each.opened.resolve({ kind: "closed" });
+    each.closed.resolve();
+  }
   await settle();
   sessions.length = 0;
   given.length = 0;
@@ -120,7 +112,7 @@ describe("a file AVPlayer can't open", () => {
     session("1").opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/t/main.m3u8" });
     await settle();
     expect(given.at(-1)).toEqual({ uri: "http://127.0.0.1:1/t/main.m3u8", contentType: "hls" });
-    emit("statusChange", { status: "readyToPlay" });
+    fakePlayer.ready();
     expect(fakePlayer.currentTime).toBe(0);
   });
 
@@ -178,10 +170,7 @@ describe("a file AVPlayer can't open", () => {
     sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
     await settle();
     sessions[0]!.failure = { kind: "status", status: 509 };
-    emit("statusChange", {
-      status: "error",
-      error: { message: "The network connection was lost." },
-    });
+    fakePlayer.failure();
     expect(playbackState.get().phase).toMatchObject({
       kind: "failed",
       error: "The provider refused this title. Another device may be using your connection.",
@@ -206,7 +195,7 @@ describe("a file AVPlayer can't open", () => {
       await settle();
       sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
       await settle();
-      emit("playingChange", { isPlaying: true });
+      fakePlayer.state(true);
       fakePlayer.currentTime = 3.878;
     };
 
@@ -221,9 +210,9 @@ describe("a file AVPlayer can't open", () => {
         error: `Mr. Streamer can't play this file. ${gap}`,
       });
       expect(sessions[0]!.closeAsked).toBe(true);
-      expect(given.at(-1)).toBeNull();
+      expect(fakePlayer.detachObservedAsync).toHaveBeenCalledWith(fakePlayer.identity().attemptId);
       // The player's own error, as it lets go, changes nothing.
-      emit("statusChange", { status: "error", error: { message: "Cannot Open" } });
+      fakePlayer.failure();
       expect(playbackState.get().phase).toMatchObject({
         error: `Mr. Streamer can't play this file. ${gap}`,
       });
@@ -258,7 +247,7 @@ describe("a file AVPlayer can't open", () => {
     await settle();
     sessions[0]!.opened.resolve({ kind: "direct" });
     await settle();
-    expect(given).toEqual([null]);
+    expect(given).toEqual([]);
     sessions[0]!.closed.resolve();
     await settle();
     expect(given.at(-1)).toEqual({ uri: "http://panel/a.mkv", contentType: "auto" });
@@ -285,4 +274,39 @@ it("plays MP4, AVI and other files, and live channels, directly as before", asyn
     { uri: "http://panel/c.ts", contentType: "auto" },
     { uri: "http://panel/d.m3u8", contentType: "hls" },
   ]);
+});
+
+it("keeps a local copy's reader handle pending through both native detach and format close", async () => {
+  const app = await import("../src/playback.ts");
+  void play(
+    movie("copy:local", null),
+    async () => ({ url: "file:copy.mkv", container: "mkv" }),
+    options,
+  );
+  await settle();
+  sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/copy/main.m3u8" });
+  await settle();
+  const exact = app.playingItem(playbackState.get().phase)!;
+  const reader = app.playbackReader(exact)!;
+  let closed = false;
+  void reader.closed.then(() => {
+    closed = true;
+  });
+  const pending = deferred<Awaited<ReturnType<typeof fakePlayer.detachObservedAsync>>>();
+  fakePlayer.detachObservedAsync.mockReturnValueOnce(pending.promise);
+  const stopping = stop();
+  await settle();
+  sessions[0]!.closed.resolve();
+  await settle();
+  expect(closed).toBe(false);
+  const identity = fakePlayer.identity();
+  pending.resolve({
+    kind: "detached",
+    ...identity,
+    localItemExcluded: true,
+    appWorkDrained: true,
+    providerDisconnect: "unobservable",
+  });
+  await stopping;
+  expect(closed).toBe(true);
 });

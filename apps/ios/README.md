@@ -137,12 +137,38 @@ pending detach keeps admission blocked. Failure events expose only allowlisted d
 codes. Direct HLS HTTP causes may remain unknown; error-log numbers never become HTTP statuses.
 Managed items do not run independent HLS playlist discovery or hidden foreground/reset reloads.
 
-Track snapshots retain native option identity, item/group/revision, default/playable facts and
-native language tags, including options without a language. Subtitle `forcedOnly` uses the native
-forced characteristic. Loading, absent, ready-empty and unavailable groups are distinct. Selection
-acknowledges a request; selected IDs come from native readback. JS recovery, language policy and
-persistence are separate work. Native/Expo compilation and exact Release runtime acceptance remain
-outstanding for this source candidate. The scoped fixtures are in `test/native-player-r24`.
+`src/playback.ts` is the sole app consumer. It installs one observation listener before any
+attempt, allocates increasing attempt IDs before lookup, and filters sequence, attempt, exact
+item and source revision. Legacy status/load/playing/time/end events no longer update playback.
+A fresh nil-source player's fixed not-drained refusal permits one bootstrap retry on the same
+player and attempt. Other failures require the viewer's Try again; there is no automatic recovery,
+quality or language policy.
+
+Stop, failure and replacement retain actual native detach and format close/closed promises before
+publishing idle or failed. Replacement waits for positive matching native acknowledgement and all
+format readers, including a late opening. A three-second wait can fail the new selection, while
+real closing continues. Rejection, obsolete receipts and unknown closure keep admission blocked.
+Direct streams appear in `Playback.closing`, which downloads already consult. Stop still returns
+`Saved`; progress-save completion does not prove reader closure or provider disconnect. Close,
+Pause, Picture in Picture and AirPlay retain readers. `playbackReader(exactPlaying)` captures the
+actual reader's `closed` promise for future copy deletion. Capture it before Stop; deleting files
+and the download memory lease remain separate work.
+
+Watch queries fresh track snapshots on menu opening. Ready and track observations also refresh
+facts. Choices retain the exact native record, item, attempt and revision, refuse unplayable
+options, and offer Off only when native allows it. Checkmarks use actual selected IDs after
+readback, never a request acknowledgement. Display names are labels, not language, default or
+forced facts. Missing language stays optional. A late menu or choice cannot act after Close,
+navigation, replacement or a new revision. Initial native selection stays unchanged.
+
+Producer R54 compiled the player and passed five actual-player XCTest cases. R59 established HLS
+playback, exact-record audio/subtitle selection and readback, stable consecutive revisions, Off,
+item/revision fences, local MP4 and allowlisted failure payloads. Its original public probe still
+fails a literal display-label fixture assertion. Loader/main attachment holds, held stale events,
+same-item late/reordered groups and exposed unplayable options remain unproven. These are prior
+producer results, not consumer Release/UI acceptance. Scoped producer fixtures remain in
+`test/native-player-r24`; `managed-playback.test.ts` and the existing caller suites exercise the
+app through native-port stand-ins. Actual consumer Release/UI verification remains required.
 
 ## How it is built
 
@@ -331,7 +357,8 @@ Each responsibility has one owner, a plain module with a store the screens read:
   session (`src/title-formats.ts`, `modules/title-formats`): native code reads the file, from the
   provider over one request at a time or from the phone, and serves it to this player as HLS on
   127.0.0.1, its picture and each sound track copied as they are. Nothing of a new play reaches
-  the provider until the last session's request has ended.
+  the provider until earlier native and format readers positively close. A local closure receipt
+  cannot acknowledge server connection accounting.
 - `src/storage.ts`: what the app keeps between launches, apart from secrets and the registry, in
   `state.json` in Documents: recent channels by subscription, the country last chosen in Live for Home, the
   version picked in each title's details by subscription and TMDB id, as the desktop keeps them,
@@ -379,9 +406,9 @@ phone is held. On the simulator the screens follow its device orientation (agent
 `orientation`), not where Watch left them. `patches/` makes expo-video report Picture in Picture
 brought back to the app, which its own view never forwarded, and hold AVKit's answer until Watch
 has shown the player again, so the picture returns into Watch rather than Home.
-Watch's Audio and Subtitles list the tracks the player reports. Expo-video named a track by its
-label and language alone, so English stereo and English surround were one track to it; `patches/`
-gives each its place among what plays now as its `id`, and selects by it.
+Watch's Audio and Subtitles query observed native tracks and select the exact record with its
+item, attempt and revision. Duplicate display labels stay distinct by native ID and optional name;
+checkmarks follow actual readback. See the managed contract above for the remaining native gates.
 `src/glass.tsx` draws the app's own controls as Liquid Glass, and solid before iOS 26 or with
 Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
 `titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them

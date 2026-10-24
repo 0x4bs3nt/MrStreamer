@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,22 +19,8 @@ vi.mock("../src/files.ts", () => ({
   writeJson: (name: string, value: unknown) => files.set(name, JSON.stringify(value)),
 }));
 
-const listeners = new Map<string, (payload: never) => void>();
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  staysActiveInBackground: false,
-  currentTime: 0,
-  duration: 600,
-  addListener: (event: string, listener: (payload: never) => void) => {
-    listeners.set(event, listener);
-  },
-  replaceAsync: async () => undefined,
-  play: () => undefined,
-  pause: () => undefined,
-  seekBy: () => undefined,
-};
-const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
+const fakePlayer = nativePlayer();
+
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 vi.mock("expo-constants", () => ({
   default: { expoConfig: { version: "0.1.0" }, platform: { ios: { buildNumber: "2" } } },
@@ -151,12 +138,13 @@ let position = 0;
 function plays(seconds: number) {
   for (let i = 0; i < seconds; i++) {
     vi.advanceTimersByTime(1000);
-    emit("timeUpdate", { currentTime: ++position });
+    fakePlayer.currentTime = ++position;
+    fakePlayer.state(true);
   }
 }
 /** Time passes with no position reported. */
 const waits = (seconds: number) => vi.advanceTimersByTime(seconds * 1000);
-const playing = (isPlaying: boolean) => emit("playingChange", { isPlaying });
+const playing = (isPlaying: boolean) => fakePlayer.state(isPlaying);
 
 const channel = (id = "c1") => ({
   id,
@@ -283,7 +271,15 @@ describe("playback", () => {
     await quiet();
     playing(true);
     plays(3);
-    emit("statusChange", { status: "error", error: { message: `Cannot Decode ${PASSWORD}` } });
+    fakePlayer.failure({
+      kind: "decode",
+      evidence: {
+        kind: "system",
+        origin: "item",
+        code: { domain: "avfoundation", code: -11821 },
+        underlying: [],
+      },
+    });
     app.stop();
 
     await until(() => names().includes("stream_stopped"));
@@ -321,7 +317,15 @@ describe("playback", () => {
     );
     playing(true);
     plays(3);
-    emit("statusChange", { status: "error", error: { message: "Cannot Decode" } });
+    fakePlayer.failure({
+      kind: "decode",
+      evidence: {
+        kind: "system",
+        origin: "item",
+        code: { domain: "avfoundation", code: -11821 },
+        underlying: [],
+      },
+    });
     opening = "fails";
     app.retry(); // fails again while opening: the same incident
     await quiet();
@@ -330,7 +334,15 @@ describe("playback", () => {
     await quiet();
     playing(true);
     plays(2);
-    emit("statusChange", { status: "error", error: { message: "Cannot Decode" } }); // a new one
+    fakePlayer.failure({
+      kind: "decode",
+      evidence: {
+        kind: "system",
+        origin: "item",
+        code: { domain: "avfoundation", code: -11821 },
+        underlying: [],
+      },
+    }); // a new one
     app.stop();
 
     await until(() => names().includes("stream_stopped"));
@@ -475,9 +487,14 @@ describe("what the app reports of its use", () => {
     await app.play(channel(), opens, { watch: true, login });
     playing(true);
     plays(2);
-    emit("statusChange", {
-      status: "error",
-      error: { message: `http://panel.example/live/${USERNAME}/${PASSWORD}/1.m3u8` },
+    fakePlayer.failure({
+      kind: "decode",
+      evidence: {
+        kind: "system",
+        origin: "item",
+        code: { domain: "avfoundation", code: -11821 },
+        underlying: [],
+      },
     });
     app.stop();
     await until(() => names().includes("stream_stopped"));

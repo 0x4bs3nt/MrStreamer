@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { guideFixture } from "./native-guide.ts";
 import type { Download, DownloadStatus } from "@mrstreamer/contracts/downloads";
 import type { Episode as SeriesEpisode, TitleRef } from "@mrstreamer/contracts/ondemand";
@@ -31,11 +32,7 @@ const memory = vi.hoisted(() => ({
    */
   played: [] as { readonly uri: string; readonly downloading: number; status: number | null }[],
   downloading: (): number => 0,
-  player: null as null | {
-    currentTime: number;
-    duration: number;
-    emit(event: string, payload: unknown): void;
-  },
+  player: null as ReturnType<typeof nativePlayer> | null,
   appState: "active" as string,
   appListeners: [] as Array<(state: string) => void>,
   /** While set, a series' details reach the app only once `released` settles. */
@@ -111,44 +108,38 @@ vi.mock("expo-secure-store", () => ({
 }));
 vi.mock("expo-video", () => ({
   createVideoPlayer: () => {
-    const listeners = new Map<string, Array<(payload: unknown) => void>>();
     let stream: AbortController | null = null;
-    const player = {
-      currentTime: 0,
-      duration: 0,
-      muted: true,
-      addListener: (event: string, listener: (payload: unknown) => void) => {
-        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-      },
-      emit: (event: string, payload: unknown) => {
-        for (const listener of listeners.get(event) ?? []) listener(payload);
-      },
-      replaceAsync: async (source: { uri: string } | null) => {
-        stream?.abort();
-        stream = null;
-        if (!source) return;
-        const played = {
-          uri: source.uri,
-          downloading: memory.downloading(),
-          status: null as number | null,
-        };
-        memory.played.push(played);
-        if (!source.uri.startsWith("http")) return;
-        const controller = new AbortController();
-        stream = controller;
-        void fetch(source.uri, { signal: controller.signal }).then(
-          (response) => {
-            played.status = response.status;
-            if (response.ok) return;
-            void response.body?.cancel();
-            player.emit("statusChange", { status: "error", error: { message: "HTTP error" } });
-          },
-          () => undefined,
-        );
-      },
-      play: () => undefined,
-      pause: () => undefined,
-    };
+    let request = Promise.resolve();
+    const player = nativePlayer((source) => {
+      const played = {
+        uri: source.uri,
+        downloading: memory.downloading(),
+        status: null as number | null,
+      };
+      memory.played.push(played);
+      if (!source.uri.startsWith("http")) return;
+      const controller = new AbortController();
+      stream = controller;
+      const identity = player.identity();
+      request = fetch(source.uri, { signal: controller.signal }).then(
+        async (response) => {
+          played.status = response.status;
+          if (response.ok) return;
+          await response.body?.cancel();
+          player.observation(
+            { kind: "failure", terminal: true, failure: { kind: "unknown", evidence: null } },
+            identity,
+          );
+        },
+        () => undefined,
+      );
+    });
+    const detach = player.detachObservedAsync.getMockImplementation()!;
+    player.detachObservedAsync.mockImplementation(async (id) => {
+      stream?.abort();
+      await request;
+      return detach(id);
+    });
     memory.player = player;
     return player;
   },
@@ -997,7 +988,7 @@ describe("downloads", { timeout: 30_000 }, () => {
     app.playDownload(kept.id);
     await until(() => memory.played.length === 1, "the copy to open");
     expect(memory.played[0]?.uri).toBe(`file://${mediaFile(kept.id)!.path}`);
-    memory.player!.emit("playingChange", { isPlaying: true });
+    memory.player!.state(true);
     Object.assign(memory.player!, { currentTime: 40, duration: 100 });
     await expect(app.stop()).resolves.toEqual({ saved: true });
     const copyOf = () => app.downloadList().items.find((item) => item.id === kept.id);
@@ -1025,7 +1016,7 @@ describe("downloads", { timeout: 30_000 }, () => {
     app.playDownload(kept.id);
     await until(() => memory.played.length === 2, "the copy to open again");
     expect(memory.played[1]?.uri).toBe(memory.played[0]?.uri);
-    memory.player!.emit("playingChange", { isPlaying: true });
+    memory.player!.state(true);
     const waiting = app.request();
     await app.remove(b!, { keepHistory: true });
     expect(waiting.stands()).toBe(false);
@@ -1054,10 +1045,10 @@ describe("downloads", { timeout: 30_000 }, () => {
       playFilm(app, a, movie().id);
       await until(() => memory.played.length === 1, "the film");
       const player = memory.player!;
-      player.emit("playingChange", { isPlaying: true });
+      player.state(true);
       Object.assign(player, { currentTime: 1200, duration: 6000 });
       await expect(app.closeWatch()).resolves.toEqual({ saved: true });
-      player.emit("playingChange", { isPlaying: false });
+      player.state(false);
       await app.progressSettled();
       // Removing it stops the film, whose last save then finds its subscription gone.
       player.currentTime = 1300;
@@ -1077,19 +1068,19 @@ describe("downloads", { timeout: 30_000 }, () => {
     playFilm(app, a, movie().id);
     await until(() => memory.played.length === 1, "the film");
     const player = memory.player!;
-    player.emit("playingChange", { isPlaying: true });
+    player.state(true);
     Object.assign(player, { currentTime: 1200, duration: 6000 });
     // viewing.json can't be written.
     const blocked = new Folder(native.root, "documents", "viewing.json.next");
     blocked.create();
     await expect(app.closeWatch()).resolves.toMatchObject({ saved: false });
-    player.emit("playingChange", { isPlaying: false });
+    player.state(false);
     await app.progressSettled();
     expect(told).toHaveBeenCalledOnce();
     blocked.delete();
     app.togglePause();
-    player.emit("playingChange", { isPlaying: true });
-    player.emit("playingChange", { isPlaying: false });
+    player.state(true);
+    player.state(false);
     await app.progressSettled();
     const film = { subscriptionId: a, id: String(movie().id) };
     expect((await app.progressOf({ movies: [film] }))[0]?.position).toBe(1200);
@@ -1107,12 +1098,12 @@ describe("downloads", { timeout: 30_000 }, () => {
     await until(() => isComplete(app, kept.id), "the copy");
     app.playDownload(kept.id);
     await until(() => memory.played.length === 1, "the copy to open");
-    memory.player!.emit("playingChange", { isPlaying: true });
+    memory.player!.state(true);
     Object.assign(memory.player!, { currentTime: 40, duration: 100 });
     void app.closeWatch();
     app.playDownload(kept.id);
     await until(() => memory.played.length === 2, "the copy to open again");
-    memory.player!.emit("statusChange", { status: "readyToPlay" });
+    memory.player!.ready();
     expect(memory.player!.currentTime).toBe(35);
     await app.stop();
   });
@@ -1126,7 +1117,7 @@ describe("downloads", { timeout: 30_000 }, () => {
     await until(() => isComplete(app, kept.id), "the copy");
     app.playDownload(kept.id);
     await until(() => memory.played.length === 1, "the copy to open");
-    memory.player!.emit("playingChange", { isPlaying: true });
+    memory.player!.state(true);
     Object.assign(memory.player!, { currentTime: 40, duration: 100 });
     // The copy's record refuses the write at once; the viewing record's save is still going.
     const blocked = new Folder(native.root, "documents", "downloads.json.next");

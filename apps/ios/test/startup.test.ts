@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,14 +25,8 @@ const memory = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
-vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async () => undefined,
-    play: () => undefined,
-    pause: () => undefined,
-  }),
-}));
+vi.mock("expo-video", () => ({ createVideoPlayer: () => nativePlayer() }));
+
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
   getItemAsync: async (key: string) => {

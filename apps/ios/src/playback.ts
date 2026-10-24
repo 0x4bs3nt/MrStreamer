@@ -1,12 +1,17 @@
 import { appFailure, type AnalyticsFailure } from "@mrstreamer/contracts/analytics";
+import type { StreamFailure } from "@mrstreamer/contracts/playback";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import {
   createVideoPlayer,
-  type AudioTrack,
-  type SubtitleTrack,
+  type ObservedFailure,
+  type ObservedItemIdentity,
+  type ObservedTrackSelection,
+  type ObservedTrackSnapshot,
+  type PlaybackObservation,
   type VideoPlayer,
 } from "expo-video";
 import { appError, describeError, withoutLogin } from "./errors.ts";
+import { currentSource, onSignedIn } from "./sources.ts";
 import { store, useStore, type Store } from "./store.ts";
 import { openFormat, type FormatSession } from "./title-formats.ts";
 
@@ -14,8 +19,8 @@ import { openFormat, type FormatSession } from "./title-formats.ts";
 // shows this player and no other: Home's preview, Watch, Picture in Picture and AirPlay, and the
 // accessory above the tabs controls it. Nothing opens a second stream for a preview. Playing
 // something else, stopping, removing its subscription and a failure each let go of the stream,
-// so the provider's connection closes. A download of the same subscription gives the connection
-// back before a stream opens (`onReclaim`); a downloaded copy plays from the phone and takes none.
+// so its local readers drain. Provider disconnect is unobservable. A download gives its
+// subscription's connection back before a stream opens (`onReclaim`); a downloaded copy plays from the phone and takes none.
 //
 // A movie or episode in a file AVPlayer can't open, such as Matroska, plays through a format
 // session (`title-formats.ts`): the file is read natively, over one request to the provider at a
@@ -74,8 +79,8 @@ export interface Playback {
   /** Home's preview plays without sound until Watch opens or the viewer unmutes it. */
   readonly muted: boolean;
   /**
-   * The subscriptions whose provider connection a format session that let go of its stream still
-   * holds, until its request ended. The session streaming now isn't counted: the phase says so.
+   * Subscriptions with retired native or format readers still closing, including uncertain closes.
+   * The active stream is represented by phase. This does not acknowledge a provider disconnect.
    */
   readonly closing: readonly string[];
 }
@@ -224,25 +229,61 @@ let current: {
   loaded: boolean;
   /** Where a title was when it was let go of, for Try again. */
   stoppedAt: number | null;
+  readonly resource: Resource;
+  failure: PlaybackFailure | null;
 } | null = null;
-let attempt: AbortController | null = null;
-/** The format session the player streams from now, how to stop it, and when it has. */
-let format: {
-  readonly session: FormatSession;
-  readonly close: () => void;
-  readonly closed: Promise<void>;
-} | null = null;
-/** Every format session whose provider request hasn't ended, with its subscription. */
-const held = new Map<Promise<void>, string | null>();
+/** Failure facts stay local. Only the existing analytics callback receives a lossy category. */
+type PlaybackFailure =
+  | { readonly kind: "native"; readonly failure: ObservedFailure }
+  | { readonly kind: "format"; readonly failure: StreamFailure }
+  | { readonly kind: "lookup"; readonly error: AppError }
+  | { readonly kind: "bridge" | "reset" | "cancelled" | "detach-timeout" };
 
-/** Says which subscriptions sessions that let go of their stream still hold. */
+type FormatReader = ReturnType<typeof openFormat>;
+interface Resource {
+  readonly id: number;
+  readonly controller: AbortController;
+  readonly sourceStands: () => boolean;
+  readonly subscriptionId: string | null;
+  readonly formats: FormatReader[];
+  readonly closed: Promise<void>;
+  readonly drained: () => void;
+  readonly uncertain: (cause: Error) => void;
+  readonly opening: Promise<void>;
+  readonly opened: () => void;
+  itemId: number | null;
+  sequence: number;
+  retired: boolean;
+  detach: ReturnType<VideoPlayer["detachObservedAsync"]> | null;
+  settlement: Promise<void> | null;
+  session: FormatSession | null;
+  tracks: ObservedTrackSnapshot | null;
+  querying: Promise<ObservedTrackSnapshot | null> | null;
+}
+let attempts = 0;
+const closing = new Set<Resource>();
+
+/** Capture before Stop. The handle remains bound to these readers, even after another play. */
+export function playbackReader(item: Playing): Readonly<{ closed: Promise<void> }> | null {
+  return current?.item === item ? { closed: current.resource.closed } : null;
+}
+
+function stands(resource: Resource): boolean {
+  return (
+    current?.resource === resource &&
+    !resource.retired &&
+    !resource.controller.signal.aborted &&
+    resource.sourceStands()
+  );
+}
+
+onSignedIn(() => {
+  if (current && !current.resource.retired && !current.resource.sourceStands()) void stop();
+});
+
 function noteClosing() {
   const holding = [
-    ...new Set(
-      [...held]
-        .filter(([closed, id]) => id !== null && closed !== format?.closed)
-        .map(([, id]) => id!),
-    ),
+    ...new Set([...closing].flatMap((r) => (r.subscriptionId === null ? [] : [r.subscriptionId]))),
   ];
   const now = state.get().closing;
   if (holding.length !== now.length || holding.some((id, at) => id !== now[at])) {
@@ -250,14 +291,57 @@ function noteClosing() {
   }
 }
 
-/** Keeps `closed` among the sessions holding a connection until it resolves. */
-function hold(closed: Promise<void>, subscriptionId: string | null) {
-  held.set(closed, subscriptionId);
-  noteClosing();
-  void closed.finally(() => {
-    held.delete(closed);
+/** Retain the real native promise and every format reader until positive closure. */
+function retire(resource: Resource) {
+  if (resource.settlement) return resource.settlement;
+  resource.retired = true;
+  closing.add(resource);
+  resource.detach = Promise.resolve().then(() => player().detachObservedAsync(resource.id));
+  resource.settlement = (async () => {
+    const receipt = await resource.detach;
+    if (
+      receipt?.kind !== "detached" ||
+      receipt.attemptId !== resource.id ||
+      receipt.localItemExcluded !== true ||
+      receipt.appWorkDrained !== true ||
+      (resource.itemId !== null && receipt.itemId !== resource.itemId)
+    ) {
+      throw new Error("Player reader closure was not acknowledged.");
+    }
+    await resource.opening;
+    await Promise.all(resource.formats.map((format) => format.closed));
+    closing.delete(resource);
+    resource.drained();
     noteClosing();
+  })();
+  resource.controller.abort();
+  for (const format of resource.formats) format.close();
+  noteClosing();
+  void resource.settlement.catch(() =>
+    resource.uncertain(new Error("Player reader closure was not acknowledged.")),
+  );
+  return resource.settlement;
+}
+
+/** The selection deadline never changes the real closing ledger or resumes a failed selection. */
+async function waitForReaders(resource: Resource) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    const abort = () => reject(new Error("Selection ended."));
+    resource.controller.signal.addEventListener("abort", abort, { once: true });
+    resource.opening.then(() => resource.controller.signal.removeEventListener("abort", abort));
   });
+  try {
+    await Promise.race([
+      Promise.all([...closing].map((r) => r.closed)),
+      aborted,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("detach-timeout")), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 let checkpoint: ReturnType<typeof setInterval> | null = null;
 const KEPT: Saved = { saved: true };
@@ -275,8 +359,7 @@ let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
 let endPictureInPicture: (() => void) | null = null;
 /**
- * Takes a subscription's connection back from a download before a stream of it opens, so the
- * provider never sees both; downloads.ts registers it. Resolves once the download's request ended
+ * Takes a subscription's connection back from a download before a stream of it opens; downloads.ts registers it. Resolves once the download's request ended
  * and the provider had a moment to free it; rejects when it didn't end, and the stream fails.
  */
 let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
@@ -329,54 +412,8 @@ export function player(): VideoPlayer {
   const made = createVideoPlayer(null);
   made.timeUpdateEventInterval = 1;
   made.muted = state.get().muted;
-  made.addListener("statusChange", ({ status, error }) => {
-    if (!current) return;
-    if (status === "error") {
-      // A format session says why it stopped serving; AVPlayer's failures come without a type,
-      // and on the fixtures they were formats it can't play.
-      const stopped = format?.session.failure();
-      if (!stopped) return fail(error?.message ?? "The player stopped.", "unsupported");
-      const failure = { kind: "stream", failure: stopped } as const;
-      return fail(describeError(failure), appFailure(failure));
-    }
-    if (status === "readyToPlay" && current.seek !== null) {
-      const from = current.seek;
-      current.seek = null;
-      if (from > 0) made.currentTime = from;
-    }
-  });
-  made.addListener("sourceLoad", ({ duration }) => {
-    if (current && !current.item.live) length.set(Number.isFinite(duration) ? duration : 0);
-  });
-  made.addListener("playingChange", ({ isPlaying }) => {
-    const { phase } = state.get();
-    if (phase.kind === "idle" || phase.kind === "failed") return;
-    if (isPlaying && pauseOnStart) {
-      pauseOnStart = false;
-      made.pause();
-    }
-    if (isPlaying && current && !current.loaded) {
-      current.loaded = true;
-      current.options.outcome?.(true);
-    }
-    // Only playing moves a title on; a checkpoint while paused would make it look watched later.
-    if (checkpoint) clearInterval(checkpoint);
-    checkpoint = isPlaying ? setInterval(report, CHECKPOINT_MS) : null;
-    if (!isPlaying && phase.kind === "playing") report();
-    state.set((s) => ({
-      ...s,
-      phase: {
-        kind: isPlaying ? "playing" : phase.kind === "loading" ? "loading" : "paused",
-        item: phase.item,
-      },
-    }));
-  });
-  made.addListener("playToEnd", () => {
-    if (!current || current.item.live) return;
-    report();
-    current.options.ended?.();
-  });
-  made.addListener("timeUpdate", ({ currentTime }) => clock.set(currentTime));
+  // Installed once, before any attempt. Legacy source/status/time events have no authority.
+  made.addListener("playbackObservation", observe);
   made.addListener("isExternalPlaybackActiveChange", ({ isExternalPlaybackActive }) => {
     // An AirPlay receiver keeps playing while the app is in the background.
     made.staysActiveInBackground = isExternalPlaybackActive;
@@ -390,113 +427,341 @@ export function player(): VideoPlayer {
   return made;
 }
 
-/**
- * Lets go of the stream: the player keeps nothing that holds the provider's connection. Resolves
- * as its save of how far a title got does (`report`).
- */
+/** Releases readers independently of the ordered progress-save result. */
 function release(): Promise<Saved> {
   const saved = report();
   if (current?.loaded && !current.item.live) current.stoppedAt = player().currentTime;
   if (checkpoint) clearInterval(checkpoint);
   checkpoint = null;
-  attempt?.abort();
-  attempt = null;
-  const made = player();
-  made.pause();
-  void made.replaceAsync(null);
-  // Its request ends on its own time; `held` keeps the next play from the provider until then.
-  format?.close();
-  format = null;
-  noteClosing();
+  if (current) void retire(current.resource);
+  player().pause();
   clock.set(0);
   length.set(0);
   return saved;
 }
 
-/**
- * Shows why the stream failed: the player's message, which can quote its address, without it.
- * The first failure stands; the player may report another as the stream is let go of.
- */
-function fail(message: string, failure: AnalyticsFailure) {
-  if (!current || state.get().phase.kind === "failed") return;
-  failed?.(failure);
-  const { item, options } = current;
+function fail(failure: PlaybackFailure) {
+  if (!current || current.resource.retired) return;
+  current.failure = failure;
+  const { item, options, loaded } = current;
+  const formatFailure = failure.kind === "format" ? failure.failure : null;
+  const native = failure.kind === "native" ? failure.failure : null;
+  const analytics = formatFailure
+    ? appFailure({ kind: "stream", failure: formatFailure })
+    : failure.kind === "lookup"
+      ? appFailure(failure.error)
+      : native?.kind === "auth"
+        ? "credentials"
+        : native?.kind === "network"
+          ? "network"
+          : native?.kind === "unsupported" || native?.kind === "decode"
+            ? "unsupported"
+            : native?.kind === "missing" || native?.kind === "rate-limit" || native?.kind === "http"
+              ? "unavailable"
+              : "app";
   release();
-  if (!current.loaded) options.outcome?.(false);
+  failed?.(analytics);
+  if (!loaded) options.outcome?.(false);
   current.loaded = false;
-  const error = withoutLogin(message, options.login);
-  state.set((s) => ({ ...s, phase: { kind: "failed", item, error } }));
+  const message = formatFailure
+    ? describeError({ kind: "stream", failure: formatFailure })
+    : failure.kind === "lookup"
+      ? describeError(failure.error)
+      : native?.kind === "network"
+        ? "The connection to the provider failed."
+        : native?.kind === "unsupported" || native?.kind === "decode"
+          ? "Mr. Streamer can't play this file."
+          : failure.kind === "detach-timeout"
+            ? "The previous stream is still closing. Try again."
+            : "The player stopped. Try again.";
+  state.set((s) => ({
+    ...s,
+    phase: { kind: "failed", item, error: withoutLogin(message, options.login) },
+  }));
 }
 
-/**
- * Plays `item`, in Watch when `options.watch`, else in Home's preview. Whatever played before
- * stops first, saying how far it got; a slower earlier call that finishes later changes nothing.
- */
+function acceptItem(resource: Resource, identity: ObservedItemIdentity) {
+  if (
+    !stands(resource) ||
+    identity.attemptId !== resource.id ||
+    !Number.isSafeInteger(identity.itemId) ||
+    identity.itemId <= 0 ||
+    (resource.itemId !== null && resource.itemId !== identity.itemId)
+  )
+    return false;
+  resource.itemId = identity.itemId;
+  return true;
+}
+
+function acceptTracks(resource: Resource, tracks: ObservedTrackSnapshot) {
+  if (
+    !stands(resource) ||
+    tracks.attemptId !== resource.id ||
+    tracks.itemId !== resource.itemId ||
+    (resource.tracks && tracks.revision < resource.tracks.revision)
+  )
+    return;
+  resource.tracks = tracks;
+}
+
+function refreshTracks(resource: Resource): Promise<ObservedTrackSnapshot | null> {
+  if (!stands(resource) || resource.itemId === null) return Promise.resolve(null);
+  if (resource.querying) return resource.querying;
+  const expected = { attemptId: resource.id, itemId: resource.itemId };
+  const before = resource.tracks;
+  resource.querying = Promise.resolve()
+    .then(() => player().getObservedTracksAsync(expected))
+    .then(
+      (tracks) => {
+        if ("kind" in tracks || !stands(resource)) return null;
+        if (resource.tracks === before) acceptTracks(resource, tracks);
+        return resource.tracks;
+      },
+      () => null,
+    )
+    .finally(() => {
+      resource.querying = null;
+    });
+  return resource.querying;
+}
+
+function observe(event: PlaybackObservation) {
+  const resource = current?.resource;
+  if (
+    !resource ||
+    !stands(resource) ||
+    event.version !== 1 ||
+    event.attemptId !== resource.id ||
+    !Number.isSafeInteger(event.sequence) ||
+    event.sequence <= resource.sequence
+  )
+    return;
+  if (event.kind === "detached") return; // Only the retained promise proves drain.
+  if (event.kind === "attached") {
+    if (!acceptItem(resource, event)) return;
+  } else if (event.kind === "failure" && resource.itemId === null && event.itemId !== null) {
+    // A failed preparation may have constructed an item without ever attaching it.
+    if (!acceptItem(resource, { attemptId: event.attemptId, itemId: event.itemId })) return;
+  } else if (event.itemId !== resource.itemId) return;
+  resource.sequence = event.sequence;
+  if (!current) return;
+  switch (event.kind) {
+    case "attached":
+      return;
+    case "failure": {
+      if (!event.terminal) return;
+      const stopped = resource.session?.failure();
+      return fail(
+        stopped ? { kind: "format", failure: stopped } : { kind: "native", failure: event.failure },
+      );
+    }
+    case "media-services-reset":
+      return fail({ kind: "reset" });
+    case "ready": {
+      if (!current.item.live) length.set(event.durationSeconds ?? 0);
+      if (current.seek !== null) {
+        const from = current.seek;
+        current.seek = null;
+        if (from > 0) player().currentTime = from;
+      }
+      void refreshTracks(resource);
+      return;
+    }
+    case "tracks":
+      acceptTracks(resource, event.tracks);
+      void refreshTracks(resource);
+      return;
+    case "ended":
+      if (!pauseOnStart && !current.item.live) {
+        report();
+        current.options.ended?.();
+      }
+      return;
+    case "state": {
+      clock.set(event.mediaTimeSeconds);
+      const { phase } = state.get();
+      if (phase.kind === "idle" || phase.kind === "failed") return;
+      const playing = event.timeControl === "playing";
+      if (playing && pauseOnStart) {
+        player().pause();
+        return;
+      }
+      if (playing && !current.loaded) {
+        current.loaded = true;
+        current.options.outcome?.(true);
+      }
+      if (checkpoint) clearInterval(checkpoint);
+      checkpoint = playing ? setInterval(report, CHECKPOINT_MS) : null;
+      if (!playing && phase.kind === "playing") report();
+      state.set((s) => ({
+        ...s,
+        phase: {
+          kind: playing
+            ? "playing"
+            : phase.kind === "loading" && !pauseOnStart
+              ? "loading"
+              : "paused",
+          item: phase.item,
+        },
+      }));
+    }
+  }
+}
+
+/** Read fixed bridge codes only. Native descriptions and wrapped causes never become UI text. */
+function bridgeCode(cause: unknown): string | null {
+  for (let depth = 0; depth < 4 && typeof cause === "object" && cause !== null; depth++) {
+    if ("code" in cause && cause.code === "ERR_OBSERVED_NOT_DRAINED") return cause.code;
+    cause = "cause" in cause ? cause.cause : null;
+  }
+  return null;
+}
+let admitted = false;
+
+/** One same-player bootstrap retry yields through the async bridge, without a media reload. */
+async function attach(
+  resource: Resource,
+  source: Parameters<VideoPlayer["replaceObservedAsync"]>[0],
+) {
+  try {
+    const result = await player().replaceObservedAsync(source, resource.id);
+    admitted = true;
+    return result;
+  } catch (cause) {
+    if (admitted || !stands(resource) || bridgeCode(cause) !== "ERR_OBSERVED_NOT_DRAINED")
+      throw cause;
+    const result = await player().replaceObservedAsync(source, resource.id);
+    admitted = true;
+    return result;
+  }
+}
+
+/** Plays only after earlier native and format readers positively close. No source probes. */
 export async function play(item: Playing, open: Open, options: PlayOptions) {
   requests++;
   release();
   const controller = new AbortController();
-  attempt = controller;
-  current = { item, open, options, seek: options.from ?? null, loaded: false, stoppedAt: null };
+  const source = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
+  let drained!: () => void;
+  let uncertain!: (cause: Error) => void;
+  let opened!: () => void;
+  const closed = new Promise<void>((resolve, reject) => {
+    drained = resolve;
+    uncertain = reject;
+  });
+  void closed.catch(() => undefined); // Admission and reader handles still observe rejection.
+  const resource: Resource = {
+    id: ++attempts,
+    controller,
+    subscriptionId: item.subscriptionId,
+    sourceStands: () =>
+      item.subscriptionId === null || currentSource(item.subscriptionId) === source,
+    formats: [],
+    closed,
+    drained,
+    uncertain,
+    opening: new Promise<void>((resolve) => {
+      opened = resolve;
+    }),
+    opened,
+    itemId: null,
+    sequence: 0,
+    retired: false,
+    detach: null,
+    settlement: null,
+    session: null,
+    tracks: null,
+    querying: null,
+  };
+  current = {
+    item,
+    open,
+    options,
+    seek: options.from ?? null,
+    loaded: false,
+    stoppedAt: null,
+    resource,
+    failure: null,
+  };
   resumeOnReturn = false;
   pauseOnStart = false;
   soundOnPlay = false;
+  const owned = current;
   state.set((s) => {
     const muted = options.watch || s.watch ? false : s.muted;
     player().muted = muted;
     return {
       ...s,
-      phase: { kind: "loading", item },
+      phase: { kind: "loading", item: owned.item },
       watch: options.watch || s.watch,
       aside: false,
       muted,
     };
   });
+  let stage: "readers" | "lookup" | "native" = "readers";
   try {
-    await Promise.all(held.keys());
-    if (controller.signal.aborted) return;
+    if (player().mrStreamerPlaybackContract !== 1) throw new Error("Player contract unavailable.");
+    await waitForReaders(resource);
+    if (!stands(resource)) return;
+    stage = "lookup";
     if (item.subscriptionId !== null) await reclaim?.(item.subscriptionId);
-    if (controller.signal.aborted) return;
+    if (!stands(resource)) return;
     const source = await open(controller.signal);
-    if (controller.signal.aborted) return;
+    if (!stands(resource)) return;
     let playable = {
       uri: source.url,
       ...(source.headers ? { headers: { ...source.headers } } : {}),
       contentType: source.container === "m3u8" ? ("hls" as const) : ("auto" as const),
     };
     if (!item.live && THROUGH_SESSION.has(source.container.toLowerCase())) {
-      const start = options.from ?? 0;
-      const opening = openFormat(source.url, source.headers, start, controller.signal);
-      hold(opening.closed, item.subscriptionId);
+      const opening = openFormat(source.url, source.headers, options.from ?? 0, controller.signal);
+      resource.formats.push(opening);
+      // Observe failure now, even if opening itself is still pending.
+      void opening.closed.catch(() => undefined);
       const opened = await opening.opened;
-      if (controller.signal.aborted) return opening.close();
+      if (!stands(resource)) return opening.close();
       if (opened.kind === "session") {
         const { session } = opened;
-        format = { session, close: opening.close, closed: opening.closed };
-        noteClosing();
-        // AVPlayer may only wait on the request the session refused, so its own word ends the
-        // stream; a session already let go of says nothing to what plays now.
+        resource.session = session;
         void session.failed.then((failure) => {
-          if (format?.session !== session) return;
-          const error = { kind: "stream", failure } as const;
-          fail(describeError(error), appFailure(error));
+          if (stands(resource)) fail({ kind: "format", failure });
         });
-        playable = { uri: opened.session.playlist, contentType: "hls" };
-        // The stream starts there itself, so AVPlayer reads nothing before it.
-        if (current) current.seek = null;
+        playable = { uri: session.playlist, contentType: "hls" };
+        owned.seek = null;
       } else {
-        // AVPlayer opens it itself, once the session's request ended.
         await opening.closed;
-        if (controller.signal.aborted) return;
+        if (!stands(resource)) return;
       }
     }
-    await player().replaceAsync(playable);
-    if (controller.signal.aborted) return;
-    player().play();
+    stage = "native";
+    const result = await attach(resource, playable);
+    if (!stands(resource)) return;
+    if (result.attemptId !== resource.id) return fail({ kind: "bridge" });
+    if (result.kind === "attached") {
+      if (!acceptItem(resource, result)) return fail({ kind: "bridge" });
+      player().play();
+    } else if (result.kind === "failed") {
+      if (
+        result.itemId !== null &&
+        !acceptItem(resource, { attemptId: result.attemptId, itemId: result.itemId })
+      ) {
+        return fail({ kind: "bridge" });
+      }
+      fail({ kind: "native", failure: result.failure });
+    } else fail({ kind: "cancelled" });
   } catch (cause) {
-    if (controller.signal.aborted) return;
-    const error = appError(cause);
-    fail(describeError(error), appFailure(error));
+    if (!stands(resource)) return;
+    if (stage === "lookup") {
+      const error = appError(cause);
+      fail(
+        error.kind === "stream"
+          ? { kind: "format", failure: error.failure }
+          : { kind: "lookup", error },
+      );
+    } else fail({ kind: stage === "readers" ? "detach-timeout" : "bridge" });
+  } finally {
+    resource.opened();
+    if (!stands(resource) && !resource.retired) void retire(resource);
   }
 }
 
@@ -514,12 +779,13 @@ export function retry() {
 
 /**
  * Stops playing and closes Watch, Picture in Picture and the accessory, saving how far a title
- * got. What plays next on Home starts without sound again. Resolves once that save and every
- * format session's request let go of ended, with how the save went.
+ * got. What plays next on Home starts without sound again. Waits for its real reader settlement
+ * and reports only the save outcome. Uncertain closure stays blocked in the resource ledger.
  */
 export async function stop(): Promise<Saved> {
   requests++;
   const saved = release();
+  const readers = current?.resource.settlement;
   current = null;
   endPictureInPicture?.();
   player().muted = true;
@@ -534,8 +800,10 @@ export async function stop(): Promise<Saved> {
     aside: false,
     muted: true,
   }));
-  const [outcome] = await Promise.all([saved, Promise.allSettled(held.keys())]);
-  return outcome;
+  // Saved says only whether progress was kept. Reader failure remains in closing and on the
+  // captured reader handle, even when Stop returns its save result.
+  await readers?.catch(() => undefined);
+  return saved;
 }
 
 /**
@@ -547,8 +815,11 @@ export async function stop(): Promise<Saved> {
 export function togglePause() {
   resumeOnReturn = false;
   const { phase } = state.get();
-  if (phase.kind === "playing") player().pause();
-  else if (phase.kind === "paused") {
+  if (phase.kind === "playing" || phase.kind === "loading") {
+    pauseOnStart = true;
+    player().pause();
+  } else if (phase.kind === "paused") {
+    pauseOnStart = false;
     if (soundOnPlay) setMuted(false);
     player().play();
   }
@@ -570,35 +841,18 @@ export function setMuted(muted: boolean) {
   state.set((s) => ({ ...s, muted }));
 }
 
-/** A sound or subtitle track the player found in what plays, to choose in Watch. */
+/** Existing Watch rows. Selection acknowledges a request; subsequent readback checks the row. */
 export interface TrackChoice {
+  readonly kind: "track" | "off";
   readonly label: string;
   readonly selected: boolean;
-  readonly choose: () => void;
+  readonly choose: () => Promise<void>;
 }
 
-/** What names a sound or subtitle track. */
-type Track = Pick<AudioTrack | SubtitleTrack, "id" | "language" | "label" | "name">;
+type Track =
+  | ObservedTrackSnapshot["audio"]["options"][number]
+  | ObservedTrackSnapshot["subtitles"]["options"][number];
 
-/**
- * A file can hold tracks of one language, such as English stereo and English surround. On iOS the
- * player's `id` (the track's place in what plays now, from the expo-video patch) tells them apart,
- * and the track's own name, where the file gives one, does too.
- */
-function sameTrack(a: Track | null, b: Track) {
-  return (
-    a !== null &&
-    a.id === b.id &&
-    a.language === b.language &&
-    a.label === b.label &&
-    a.name === b.name
-  );
-}
-
-/**
- * Each track with its label, or its language: tracks that share one add their own name, or else
- * their number among those that share it.
- */
 function labelled<T extends Track>(tracks: readonly T[], fallback: string) {
   const labels = tracks.map((track) => track.label || track.language || fallback);
   return tracks.map((track, i) => {
@@ -609,38 +863,55 @@ function labelled<T extends Track>(tracks: readonly T[], fallback: string) {
   });
 }
 
-/**
- * The sound tracks, or the subtitle tracks with Off first, AVPlayer exposes for what plays now.
- * Subtitles it doesn't draw itself, such as pictures, aren't among them. Choosing one hands the
- * player back the very track it listed.
- */
-export function trackChoices(of: "audio" | "subtitles"): readonly TrackChoice[] {
-  const made = player();
+/** Query actual groups when the menu opens. A retained row cannot select on a newer item/revision. */
+export async function trackChoices(of: "audio" | "subtitles"): Promise<readonly TrackChoice[]> {
+  const resource = current?.resource;
+  if (!resource) return [];
+  const tracks = await refreshTracks(resource);
+  if (!tracks || !stands(resource)) return [];
+  const choose = async (selection: ObservedTrackSelection) => {
+    if (!stands(resource) || resource.tracks?.revision !== tracks.revision) return;
+    if (selection.track && !selection.track.isPlayable) return;
+    if (!selection.track && !tracks.subtitleOffAllowed) return;
+    try {
+      const result = await player().selectObservedTrackAsync(tracks, tracks.revision, selection);
+      if (result.kind === "requested" && stands(resource)) await refreshTracks(resource);
+    } catch {
+      /* Selection is unconfirmed. No optimistic checkmark or raw bridge error. */
+    }
+  };
   if (of === "audio") {
-    const current = made.audioTrack;
-    return labelled(made.availableAudioTracks, "Sound").map(({ track, label }) => ({
+    if (tracks.audio.state !== "ready") return [];
+    return labelled(
+      tracks.audio.options.filter((track) => track.isPlayable),
+      "Sound",
+    ).map(({ track, label }) => ({
+      kind: "track" as const,
       label,
-      selected: sameTrack(current, track),
-      choose: () => {
-        made.audioTrack = track;
-      },
+      selected: tracks.selectedAudioId === track.id,
+      choose: () => choose({ kind: "audio", track }),
     }));
   }
-  const current = made.subtitleTrack;
+  if (tracks.subtitles.state !== "ready") return [];
   return [
-    {
-      label: "Off",
-      selected: current === null,
-      choose: () => {
-        made.subtitleTrack = null;
-      },
-    },
-    ...labelled(made.availableSubtitleTracks, "Subtitles").map(({ track, label }) => ({
+    ...(tracks.subtitleOffAllowed
+      ? [
+          {
+            kind: "off" as const,
+            label: "Off",
+            selected: tracks.selectedSubtitleId === null,
+            choose: () => choose({ kind: "subtitles", track: null }),
+          },
+        ]
+      : []),
+    ...labelled(
+      tracks.subtitles.options.filter((track) => track.isPlayable),
+      "Subtitles",
+    ).map(({ track, label }) => ({
+      kind: "track" as const,
       label,
-      selected: sameTrack(current, track),
-      choose: () => {
-        made.subtitleTrack = track;
-      },
+      selected: tracks.selectedSubtitleId === track.id,
+      choose: () => choose({ kind: "subtitles", track }),
     })),
   ];
 }
@@ -670,13 +941,15 @@ export function openWatch() {
   const { pip, aside, phase } = state.get();
   if (pip) endPictureInPicture?.();
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
-  // Still loading, it plays once it can; nothing pauses it now.
-  pauseOnStart = false;
   const resume = aside && resumeOnReturn;
+  if (resume) pauseOnStart = false;
   resumeOnReturn = false;
   if (!resume || (phase.kind !== "playing" && phase.kind !== "paused")) return;
   if (phase.item.live) retry();
-  else if (phase.kind === "paused") player().play();
+  else if (phase.kind === "paused") {
+    pauseOnStart = false;
+    player().play();
+  }
 }
 
 /**
@@ -688,11 +961,12 @@ export function openWatch() {
  * it ended; a format session paused keeps its request open for Play.
  */
 export function closeWatch(): Promise<Saved> {
+  requests++;
   const { pip, external, phase, muted } = state.get();
   const away = !pip && !external;
   if (away) {
     resumeOnReturn = false;
-    pauseOnStart = phase.kind === "loading";
+    if (phase.kind === "playing" || phase.kind === "loading") pauseOnStart = true;
     soundOnPlay = !muted;
     if (phase.kind === "playing") player().pause();
   }
@@ -709,10 +983,11 @@ export function closeWatch(): Promise<Saved> {
  * the tabs shows it as it is and brings Watch back (`openWatch`).
  */
 export function setAside() {
+  requests++;
   const { phase, external } = state.get();
   if (phase.kind === "idle" || external) return void closeWatch();
   resumeOnReturn = phase.kind === "playing" || phase.kind === "loading";
-  pauseOnStart = phase.kind === "loading";
+  if (phase.kind === "playing" || phase.kind === "loading") pauseOnStart = true;
   if (phase.kind === "playing") player().pause();
   // Paused, it makes no sound; played again from the accessory, it plays as Watch would.
   player().muted = false;
@@ -727,7 +1002,6 @@ export function setAside() {
 export function unsetAside() {
   if (!state.get().aside) return;
   resumeOnReturn = false;
-  pauseOnStart = false;
   player().muted = false;
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
 }
@@ -737,6 +1011,7 @@ export function unsetAside() {
  * accessory controls it; once it ends, Home's preview shows the player again.
  */
 export function pictureInPicture(active: boolean) {
+  requests++;
   if (active) {
     state.set((s) => ({ ...s, pip: true, watch: false, aside: false }));
     return;
