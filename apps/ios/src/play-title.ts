@@ -18,7 +18,7 @@ import {
   type Continuation,
 } from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
-import { play, progressSettled, request, type Playing } from "./playback.ts";
+import { play, progressSettled, request, type Playing, type Request } from "./playback.ts";
 import { loginOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { titleFile } from "./titles.ts";
@@ -183,15 +183,22 @@ export function playEpisode(
  * Plays from where `read` says a title got to, read once every save of progress asked before
  * ended (`progressSettled`); from `shown`, what the screen showed, when the record can't be read.
  * Anything the viewer asks meanwhile, playing, Stop, removing a subscription or another screen,
- * cancels it (`request`).
+ * cancels it (`request`), as does `owner`, the caller's own word, no longer standing: details
+ * showing another version, or gone.
  */
-function resumeWith<P>(read: () => Promise<P>, shown: P, start: (found: P) => void) {
+function resumeWith<P>(
+  read: () => Promise<P>,
+  shown: P,
+  start: (found: P) => void,
+  owner: Request | undefined,
+) {
   const asked = request();
+  const stands = () => asked.stands() && (owner?.stands() ?? true);
   void (async () => {
     await progressSettled();
-    if (!asked.stands()) return;
+    if (!stands()) return;
     const found = await read().catch(() => shown);
-    if (asked.stands()) start(found);
+    if (stands()) start(found);
   })();
 }
 
@@ -201,6 +208,7 @@ export function resumeMovie(
   version: OwnedId,
   shown: TitleProgress | undefined,
   versions: ShowVersions,
+  owner?: Request,
 ) {
   resumeWith(
     async () =>
@@ -209,6 +217,7 @@ export function resumeMovie(
       ),
     shown,
     (found) => playMovie(title, version, resumePoint(found), versions),
+    owner,
   );
 }
 
@@ -218,6 +227,7 @@ export function resumeEpisode(
   episode: Episode,
   shown: TitleProgress | undefined,
   versions: ShowVersions,
+  owner?: Request,
 ) {
   resumeWith(
     async () => {
@@ -230,6 +240,7 @@ export function resumeEpisode(
     },
     shown,
     (found) => playEpisode(details, episode, resumePoint(found), versions),
+    owner,
   );
 }
 
@@ -239,6 +250,7 @@ export function resumeSeries(
   version: OwnedId,
   shown: Continuation<Episode, TitleProgress>,
   versions: ShowVersions,
+  owner?: Request,
 ) {
   resumeWith(
     async () => {
@@ -247,5 +259,6 @@ export function resumeSeries(
     },
     shown,
     (goesOn) => playEpisode(details, goesOn.episode, resumePoint(goesOn.resume), versions),
+    owner,
   );
 }

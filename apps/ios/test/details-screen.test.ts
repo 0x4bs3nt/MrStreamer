@@ -149,6 +149,9 @@ vi.mock("../src/play-title.ts", () => ({
   resumeEpisode: () => undefined,
   resumeSeries: () => undefined,
 }));
+// A version chosen asks playback to retire a Resume still waiting; details-resume.test.ts runs
+// that with the real owners.
+vi.mock("../src/playback.ts", () => ({ request: () => ({ stands: () => true }) }));
 vi.mock("../src/viewing.ts", () => ({
   useViewing: () => null,
   progressOf: async () => scenario.progress,

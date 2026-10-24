@@ -43,6 +43,7 @@ import {
   useFailure,
   type Failure,
 } from "./play-title.ts";
+import { request, type Request } from "./playback.ts";
 import { useRead, type Loaded } from "./read.ts";
 import { members, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
@@ -130,6 +131,26 @@ export function DetailsScreen({
 /** The version menu's choice of Automatic: progress and the title's own choice decide. */
 const AUTOMATIC = "automatic";
 
+/**
+ * The word of a Resume pressed here, for play-title to check before it plays: it stands while
+ * this screen still shows the version it was pressed for, `key`. The screen showing another
+ * version, or going, ends it for good, so a Resume still waiting for earlier saves or the record
+ * never plays a version no longer shown. Drawing the same version again keeps it.
+ */
+function usePressed(key: string): () => Request {
+  const shown = useRef(0);
+  useEffect(
+    () => () => {
+      shown.current++;
+    },
+    [key],
+  );
+  return () => {
+    const at = shown.current;
+    return { stands: () => shown.current === at };
+  };
+}
+
 function Details({ title, opened, asked }: { title: Title; opened: OwnedId; asked: boolean }) {
   const viewing = useViewing();
   const watchlist = useWatchlist();
@@ -199,6 +220,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
     [chosen.subscriptionId, chosen.id],
   );
   const shownTitle = useMemo(() => ({ ...title, ...version }), [title, version]);
+  const pressed = usePressed(`${title.key}|${ownedKey(version)}`);
   // Details answer only the version they were read for: another version shows loading at once.
   // Try again reads the same version anew; until that answers, its facts show as loading.
   const [again, setAgain] = useState(0);
@@ -252,13 +274,16 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
         // only with a version still listed: otherwise it changes nothing, the pick saved included.
         const now = listedNow.current;
         if (!now || now.key !== title.key) return;
+        // A choice is the viewer's newest ask: a Resume still waiting plays nothing (`request`).
         if (index === 0) {
+          request();
           setPicked(AUTOMATIC);
           pickVersion(now, null);
           return;
         }
         const choice = choices[index - 1];
         if (!choice || !now.versions.some((each) => sameOwned(each, choice.version))) return;
+        request();
         setPicked(choice.version);
         pickVersion(now, choice.version);
       },
@@ -299,7 +324,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
               label={movieProgress && !movieProgress.finished ? "Resume" : "Play"}
               onPress={() =>
                 // After a failure, Watch closes onto this page and its version menu opens.
-                resumeMovie(shownTitle, version, movieProgress, chooseVersion)
+                resumeMovie(shownTitle, version, movieProgress, chooseVersion, pressed())
               }
               testID="details-play"
             />
@@ -440,6 +465,7 @@ function SeriesPlay({
   onVersions: () => void;
 }) {
   const viewing = useViewing();
+  const pressed = usePressed(ownedKey(version));
   const standing = useRead(
     ownedKey(version),
     useCallback(() => seriesViewing(version), [version]),
@@ -459,7 +485,9 @@ function SeriesPlay({
       symbol="play.fill"
       label={label}
       disabled={!details || !goesOn}
-      onPress={() => details && goesOn && resumeSeries(details, version, goesOn, onVersions)}
+      onPress={() =>
+        details && goesOn && resumeSeries(details, version, goesOn, onVersions, pressed())
+      }
       testID="details-play"
     />
   );
@@ -479,6 +507,7 @@ function Seasons({
   sequence: number;
   onVersions: () => void;
 }) {
+  const pressed = usePressed(ownedKey(version));
   const standing = useRead(
     ownedKey(version),
     useCallback(() => seriesViewing(version), [version]),
@@ -570,7 +599,7 @@ function Seasons({
             name={title.title}
             watched={state.kind === "watched"}
             progress={progress}
-            onPlay={() => resumeEpisode(details, episode, progress, onVersions)}
+            onPlay={() => resumeEpisode(details, episode, progress, onVersions, pressed())}
             onMark={(watched) => mark(episode, watched)}
           />
         );
