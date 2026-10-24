@@ -210,8 +210,8 @@ export function onScreen(path: string) {
 
 /** Whether setting Watch aside paused what played, so bringing Watch back plays it again. */
 let resumeOnReturn = false;
-/** Deferred loading Pause, or Watch's own pause while away. Returning clears only the latter. */
-let pauseOnStart: false | "viewer" | "away" = false;
+/** Viewer Pause waits for application and a paused acknowledgement; away clears on return. */
+let pauseOnStart: false | "viewer" | "viewer-applied" | "away" = false;
 /**
  * Close silenced what it paused, which had sound: Play from paused brings that sound back. A new
  * play, Stop, Watch shown again and the viewer's own mute or unmute each end it.
@@ -247,6 +247,8 @@ interface Resource {
   readonly controller: AbortController;
   readonly sourceStands: () => boolean;
   readonly subscriptionId: string | null;
+  /** Actual bound login parts stay private, including a source restored after play was asked. */
+  redaction: readonly string[];
   readonly formats: FormatReader[];
   readonly closed: Promise<void>;
   readonly drained: () => void;
@@ -261,6 +263,8 @@ interface Resource {
   session: FormatSession | null;
   tracks: ObservedTrackSnapshot | null;
   querying: Promise<ObservedTrackSnapshot | null> | null;
+  /** A viewer Pause applied before admission resolves must still suppress its initial play. */
+  holdInitialPlay: boolean;
 }
 let attempts = 0;
 const closing = new Set<Resource>();
@@ -463,7 +467,7 @@ function release(): Promise<Saved> {
 function fail(failure: PlaybackFailure) {
   if (!current || current.resource.retired) return;
   current.failure = failure;
-  const { item, options, loaded } = current;
+  const { item, options, loaded, resource } = current;
   const formatFailure = failure.kind === "format" ? failure.failure : null;
   const native = failure.kind === "native" ? failure.failure : null;
   const analytics = formatFailure
@@ -496,8 +500,25 @@ function fail(failure: PlaybackFailure) {
             : "The player stopped. Try again.";
   state.set((s) => ({
     ...s,
-    phase: { kind: "failed", item, error: withoutLogin(message, options.login) },
+    phase: {
+      kind: "failed",
+      item,
+      error: withoutLogin(message, [...options.login, ...resource.redaction]),
+    },
   }));
+}
+
+/** Apply the pending viewer Pause only once an actual item exists. */
+function applyViewerPause(resource: Resource) {
+  resource.holdInitialPlay = true;
+  pauseOnStart = "viewer-applied";
+  player().pause();
+}
+
+/** Read current intent after asynchronous admission and complete its initial action. */
+function startAttached(resource: Resource) {
+  if (pauseOnStart === "viewer") applyViewerPause(resource);
+  else if (!pauseOnStart && !resource.holdInitialPlay) player().play();
 }
 
 function acceptItem(resource: Resource, identity: ObservedItemIdentity) {
@@ -567,6 +588,7 @@ function observe(event: PlaybackObservation) {
   if (!current) return;
   switch (event.kind) {
     case "attached":
+      if (pauseOnStart === "viewer") applyViewerPause(resource);
       return;
     case "failure": {
       if (!event.terminal) return;
@@ -602,8 +624,12 @@ function observe(event: PlaybackObservation) {
       const { phase } = state.get();
       if (phase.kind === "idle" || phase.kind === "failed") return;
       const playing = event.timeControl === "playing";
+      const paused = event.timeControl === "paused";
+      const viewerPaused = paused && pauseOnStart === "viewer-applied";
+      if (viewerPaused) pauseOnStart = false;
       if (playing && pauseOnStart) {
-        player().pause();
+        if (pauseOnStart === "viewer") applyViewerPause(resource);
+        else player().pause();
         return;
       }
       if (playing && !current.loaded) {
@@ -618,7 +644,7 @@ function observe(event: PlaybackObservation) {
       if (!playing && phase.kind === "playing") report();
       const kind = playing
         ? "playing"
-        : phase.kind === "loading" && !pauseOnStart
+        : phase.kind === "loading" && !viewerPaused && !(paused && pauseOnStart)
           ? "loading"
           : "paused";
       if (kind !== phase.kind) {
@@ -675,6 +701,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     id: ++attempts,
     controller,
     subscriptionId: item.subscriptionId,
+    redaction: signedIn?.login ?? [],
     sourceStands: () =>
       item.subscriptionId === null ||
       !sourceBound ||
@@ -695,6 +722,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     session: null,
     tracks: null,
     querying: null,
+    holdInitialPlay: false,
   };
   current = {
     item,
@@ -734,6 +762,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
       sourceBound = true;
     }
+    resource.redaction = signedIn?.login ?? [];
     const source = await open(controller.signal);
     if (!stands(resource)) return;
     let playable = {
@@ -767,7 +796,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     if (result.attemptId !== resource.id) return fail({ kind: "bridge" });
     if (result.kind === "attached") {
       if (!acceptItem(resource, result)) return fail({ kind: "bridge" });
-      player().play();
+      startAttached(resource);
     } else if (result.kind === "failed") {
       if (
         result.itemId !== null &&
@@ -845,7 +874,9 @@ export function togglePause() {
   const { phase } = state.get();
   if (phase.kind === "playing" || phase.kind === "loading") {
     pauseOnStart = phase.kind === "loading" ? "viewer" : false;
-    player().pause();
+    if (pauseOnStart === "viewer" && current && current.resource.itemId !== null) {
+      applyViewerPause(current.resource);
+    } else player().pause();
   } else if (phase.kind === "paused") {
     pauseOnStart = false;
     if (soundOnPlay) setMuted(false);
@@ -1016,7 +1047,10 @@ export function setAside() {
   requests++;
   const { phase, external } = state.get();
   if (phase.kind === "idle" || external) return void closeWatch();
-  resumeOnReturn = phase.kind === "playing" || phase.kind === "loading";
+  resumeOnReturn =
+    (phase.kind === "playing" || phase.kind === "loading") &&
+    pauseOnStart !== "viewer" &&
+    pauseOnStart !== "viewer-applied";
   if ((phase.kind === "playing" || phase.kind === "loading") && !pauseOnStart) {
     pauseOnStart = "away";
   }
@@ -1034,6 +1068,7 @@ export function setAside() {
 export function unsetAside() {
   if (!state.get().aside) return;
   resumeOnReturn = false;
+  if (pauseOnStart === "away") pauseOnStart = false;
   player().muted = false;
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
 }

@@ -105,11 +105,12 @@ describe("Close", () => {
     source.resolve({ url: "file:m1", container: "mp4" });
     await starting;
     expect(fakePlayer.pause).not.toHaveBeenCalled();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
     playing();
     expect(fakePlayer.pause).toHaveBeenCalledOnce();
     playing(false);
     expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, watch: false });
-    expect(fakePlayer.play).toHaveBeenCalledOnce();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
   });
 
   it("leaves a paused title paused, where it was saved", async () => {

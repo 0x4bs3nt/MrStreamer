@@ -300,6 +300,178 @@ describe("managed playback ownership", () => {
     expect(port.pause).toHaveBeenCalledOnce();
     event({ attemptId: 1, itemId: 1 }, "paused", 2);
     expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+    owner.pictureInPicture(true);
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 3);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it("loading Pause waits for paused acknowledgement and never treats waiting as acknowledgement", async () => {
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    stop = () => lookup.resolve({ url: "file:clear.mp4", container: "mp4" });
+    const playing = owner.play(item("a"), () => lookup.promise, options);
+    owner.togglePause();
+    lookup.resolve(await source());
+    await playing;
+    port.observation(
+      {
+        kind: "state",
+        timeControl: "waiting",
+        mediaTimeSeconds: 0,
+        bufferEmpty: true,
+        likelyToKeepUp: false,
+      },
+      { attemptId: 1, itemId: 1, sequence: 1 },
+    );
+    expect(owner.playbackState.get().phase.kind).toBe("loading");
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 2);
+    expect(port.pause).toHaveBeenCalledOnce();
+    event({ attemptId: 1, itemId: 1 }, "paused", 3);
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.observation(
+      {
+        kind: "state",
+        timeControl: "waiting",
+        mediaTimeSeconds: 0,
+        bufferEmpty: true,
+        likelyToKeepUp: false,
+      },
+      { attemptId: 1, itemId: 1, sequence: 4 },
+    );
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 5);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it.each(["before-ack", "after-ack"] as const)(
+    "loading Pause survives Settings/Downloads aside and return %s",
+    async (returnAt) => {
+      const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+      stop = () => lookup.resolve({ url: "file:clear.mp4", container: "mp4" });
+      const playing = owner.play(item("a"), () => lookup.promise, options);
+      owner.togglePause();
+      owner.setAside();
+      lookup.resolve(await source());
+      await playing;
+      event({ attemptId: 1, itemId: 1 });
+      if (returnAt === "before-ack") owner.openWatch();
+      event({ attemptId: 1, itemId: 1 }, "paused", 2);
+      port.play.mockClear();
+      if (returnAt === "after-ack") owner.openWatch();
+      expect(port.play).not.toHaveBeenCalled();
+      expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+    },
+  );
+
+  it("unsetAside clears the away pause of a loading local copy", async () => {
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    stop = () => lookup.resolve({ url: "file:copy.mp4", container: "mp4" });
+    const playing = owner.play(item("copy:1", null), () => lookup.promise, options);
+    owner.setAside();
+    owner.unsetAside();
+    lookup.resolve(await source());
+    await playing;
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 });
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "playing" } });
+  });
+
+  it("unsetAside keeps a paused local copy paused and accepts its later native Play", async () => {
+    const a = await start("copy:1", null);
+    event(a);
+    owner.setAside();
+    event(a, "paused", 2);
+    port.play.mockClear();
+    owner.unsetAside();
+    expect(port.play).not.toHaveBeenCalled();
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+    port.pause.mockClear();
+    owner.pictureInPicture(true);
+    event(a, "playing", 3);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it("unsetAside preserves a viewer loading Pause of a local copy", async () => {
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    stop = () => lookup.resolve({ url: "file:copy.mp4", container: "mp4" });
+    const playing = owner.play(item("copy:1", null), () => lookup.promise, options);
+    owner.togglePause();
+    owner.setAside();
+    owner.unsetAside();
+    lookup.resolve(await source());
+    await playing;
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 });
+    expect(port.pause).toHaveBeenCalledOnce();
+    event({ attemptId: 1, itemId: 1 }, "paused", 2);
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+  });
+
+  it("an early paused acknowledgement holds initial Play until the admission promise settles", async () => {
+    const admission = deferred<ObservedOpenResult>();
+    stop = () => admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    port.replaceObservedAsync.mockImplementationOnce(async () => {
+      port.emit("playbackObservation", {
+        version: 1,
+        sequence: 1,
+        kind: "attached",
+        attemptId: 1,
+        itemId: 1,
+      });
+      event({ attemptId: 1, itemId: 1 }, "paused", 2);
+      return admission.promise;
+    });
+    const outcome = vi.fn();
+    const playing = owner.play(item("a"), source, { ...options, outcome });
+    owner.togglePause();
+    await tick();
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    expect(outcome).not.toHaveBeenCalled();
+    admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await playing;
+    expect(port.play).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    owner.pictureInPicture(true);
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 3);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+    expect(outcome).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("a paused sample before the loading Pause request cannot consume the later request", async () => {
+    const admission = deferred<ObservedOpenResult>();
+    stop = () => admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    port.replaceObservedAsync.mockImplementationOnce(async () => {
+      port.emit("playbackObservation", {
+        version: 1,
+        sequence: 1,
+        kind: "attached",
+        attemptId: 1,
+        itemId: 1,
+      });
+      event({ attemptId: 1, itemId: 1 }, "paused", 2);
+      return admission.promise;
+    });
+    const playing = owner.play(item("a"), source, options);
+    await tick();
+    expect(owner.playbackState.get().phase.kind).toBe("loading");
+    owner.togglePause();
+    admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await playing;
+    expect(port.play).not.toHaveBeenCalled();
+    event({ attemptId: 1, itemId: 1 }, "paused", 3);
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 4);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
   });
 
   it("reset fails once and requires an explicit Retry", async () => {
@@ -544,6 +716,46 @@ it("an initially absent source can restore during reclaim before lookup binds it
   expect(lookup).toHaveBeenCalledOnce();
   expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
 });
+
+it.each(["lookup", "format"] as const)(
+  "late-bound source login is redacted from %s failures and Retry",
+  async (failureAt) => {
+    const { xtreamProvider } = await import("@mrstreamer/core/xtream");
+    const { AppFailure } = await import("@mrstreamer/contracts/errors");
+    const sources = await import("../src/sources.ts");
+    const login = ["r79-fixture-user", "r79-fixture-secret"];
+    const detail = `live/${login[0]}/${login[1]}/1.ts`;
+    const provider = xtreamProvider(
+      { server: "http://fixture.invalid", username: login[0]!, password: login[1]! },
+      { userAgent: "MrStreamer fixture" },
+    );
+    const reclaim = deferred<void>();
+    stop = () => reclaim.resolve();
+    owner.onReclaim(() => reclaim.promise);
+    const lookup = vi.fn(async () => {
+      if (failureAt === "format") {
+        throw new AppFailure({ kind: "stream", failure: { kind: "unsupported", detail } });
+      }
+      throw new Error(detail);
+    });
+    const playing = owner.play(item("late-login"), lookup, options);
+    await tick();
+    sources.setSource("sub", { revision: 1, provider, login });
+    reclaim.resolve();
+    await playing;
+    expect(owner.playbackState.get().phase.kind).toBe("failed");
+    expect(login.some((part) => JSON.stringify(owner.playbackState.get()).includes(part))).toBe(
+      false,
+    );
+    owner.retry();
+    await tick();
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(owner.playbackState.get().phase.kind).toBe("failed");
+    expect(login.some((part) => JSON.stringify(owner.playbackState.get()).includes(part))).toBe(
+      false,
+    );
+  },
+);
 
 it("an obsolete pre-reader reclaim does not hold another provider's selection", async () => {
   const first = deferred<void>();
