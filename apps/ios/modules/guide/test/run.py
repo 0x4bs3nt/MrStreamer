@@ -2,14 +2,23 @@
 """Compile the production native core for three SDKs, run fake-only host fixtures. No app build."""
 from pathlib import Path
 import gzip, http.server, json, os, subprocess, threading, time
+from datetime import datetime, timedelta, timezone
 os.umask(0o077)
 root = Path(__file__).resolve().parent.parent
 out = root / 'test-output'
 out.mkdir(exist_ok=True)
 xml = b'''<?xml version="1.0" encoding="UTF-8"?><tv><channel id="trusted"><display-name>News</display-name></channel><programme channel="trusted" start="20261024110000 +0000" stop="20261024140000 +0000"><title>News &amp; weather</title><desc><![CDATA[Details]]></desc></programme><programme channel="trusted" start="20261024130000 +0000"><title>Next</title></programme><programme channel="trusted" start="20261024140000 +0000" stop="20261024150000 +0000"><title>Later</title></programme><programme channel="alternate" start="20261024120000 +0000" stop="20261024160000 +0000"><title>Never fill gaps</title></programme></tv>'''
+gap = b'<programme channel="gap" start="20261024110000 +0000" stop="20261024113000 +0000"><title>Ended</title></programme><programme channel="gap" start="20261024130000 +0000" stop="20261024140000 +0000"><title>After gap</title></programme>'
+xml = xml.replace(b'</tv>', gap + b'</tv>')
+page_rows = []
+for n in range(130):
+    start = datetime(2026, 10, 24, 12, tzinfo=timezone.utc) + timedelta(minutes=n)
+    stop = start + timedelta(minutes=1)
+    page_rows.append(f'<programme channel="pages" start="{start:%Y%m%d%H%M%S} +0000" stop="{stop:%Y%m%d%H%M%S} +0000"><title>Slot {n}</title><desc>Details {n}</desc></programme>')
+pages = ('<tv>' + ''.join(page_rows) + '</tv>').encode()
 packed = gzip.compress(xml)
 bad = bytearray(packed); bad[-8] ^= 1
-routes = {'/plain': xml, '/slow': xml, '/split-gzip': packed[:3] + b'\x04' + packed[4:10] + (65530).to_bytes(2, 'little') + b'x' * 65530 + packed[10:], '/chunks': xml, '/gzip': packed, '/members': gzip.compress(xml[:len(xml)//2]) + gzip.compress(xml[len(xml)//2:]), '/http-gzip': packed, '/double-gzip': gzip.compress(packed), '/bad-crc': bytes(bad), '/truncated-gzip': packed[:-3], '/malformed': xml[:-5], '/dtd': b'<!DOCTYPE tv [<!ENTITY x "attack">]>' + xml[38:], '/attributes': b'<tv long="' + b'a' * 70000 + b'"/>', '/empty': b'<tv/>', '/ended': xml.replace(b'20261024', b'20261001'), '/secret': xml.replace(b'News &amp; weather', b'canary-secret'), '/false-positive': xml.replace(b'News &amp; weather', b'fixture News'), '/depth': b'<tv>' + b'<x>' * 33 + b'</x>' * 33 + b'</tv>', '/html': b'<html><body>login</body></html>'}
+routes = {'/pages': pages, '/plain': xml, '/slow': xml, '/split-gzip': packed[:3] + b'\x04' + packed[4:10] + (65530).to_bytes(2, 'little') + b'x' * 65530 + packed[10:], '/chunks': xml, '/gzip': packed, '/members': gzip.compress(xml[:len(xml)//2]) + gzip.compress(xml[len(xml)//2:]), '/http-gzip': packed, '/double-gzip': gzip.compress(packed), '/bad-crc': bytes(bad), '/truncated-gzip': packed[:-3], '/malformed': xml[:-5], '/dtd': b'<!DOCTYPE tv [<!ENTITY x "attack">]>' + xml[38:], '/attributes': b'<tv long="' + b'a' * 70000 + b'"/>', '/empty': b'<tv/>', '/ended': xml.replace(b'20261024', b'20261001'), '/secret': xml.replace(b'News &amp; weather', b'canary-secret'), '/false-positive': xml.replace(b'News &amp; weather', b'fixture News'), '/depth': b'<tv>' + b'<x>' * 33 + b'</x>' * 33 + b'</tv>', '/html': b'<html><body>login</body></html>'}
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def do_GET(self):

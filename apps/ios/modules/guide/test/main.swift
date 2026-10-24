@@ -38,6 +38,35 @@ import Foundation
     try require(rows[0]["stop"] as? Double == now + 3600000, "overlap")
     try require(rows[1]["stop"] as? Double == now + 7200000, "missing-stop")
     owner.finish("q1")
+    try require(guideTime("20261024120000") == now, "UTC-default")
+    try require(guideTime("20260230010000 +0000") == nil, "invalid-calendar")
+    try require(guideTime("20261025023000 +0100")! - guideTime("20261025023000 +0200")! == 3600000, "DST-offset")
+    owner.begin(lease, "gap")
+    let gap = try value(owner.query(lease, db, "gap", ["gap", "trusted"], now, "listing", 0, 0, -1))
+    let gapRows = gap["rows"] as! [[String: Any]]
+    try require(gap["guideId"] as? String == "gap" && gapRows.count == 1 && gapRows[0]["start"] as? Double == now + 3600000, "gap-no-fill")
+    owner.finish("gap")
+    let pageActivation = try owner.attach("pages-provider", 1)
+    let pageLease = pageActivation["lease"] as! String
+    owner.begin(pageLease, "pages")
+    let pageCandidate = try value(owner.prepare(pageLease, "pages", base + "/pages", [:], ["fixture", "canary-secret"], now, now - 86400000, now + 7 * 86400000))["id"] as! String
+    let pageGeneration = try value(owner.publish(pageLease, "pages", pageCandidate))["id"] as! String
+    owner.finish("pages")
+    owner.begin(pageLease, "day1")
+    let firstPage = try value(owner.query(pageLease, pageGeneration, "day1", ["pages"], now, "day", now - 12 * 3600000, now + 12 * 3600000, -1))
+    let firstRows = firstPage["rows"] as! [[String: Any]]
+    try require(firstRows.count == 128 && firstPage["more"] as? Bool == true && firstRows[0]["description"] is NSNull, "bounded-day")
+    owner.finish("day1")
+    let lastStart = firstRows.last!["start"] as! Double
+    owner.begin(pageLease, "day2")
+    let secondPage = try value(owner.query(pageLease, pageGeneration, "day2", ["pages"], now, "day", now - 12 * 3600000, now + 12 * 3600000, lastStart))
+    try require((secondPage["rows"] as! [[String: Any]]).count == 2 && secondPage["more"] as? Bool == false, "day-continuation")
+    owner.finish("day2")
+    owner.begin(pageLease, "detail")
+    let detail = try value(owner.query(pageLease, pageGeneration, "detail", ["pages"], now, "detail", 0, 0, lastStart))
+    try require((detail["rows"] as! [[String: Any]])[0]["description"] as? String == "Details 127", "bounded-detail")
+    owner.finish("detail")
+
     for route in ["/gzip", "/members", "/http-gzip", "/double-gzip", "/chunks", "/split-gzip"] {
       let job = "fixture-" + UUID().uuidString
       let value = try value(prepare(route, job))

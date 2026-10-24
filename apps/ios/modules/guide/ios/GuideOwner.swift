@@ -89,7 +89,8 @@ final class GuideOwner {
   func attach(_ id: String, _ revision: Int) throws -> [String: Any] {
     lock.lock(); defer { lock.unlock() }
     let dir = try directory(id)
-    if blocked.contains(id) || FileManager.default.fileExists(atPath: try revocation(id).path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
+    let marker = try revocation(id)
+    if blocked.contains(id) || FileManager.default.fileExists(atPath: marker.path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
     if let current = sources[id], current.revision == revision { return current.payload }
     if let current = sources[id] { for job in jobs.values where job.lease == current.lease { job.cancel() } }
     let activation = GuideActivation(lease: UUID().uuidString, revision: revision, generation: sources[id]?.generation ?? readGeneration(id))
