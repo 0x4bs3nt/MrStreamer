@@ -49,6 +49,8 @@ Run `pnpm vitest run apps/marketing/test/indexnow.test.ts` and `pnpm actionlint`
 
 ## Gotchas
 
+The Linux row on `/download` links to `/docs/updates#installed-through-the-aur`. Verify the guide's helper and manual install/update commands, package-managed update explanation and retained-data uninstall guidance at wide and 390px widths, including navigation with scripts disabled. This documentation link does not change the package registry's publication state.
+
 Build-time release history can fall back to truthful GitHub links when unavailable. The isolated baseline browser blocks external requests, so it proves the built fallback/links, not successful live refresh, production analytics or installer downloads. Record what was observed rather than calling all network behavior verified. A 390px desktop-browser viewport is responsive evidence, not a physical-phone or Safari check. Native OS download choices on `/download` require the matching user agent. Prefer the current page registry to guessing route aliases.
 
 For the 0.0.18 layout, inspect full-page captures at 1280px and 390px to confirm all five app screens appear once and the fan/legend remains legible. Home has four current section-view values: movies-and-series, sound-and-subtitles, what-you-need and downloads; live-tv/tv-guide remain historical only. Run the real analytics scenario after homepage or download changes and retain its exact reached-section set.
