@@ -319,8 +319,12 @@ function Tiles({
               <ChannelLogo channel={channel} style={styles.tileLogo} large />
               <Text style={styles.tileName} numberOfLines={1}>
                 {channel.title}
-                {provider ? ` · ${provider}` : ""}
               </Text>
+              {provider ? (
+                <Text style={styles.tileLine} numberOfLines={2}>
+                  {provider}
+                </Text>
+              ) : null}
               {programmes ? (
                 <ProgrammeLines listing={programmes.get(channel.key)} fallback={line} at={now} />
               ) : line ? (

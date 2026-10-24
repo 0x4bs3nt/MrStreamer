@@ -537,7 +537,8 @@ refocus and Programme/Back. Pending work aborts and subscriptions stop when the 
 Schedule refreshes replace the represented page span atomically; Show more never appends with a
 prior generation's cursor. Failed/refused replacements retain known rows, mark stale generation
 presentation, and keep outdated cursors disabled until a valid replacement. Ambiguous channels
-retain their provider's visible/spoken label beside populated programmes and on Schedule actions. There is no UI polling clock, guide cache, provider request or XML parser. The owner's
+retain their provider's visible/spoken label beside populated programmes and on Schedule actions.
+There is no UI polling clock, guide cache, provider request or XML parser. The owner's
 foreground minute notifications update progress and Today after midnight. Stale last-good data
 stays marked; cold, missing, discarded and failed reads finish with honest empty/unavailable
 copy. Provider settings is the recovery entry. There is no pull-to-refresh or promised queued

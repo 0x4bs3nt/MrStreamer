@@ -404,7 +404,9 @@ function ChannelList({
                 </Text>
               ))}
               {messages.includes("Guide unavailable") ? (
-                <TextButton label="Provider settings" onPress={openSettings} />
+                <View style={styles.settingsInset}>
+                  <TextButton label="Provider settings" onPress={openSettings} />
+                </View>
               ) : null}
             </>
           ) : null}
@@ -416,10 +418,11 @@ function ChannelList({
         const programme = programmePresentation(read.value?.get(item.key), read.now);
         const showsProgramme = programme.line !== null || programme.next !== null;
         // Without programme data, the existing category/place line already names the provider.
-        const fallback =
-          showsProgramme && provider && place.endsWith(` · ${provider}`)
+        const category =
+          provider && place.endsWith(` · ${provider}`)
             ? place.slice(0, -provider.length - 3)
             : place;
+        const fallback = showsProgramme ? category : place;
         return (
           <ChannelRow
             channel={item}
@@ -430,11 +433,13 @@ function ChannelList({
             onPress={onPress}
             favourite={favourites.has(item.key)}
             onFavourite={starChannel}
-            programmeHint={[programme.line ?? fallback, programme.next].filter(Boolean).join(", ")}
+            programmeHint={[programme.line ?? category, programme.next].filter(Boolean).join(", ")}
             programme={
               <>
                 {showsProgramme && provider ? (
-                  <Text style={styles.provider}>{provider}</Text>
+                  <Text style={styles.provider} numberOfLines={1}>
+                    {provider}
+                  </Text>
                 ) : null}
                 <ProgrammeLines
                   listing={read.value?.get(item.key)}
@@ -772,6 +777,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000000" },
   pressed: { opacity: 0.6 },
   provider: { color: colors.text, fontSize: 13, marginTop: 2 },
+  settingsInset: { marginHorizontal: 16 },
   note: { color: colors.text, fontSize: 15, marginHorizontal: 16, marginVertical: 12 },
   find: {
     flexDirection: "row",

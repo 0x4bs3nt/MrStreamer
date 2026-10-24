@@ -807,71 +807,79 @@ describe("selected A public guide UI with the real guide owner", () => {
     expect(currentSource("a")?.revision).toBe(2);
   });
 
-  it("keeps visible and spoken provider identity with the same populated guide on two providers", async () => {
-    const a = part("a"),
-      b = part("b");
-    fixture().control.activations.set("b", {
-      lease: "lease-b",
-      generation: { id: "db-b", fetchedAt: Date.now(), until: Date.now() + 86400_000 },
-    });
-    await owner().restore(["a", "b"]);
-    owner().setPart(a);
-    owner().setPart(b);
-    state.catalogue = {
-      kind: "ready",
-      failing: [],
-      library: combine([
-        { label: "Home provider", part: a },
-        { label: "Cabin provider", part: b },
-      ]),
-    };
-    await draw(React.createElement(LiveHome));
-    await settle();
-    await click("Guide");
-    state.did = [];
-    for (const [id, label] of [
-      ["a", "Home provider"],
-      ["b", "Cabin provider"],
-    ]) {
-      const row = container.querySelector(`[data-testid="channel-${id}:1"]`)!;
-      expect(row.textContent).toContain(current.title);
-      expect(row.textContent).toContain(label);
-      expect(row.getAttribute("aria-label")).toContain(label);
-      expect(row.getAttribute("aria-label")).toContain(current.title);
-      expect(
-        container.querySelector(`[data-testid="schedule-${id}:1"]`)?.getAttribute("aria-label"),
-      ).toContain(label);
-      await click(`channel-${id}:1`);
-      await click(`schedule-${id}:1`);
-      expect(state.did).toContainEqual({ play: `${id}:1`, watch: true });
-      expect(state.did).toContainEqual({
-        pathname: "/live/schedule",
-        params: { channel: `${id}:1` },
+  it.each([true, false])(
+    "keeps separate provider lines on two providers, populated guide: %s",
+    async (populated) => {
+      const a = part("a"),
+        b = part("b");
+      state.answer = async () => answer(populated ? [current, next] : []);
+      fixture().control.activations.set("b", {
+        lease: "lease-b",
+        generation: { id: "db-b", fetchedAt: Date.now(), until: Date.now() + 86400_000 },
       });
-    }
-    await draw(React.createElement(Home));
-    await settle();
-    state.did = [];
-    for (const [id, label] of [
-      ["a", "Home provider"],
-      ["b", "Cabin provider"],
-    ]) {
-      const tile = container.querySelector(`[data-testid="home-channel-${id}:1"]`)!;
-      expect(tile.textContent).toContain(current.title);
-      expect(tile.textContent).toContain(label);
-      expect(tile.getAttribute("aria-label")).toContain(label);
-      expect(tile.getAttribute("aria-label")).toContain(current.title);
-      expect(
-        container
-          .querySelector(`[data-testid="home-schedule-${id}:1"]`)
-          ?.getAttribute("aria-label"),
-      ).toContain(label);
-      await click(`home-channel-${id}:1`);
-      await click(`home-schedule-${id}:1`);
-      expect(state.did).toContainEqual({ play: `${id}:1`, watch: false });
-      expect(state.did).toContainEqual({ pathname: "/schedule", params: { channel: `${id}:1` } });
-    }
-  });
+      await owner().restore(["a", "b"]);
+      owner().setPart(a);
+      owner().setPart(b);
+      state.catalogue = {
+        kind: "ready",
+        failing: [],
+        library: combine([
+          { label: "line.alpha-tv.example", part: a },
+          { label: "line.beta-tv.example", part: b },
+        ]),
+      };
+      await draw(React.createElement(LiveHome));
+      await settle();
+      await click("Guide");
+      state.did = [];
+      for (const [id, label] of [
+        ["a", "line.alpha-tv.example"],
+        ["b", "line.beta-tv.example"],
+      ] as const) {
+        const row = container.querySelector(`[data-testid="channel-${id}:1"]`)!;
+        if (populated) expect(row.textContent).toContain(current.title);
+        expect(row.textContent).toContain(label);
+        expect(row.getAttribute("aria-label")).toContain(label);
+        expect(row.getAttribute("aria-label")!.split(label)).toHaveLength(2);
+        if (populated) expect(row.getAttribute("aria-label")).toContain(current.title);
+        expect(
+          container.querySelector(`[data-testid="schedule-${id}:1"]`)?.getAttribute("aria-label"),
+        ).toContain(label);
+        await click(`channel-${id}:1`);
+        await click(`schedule-${id}:1`);
+        expect(state.did).toContainEqual({ play: `${id}:1`, watch: true });
+        expect(state.did).toContainEqual({
+          pathname: "/live/schedule",
+          params: { channel: `${id}:1` },
+        });
+      }
+      await draw(React.createElement(Home));
+      await settle();
+      state.did = [];
+      for (const [id, label] of [
+        ["a", "line.alpha-tv.example"],
+        ["b", "line.beta-tv.example"],
+      ] as const) {
+        const tile = container.querySelector(`[data-testid="home-channel-${id}:1"]`)!;
+        if (populated) expect(tile.textContent).toContain(current.title);
+        expect(tile.textContent).toContain(label);
+        expect([...tile.querySelectorAll("div")].some((line) => line.textContent === label)).toBe(
+          true,
+        );
+        expect(tile.getAttribute("aria-label")).toContain(label);
+        if (populated) expect(tile.getAttribute("aria-label")).toContain(current.title);
+        expect(
+          container
+            .querySelector(`[data-testid="home-schedule-${id}:1"]`)
+            ?.getAttribute("aria-label"),
+        ).toContain(label);
+        await click(`home-channel-${id}:1`);
+        await click(`home-schedule-${id}:1`);
+        expect(state.did).toContainEqual({ play: `${id}:1`, watch: false });
+        expect(state.did).toContainEqual({ pathname: "/schedule", params: { channel: `${id}:1` } });
+      }
+    },
+  );
 
   it("keeps inspected programme text mounted across a held minute read and settles retired details", async () => {
     state.params = { channel: "a:1" };
