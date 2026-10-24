@@ -2,7 +2,7 @@ import { QUALITIES, type Quality } from "@mrstreamer/contracts/library";
 import { DEFAULT_LIVE_QUALITY } from "@mrstreamer/contracts/preferences";
 import { TITLE_LANGUAGES, type TitleLanguage } from "@mrstreamer/core/ondemand/languages";
 import { File, Paths } from "expo-file-system";
-import { readJson, writeJson } from "./files.ts";
+import { writeJson } from "./files.ts";
 import { store, useStore, type Store } from "./store.ts";
 
 type Audio =
@@ -29,9 +29,10 @@ interface MediaPreferences {
 }
 
 const FILE = "media-preferences.json";
+const BACKUP = "media-preferences.accepted.json";
 let contents: Record<string, unknown> = { version: 1 };
 let writable = true;
-let checkpoint = false;
+let checkpointed = false;
 let cached: Store<MediaPreferences> | undefined;
 
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -67,29 +68,25 @@ function accepted(value: MediaPreferences): MediaPreferences {
 /** Read synchronously on first use, before the title owner starts any indexing. */
 function saved(): Store<MediaPreferences> {
   if (cached) return cached;
-  try {
-    const raw = readJson(FILE);
-    checkpoint = raw === null;
-    if (record(raw)) contents = raw;
-    // readJson can recover a complete interrupted write. Establish it as the last complete
-    // file before a later write reuses .next, so a refusal cannot lose that accepted value.
-    if (raw !== null) {
-      const complete = new File(Paths.document, FILE);
-      const pending = new File(Paths.document, `${FILE}.next`);
-      if (pending.exists) {
-        let readable = false;
-        try {
-          JSON.parse(complete.textSync());
-          readable = true;
-        } catch {
-          // The accepted read came from .next instead.
-        }
-        if (!readable) pending.moveSync(complete, { overwrite: true });
+  // The primary wins. Accepted backup contents precede a pending proposal, which a
+  // refused native delete-then-move replacement may leave as the only primary candidate.
+  for (const name of [FILE, BACKUP, `${BACKUP}.next`, `${FILE}.next`]) {
+    try {
+      const file = new File(Paths.document, name);
+      if (!file.exists) continue;
+      const raw: unknown = JSON.parse(file.textSync());
+      if (!record(raw)) {
+        writable = false;
+        continue;
       }
+      contents = raw;
+      checkpointed = name === BACKUP || name === `${BACKUP}.next`;
+      break;
+    } catch {
+      // Existence and readability differ. Preserve an unreadable candidate even if the
+      // disk becomes readable later; a lower candidate may still supply display values.
+      writable = false;
     }
-  } catch {
-    // An inaccessible file must not be replaced with defaults.
-    writable = false;
   }
   writable &&= contents["version"] === undefined || contents["version"] === 1;
   cached = store(
@@ -123,17 +120,21 @@ export function updateMediaPreferences<K extends keyof MediaPreferences>(
   if (JSON.stringify(current[field]) === JSON.stringify(value)) return true;
   if (!writable) return false;
   const next = { ...contents, version: 1, [field]: value };
-  try {
-    // Give a first edit a complete prior file too. If the proposal's move and cleanup both
-    // fail, readJson must recover the accepted defaults rather than the refused proposal.
-    if (checkpoint) {
-      writeJson(FILE, contents);
-      checkpoint = false;
+  if (!checkpointed) {
+    try {
+      // Expo overwrites by deleting then moving. A checkpoint refusal must leave the
+      // current primary untouched; only this owner writes accepted contents to BACKUP.
+      writeJson(BACKUP, contents);
+      checkpointed = true;
+    } catch {
+      return false;
     }
+  }
+  try {
     writeJson(FILE, next);
   } catch {
-    // A refused first move must not become an accepted choice on restart via readJson's
-    // interrupted-write recovery. Existing complete bytes remain authoritative.
+    // BACKUP still holds the accepted contents, ahead of this refused proposal at the
+    // next launch, even when native replacement deleted the primary and cleanup fails.
     try {
       const pending = new File(Paths.document, `${FILE}.next`);
       if (pending.exists) pending.delete();
@@ -143,6 +144,7 @@ export function updateMediaPreferences<K extends keyof MediaPreferences>(
     return false;
   }
   contents = next;
+  checkpointed = false;
   source.set(accepted({ ...current, [field]: value }));
   return true;
 }

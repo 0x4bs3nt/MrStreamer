@@ -19,6 +19,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   native.sync = null;
+  native.undeletable = null;
   vi.restoreAllMocks();
 });
 
@@ -180,10 +181,9 @@ it("a refused first move cannot reappear as accepted after restart", async () =>
 it.each([false, true])(
   "retains recovered interrupted bytes on the next refused save, corrupt complete=%s",
   async (corrupt) => {
-    const app = await restart();
-    app.updateMediaPreferences("titleLanguage", "nl");
-    const accepted = bytes();
-    rmSync(path);
+    // A legacy interrupted save has no accepted-backup file yet. A new-owner backup would
+    // intentionally take precedence over a pending proposal after losing the primary.
+    const accepted = JSON.stringify({ version: 1, titleLanguage: "nl" });
     if (corrupt) writeFileSync(path, "{broken");
     writeFileSync(`${path}.next`, accepted);
     const recovered = await restart();
@@ -220,4 +220,113 @@ it("saves follow-title as its own policy while later title-language choices rema
   expect(app.getMediaPreferences().titleLanguage).toBe("fr");
   app.updateMediaPreferences("titleLanguage", null);
   expect(app.getMediaPreferences().audio).toEqual({ kind: "follow-title" });
+});
+
+describe("R77 accepted-value recovery", () => {
+  const prior = {
+    version: 1,
+    titleLanguage: "nl",
+    audio: { kind: "language", language: "de", futureLayout: "surround" },
+    subtitles: { kind: "off" },
+    liveQuality: "hd",
+    future: { nested: ["keep", 7] },
+  };
+
+  it.each([false, true])(
+    "recovers Dutch and future leaves after destination deletion, cleanup refused=%s",
+    async (cleanupRefused) => {
+      writeFileSync(path, JSON.stringify(prior));
+      const app = await restart();
+      const before = app.getMediaPreferences();
+      const heard = vi.fn();
+      app.onMediaPreferences(heard);
+      native.sync = (step, file) => {
+        if (step === "move-after-delete" && file === `${path}.next`)
+          throw new Error("move refused after destination deletion");
+      };
+      native.undeletable = (file) => cleanupRefused && file === `${path}.next`;
+      expect(app.updateMediaPreferences("titleLanguage", "fr")).toBe(false);
+      expect(app.getMediaPreferences()).toBe(before);
+      expect(heard).not.toHaveBeenCalled();
+      native.sync = null;
+      native.undeletable = null;
+      const cold = await restart();
+      expect(cold.getMediaPreferences()).toEqual(before);
+      // Public unrelated save proves that recovery kept the complete raw accepted contents.
+      expect(cold.updateMediaPreferences("liveQuality", "sd")).toBe(true);
+      expect(JSON.parse(bytes())).toEqual({ ...prior, liveQuality: "sd" });
+    },
+  );
+
+  it.each(["write", "move-after-delete"] as const)(
+    "a checkpoint %s failure cannot touch the accepted primary",
+    async (fault) => {
+      writeFileSync(path, JSON.stringify(prior));
+      const app = await restart();
+      expect(app.updateMediaPreferences("titleLanguage", "fr")).toBe(true);
+      const before = app.getMediaPreferences();
+      const text = bytes();
+      native.sync = (step) => {
+        if (step === fault) throw new Error("checkpoint refused");
+      };
+      expect(app.updateMediaPreferences("titleLanguage", "it")).toBe(false);
+      expect(app.getMediaPreferences()).toBe(before);
+      expect(bytes()).toBe(text);
+      native.sync = null;
+      expect((await restart()).getMediaPreferences()).toEqual(before);
+    },
+  );
+
+  it("reuses a recovered accepted checkpoint after another refused proposal", async () => {
+    writeFileSync(path, JSON.stringify(prior));
+    const app = await restart();
+    app.getMediaPreferences();
+    native.sync = (step, file) => {
+      if (step === "move-after-delete" && file === `${path}.next`)
+        throw new Error("first proposal refused");
+    };
+    native.undeletable = (file) => file === `${path}.next`;
+    expect(app.updateMediaPreferences("titleLanguage", "fr")).toBe(false);
+    native.sync = null;
+    const cold = await restart();
+    expect(cold.getMediaPreferences().titleLanguage).toBe("nl");
+    native.sync = (step, file) => {
+      if (step === "move" && file === `${path}.next`) throw new Error("second proposal refused");
+    };
+    expect(cold.updateMediaPreferences("titleLanguage", "it")).toBe(false);
+    native.sync = null;
+    const again = await restart();
+    expect(again.getMediaPreferences().titleLanguage).toBe("nl");
+    expect(again.updateMediaPreferences("liveQuality", "uhd")).toBe(true);
+    expect(JSON.parse(bytes())).toEqual({ ...prior, liveQuality: "uhd" });
+  });
+
+  it("a readable accepted primary stays authoritative over an older checkpoint and refused pending bytes", async () => {
+    const app = await restart();
+    app.updateMediaPreferences("titleLanguage", "nl");
+    app.updateMediaPreferences("titleLanguage", "fr");
+    writeFileSync(`${path}.next`, JSON.stringify({ version: 1, titleLanguage: "it" }));
+    expect((await restart()).getMediaPreferences().titleLanguage).toBe("fr");
+  });
+
+  it.each(["primary", "pending"] as const)(
+    "refuses edits after an existing %s text read failed, even when readable later",
+    async (candidate) => {
+      const destination = candidate === "primary" ? path : `${path}.next`;
+      const text = JSON.stringify({ ...prior, version: 88 });
+      writeFileSync(destination, text);
+      native.sync = (step, file) => {
+        if (step === "text" && file === destination) throw new Error("protected file unreadable");
+      };
+      const app = await restart();
+      app.getMediaPreferences();
+      const heard = vi.fn();
+      app.onMediaPreferences(heard);
+      native.sync = null;
+      expect(app.updateMediaPreferences("titleLanguage", "fr")).toBe(false);
+      expect(readFileSync(destination, "utf8")).toBe(text);
+      expect(heard).not.toHaveBeenCalled();
+      expect((await restart()).getMediaPreferences().titleLanguage).toBe("nl");
+    },
+  );
 });

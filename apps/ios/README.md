@@ -157,7 +157,10 @@ Each responsibility has one owner, a plain module with a store the screens read:
   `assets/splash.png`, the approved artwork, kept as it is (nothing generates it), with "Opening
   your library" beneath after a second. Nothing on it moves.
 - `src/media-preferences.ts`: separate saved title language, audio and subtitle policies, and
-  global Live quality in Documents/media-preferences.json. Settings > Media uses system sheets;
+  global Live quality in Documents/media-preferences.json. The same owner keeps the previous
+  accepted raw contents in media-preferences.accepted.json before replacing the primary, so a
+  refused native delete-then-move recovers that choice ahead of a pending proposal. Existing
+  unreadable preference files make the owner read-only. Settings > Media uses system sheets;
   accepted choices are written before rows update, and failed writes keep the previous choice.
   Titles keep the device language until changed, then rebuild the index and collections in tasks
   and read TMDB names/details/episodes in that language. Saved manual version picks still win.

@@ -48,6 +48,9 @@ const memory = vi.hoisted(() => ({
   translated: [] as Array<{ path: string; language: string }>,
   holdTranslated: false,
   heldTranslated: [] as Array<() => void>,
+  /** Hold about responses individually across source replacement and language A-B-A. */
+  holdAboutResponses: false,
+  heldAboutResponses: [] as Array<() => void>,
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -94,6 +97,9 @@ vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
       (url.searchParams.get("append_to_response") === "credits" ||
         url.pathname.includes("/season/"));
     const response = await passThrough(input, init);
+    if (memory.holdAboutResponses && url.searchParams.get("append_to_response") === "credits") {
+      await new Promise<void>((go) => memory.heldAboutResponses.push(go));
+    }
     if (!hold) return response;
     const body = (await response.json()) as Record<string, unknown>;
     await new Promise<void>((go) => memory.heldTranslated.push(go));
@@ -287,6 +293,7 @@ beforeEach(() => {
   memory.aliases = [];
   memory.translated.length = 0;
   memory.holdTranslated = false;
+  memory.holdAboutResponses = false;
   native.sync = null;
   memory.keychain.clear();
   memory.holdSecrets = false;
@@ -311,10 +318,13 @@ afterEach(() => {
   for (const go of [
     ...memory.heldDetails.splice(0),
     ...memory.heldTranslated.splice(0),
+    ...memory.heldAboutResponses.splice(0),
     ...memory.heldSecrets.splice(0),
     ...memory.heldLists.splice(0),
   ])
     go();
+  memory.holdAboutResponses = false;
+  native.gate = null;
   tmdb.holdAbout(false);
   tmdb.failSeasons(null);
   vi.useRealTimers();
@@ -452,6 +462,85 @@ describe("saved title language", () => {
     expect(callbacks.join(" ")).not.toContain("OBSOLETE");
     await settle();
     expect(records().map(textOf).join(" ")).not.toContain("OBSOLETE");
+  });
+});
+
+describe("R77 source and language authority", () => {
+  it("a language change during a cold provider-record read does not request the provider again", async () => {
+    const initial = await launch({ withTmdb: true });
+    initial.updateMediaPreferences("titleLanguage", "en");
+    await added(initial);
+    const series = await first(initial, "series");
+    await opened(initial, series);
+    const app = await launch({ withTmdb: true });
+    const title = await first(app, "series");
+    const from = memory.requests.length;
+    let release = () => {};
+    let held = false;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    native.gate = (operation, file) => {
+      if (operation === "text" && file.endsWith(`/series.${title.id}.json`)) {
+        held = true;
+        return gate;
+      }
+      return undefined;
+    };
+    const old = app.detailsOf(title);
+    await until(() => held, "the source-owned saved record");
+    app.updateMediaPreferences("titleLanguage", "nl");
+    native.gate = null;
+    release();
+    const current = await app.detailsOf(title);
+    expect(await old).toEqual(current);
+    expect(detailsAskedSince(from)).toBe(0);
+  });
+
+  it("persists a current caller after password replacement and language A-B-A compose with an old read", async () => {
+    const NEW = "canaryNew9";
+    memory.aliases = [[NEW, ONE.password]];
+    memory.details = (body) => episodePlots(body, "Old source episode.");
+    const app = await launch({ withTmdb: true });
+    app.updateMediaPreferences("titleLanguage", "nl");
+    const id = await added(app);
+    const series = await first(app, "series");
+    memory.holdAboutResponses = true;
+    const callbacks: (string | null | undefined)[] = [];
+    const obsolete = app.detailsOf(series, (details) => callbacks.push(firstEpisodePlot(details)));
+    await until(() => memory.heldAboutResponses.length === 1, "old language's about response");
+    app.updateMediaPreferences("titleLanguage", "fr");
+    app.updateMediaPreferences("titleLanguage", "nl");
+    memory.details = (body) => episodePlots(body, "Current source episode.");
+    await app.update(id, { password: NEW });
+    await until(() => app.members()[0]?.titles.kind === "ready", "replacement source lists");
+    callbacks.length = 0;
+    const oldResponse = memory.heldAboutResponses.shift();
+    if (!oldResponse) throw new Error("No held old response");
+    oldResponse();
+    await until(() => memory.heldAboutResponses.length === 1, "retried current-language response");
+    const fresh = app.detailsOf(series, (details) => callbacks.push(firstEpisodePlot(details)));
+    await until(
+      () => callbacks.includes("Current source episode."),
+      "fresh current-source callback",
+    );
+    memory.holdAboutResponses = false;
+    for (const release of memory.heldAboutResponses.splice(0)) release();
+    const current = await fresh;
+    expect(firstEpisodePlot(current)).toBe("Current source episode.");
+    expect(firstEpisodePlot(await obsolete)).toBe("Current source episode.");
+    expect(callbacks.every((plot) => plot === "Current source episode.")).toBe(true);
+    const cache = await import("../src/details-cache.ts");
+    if (!series.tmdbId) throw new Error("No fixture TMDB id");
+    await expect
+      .poll(async () => (await cache.readAbout("series", series.tmdbId!, "nl"))?.value?.overview)
+      .toBe(current.plot);
+    const abouts = tmdb.aboutRequests();
+    const cold = await launch({ withTmdb: true });
+    const reopened = await cold.detailsOf(await first(cold, "series"));
+    expect(firstEpisodePlot(reopened)).toBe("Current source episode.");
+    expect(reopened.plot).toBe(current.plot);
+    expect(tmdb.aboutRequests()).toBe(abouts);
   });
 });
 

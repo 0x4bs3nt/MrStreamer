@@ -45,8 +45,8 @@ interface Native {
    * settles stands for the app stopping there. Null: each goes ahead at once.
    */
   gate: ((operation: FileOperation, path: string) => Promise<void> | undefined) | null;
-  /** The synchronous atomic JSON boundary: observes or refuses a write/move before it runs. */
-  sync: ((operation: "write" | "move", path: string) => void) | null;
+  /** Synchronous I/O faults; move-after-delete runs after an existing destination is removed. */
+  sync: ((operation: "text" | "write" | "move" | "move-after-delete", path: string) => void) | null;
   /** Answers true for a file whose deletion the disk refuses. Null: every deletion goes ahead. */
   undeletable: ((path: string) => boolean) | null;
   /**
@@ -115,6 +115,7 @@ export class File {
     if (!this.exists) writeFileSync(this.path, "");
   }
   textSync() {
+    native.sync?.("text", this.path);
     return readFileSync(this.path, "utf8");
   }
   async text() {
@@ -129,9 +130,16 @@ export class File {
     await through("write", this.path);
     writeFileSync(this.path, text);
   }
-  moveSync(to: File) {
+  /** Matches pinned Expo: refuse an existing destination unless overwrite, then delete before move. */
+  moveSync(to: File, options?: { readonly overwrite?: boolean }) {
     native.sync?.("move", this.path);
+    if (to.exists) {
+      if (!options?.overwrite) throw new Error(`A file is already at ${to.path}`);
+      to.delete();
+      native.sync?.("move-after-delete", this.path);
+    }
     renameSync(this.path, to.path);
+    this.path = to.path;
   }
   /** As on iOS: with `overwrite`, the file there is deleted, then this one moved in its place. */
   async move(to: File, options?: { readonly overwrite?: boolean }) {

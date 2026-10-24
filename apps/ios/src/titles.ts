@@ -204,6 +204,8 @@ interface ReadingLanguage {
 }
 const readingLanguage = (): ReadingLanguage => ({ language, epoch: languageEpoch });
 const currentLanguage = (reading: ReadingLanguage) => reading.epoch === languageEpoch;
+/** Internal handback to detailsOf's latest-language loop, including underLogin retries. */
+const retiredLanguage = Symbol("retired title language");
 const region = locale.region ?? "US";
 
 const TMDB_KEY = process.env.EXPO_PUBLIC_TMDB_KEY ?? "";
@@ -753,8 +755,13 @@ async function detailsUnder(
   show: ((details: TitleDetails) => void) | undefined,
   reading: ReadingLanguage,
 ): Promise<TitleDetails> {
+  if (!currentLanguage(reading)) throw retiredLanguage;
   const id = title.subscriptionId;
-  const stands = () => currentLanguage(reading) && savable(id, source);
+  const stands = () => savable(id, source);
+  const saved = await readTitle(id, title.kind, title.id, stands);
+  // Provider records belong to the source, not the presentation language. A retired
+  // attempt must return before it can launch work or rejoin the current metadata map.
+  if (!currentLanguage(reading) || !stands()) throw retiredLanguage;
   const about = aboutOf(title, reading);
   const shown = (raw: ProviderDetails, known: TitleAbout | null) =>
     title.kind === "movie"
@@ -762,9 +769,8 @@ async function detailsUnder(
       : seriesDetails(title, raw, known, reading.language);
   const early = async (raw: ProviderDetails) => {
     const known = about ? await about.now : null;
-    if (show && stands()) show(shown(raw, known));
+    if (show && stands() && currentLanguage(reading)) show(shown(raw, known));
   };
-  const saved = await readTitle(id, title.kind, title.id, stands);
   const fresh = saved && Date.now() - saved.at < PROVIDER_FRESH && saved.listedAt === listedAt(id);
   const refresh =
     used(asked, askedKey(title, source))?.read ?? (fresh ? null : askUnder(title, source));
@@ -878,7 +884,10 @@ function aboutOf(title: Title, reading: ReadingLanguage): Answer<TitleAbout> | n
     abouts,
     `${kind}|${tmdbId}|${language}`,
     () => readAbout(kind, tmdbId, language),
-    (signal) => client.about(tmdbKind(kind), tmdbId, language, signal),
+    (signal) => {
+      if (!currentLanguage(reading)) throw retiredLanguage;
+      return client.about(tmdbKind(kind), tmdbId, language, signal);
+    },
     (saved) =>
       currentLanguage(reading) ? writeAbout(kind, tmdbId, language, saved) : Promise.resolve(),
   );
@@ -914,7 +923,10 @@ export async function episodesOf(
       seasons,
       `${tmdbId}|${number}|${asked}`,
       () => readSeason(tmdbId, number, asked),
-      (signal) => client.season(tmdbId, number, asked, signal),
+      (signal) => {
+        if (!currentLanguage(reading)) throw retiredLanguage;
+        return client.season(tmdbId, number, asked, signal);
+      },
       (saved) =>
         currentLanguage(reading) ? writeSeason(tmdbId, number, asked, saved) : Promise.resolve(),
     ),
