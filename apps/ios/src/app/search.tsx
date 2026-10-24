@@ -26,6 +26,7 @@ import {
 } from "../account.ts";
 import { useReduceMotion } from "../glass.tsx";
 import { openOnTabs, useTabs } from "../header.tsx";
+import { DownloadStatusButton } from "../download-status.tsx";
 import { inTasks, searchChannelsSteps, type Channel, type Library } from "../library.ts";
 import {
   libraryStatus,
@@ -430,6 +431,16 @@ export default function Search() {
             testID="search-field"
           />
         </View>
+        <DownloadStatusButton
+          onlyActive
+          testID="search-downloads"
+          onPress={() => {
+            if (dismiss()) {
+              if (tabs) openOnTabs(tabs, "downloads");
+              else back();
+            }
+          }}
+        />
         <TextButton label="Cancel" onPress={close} />
       </View>
       <View style={styles.screen} onLayout={(event) => setArea(event.nativeEvent.layout.height)}>

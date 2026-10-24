@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { DownloadList } from "@mrstreamer/contracts/downloads";
 import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import type { LiveCatalogue, OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
 import { Window, type HTMLInputElement } from "happy-dom";
@@ -24,6 +25,7 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 
 const scenario = vi.hoisted(() => ({
   dismissed: 0,
+  downloads: { items: [], bytes: 0, free: null, ended: 0 } as DownloadList,
   opened: [] as Title[],
   presses: new Map<string, () => void>(),
   members: [] as Member[],
@@ -174,6 +176,7 @@ vi.mock("expo-router", () => ({
   }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
+vi.mock("../src/downloads.ts", () => ({ useDownloads: () => scenario.downloads }));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
@@ -438,6 +441,7 @@ beforeEach(async () => {
     said: [],
     fontScale: 1,
     dismissed: 0,
+    downloads: { items: [], bytes: 0, free: null, ended: 0 },
   });
   scenario.presses.clear();
   scenario.keyboard.clear();
@@ -451,6 +455,40 @@ afterEach(() => {
 });
 
 describe("Search over the tabs", () => {
+  it("opens the live queue on its original tab and keeps the query for the next search", async () => {
+    scenario.downloads = {
+      ...scenario.downloads,
+      items: [
+        {
+          id: "d-1",
+          name: "Paper Harbor",
+          title: { kind: "movie", id: "1" },
+          subscription: { id: "a", name: "Northwind" },
+          status: { kind: "queued" },
+          episodeName: null,
+          year: null,
+          duration: null,
+          originalLanguage: null,
+          posterUrl: null,
+          wideUrl: null,
+          size: null,
+          progress: null,
+        },
+      ],
+    };
+    await open();
+    await type("dune");
+    expect(container.querySelector('[data-testid="search-downloads"]')?.textContent).toBe("1");
+    await press("search-downloads");
+    expect(scenario.did.slice(-2)).toEqual(["dismiss 1", "push /live/downloads"]);
+    expect(scenario.dismissed).toBe(1);
+    unmount();
+    scenario.downloads = { ...scenario.downloads, items: [] };
+    await open();
+    expect(field().value).toBe("dune");
+    expect(container.querySelector('[data-testid="search-downloads"]')).toBeNull();
+  });
+
   it("closes before a title opens in Movies or Series, and before a channel plays in Watch", async () => {
     const prophecy = { ...titled("series", "p", "", 1)[0]!, name: "Dune Prophecy" };
     await subscriptions([member("a", "Northwind", {}, lists(duneOnly().movies, [prophecy]))]);

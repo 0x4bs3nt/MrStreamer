@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { DownloadList } from "@mrstreamer/contracts/downloads";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue } from "../src/account.ts";
@@ -34,6 +35,7 @@ interface NativeView {
 type Answer = { view: number; request: number; restored: boolean };
 
 const native = vi.hoisted(() => ({
+  downloads: { items: [], bytes: 0, free: null, ended: 0 } as DownloadList,
   made: 0,
   /** The VideoViews on screen, newest last. */
   views: [] as NativeView[],
@@ -64,6 +66,8 @@ const native = vi.hoisted(() => ({
   alerts: [] as string[][],
 }));
 
+vi.mock("../src/downloads.ts", () => ({ useDownloads: () => native.downloads }));
+vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("expo-video", async () => {
   const { Component } = await import("react");
   type Props = {
@@ -246,6 +250,7 @@ beforeEach(() => {
     root: onLive,
     pathname: "/live",
     alerts: [],
+    downloads: { items: [], bytes: 0, free: null, ended: 0 },
   });
 });
 afterEach(() => unmount());

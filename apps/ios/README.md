@@ -332,6 +332,12 @@ the phone, Connect also opens `offline`, the same Downloads outside the tabs, so
 no provider saved, after a relaunch too. Connect and `provider` share `src/provider-form.tsx`. Settings lists each provider as a row with how it
 stands; pressing one offers Retry, its reloads, Edit and Remove as a system sheet, and Remove asks
 whether to delete its history too.
+
+Downloads' header entry and Watch's existing button show the queue's actual percentage, received
+bytes when its size is unknown, provider wait, queue count or failure. Search offers the same
+entry while that status exists, closing Search onto Downloads on its original tab and keeping
+the query. All three read the existing downloads store (`src/download-status.tsx`); completed
+copies alone leave no extra status. There is no new timer, transfer or animated indicator.
 Watch (`src/watch.tsx`) is a layer over the navigation rather than a route, because the view that
 starts Picture in Picture has to stay while it plays. Its Downloads and Settings open on the tab
 under it, closing Search first if Watch came back over it (`openOnTabs` in `src/header.tsx`):

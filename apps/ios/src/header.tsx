@@ -8,11 +8,13 @@ import {
 import type { SFSymbol } from "expo-symbols";
 import { useEffect, useRef } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
+import { DownloadStatusButton } from "./download-status.tsx";
 import { colors } from "./ui.tsx";
 
 // The top bar every tab's screens share, layout A: the brand on the left, after the system's back
-// button on a pushed screen, and Search, Downloads and Settings on the right as the system's own
-// glass buttons. Downloads, Settings and what Settings opens (the provider form, Licences) open on
+// button on a pushed screen, and Search, Downloads and Settings on the right. Downloads shows the
+// queue's status; Search and Settings use the system's glass buttons. They and what Settings opens
+// (the provider form, Licences) open on
 // the tab they were asked from; leaving that tab closes them again, while Movies' and Series'
 // details stay. Search opens above the tabs (`app/search.tsx`) and closes back to the screen it
 // opened over.
@@ -121,14 +123,21 @@ const ACTIONS: readonly {
 
 /** The three buttons, less the one for the screen they show on. */
 function actions(tab: Tab, current: string): NativeStackHeaderItem[] {
-  return ACTIONS.filter(({ screen }) => screen !== current).map(({ screen, label, symbol }) => ({
-    type: "button",
-    label,
-    icon: { type: "sfSymbol", name: symbol },
-    // The same item on the next screen, so the glass group carries over as a screen is pushed.
-    identifier: screen,
-    onPress: () => (screen === "search" ? openSearch() : router.push(tabHref(tab, screen))),
-  }));
+  return ACTIONS.filter(({ screen }) => screen !== current).map(({ screen, label, symbol }) =>
+    screen === "downloads"
+      ? {
+          type: "custom",
+          element: <DownloadStatusButton onPress={() => router.push(tabHref(tab, screen))} />,
+        }
+      : {
+          type: "button",
+          label,
+          icon: { type: "sfSymbol", name: symbol },
+          // The same item on the next screen, so the glass group carries over as a screen is pushed.
+          identifier: screen,
+          onPress: () => (screen === "search" ? openSearch() : router.push(tabHref(tab, screen))),
+        },
+  );
 }
 
 /**

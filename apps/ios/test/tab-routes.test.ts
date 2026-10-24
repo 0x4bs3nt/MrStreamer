@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // checked against its installed reducers outside this suite, which CI runs without the iOS install.
 
 const asked = vi.hoisted(() => [] as string[]);
+vi.mock("../src/download-status.tsx", () => ({ DownloadStatusButton: () => null }));
 vi.mock("expo-router", () => ({
   router: {
     dismiss: (count: number) => asked.push(`dismiss ${count}`),

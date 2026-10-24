@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useCatalogue } from "./account.ts";
 import { starChannel, useFavouriteKeys } from "./favourites.ts";
 import { Glass, IconButton } from "./glass.tsx";
+import { DownloadStatusButton } from "./download-status.tsx";
 import { openOnTabs, useTabs, type TabScreen } from "./header.tsx";
 import {
   closeWatch,
@@ -261,12 +262,7 @@ function Controls({
             </>
           ) : null}
           {screens.includes("downloads") ? (
-            <IconButton
-              symbol="arrow.down.circle"
-              label="Downloads"
-              onPress={() => onScreen("downloads")}
-              testID="watch-downloads"
-            />
+            <DownloadStatusButton onPress={() => onScreen("downloads")} testID="watch-downloads" />
           ) : null}
           {screens.includes("settings") ? (
             <IconButton
