@@ -163,6 +163,19 @@ Each responsibility has one owner, a plain module with a store the screens read:
   (`expo-splash-screen`) and then the app's own copy of it at the same place, both drawing
   `assets/splash.png`, the approved artwork, kept as it is (nothing generates it), with "Opening
   your library" beneath after a second. Nothing on it moves.
+- `src/media-preferences.ts`: separate saved title language, audio and subtitle policies, and
+  global Live quality in Documents/media-preferences.json. The same owner keeps the previous
+  accepted raw contents in media-preferences.accepted.json before replacing the primary, so a
+  refused native delete-then-move recovers that choice ahead of a pending proposal. Existing
+  unreadable preference files make the owner read-only. Settings > Media uses system sheets;
+  accepted choices are written before rows update, and failed writes keep the previous choice.
+  Titles keep the device language until changed, then rebuild the index and collections in tasks
+  and read TMDB names/details/episodes in that language. Saved manual version picks still win.
+  Audio defaults to Follow title language, with original/preferred-language options. The later
+  consumer targets the effective title language and falls back to the native playable default
+  when unavailable. Subtitles default to forced-only, with Off/preferred-language options. These track policies and Full HD default Live
+  quality are saved for later player/variant integration. They do not yet select native tracks,
+  apply Live quality, remember per-item tracks or restart current playback.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
   facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
   as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one
