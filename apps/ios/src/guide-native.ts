@@ -103,9 +103,8 @@ export async function ingest(
   now: number,
   wanted: () => boolean,
 ): Promise<Result<Generation>> {
-  const yesterday = new Date(now);
-  yesterday.setHours(0, 0, 0, 0);
-  yesterday.setDate(yesterday.getDate() - 1);
+  const today = new Date(now);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
   let url = request.url;
   for (let followed = 0; ; followed++) {
     if (!wanted()) return { kind: "cancelled" };

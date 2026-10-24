@@ -361,8 +361,10 @@ describe("Live", () => {
     await settle();
     expect(text("live-favourites")).toBe("Favourites1");
     // The same stream id of the other provider is its own channel, and stays unstarred.
-    expect(find("channel-b:10")?.getAttribute("aria-label")).toBe("RTL Nieuws, favourite");
-    expect(find("channel-a:10")?.getAttribute("aria-label")).toBe("NOS Journaal");
+    expect(find("channel-b:10")?.getAttribute("aria-label")).toBe(
+      "RTL Nieuws, favourite, NL | News",
+    );
+    expect(find("channel-a:10")?.getAttribute("aria-label")).toBe("NOS Journaal, NL | News");
     press("star-b:10");
     await holds([]);
     expect(scenario.did).toEqual([]);

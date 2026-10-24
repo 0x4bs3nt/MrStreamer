@@ -44,7 +44,15 @@ A movie or an episode plays in Watch from where it stopped. Home leads with the 
 channels to preview (On now: recent ones, else the country last chosen in Live), Favourites (its
 heading always there, opening the list on Home's stack: `favourites`), Continue watching, the watchlist
 (its heading always there, opening all of it on Home's stack: `watchlist`)
-and Movies for you, which falls back to the provider's own list without TMDB. Home's On now and Stage and Live's channel rows use the same guide owner for actual now/next, local times and static programme progress, retaining category fallback in gaps. Live adds Guide alongside For you, Categories and All, with the country filter preserved. Channel taps still play in Watch; the separate Schedule action opens a pushed day without playing. Home tiles still preview. Schedule and programme routes stay on their originating Home or Live stack, retaining Back and browse context. Day controls use local calendar midnights, page at most 128 programme rows with Show more, and inspect one opaque programme detail. Only Watch live starts playback; there is no catch-up. Search finds
+and Movies for you, which falls back to the provider's own list without TMDB. Home's On now and
+Stage and Live's channel rows use the same guide owner for actual now/next, local times and static
+programme progress, retaining category fallback in gaps. Live adds Guide alongside For you,
+Categories and All, with the country filter preserved. Channel taps still play in Watch; the
+separate Schedule action opens a pushed day without playing. Home tiles still preview. Schedule
+and programme routes stay on their originating Home or Live stack, retaining Back and browse
+context. Day controls use each local date's first valid instant, including a skipped midnight,
+page at most 128 programme rows with Show more, and inspect one opaque programme detail. Only
+Watch live starts playback; there is no catch-up. Search finds
 movies, series and channels: 20 movies and 20 series at first, each kind with its own Show more
 for the next 20 until every match shows. A movie's details and each episode row have a download button whose
 symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
@@ -551,7 +559,8 @@ For native acceptance, open Home, preview a tile, open its Schedule and a progra
 open Live > Guide, choose/clear a country, star a channel, open Schedule, change local days and
 Show more, inspect details and press Watch live. Return through native Back to the same day and
 country. Repeat with cold/missing/stale/failed guide, account recovery, a held read during
-provider replacement/removal, foreground and local midnight on 23/25-hour DST days. Check large
+provider replacement/removal, foreground and local calendar boundaries on short, long and
+skipped-midnight DST days. Check large
 text, VoiceOver's separate Play/Schedule actions, rotation and scrolling during ingestion on the
 exact Expo/Hermes native candidate. These native checks remain UNRUN by this source unit.
 

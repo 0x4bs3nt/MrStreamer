@@ -287,6 +287,29 @@ describe("guide public owner", () => {
 });
 
 describe("native transport adapter", () => {
+  it("keeps yesterday's full calendar day when today's midnight is skipped", async () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Santiago";
+    try {
+      const when = new Date(2026, 8, 6, 12).getTime();
+      const { native } = guideFixture();
+      const prepare = vi.spyOn(native, "prepare");
+      await ingest(
+        native,
+        "lease",
+        "job",
+        { kind: "request", url: "https://fixture.test/guide", headers: {} },
+        [],
+        when,
+        () => true,
+      );
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(prepare.mock.calls[0]?.[6]).toBe(new Date(2026, 8, 5).getTime());
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
   it("validates each closed hop with original credentials and stops unsafe downgrade", async () => {
     const { native } = guideFixture();
     const urls: string[] = [];

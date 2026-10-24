@@ -44,6 +44,7 @@ vi.mock("react-native", async () => {
   };
 });
 vi.mock("expo-router", () => ({
+  useIsFocused: () => true,
   router: { push: (href: string) => scenario.did.push(`push ${href}`) },
 }));
 vi.mock("expo-video", () => ({ VideoView: () => null }));
