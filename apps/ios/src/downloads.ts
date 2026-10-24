@@ -19,7 +19,16 @@ import {
 } from "./download-task.ts";
 import { appError, describeError, statusFailure } from "./errors.ts";
 import { readJson, writeJson } from "./files.ts";
-import { onReclaim, play, playbackState, playingItem, stop, type Playing } from "./playback.ts";
+import {
+  onReclaim,
+  play,
+  playbackState,
+  playingItem,
+  progressSettled,
+  request,
+  stop,
+  type Playing,
+} from "./playback.ts";
 import { fetchPicture } from "./picture-transfer.ts";
 import { keychainSecrets } from "./secrets.ts";
 import { currentSource, sourceOf } from "./sources.ts";
@@ -1209,12 +1218,21 @@ export async function retryDownload(id: string): Promise<void> {
 
 /**
  * Plays a copy in Watch from where it was left, from the phone: no provider, login or network.
+ * Where it was left is read once every save of progress asked before ended, so a position Close
+ * or Stop just saved counts; anything the viewer asks meanwhile, or the copy going, cancels it.
  * Its progress stays with the copy, and goes to its subscription's viewing record too while that
  * subscription is saved (`keepProgress`). A copy whose file is gone fails in Watch as unavailable.
  */
 export function playDownload(id: string): void {
-  const record = find(id);
-  if (record?.state !== "complete") return;
+  const asked = request();
+  void progressSettled().then(() => {
+    const record = find(id);
+    if (asked.stands() && record?.state === "complete") playCopy(id, record);
+  });
+}
+
+/** Plays copy `id` as its record stands now. */
+function playCopy(id: string, record: Stored) {
   const media = mediaOf(record);
   const { about, title, progress } = record;
   const since = Date.now();
@@ -1257,8 +1275,9 @@ export function playDownload(id: string): void {
 
 /**
  * Saves how far a copy played in its record, and in its subscription's viewing record while that
- * subscription is saved. Rejects when either refused it, each keeping what it held before; a copy
- * removed meanwhile saves nothing.
+ * subscription is saved. Once both ended, rejects when either refused it; the one that refused
+ * keeps what it held before, the other has the new position. A copy removed meanwhile saves
+ * nothing.
  */
 async function keepProgress(id: string, position: number, duration: number, since: number) {
   const record = find(id);
@@ -1274,7 +1293,10 @@ async function keepProgress(id: string, position: number, duration: number, sinc
   const viewed = members().some((member) => member.entry.id === subscriptionId)
     ? recordProgress({ ...record.title, subscriptionId }, position, duration, since)
     : undefined;
-  await Promise.all([copy, viewed]);
+  const refused = (await Promise.allSettled([copy, viewed])).find(
+    (ended): ended is PromiseRejectedResult => ended.status === "rejected",
+  );
+  if (refused) throw refused.reason;
 }
 
 /**

@@ -286,9 +286,10 @@ Each responsibility has one owner, a plain module with a store the screens read:
   preview, Watch, Picture in Picture and the accessory all show or control this player; none
   opens a stream of its own. Another channel or title, Stop, removing its subscription and a failure each let go
   of the stream. `src/play-title.ts` plays movies and episodes in it, saving how far they got;
-  saves go one at a time, in order, so a late one never overwrites a newer position. Closing
+  saves go one at a time, in order, so a late one never overwrites a newer position, and Resume,
+  Continue watching, Next and a copy's Play read where a title got to only once they ended. Closing
   Watch pauses what plays and saves where it got to, unless Picture in Picture or AirPlay already
-  shows it; Stop ends it. Both resolve once the save ended, saying whether it was kept.
+  shows it; Stop ends it. A refused save shows a system alert, once until a save is kept again.
   A title or copy in a file AVPlayer can't open, such as Matroska, plays through a format
   session (`src/title-formats.ts`, `modules/title-formats`): native code reads the file, from the
   provider over one request at a time or from the phone, and serves it to this player as HLS on

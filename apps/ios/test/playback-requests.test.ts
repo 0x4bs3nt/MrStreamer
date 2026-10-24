@@ -1,5 +1,5 @@
 import type { Episode, SeriesDetails, Title, TitleRef } from "@mrstreamer/contracts/ondemand";
-import type { SeriesViewing } from "@mrstreamer/contracts/viewing";
+import type { SeriesViewing, TitleProgress } from "@mrstreamer/contracts/viewing";
 import type { ContinueEntry } from "@mrstreamer/core/viewing/continue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,10 +33,15 @@ const fakePlayer = {
 const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
 
 const pushed: string[] = [];
+type Answer<T> = { resolve: (value: T) => void; reject: (cause: unknown) => void };
 const held: {
-  details: Array<{ resolve: (d: SeriesDetails) => void; reject: (e: unknown) => void }>;
+  details: Array<Answer<SeriesDetails>>;
   standing: Array<(s: SeriesViewing) => void>;
-} = { details: [], standing: [] };
+  /** The same reads of how a series' episodes stand, to refuse. */
+  unreadable: Array<(cause: unknown) => void>;
+  /** Reads of how far movies got. */
+  progress: Array<Answer<readonly TitleProgress[]>>;
+} = { details: [], standing: [], unreadable: [], progress: [] };
 
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 vi.mock("expo-router", () => ({
@@ -53,7 +58,15 @@ vi.mock("../src/titles.ts", () => ({
 /** The viewing record's saves of how far an episode got, as asked. */
 const saves = vi.hoisted(() => ({ asked: [] as number[], answer: async () => undefined }));
 vi.mock("../src/viewing.ts", () => ({
-  seriesViewing: () => new Promise<SeriesViewing>((resolve) => held.standing.push(resolve)),
+  seriesViewing: () =>
+    new Promise<SeriesViewing>((resolve, reject) => {
+      held.standing.push(resolve);
+      held.unreadable.push(reject);
+    }),
+  progressOf: () =>
+    new Promise<readonly TitleProgress[]>((resolve, reject) =>
+      held.progress.push({ resolve, reject }),
+    ),
   recordProgress: (_title: unknown, position: number) => {
     saves.asked.push(position);
     return saves.answer();
@@ -62,8 +75,10 @@ vi.mock("../src/viewing.ts", () => ({
   useViewing: () => null,
 }));
 
-const { failureOf, playEpisode, playMovie } = await import("../src/play-title.ts");
-const { onScreen, play, playNext, showVersions, stop } = await import("../src/playback.ts");
+const { failureOf, playEpisode, playMovie, resumeEpisode, resumeMovie } =
+  await import("../src/play-title.ts");
+const { closeWatch, onScreen, play, playNext, showVersions, stop } =
+  await import("../src/playback.ts");
 const { resume } = await import("../src/resume.ts");
 
 function title(kind: Title["kind"], id: string, versions: readonly string[] = [id]): Title {
@@ -122,6 +137,37 @@ function seriesDetails(id: string, versions: readonly string[] = [id]): SeriesDe
 
 const nothingPlayed: SeriesViewing = { progress: [], marks: [], undoable: null };
 
+/** How far a movie or an episode of `s1` got, as the record keeps it. */
+const progressAt = (kind: "movie" | "episode", id: string, position: number): TitleProgress => ({
+  title:
+    kind === "movie"
+      ? { kind, subscriptionId: SUB, id }
+      : { kind, subscriptionId: SUB, id, seriesId: "s1", season: 1, episode: Number(id.at(-1)) },
+  position,
+  duration: 600,
+  finished: false,
+  at: 1,
+  since: 1,
+});
+
+/** The next save of progress waits until the test calls what this returns; later ones don't. */
+function holdNextSave() {
+  let answer: (refused?: unknown) => void = () => {};
+  saves.answer = () => {
+    saves.answer = async () => undefined;
+    return new Promise<undefined>((done, fail) => {
+      answer = (refused) => (refused === undefined ? done(undefined) : fail(refused));
+    });
+  };
+  return (refused?: unknown) => answer(refused);
+}
+
+/** The player is ready and seeks to where the play starts; answers where that is. */
+function startsAt() {
+  emit("statusChange", { status: "readyToPlay" });
+  return fakePlayer.currentTime;
+}
+
 const seriesEntry = (id: string): ContinueEntry => ({
   key: `series:${id}`,
   title: title("series", id),
@@ -156,6 +202,8 @@ beforeEach(() => {
   pushed.length = 0;
   held.details.length = 0;
   held.standing.length = 0;
+  held.unreadable.length = 0;
+  held.progress.length = 0;
   saves.asked.length = 0;
   saves.answer = async () => undefined;
   onScreen("/");
@@ -279,6 +327,30 @@ describe("Next episode", () => {
     expect(sources).toEqual(["file:episode:s1e1", "file:episode:s1e2"]);
   });
 
+  it("stays on the episode when its save was refused, reading nothing", async () => {
+    playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
+    await settle();
+    emit("playingChange", { isPlaying: true });
+    fakePlayer.currentTime = 590;
+    const answer = holdNextSave();
+    playNext();
+    await settle();
+    answer(new Error("disk full"));
+    await settle();
+    expect(held.standing).toEqual([]);
+    expect(sources).toEqual(["file:episode:s1e1"]);
+  });
+
+  it("plays no guess when the record can't be read", async () => {
+    playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
+    await settle();
+    playNext();
+    await settle();
+    held.unreadable.shift()?.(new Error("unreadable"));
+    await settle();
+    expect(sources).toEqual(["file:episode:s1e1"]);
+  });
+
   it("stays cancelled when the viewer goes away and comes back while the record answers", async () => {
     playEpisode(seriesDetails("s1"), episode("s1", 1), 0, () => undefined);
     await settle();
@@ -300,6 +372,82 @@ describe("Next episode", () => {
     held.standing.shift()?.(nothingPlayed);
     await settle();
     expect(sources).toEqual(["file:episode:s1e1", "file:movie:m1"]);
+  });
+});
+
+describe("resuming right after Close", () => {
+  const m1 = { subscriptionId: SUB, id: "m1" };
+
+  /** m1 plays at `position`, then Close pauses it with its save still going. */
+  async function closedAt(position: number) {
+    playMovie(title("movie", "m1"), m1, 0, () => undefined);
+    await settle();
+    emit("playingChange", { isPlaying: true });
+    fakePlayer.currentTime = position;
+    const answer = holdNextSave();
+    void closeWatch();
+    return answer;
+  }
+
+  it("plays a movie from where Close saved it, read once the save ended", async () => {
+    const saved = await closedAt(300);
+    resumeMovie(title("movie", "m1"), m1, progressAt("movie", "m1", 100), () => undefined);
+    await settle();
+    expect(held.progress).toEqual([]);
+    saved();
+    await settle();
+    held.progress.shift()?.resolve([progressAt("movie", "m1", 300)]);
+    await settle();
+    expect(sources).toEqual(["file:movie:m1", "file:movie:m1"]);
+    expect(startsAt()).toBe(295);
+  });
+
+  it("plays nothing when Stop, another screen or another play came first", async () => {
+    for (const first of [
+      () => void stop(),
+      () => onScreen("/films"),
+      () => playMovie(title("movie", "m2"), { subscriptionId: SUB, id: "m2" }, 0, () => {}),
+    ]) {
+      const saved = await closedAt(300);
+      sources.length = 0;
+      resumeMovie(title("movie", "m1"), m1, progressAt("movie", "m1", 100), () => undefined);
+      first();
+      saved();
+      await settle();
+      held.progress.shift()?.resolve([progressAt("movie", "m1", 300)]);
+      await settle();
+      expect(sources).not.toContain("file:movie:m1");
+      onScreen("/");
+    }
+  });
+
+  it("plays from what the screen showed when the record can't be read", async () => {
+    const saved = await closedAt(300);
+    resumeMovie(title("movie", "m1"), m1, progressAt("movie", "m1", 100), () => undefined);
+    saved();
+    await settle();
+    held.progress.shift()?.reject(new Error("unreadable"));
+    await settle();
+    expect(startsAt()).toBe(95);
+  });
+
+  it("plays an episode from where the record says it got to", async () => {
+    const details = seriesDetails("s1");
+    playEpisode(details, episode("s1", 1), 0, () => undefined);
+    await settle();
+    emit("playingChange", { isPlaying: true });
+    fakePlayer.currentTime = 400;
+    const saved = holdNextSave();
+    void closeWatch();
+    resumeEpisode(details, episode("s1", 1), undefined, () => undefined);
+    await settle();
+    expect(held.standing).toEqual([]);
+    saved();
+    await settle();
+    held.standing.shift()?.({ ...nothingPlayed, progress: [progressAt("episode", "s1e1", 400)] });
+    await settle();
+    expect(sources).toEqual(["file:episode:s1e1", "file:episode:s1e1"]);
+    expect(startsAt()).toBe(395);
   });
 });
 

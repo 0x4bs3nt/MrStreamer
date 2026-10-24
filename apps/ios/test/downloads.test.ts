@@ -42,6 +42,18 @@ const memory = vi.hoisted(() => ({
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
+/** Set, the viewing record's saves of progress wait for it, as a busy record would. */
+const viewingSaves = vi.hoisted(() => ({ hold: null as Promise<void> | null }));
+vi.mock("../src/viewing.ts", async (original) => {
+  const viewing = await original<typeof import("../src/viewing.ts")>();
+  return {
+    ...viewing,
+    recordProgress: async (...args: Parameters<typeof viewing.recordProgress>) => {
+      await viewingSaves.hold;
+      return viewing.recordProgress(...args);
+    },
+  };
+});
 vi.mock("expo", () => import("./native-downloads.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
@@ -1010,5 +1022,52 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(one.fileRequests()).toBe(requests);
     const copy: Download | undefined = app.downloadList().items[0];
     expect(copy?.subscription).toBeNull();
+  });
+
+  it("plays a copy again from where Close just left it", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const kept = await app.addDownload(movieRef(a));
+    await until(() => isComplete(app, kept.id), "the copy");
+    app.playDownload(kept.id);
+    await until(() => memory.played.length === 1, "the copy to open");
+    memory.player!.emit("playingChange", { isPlaying: true });
+    Object.assign(memory.player!, { currentTime: 40, duration: 100 });
+    void app.closeWatch();
+    app.playDownload(kept.id);
+    await until(() => memory.played.length === 2, "the copy to open again");
+    memory.player!.emit("statusChange", { status: "readyToPlay" });
+    expect(memory.player!.currentTime).toBe(35);
+    await app.stop();
+  });
+
+  it("goes on to the next save only once both of a copy's saves ended, and says it wasn't kept", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const kept = await app.addDownload(movieRef(a));
+    await until(() => isComplete(app, kept.id), "the copy");
+    app.playDownload(kept.id);
+    await until(() => memory.played.length === 1, "the copy to open");
+    memory.player!.emit("playingChange", { isPlaying: true });
+    Object.assign(memory.player!, { currentTime: 40, duration: 100 });
+    // The copy's record refuses the write at once; the viewing record's save is still going.
+    const blocked = new Folder(native.root, "documents", "downloads.json.next");
+    blocked.create();
+    let release = () => {};
+    viewingSaves.hold = new Promise((done) => (release = done));
+    let stopped: unknown = null;
+    void app.stop().then((saved) => (stopped = saved));
+    await sleep(50);
+    expect(stopped).toBeNull();
+    release();
+    viewingSaves.hold = null;
+    await until(() => stopped !== null, "Stop to settle");
+    expect(stopped).toMatchObject({ saved: false });
+    blocked.delete();
+    expect(app.downloadList().items.find((item) => item.id === kept.id)?.progress).toBeNull();
+    const recorded = await app.progressOf({ movies: [{ subscriptionId: a, id: kept.title.id }] });
+    expect(recorded[0]?.position).toBe(40);
   });
 });

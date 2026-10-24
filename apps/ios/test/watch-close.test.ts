@@ -1,5 +1,5 @@
 import { AppFailure } from "@mrstreamer/contracts/errors";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // Leaving Watch and letting go of a title, as playback promises its owners: Close pauses what
 // plays and saves where it got to, unless Picture in Picture or AirPlay already shows it; Stop
@@ -24,8 +24,16 @@ const fakePlayer = {
 const emit = (event: string, payload: unknown) => listeners.get(event)?.(payload as never);
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 
-const { closeWatch, pictureInPicture, play, playbackState, stop, togglePause } =
-  await import("../src/playback.ts");
+const {
+  closeWatch,
+  onProgressRefused,
+  openWatch,
+  pictureInPicture,
+  play,
+  playbackState,
+  stop,
+  togglePause,
+} = await import("../src/playback.ts");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -49,13 +57,15 @@ const movie = (id: string, live = false) => ({
 const open = async () => ({ url: `file:${Math.random()}`, container: "mp4" });
 const settle = () => new Promise((done) => setTimeout(done, 0));
 
-/** Each save the title's owner was asked for, in order, with its answer to give. */
-let saves: Array<{ position: number; answer: ReturnType<typeof deferred<void>> }> = [];
-const progress = (position: number) => {
+/** Each save a title's owner was asked for, in order, with its answer to give. */
+let saves: Array<{ id: string; position: number; answer: ReturnType<typeof deferred<void>> }> = [];
+/** Saves how far `id` got, as its owner would. */
+const saverOf = (id: string) => (position: number) => {
   const answer = deferred<void>();
-  saves.push({ position, answer });
+  saves.push({ id, position, answer });
   return answer.promise;
 };
+const progress = saverOf("m1");
 /** The player reports it plays, or stopped playing. */
 const playing = (isPlaying = true) => emit("playingChange", { isPlaying });
 
@@ -69,13 +79,16 @@ async function watching(position = 120) {
 }
 
 beforeEach(async () => {
-  for (const save of saves) save.answer.resolve();
   void stop();
   pictureInPicture(false);
   emit("isExternalPlaybackActiveChange", { isExternalPlaybackActive: false });
-  await settle();
-  for (const save of saves) save.answer.resolve();
-  await settle();
+  // Answers every save the last test left waiting, and those each asked for after it.
+  let answered = -1;
+  while (answered !== saves.length) {
+    answered = saves.length;
+    for (const save of saves) save.answer.resolve();
+    await settle();
+  }
   saves = [];
   fakePlayer.pause.mockClear();
   fakePlayer.play.mockClear();
@@ -157,6 +170,69 @@ describe("Close", () => {
       saved: false,
       error: { kind: "no-subscription" },
     });
+  });
+});
+
+describe("after Close", () => {
+  it("plays again with its sound from the accessory", async () => {
+    await watching(120);
+    void closeWatch();
+    playing(false);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, muted: false });
+    togglePause();
+    expect(fakePlayer.play).toHaveBeenCalledOnce();
+    playing();
+    expect(fakePlayer.muted).toBe(false);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "playing" }, muted: false });
+  });
+
+  it("shows Watch again paused, with its sound, until the viewer plays it", async () => {
+    await watching(120);
+    void closeWatch();
+    playing(false);
+    openWatch();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
+    expect(fakePlayer.muted).toBe(false);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, watch: true });
+  });
+
+  it("saves nothing of the next title for a pause the player reports after it began", async () => {
+    await watching(120);
+    void closeWatch();
+    await play(movie("m2"), open, { watch: true, login: [], progress: saverOf("m2") });
+    fakePlayer.currentTime = 0;
+    playing(false);
+    for (const save of saves) save.answer.resolve();
+    await settle();
+    expect(saves.map(({ id, position }) => `${id}@${position}`)).toEqual(["m1@120", "m1@120"]);
+  });
+});
+
+describe("a refused save", () => {
+  it("is told once until a save is kept again", async () => {
+    const told = vi.fn();
+    onProgressRefused(told);
+    onTestFinished(() => onProgressRefused(null));
+    await watching(120);
+    void closeWatch();
+    playing(false);
+    await settle();
+    saves[0]!.answer.reject(new Error("disk full"));
+    await settle();
+    saves[1]!.answer.reject(new Error("disk full"));
+    await settle();
+    expect(told).toHaveBeenCalledOnce();
+    togglePause();
+    playing();
+    playing(false);
+    await settle();
+    saves[2]!.answer.resolve();
+    await settle();
+    const stopping = stop();
+    await settle();
+    saves[3]!.answer.reject(new Error("disk full"));
+    await expect(stopping).resolves.toMatchObject({ saved: false });
+    expect(told).toHaveBeenCalledTimes(2);
   });
 });
 

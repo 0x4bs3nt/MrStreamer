@@ -4,6 +4,7 @@ import { isPictureInPictureSupported, VideoAirPlayButton, VideoView } from "expo
 import { useEffect, useRef, useState } from "react";
 import {
   ActionSheetIOS,
+  Alert,
   Keyboard,
   PanResponder,
   Pressable,
@@ -23,6 +24,7 @@ import { openOnTabs, useTabs, type TabScreen } from "./header.tsx";
 import {
   closeWatch,
   onEndPictureInPicture,
+  onProgressRefused,
   pictureInPicture,
   player,
   playingItem,
@@ -119,6 +121,14 @@ export function WatchLayer() {
   useEffect(() => {
     onEndPictureInPicture(() => void view.current?.stopPictureInPicture());
     return () => onEndPictureInPicture(null);
+  }, []);
+  // A refused save of how far a title got, told by the system's alert, which stays over whatever
+  // shows: Watch closed by then, or nothing playing after Stop. Once until a save is kept again.
+  useEffect(() => {
+    onProgressRefused(() =>
+      Alert.alert("Couldn't save progress", "Your latest position could not be saved."),
+    );
+    return () => onProgressRefused(null);
   }, []);
   // A return from Picture in Picture, answered once Watch has committed what it returns to: AVKit
   // then brings the picture back into a view on screen. The answer goes to the view that asked,

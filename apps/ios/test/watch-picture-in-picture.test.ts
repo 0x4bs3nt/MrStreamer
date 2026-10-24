@@ -60,6 +60,8 @@ const native = vi.hoisted(() => ({
   pathname: "/live",
   /** The channels Live shows. */
   catalogue: { kind: "loading" } as Catalogue,
+  /** The system alerts shown, by title and message. */
+  alerts: [] as string[][],
 }));
 
 vi.mock("expo-video", async () => {
@@ -151,6 +153,7 @@ vi.mock("react-native", async () => {
     Keyboard: { dismiss: () => undefined },
     PanResponder: { create: () => ({ panHandlers: {} }) },
     ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
+    Alert: { alert: (title: string, message: string) => void native.alerts.push([title, message]) },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
   };
 });
@@ -189,7 +192,7 @@ vi.mock("../src/account.ts", () => ({
   members: () => [{ entry: { id: "a" } }],
 }));
 
-const { closeWatch, openWatch, play, playbackState, retry, stop, togglePause } =
+const { closeWatch, openWatch, play, playbackState, player, retry, stop, togglePause } =
   await import("../src/playback.ts");
 const { WatchLayer } = await import("../src/watch.tsx");
 
@@ -242,6 +245,7 @@ beforeEach(() => {
     pushed: [],
     root: onLive,
     pathname: "/live",
+    alerts: [],
   });
 });
 afterEach(() => unmount());
@@ -534,6 +538,39 @@ describe("Downloads and Settings from Watch", () => {
 });
 
 describe("Close", () => {
+  it("says when the position it saved was refused, with Watch gone and after Stop", async () => {
+    const refused = { cause: new Error("/private/var/mobile/viewing.json: disk full") };
+    let refuse = true;
+    const progress = async () => {
+      if (refuse) throw refused.cause;
+    };
+    const root = createRoot(window.document.createElement("div"));
+    act(() => root.render(React.createElement(WatchLayer)));
+    unmount = () => act(() => root.unmount());
+    await act(() => play(movie("1"), open, { ...inWatch, progress }));
+    started();
+    Object.assign(player(), { currentTime: 100, duration: 600 });
+    await act(async () => void (await closeWatch()));
+    const told = ["Couldn't save progress", "Your latest position could not be saved."];
+    expect(playbackState.get()).toMatchObject({ watch: false });
+    expect(native.alerts).toEqual([told]);
+    // The player reports the pause, whose save is refused too: told once for both.
+    started(false);
+    await act(async () => undefined);
+    expect(native.alerts).toEqual([told]);
+    // Kept once, then refused at Stop: told again, with nothing playing.
+    refuse = false;
+    act(() => togglePause());
+    started();
+    started(false);
+    await act(async () => undefined);
+    refuse = true;
+    await act(async () => void (await stop()));
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "idle" } });
+    expect(native.alerts).toEqual([told, told]);
+    Object.assign(player(), { currentTime: 0, duration: 0 });
+  });
+
   it("pauses what plays and shows the screen under Watch", async () => {
     const watch = await watching(movie("1"));
     native.player.length = 0;

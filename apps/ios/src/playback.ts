@@ -26,6 +26,8 @@ import { openFormat, type FormatSession } from "./title-formats.ts";
 // far it got: every minute while it plays, when it pauses, and when it stops, fails or gives way
 // to something else; and once more when it plays to its end. Its owner saves each, one at a
 // time in the order told, whichever play told it, so a slow save never lands after a later one.
+// Whatever resumes a title waits for those saves before it reads where it got to
+// (`progressSettled`). A refused save is told once, until one is kept again (`onProgressRefused`).
 //
 // Closing Watch pauses what plays, saving where it got to, unless Picture in Picture or AirPlay
 // already shows it, where it plays on with its sound. Stop ends it and saves. Both resolve once
@@ -114,8 +116,8 @@ export interface PlayOptions {
   readonly ended?: () => void;
   /** Whether it got as far as playing, said once: true when it first plays, false if it fails. */
   readonly outcome?: (played: boolean) => void;
-  /** Plays the episode after this one. */
-  readonly next?: () => void;
+  /** Plays the episode after this one, once `saved`, this one's save before it, ended. */
+  readonly next?: (saved: Promise<Saved>) => void;
   /** Shows the title's other versions, after this one failed. */
   readonly versions?: () => void;
 }
@@ -253,8 +255,13 @@ function hold(closed: Promise<void>, subscriptionId: string | null) {
   });
 }
 let checkpoint: ReturnType<typeof setInterval> | null = null;
+const KEPT: Saved = { saved: true };
 /** Every save of progress asked so far, one after another, ending with how the latest went. */
-let saving: Promise<Saved> = Promise.resolve({ saved: true });
+let saving: Promise<Saved> = Promise.resolve(KEPT);
+/** Whether the latest save was refused, so a run of refusals is told once. */
+let refusing = false;
+/** Told when a save is refused after one that was kept; Watch registers it. */
+let refused: (() => void) | null = null;
 /** Told each failure's category, never its message; telemetry registers it. */
 let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
@@ -266,31 +273,40 @@ let endPictureInPicture: (() => void) | null = null;
  */
 let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
 
-/** Tells a title's owner how far it got, if it got anywhere, after the saves asked before. */
-function report() {
+/**
+ * Tells a title's owner how far it got, if it got anywhere, after the saves asked before.
+ * Resolves with how that save went once it ended; kept when there was nothing to save.
+ */
+function report(): Promise<Saved> {
   const save = current?.options.progress;
-  if (!current?.loaded || current.item.live || !save) return;
   const made = player();
   const duration = made.duration;
-  if (!(duration > 0 && Number.isFinite(duration))) return;
+  if (
+    !current?.loaded ||
+    current.item.live ||
+    !save ||
+    !(duration > 0 && Number.isFinite(duration))
+  ) {
+    return saving.then(() => KEPT);
+  }
   const position = Math.min(made.currentTime, duration);
   saving = saving.then(async (): Promise<Saved> => {
     try {
       await save(position, duration);
-      return { saved: true };
+      refusing = false;
+      return KEPT;
     } catch (cause) {
+      if (!refusing) refused?.();
+      refusing = true;
       return { saved: false, error: appError(cause) };
     }
   });
+  return saving;
 }
 
-/**
- * Resolves once every save of progress asked so far ended, with how the latest went, and every
- * format session let go of has ended its request. For Stop, which let go of what streamed.
- */
-async function settled(): Promise<Saved> {
-  const [saved] = await Promise.all([saving, Promise.allSettled(held.keys())]);
-  return saved;
+/** Resolves once every save of progress asked so far ended, kept or not. */
+export function progressSettled(): Promise<void> {
+  return saving.then(() => undefined);
 }
 
 let created: VideoPlayer | null = null;
@@ -361,9 +377,12 @@ export function player(): VideoPlayer {
   return made;
 }
 
-/** Lets go of the stream: the player keeps nothing that holds the provider's connection. */
-function release() {
-  report();
+/**
+ * Lets go of the stream: the player keeps nothing that holds the provider's connection. Resolves
+ * as its save of how far a title got does (`report`).
+ */
+function release(): Promise<Saved> {
+  const saved = report();
   if (current?.loaded && !current.item.live) current.stoppedAt = player().currentTime;
   if (checkpoint) clearInterval(checkpoint);
   checkpoint = null;
@@ -378,6 +397,7 @@ function release() {
   noteClosing();
   clock.set(0);
   length.set(0);
+  return saved;
 }
 
 /**
@@ -480,12 +500,12 @@ export function retry() {
 
 /**
  * Stops playing and closes Watch, Picture in Picture and the accessory, saving how far a title
- * got. What plays next on Home starts without sound again. Resolves once the save and the stream's
- * request ended (`settled`).
+ * got. What plays next on Home starts without sound again. Resolves once that save and every
+ * format session's request let go of ended, with how the save went.
  */
-export function stop(): Promise<Saved> {
+export async function stop(): Promise<Saved> {
   requests++;
-  release();
+  const saved = release();
   current = null;
   endPictureInPicture?.();
   player().muted = true;
@@ -499,7 +519,8 @@ export function stop(): Promise<Saved> {
     aside: false,
     muted: true,
   }));
-  return settled();
+  const [outcome] = await Promise.all([saved, Promise.allSettled(held.keys())]);
+  return outcome;
 }
 
 /**
@@ -604,17 +625,12 @@ export function trackChoices(of: "audio" | "subtitles"): readonly TrackChoice[] 
 }
 
 /**
- * Plays the episode after the one playing, saving how far this one got first: its owner reads the
- * record once that save ended (`progressSaved`).
+ * Plays the episode after the one playing, saving how far this one got first: its owner is given
+ * that save, to read the record once it ended.
  */
 export function playNext() {
-  report();
-  current?.options.next?.();
-}
-
-/** Resolves once every save of progress asked so far ended, with how the latest went. */
-export function progressSaved(): Promise<Saved> {
-  return saving;
+  const saved = report();
+  current?.options.next?.(saved);
 }
 
 /** Shows the other versions of the title that failed. */
@@ -642,26 +658,23 @@ export function openWatch() {
 }
 
 /**
- * Back to the tabs at once. Picture in Picture or AirPlay already showing it plays on there, with
- * its sound. Otherwise nothing plays unseen: what plays pauses, saving where it got to; what still
- * loads pauses as it starts; what was paused or failed stays so. The accessory shows it as it is,
- * and Home's preview without sound. Resolves once the save ended; a format session paused keeps
- * its request open for Play.
+ * Back to the tabs at once, saving where a title got to. Picture in Picture or AirPlay already
+ * showing it plays on there, with its sound. Otherwise nothing plays unseen: what plays pauses;
+ * what still loads pauses as it starts; what was paused or failed stays so. Paused, it makes no
+ * sound; played again from the accessory or Home, it plays with its sound, as after `setAside`.
+ * Resolves with how the save went once it ended; a format session paused keeps its request open
+ * for Play.
  */
 export function closeWatch(): Promise<Saved> {
   const { pip, external, phase } = state.get();
-  const away = !pip && !external;
-  if (away) {
+  if (!pip && !external) {
     resumeOnReturn = false;
     pauseOnStart = phase.kind === "loading";
-    if (phase.kind === "playing") {
-      player().pause();
-      report();
-    }
+    if (phase.kind === "playing") player().pause();
   }
-  player().muted = away;
-  state.set((s) => ({ ...s, watch: false, aside: false, muted: away }));
-  return saving;
+  player().muted = false;
+  state.set((s) => ({ ...s, watch: false, aside: false, muted: false }));
+  return report();
 }
 
 /**
@@ -733,4 +746,8 @@ export function onEndPictureInPicture(end: (() => void) | null) {
 
 export function onReclaim(take: ((subscriptionId: string) => Promise<void>) | null) {
   reclaim = take;
+}
+
+export function onProgressRefused(tell: (() => void) | null) {
+  refused = tell;
 }

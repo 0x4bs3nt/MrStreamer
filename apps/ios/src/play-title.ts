@@ -5,22 +5,30 @@ import type {
   TitleKind,
   TitleRef,
 } from "@mrstreamer/contracts/ondemand";
-import { ownedId, ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
+import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
+import type { TitleProgress } from "@mrstreamer/contracts/viewing";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { nextEpisode } from "@mrstreamer/core/ondemand/details";
 import { resumePoint } from "@mrstreamer/core/viewing/continue";
-import { finishes, nextUnwatched } from "@mrstreamer/core/viewing/episodes";
+import {
+  continuation,
+  episodeStates,
+  finishes,
+  nextUnwatched,
+  type Continuation,
+} from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
-import { play, progressSaved, request, type Playing } from "./playback.ts";
+import { play, progressSettled, request, type Playing } from "./playback.ts";
 import { loginOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { titleFile } from "./titles.ts";
-import { finishSeries, recordProgress, seriesViewing } from "./viewing.ts";
+import { finishSeries, progressOf, recordProgress, seriesViewing } from "./viewing.ts";
 
 // Playing a movie or an episode in the one player, as the desktop's title player decides it:
 // from where it stopped, saving how far it got in the viewing record against when this play
 // began, the next episode not yet watched, and a series finished once its last episode ends with
-// none left. Any file is tried, whatever its name or type says.
+// none left. Any file is tried, whatever its name or type says. Resuming reads where a title got
+// to once every save asked before ended, so a position Close or Stop just saved counts.
 //
 // What didn't play is noted by the version the viewer chooses between, a movie's or a series',
 // for its details and version menu, until that version plays. For a series it says an episode of
@@ -148,24 +156,96 @@ export function playEpisode(
     },
     outcome: outcomeOf("series", series, "episode"),
     // The next one not yet watched, as the record stands once this one's progress is saved, else
-    // the next in order, unless the viewer did something else while the record answered.
-    next: () => {
+    // the next in order, unless the viewer did something else while the record answered. A
+    // refused save was told (`onProgressRefused`), and an unreadable record can't say which
+    // episode goes on or from where: either way this one stays, for Next to be pressed again.
+    next: (saved) => {
       const asked = request();
-      void progressSaved()
-        .then(standing)
-        .then(
-          ({ progress, marks }) => {
-            if (!asked.stands()) return;
-            const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
-            if (!upcoming) return;
-            const kept = progress.find(
-              ({ title }) => title.kind === "episode" && title.id === upcoming.id,
-            );
-            playEpisode(details, upcoming, resumePoint(kept), versions);
-          },
-          () => asked.stands() && after && playEpisode(details, after, 0, versions),
-        );
+      void saved
+        .then(async ({ saved: kept }) => {
+          if (!kept || !asked.stands()) return;
+          const { progress, marks } = await standing();
+          if (!asked.stands()) return;
+          const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
+          if (!upcoming) return;
+          const found = progress.find(
+            ({ title }) => title.kind === "episode" && title.id === upcoming.id,
+          );
+          playEpisode(details, upcoming, resumePoint(found), versions);
+        })
+        .catch(() => undefined);
     },
     versions,
   });
+}
+
+/**
+ * Plays from where `read` says a title got to, read once every save of progress asked before
+ * ended (`progressSettled`); from `shown`, what the screen showed, when the record can't be read.
+ * Anything the viewer asks meanwhile, playing, Stop, removing a subscription or another screen,
+ * cancels it (`request`).
+ */
+function resumeWith<P>(read: () => Promise<P>, shown: P, start: (found: P) => void) {
+  const asked = request();
+  void (async () => {
+    await progressSettled();
+    if (!asked.stands()) return;
+    const found = await read().catch(() => shown);
+    if (asked.stands()) start(found);
+  })();
+}
+
+/** Resumes a movie's `version` where it stopped; a finished one plays from its start. */
+export function resumeMovie(
+  title: Title,
+  version: OwnedId,
+  shown: TitleProgress | undefined,
+  versions: ShowVersions,
+) {
+  resumeWith(
+    async () =>
+      (await progressOf({ movies: [version] })).find(
+        (played) => played.title.kind === "movie" && sameOwned(played.title, version),
+      ),
+    shown,
+    (found) => playMovie(title, version, resumePoint(found), versions),
+  );
+}
+
+/** Resumes an episode of `details` where it stopped; one watched or not begun plays from its start. */
+export function resumeEpisode(
+  details: SeriesDetails,
+  episode: Episode,
+  shown: TitleProgress | undefined,
+  versions: ShowVersions,
+) {
+  resumeWith(
+    async () => {
+      const { progress, marks } = await seriesViewing({
+        subscriptionId: episode.subscriptionId,
+        id: episode.seriesId,
+      });
+      const state = episodeStates(progress, marks)(episode);
+      return state.kind === "partial" ? state.progress : undefined;
+    },
+    shown,
+    (found) => playEpisode(details, episode, resumePoint(found), versions),
+  );
+}
+
+/** Plays a series `version` where its episodes say it goes on; `shown` when they say none. */
+export function resumeSeries(
+  details: SeriesDetails,
+  version: OwnedId,
+  shown: Continuation<Episode, TitleProgress>,
+  versions: ShowVersions,
+) {
+  resumeWith(
+    async () => {
+      const { progress, marks } = await seriesViewing(version);
+      return continuation(details, progress, marks) ?? shown;
+    },
+    shown,
+    (goesOn) => playEpisode(details, goesOn.episode, resumePoint(goesOn.resume), versions),
+  );
 }

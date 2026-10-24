@@ -227,9 +227,12 @@ describe("playback", () => {
     playing(false);
     playing(true);
     plays(10); // 55
-    app.closeWatch();
-    plays(10); // silent preview again
+    void app.closeWatch();
+    playing(false); // Close pauses it
+    waits(10); // closed and paused: nothing counts
     app.openWatch();
+    app.togglePause();
+    playing(true);
     plays(5); // 60
     appState("background"); // Watch without Picture in Picture doesn't play on
     plays(20);

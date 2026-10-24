@@ -11,12 +11,7 @@ import { formatBytes } from "@mrstreamer/core/i18n";
 import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import type { EpisodeMark, SeriesViewing, TitleProgress } from "@mrstreamer/contracts/viewing";
 import { versionOptions } from "@mrstreamer/core/ondemand/version-options";
-import {
-  automaticVersion,
-  resumePoint,
-  runtime,
-  timeLeftOf,
-} from "@mrstreamer/core/viewing/continue";
+import { automaticVersion, runtime, timeLeftOf } from "@mrstreamer/core/viewing/continue";
 import { continuation, episodeStates } from "@mrstreamer/core/viewing/episodes";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { SymbolView, type SFSymbol } from "expo-symbols";
@@ -40,7 +35,14 @@ import {
 } from "./download-controls.tsx";
 import { useDownloadOf } from "./downloads.ts";
 import { Glass } from "./glass.tsx";
-import { failureOf, playEpisode, playMovie, useFailure, type Failure } from "./play-title.ts";
+import {
+  failureOf,
+  resumeEpisode,
+  resumeMovie,
+  resumeSeries,
+  useFailure,
+  type Failure,
+} from "./play-title.ts";
 import { useRead, type Loaded } from "./read.ts";
 import { members, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
@@ -297,7 +299,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
               label={movieProgress && !movieProgress.finished ? "Resume" : "Play"}
               onPress={() =>
                 // After a failure, Watch closes onto this page and its version menu opens.
-                playMovie(shownTitle, version, resumePoint(movieProgress), chooseVersion)
+                resumeMovie(shownTitle, version, movieProgress, chooseVersion)
               }
               testID="details-play"
             />
@@ -457,11 +459,7 @@ function SeriesPlay({
       symbol="play.fill"
       label={label}
       disabled={!details || !goesOn}
-      onPress={() =>
-        details &&
-        goesOn &&
-        playEpisode(details, goesOn.episode, resumePoint(goesOn.resume), onVersions)
-      }
+      onPress={() => details && goesOn && resumeSeries(details, version, goesOn, onVersions)}
       testID="details-play"
     />
   );
@@ -572,7 +570,7 @@ function Seasons({
             name={title.title}
             watched={state.kind === "watched"}
             progress={progress}
-            onPlay={() => playEpisode(details, episode, resumePoint(progress), onVersions)}
+            onPlay={() => resumeEpisode(details, episode, progress, onVersions)}
             onMark={(watched) => mark(episode, watched)}
           />
         );

@@ -145,6 +145,9 @@ vi.mock("../src/play-title.ts", () => ({
   useFailure: () => undefined,
   playMovie: (_title: unknown, version: OwnedId) => scenario.played.push(version),
   playEpisode: () => undefined,
+  resumeMovie: (_title: unknown, version: OwnedId) => scenario.played.push(version),
+  resumeEpisode: () => undefined,
+  resumeSeries: () => undefined,
 }));
 vi.mock("../src/viewing.ts", () => ({
   useViewing: () => null,
