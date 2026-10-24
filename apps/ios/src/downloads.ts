@@ -5,6 +5,7 @@ import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 import { RawTitleRef, type TitleRef } from "@mrstreamer/contracts/ondemand";
 import { t } from "@mrstreamer/core/i18n";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
+import { nextEpisode } from "@mrstreamer/core/ondemand/details";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
 import { Directory, File, Paths } from "expo-file-system";
 import { AppState } from "react-native";
@@ -43,8 +44,9 @@ import { recordProgress } from "./viewing.ts";
 //
 // A download names the exact provider file by its subscription and the provider's own ids, so
 // two providers' titles of one id never meet. Its record holds what the copy shows and plays
-// with: details, artwork kept in its folder, the file type, how far it got and how far it was
-// watched. No record holds an address, a header, a login or resume data. The file's address is
+// with: details, artwork kept in its folder, the file type, how far it got, how far it was
+// watched and the provider-ordered immediate successor of a newly saved episode. No record
+// holds an address, a header, a login or resume data. The file's address is
 // made from the subscription's login only as a transfer starts (`sources.ts`).
 //
 // One download transfers at a time, by `download-task.ts`: the app's native owner of a background
@@ -154,9 +156,12 @@ const Stored = lazy(() =>
     completedAt: "number | null",
     /** How far the copy was watched here. */
     progress: type({ position: "number", duration: "number", at: "number" }).or("null"),
+    /** Optional ordering added by this build; an unreadable edge never hides a playable copy. */
+    "continuation?": "unknown",
   }),
 );
 type Stored = Infer<typeof Stored>;
+const Continuation = lazy(() => type({ version: "1", title: RawTitleRef() }));
 /** Why a download stopped, of the kinds this module writes down. */
 type StoredFailure = NonNullable<Stored["failure"]>;
 
@@ -1193,6 +1198,7 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
     addedAt: Date.now(),
     completedAt: null,
     progress: null,
+    ...(kept.continuation ? { continuation: kept.continuation } : {}),
   };
   commit({ ...doc, items: [...doc.items, record] });
   void keepArtwork(record.id, kept.artwork);
@@ -1278,6 +1284,7 @@ export async function retryDownload(id: string, stands: Stands = always): Promis
  * or Stop just saved counts; anything the viewer asks meanwhile, or the copy going, cancels it.
  * Its progress stays with the copy, and goes to its subscription's viewing record too while that
  * subscription is saved (`keepProgress`). A copy whose file is gone fails in Watch as unavailable.
+ * Manual Next follows only its saved immediate successor when that exact local copy is complete.
  */
 export function playDownload(id: string): void {
   const asked = request();
@@ -1285,6 +1292,29 @@ export function playDownload(id: string): void {
     const record = find(id);
     if (asked.stands() && record?.state === "complete") playCopy(id, record);
   });
+}
+
+/** Only the saved immediate successor, never the next copy that happens to be downloaded. */
+function nextCopy(record: Stored): Stored | undefined {
+  if (record.title.kind !== "episode" || record.continuation === undefined) return;
+  const edge = Continuation()(record.continuation);
+  if (edge instanceof type.errors || edge.title.kind !== "episode") return;
+  if (edge.title.seriesId !== record.title.seriesId || edge.title.id === record.title.id) return;
+  const ref: TitleRef = { ...edge.title, subscriptionId: record.subscriptionId };
+  const copy = doc.items.find((each) => sameTitle(each, ref));
+  if (
+    copy?.state === "complete" &&
+    copy.title.kind === "episode" &&
+    copy.title.seriesId === record.title.seriesId &&
+    copy.title.season === edge.title.season &&
+    copy.title.episode === edge.title.episode
+  ) {
+    try {
+      if (mediaOf(copy).exists) return copy;
+    } catch {
+      // An unreadable successor cannot prevent this copy from playing.
+    }
+  }
 }
 
 /** Plays copy `id` as its record stands now. */
@@ -1303,7 +1333,7 @@ function playCopy(id: string, record: Stored) {
           ? String(about.year)
           : "",
     live: false,
-    next: false,
+    next: nextCopy(record) !== undefined,
     versions: false,
   };
   const from =
@@ -1325,6 +1355,17 @@ function playCopy(id: string, record: Stored) {
       login: [],
       from,
       progress: (position, duration) => keepProgress(id, position, duration, since),
+      next: (saved) => {
+        const asked = request();
+        void saved.then(async (result) => {
+          if (!result.saved) return;
+          await progressSettled();
+          if (!asked.stands()) return;
+          const current = find(id);
+          const next = current && nextCopy(current);
+          if (next) playCopy(next.id, next);
+        });
+      },
     },
   );
 }
@@ -1367,6 +1408,7 @@ async function aboutOf(ref: TitleRef, signal: AbortSignal) {
     if (!title) throw missingTitle;
     const details = await detailsOf({ ...title, subscriptionId: ref.subscriptionId, id: ref.id });
     return {
+      continuation: undefined,
       about: {
         name: title.title,
         episodeName: null,
@@ -1390,7 +1432,20 @@ async function aboutOf(ref: TitleRef, signal: AbortSignal) {
   const episode =
     told.find((each) => each.id === ref.id) ??
     seasons.flatMap((each) => each.episodes).find((each) => each.id === ref.id);
+  const after = details.kind === "series" ? nextEpisode(details, ref) : null;
   return {
+    continuation: after
+      ? ({
+          version: 1,
+          title: {
+            kind: "episode",
+            id: after.id,
+            seriesId: ref.seriesId,
+            season: after.season,
+            episode: after.number,
+          },
+        } satisfies Infer<typeof Continuation>)
+      : undefined,
     about: {
       name: series.title,
       episodeName: episode?.title ?? null,
