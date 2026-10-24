@@ -1388,3 +1388,176 @@ const episodeOf = (each: SeriesEpisode): TitleRef => ({
   season: each.season,
   episode: each.number,
 });
+
+describe("offline Next", { timeout: 30_000 }, () => {
+  /** MP4 neighbours in the provider's first season, downloaded by the real queue. */
+  async function pair() {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const { details } = await seriesDetails(app, a);
+    const [first, second] = details.seasons[0]!.episodes.slice(1, 3);
+    const from = await app.addDownload(episodeOf(first!));
+    const to = await app.addDownload(episodeOf(second!));
+    await until(() => isComplete(app, from.id) && isComplete(app, to.id), "the episode copies");
+    return { app, a, from, to };
+  }
+  const item = (app: App) => app.playingItem(app.playbackState.get().phase);
+
+  it("keeps the saved immediate order across a removed provider and cold launch, with no network or autoplay", async () => {
+    let { app, a, from, to } = await pair();
+    // The target's own resume position must survive too, without an online viewing read.
+    app.playDownload(to.id);
+    await until(() => memory.played.length === 1, "the target copy");
+    memory.player!.ready();
+    memory.player!.currentTime = 70;
+    memory.player!.state(true);
+    await app.stop();
+    await app.remove(a, { keepHistory: false });
+    app = await launch();
+    const network = vi.spyOn(globalThis, "fetch");
+    onTestFinished(() => network.mockRestore());
+    app.playDownload(from.id);
+    await until(() => memory.played.length === 2, "the original copy");
+    expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: true });
+    memory.player!.ready();
+    memory.player!.currentTime = 40;
+    memory.player!.state(true);
+    memory.player!.observation({ kind: "ended" });
+    await sleep(30);
+    expect(memory.played).toHaveLength(2);
+    app.playNext();
+    await until(() => memory.played.length === 3, "the next saved copy");
+    memory.player!.ready();
+    expect(memory.played[2]?.uri).toBe(`file://${mediaFile(to.id)!.path}`);
+    expect(memory.player!.currentTime).toBe(65);
+    expect(app.downloadList().items.find((each) => each.id === from.id)?.progress?.position).toBe(
+      40,
+    );
+    expect(network).not.toHaveBeenCalled();
+    await app.stop();
+  });
+
+  it("stops at a missing episode instead of skipping to a later saved one", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const { details } = await seriesDetails(app, a);
+    const last = details.seasons[0]!.episodes.at(-1)!;
+    const later = details.seasons[1]!.episodes[1]!;
+    const from = await app.addDownload(episodeOf(last));
+    const pastGap = await app.addDownload(episodeOf(later));
+    await until(
+      () => isComplete(app, from.id) && isComplete(app, pastGap.id),
+      "the nonadjacent copies",
+    );
+    app.playDownload(from.id);
+    await until(() => memory.played.length === 1, "the copy");
+    memory.player!.ready();
+    expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: false });
+    app.playNext();
+    await app.progressSettled();
+    await sleep(30);
+    expect(memory.played).toHaveLength(1);
+    await app.stop();
+  });
+
+  it("never borrows the same episode id from another provider", async () => {
+    await install();
+    const app = await launch();
+    const { a, b } = await withProviders(app, true);
+    const theirs = await seriesDetails(app, b!);
+    const ours = await seriesDetails(app, a);
+    const from = await app.addDownload(episodeOf(theirs.details.seasons[0]!.episodes[0]!));
+    const other = await app.addDownload(episodeOf(ours.details.seasons[0]!.episodes[1]!));
+    await until(
+      () => isComplete(app, from.id) && isComplete(app, other.id),
+      "both providers' copies",
+    );
+    app.playDownload(from.id);
+    await until(() => memory.played.length === 1, "the second provider's copy");
+    memory.player!.ready();
+    expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: false });
+    app.playNext();
+    await app.progressSettled();
+    await sleep(30);
+    expect(memory.played).toHaveLength(1);
+    await app.stop();
+  });
+
+  it("does not offer or stream a successor whose complete record has lost its file", async () => {
+    const { app, from, to } = await pair();
+    mediaFile(to.id)!.delete();
+    app.playDownload(from.id);
+    await until(() => memory.played.length === 1, "the original copy");
+    memory.player!.ready();
+    expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: false });
+    const requests = one.fileRequests();
+    app.playNext();
+    await app.progressSettled();
+    await sleep(30);
+    expect(memory.played).toHaveLength(1);
+    expect(one.fileRequests()).toBe(requests);
+    await app.stop();
+  });
+
+  for (const change of ["Stop", "navigation", "target removed"] as const) {
+    it(`retires a Next waiting for its save when ${change}`, async () => {
+      holdingViewingSaves();
+      const { app, from, to } = await pair();
+      app.playDownload(from.id);
+      await until(() => memory.played.length === 1, "the copy");
+      memory.player!.ready();
+      memory.player!.currentTime = 40;
+      memory.player!.state(true);
+      const held = Promise.withResolvers<void>();
+      viewingSaves.hold = held.promise;
+      onTestFinished(() => {
+        viewingSaves.hold = null;
+        held.resolve();
+      });
+      app.playNext();
+      await sleep(20);
+      expect(memory.played).toHaveLength(1);
+      if (change === "Stop") void app.stop();
+      else if (change === "navigation") app.request();
+      else await app.removeDownload(to.id);
+      viewingSaves.hold = null;
+      held.resolve();
+      await app.progressSettled();
+      await sleep(30);
+      expect(memory.played).toHaveLength(1);
+      await app.stop();
+    });
+  }
+
+  for (const continuation of [
+    undefined,
+    { version: 2, title: "future" },
+    { version: 1, title: { kind: "bad" } },
+  ]) {
+    it(`keeps a copy playable without guessing an unreadable saved order: ${JSON.stringify(continuation)}`, async () => {
+      let { app, a, from } = await pair();
+      await app.remove(a, { keepHistory: false });
+      const stored = doc();
+      const row = stored.items.find((each: { id: string }) => each.id === from.id);
+      if (continuation === undefined) delete row.continuation;
+      else row.continuation = continuation;
+      new DiskFile(native.root, "documents", "downloads.json").writeSync(JSON.stringify(stored));
+      app = await launch();
+      app.playDownload(from.id);
+      await until(() => memory.played.length === 1, "the legacy copy");
+      memory.player!.ready();
+      expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: false });
+      expect(memory.played[0]?.uri).toBe(`file://${mediaFile(from.id)!.path}`);
+      app.playNext();
+      await app.progressSettled();
+      await sleep(20);
+      expect(memory.played).toHaveLength(1);
+      await app.stop();
+      expect(doc().items.find((each: { id: string }) => each.id === from.id).continuation).toEqual(
+        continuation,
+      );
+    });
+  }
+});

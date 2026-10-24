@@ -341,6 +341,11 @@ Each responsibility has one owner, a plain module with a store the screens read:
   stay, play from the phone with no login or network, and keep their own progress, also given to
   the subscription's viewing record while it is saved. A copy playing goes on when the last
   subscription is removed.
+  Each newly downloaded episode also keeps the exact immediate successor from its provider's
+  series order. Watch offers manual Next only when that successor is a complete local copy of
+  the same provider and series version. Next saves first, then rechecks the copies and uses the
+  target copy's own resume point. A missing copy stops continuation without skipping or
+  streaming; no episode autoplays. Older copies with no saved order still play normally.
   `modules/downloads-folder` makes `Documents/downloads` at launch and keeps it out of backups;
   `modules/background-downloads` keeps its ledger in Application Support and its resume data in
   the Keychain, both readable after the first unlock (native: both take a new build).
