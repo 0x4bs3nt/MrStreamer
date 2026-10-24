@@ -4,19 +4,18 @@ import Foundation
 final class GuideDownload: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
   private let job: GuideJob
   private let file: URL
-  private let root: URL
+  private let disk: GuideDisk
   private let done = DispatchSemaphore(value: 0)
   private var handle: FileHandle?
   private var count: Int64 = 0
   private var failure: String?
   private var redirect: String?
   private var status = 0
-  init(job: GuideJob, file: URL, root: URL) { self.job = job; self.file = file; self.root = root }
+  init(job: GuideJob, file: URL, disk: GuideDisk) { self.job = job; self.file = file; self.disk = disk }
   func run(_ address: String, _ headers: [String: String]) throws -> String? {
     guard let url = URL(string: address), ["http", "https"].contains(url.scheme ?? "") else { throw GuideFailure("redirect") }
-    try job.check(); try guideDisk(root)
-    FileManager.default.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600])
-    handle = try FileHandle(forWritingTo: file)
+    try job.check(); try disk.check()
+    handle = try disk.open(file)
     defer { try? handle?.close(); try? FileManager.default.removeItem(at: file) }
     let configuration = URLSessionConfiguration.ephemeral
     configuration.urlCache = nil; configuration.httpCookieStorage = nil
@@ -66,9 +65,10 @@ final class GuideDownload: NSObject, URLSessionDataDelegate, URLSessionTaskDeleg
       if count > GuideBudget.body { throw GuideFailure("body") }
       // No async work queue that retains callback Data without backpressure.
       for offset in stride(from: 0, to: data.count, by: 65536) {
-        try handle?.write(contentsOf: data.subdata(in: offset..<min(data.count, offset + 65536)))
+        guard let handle = handle else { throw GuideFailure("disk") }
+        try disk.write(data.subdata(in: offset..<min(data.count, offset + 65536)), to: file, handle: handle)
       }
-      try guideDisk(root)
+      try disk.check()
     } catch let error as GuideFailure { failure = error.code; dataTask.cancel() }
     catch { failure = "disk"; dataTask.cancel() }
   }

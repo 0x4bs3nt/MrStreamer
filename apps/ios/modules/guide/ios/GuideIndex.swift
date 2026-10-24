@@ -5,18 +5,22 @@ private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 final class GuideIndex {
   private var db: OpaquePointer?
   private let job: GuideJob
-  private let root: URL
+  private let disk: GuideDisk
+  private let file: URL
+  private let connection: GuideConnection
   private var insertStatement: OpaquePointer?
   private var count = 0
-  init(_ file: URL, job: GuideJob, root: URL, create: Bool) throws {
-    self.job = job; self.root = root
+  init(_ file: URL, job: GuideJob, disk: GuideDisk, create: Bool) throws {
+    self.job = job; self.disk = disk; self.file = file
+    self.connection = try GuideConnection(disk: disk, job: job)
     let flags = create ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE : SQLITE_OPEN_READONLY
-    guard sqlite3_open_v2(file.path, &db, flags | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else { sqlite3_close(db); throw GuideFailure("disk") }
+    guard sqlite3_open_v2(file.path, &db, flags | SQLITE_OPEN_NOMUTEX, connection.name) == SQLITE_OK else { sqlite3_close(db); db = nil; throw GuideFailure("disk") }
     sqlite3_progress_handler(db, 1000, { context in
       guard let context = context else { return 1 }
       let job = Unmanaged<GuideJob>.fromOpaque(context).takeUnretainedValue()
       return (try? job.check()) == nil ? 1 : 0
     }, Unmanaged.passUnretained(job).toOpaque())
+    try execute("PRAGMA mmap_size=0; PRAGMA cache_size=-2048; PRAGMA temp_store=FILE; PRAGMA threads=0;")
     if create {
       try execute("PRAGMA journal_mode=DELETE; PRAGMA temp_store=FILE; PRAGMA cache_size=-2048; PRAGMA page_size=4096; PRAGMA max_page_count=8192; PRAGMA user_version=1; CREATE TABLE raw(channel TEXT NOT NULL,start REAL NOT NULL,stop REAL,title TEXT NOT NULL,description TEXT,PRIMARY KEY(channel,start)); BEGIN IMMEDIATE;")
       insertStatement = try prepare("INSERT OR IGNORE INTO raw VALUES(?,?,?,?,?)")
@@ -25,7 +29,15 @@ final class GuideIndex {
       if sqlite3_step(schema) != SQLITE_ROW || sqlite3_column_int(schema, 0) != 1 { throw GuideFailure("disk") }
     }
   }
-  deinit { sqlite3_finalize(insertStatement); sqlite3_close(db) }
+  deinit { close() }
+  private func close() {
+    // Finalize even a statement whose bind/prepare path failed before its local defer.
+    if let db = db {
+      while let statement = sqlite3_next_stmt(db, nil) { sqlite3_finalize(statement) }
+      sqlite3_close(db)
+      self.db = nil; insertStatement = nil
+    }
+  }
   private func prepare(_ sql: String) throws -> OpaquePointer {
     var statement: OpaquePointer?
     if sqlite3_prepare_v2(db, sql, -1, &statement, nil) != SQLITE_OK { throw GuideFailure("disk") }
@@ -49,16 +61,18 @@ final class GuideIndex {
     try bind(statement, 4, title); try bind(statement, 5, description)
     if sqlite3_step(statement) != SQLITE_DONE { try job.check(); throw GuideFailure("disk") }
     count += 1
-    if count % 512 == 0 { try job.check(); try execute("COMMIT; BEGIN IMMEDIATE;"); try guideDisk(root) }
+    if count % 512 == 0 { try job.check(); try execute("COMMIT; BEGIN IMMEDIATE;"); try disk.check() }
   }
   func finish(now: Double, from: Double, until: Double) throws -> Double {
     sqlite3_finalize(insertStatement); insertStatement = nil
     // Sort inside SQLite. First duplicate start wins. Missing stops use next start; overlaps end there.
     try execute("COMMIT; CREATE TABLE programmes(channel TEXT NOT NULL,start REAL NOT NULL,stop REAL NOT NULL,title TEXT NOT NULL,description TEXT,PRIMARY KEY(channel,start));")
+    connection.phase = "normalize"
     let statement = try prepare("INSERT INTO programmes SELECT channel,start,finish,title,description FROM (SELECT *, CASE WHEN stop IS NULL THEN next WHEN next IS NULL THEN stop ELSE min(stop,next) END finish FROM (SELECT *,lead(start) OVER(PARTITION BY channel ORDER BY start) next FROM raw)) WHERE finish-start>=60000 AND finish>? AND start<?")
-    defer { sqlite3_finalize(statement) }
     sqlite3_bind_double(statement, 1, from); sqlite3_bind_double(statement, 2, until)
-    if sqlite3_step(statement) != SQLITE_DONE { try job.check(); throw GuideFailure("disk") }
+    let inserted = sqlite3_step(statement)
+    sqlite3_finalize(statement)
+    if inserted != SQLITE_DONE { try job.check(); throw GuideFailure("disk") }
     let last: Double = try {
       let summary = try prepare("SELECT count(*),count(DISTINCT channel),max(stop) FROM programmes")
       defer { sqlite3_finalize(summary) }
@@ -69,8 +83,25 @@ final class GuideIndex {
       if last <= now { throw GuideFailure("ended") }
       return last
     }()
-    try execute("DROP TABLE raw; VACUUM; PRAGMA quick_check;")
-    try guideDisk(root)
+    try execute("DROP TABLE raw;")
+    connection.phase = "finalize"
+    // VACUUM INTO materializes compaction in an owned file instead of relying on the
+    // plain VACUUM transient pager's spill policy. Only an unpublished candidate is replaced.
+    let compact = file.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".vacuum")
+    defer { try? FileManager.default.removeItem(at: compact) }
+    let vacuum = try prepare("VACUUM INTO ?")
+    do { try bind(vacuum, 1, compact.path) } catch { sqlite3_finalize(vacuum); throw error }
+    let vacuumed = sqlite3_step(vacuum)
+    sqlite3_finalize(vacuum)
+    if vacuumed != SQLITE_DONE { try job.check(); throw GuideFailure("disk") }
+    try job.check()
+    close()
+    try {
+      let verified = try GuideIndex(compact, job: job, disk: disk, create: false)
+      try verified.integrity()
+    }()
+    try disk.replace(compact, with: file)
+    try disk.check()
     return last
   }
   func integrity() throws {

@@ -503,8 +503,11 @@ Initial native refusals are 32 MiB delivered callback bytes, 64 MiB inflated XML
 tokens/channel/programme elements, depth 32, 250,000 input programme rows, 10,000 kept programme
 channel IDs, 32 MiB per database, 256 MiB total guide disk and a 256 MiB free-space floor.
 These are conservative budgets to measure on devices, not phone-safety or exact compressed-wire
-limits. Whole-pipeline disk acceptance is pending: current checks count the guide directory;
-SQLite sorting and VACUUM temporaries outside it still need owned, bounded accounting. UTF-8 XML only; DTDs and entity declarations are refused. Programme prose follows the
+limits. Every guide connection uses a private non-default SQLite VFS. Sorting, journals and VACUUM
+scratch files stay under the guide root and share before-growth disk/free-space checks with
+spools and manifest staging. Per-connection mmap, preallocation hints and WAL shared-memory
+writes are disabled. The free-space check reserves allocation rounding and 64 KiB metadata
+headroom; it cannot reserve space against unrelated filesystem writers. UTF-8 XML only; DTDs and entity declarations are refused. Programme prose follows the
 existing catalogue password-substring policy: it refuses a raw password anywhere in saved text,
 including ordinary-word collisions, while usernames within prose are allowed. No guide artwork,
 provider URLs or request metadata is saved. `modules/guide/test/run.py` compiles the production

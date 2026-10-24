@@ -2,13 +2,13 @@ import Foundation
 
 private final class GuideInflateContext {
   let job: GuideJob
-  let root: URL
-  init(job: GuideJob, root: URL) { self.job = job; self.root = root }
+  init(job: GuideJob) { self.job = job }
 }
 
 /** Native publication, lease revocation and read pins share one lock. IO work uses utility queues. */
 final class GuideOwner {
   let root: URL
+  let disk: GuideDisk
   private let lock = NSRecursiveLock()
   private var sources = [String: GuideActivation]()
   private var jobs = [String: GuideJob]()
@@ -22,6 +22,7 @@ final class GuideOwner {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     var excluded = root; var values = URLResourceValues(); values.isExcludedFromBackup = true
     try excluded.setResourceValues(values)
+    self.disk = try GuideDisk(root: root)
   }
   private func directory(_ id: String) throws -> URL {
     guard guideOpaque(id) else { throw GuideFailure("changed") }
@@ -48,7 +49,7 @@ final class GuideOwner {
       let db = try file(id, generation.id)
       let bytes = try db.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
       if bytes <= 0 || bytes > GuideBudget.database { return nil }
-      let index = try GuideIndex(db, job: GuideJob(UUID().uuidString, "restore"), root: root, create: false)
+      let index = try GuideIndex(db, job: GuideJob(UUID().uuidString, "restore"), disk: disk, create: false)
       try index.integrity()
       return generation
     } catch { return nil }
@@ -110,7 +111,7 @@ final class GuideOwner {
       // Keep the tombstone outside the account directory, even if that directory refuses writes.
       // A failed deletion must never let restore or attach reopen this identity's old cache.
       let marker = try revocation(id)
-      try Data().write(to: marker, options: .atomic)
+      try disk.atomic(Data(), to: marker)
       if pins.keys.contains(where: { $0.deletingLastPathComponent() == dir }) { return false }
       if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
       try FileManager.default.removeItem(at: marker)
@@ -152,24 +153,26 @@ final class GuideOwner {
       let plain = dir.appendingPathComponent(key + ".xml")
       let part = try file(owner, key, part: true)
       defer { try? FileManager.default.removeItem(at: spool); try? FileManager.default.removeItem(at: closed); try? FileManager.default.removeItem(at: plain) }
-      if let location = try GuideDownload(job: job, file: spool, root: root).run(url, headers) { return ["kind": "redirect", "location": location] }
+      if let location = try GuideDownload(job: job, file: spool, disk: disk).run(url, headers) { return ["kind": "redirect", "location": location] }
       do {
         let handle = try FileHandle(forReadingFrom: closed); let magic = try handle.read(upToCount: 2); try handle.close()
         let xml: URL
         if magic == Data([31, 139]) {
-          let inflateContext = GuideInflateContext(job: job, root: root)
-          let result = mr_guide_inflate(closed.path, plain.path, UInt64(GuideBudget.plain), { context in
+          let inflateContext = GuideInflateContext(job: job)
+          let result = mr_guide_inflate(closed.path, plain.path, UInt64(GuideBudget.plain), disk.raw, { context in
             guard let context = context else { return 1 }
             let state = Unmanaged<GuideInflateContext>.fromOpaque(context).takeUnretainedValue()
-            do { try state.job.check(); try guideDisk(state.root); return 0 } catch { return 1 }
+            do { try state.job.check(); return 0 } catch { return 1 }
           }, Unmanaged.passUnretained(inflateContext).toOpaque())
-          try job.check(); try guideDisk(root)
+          try job.check(); try disk.check()
           if result != 0 { throw GuideFailure(result == 2 ? "body" : result == 4 ? "disk" : "gzip") }
           xml = plain
         } else { xml = closed }
-        let index = try GuideIndex(part, job: job, root: root, create: true)
-        try XmltvReader(index: index, job: job, login: login).run(xml)
-        let last = try index.finish(now: now, from: from, until: until)
+        let last: Double = try {
+          let index = try GuideIndex(part, job: job, disk: disk, create: true)
+          try XmltvReader(index: index, job: job, login: login).run(xml)
+          return try index.finish(now: now, from: from, until: until)
+        }()
         let generation = GuideGeneration(id: key, fetchedAt: now, until: last)
         lock.lock(); defer { lock.unlock() }
         _ = try context(lease, id)
@@ -183,10 +186,10 @@ final class GuideOwner {
       lock.lock(); defer { lock.unlock() }
       let (owner, job) = try context(lease, id)
       guard let candidate = candidates[key], candidate.owner == owner, candidate.job == id else { throw GuideFailure("changed") }
-      try job.check(); try guideDisk(root)
+      try job.check(); try disk.check()
       let source = try file(owner, key, part: true), destination = try file(owner, key)
       try FileManager.default.moveItem(at: source, to: destination)
-      do { try JSONEncoder().encode(candidate.generation).write(to: manifest(owner), options: .atomic) }
+      do { try disk.atomic(JSONEncoder().encode(candidate.generation), to: manifest(owner)) }
       catch { try? FileManager.default.removeItem(at: destination); throw error }
       sources[owner]?.generation = candidate.generation
       candidates.removeValue(forKey: key)
@@ -205,7 +208,7 @@ final class GuideOwner {
       } catch { lock.unlock(); throw error }
       lock.unlock()
       defer { lock.lock(); pins[path, default: 1] -= 1; if pins[path] == 0 { pins.removeValue(forKey: path) }; prune(owner); lock.unlock() }
-      let index = try GuideIndex(path, job: job, root: root, create: false)
+      let index = try GuideIndex(path, job: job, disk: disk, create: false)
       let result = try index.query(ids: ids, at: at, mode: mode, from: from, until: until, after: after)
       lock.lock(); defer { lock.unlock() }; _ = try context(lease, id)
       return result

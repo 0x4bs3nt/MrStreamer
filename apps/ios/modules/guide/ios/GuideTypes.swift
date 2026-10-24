@@ -57,17 +57,3 @@ func guideOpaque(_ value: String) -> Bool {
 func guideFiles(_ root: URL) throws -> [URL] {
   try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [])
 }
-func guideDisk(_ root: URL) throws {
-  let fm = FileManager.default
-  var bytes: Int64 = 0
-  if let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey, .isSymbolicLinkKey]) {
-    for case let file as URL in enumerator {
-      let values = try file.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey])
-      if values.isSymbolicLink == true { throw GuideFailure("disk") }
-      bytes += Int64(values.fileSize ?? 0)
-      if bytes > GuideBudget.disk { throw GuideFailure("disk") }
-    }
-  }
-  let attributes = try fm.attributesOfFileSystem(forPath: root.path)
-  if (attributes[.systemFreeSize] as? NSNumber)?.int64Value ?? 0 < GuideBudget.free { throw GuideFailure("disk") }
-}

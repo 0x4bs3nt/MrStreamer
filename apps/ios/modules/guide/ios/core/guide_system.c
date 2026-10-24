@@ -2,13 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <zlib.h>
+#include <unistd.h>
 
-int mr_guide_inflate(const char *input, const char *output, uint64_t limit,
+int mr_guide_inflate(const char *input, const char *output, uint64_t limit, mr_guide_disk *disk,
                      mr_guide_check check, void *context) {
-  FILE *in = fopen(input, "rb"), *out = NULL;
+  FILE *in = fopen(input, "rb");
+  int out = -1;
   if (!in) return 4;
-  out = fopen(output, "wb");
-  if (!out) { fclose(in); return 4; }
+  out = mr_guide_disk_open(disk, output);
+  if (out < 0) { fclose(in); return 4; }
   unsigned char src[65536], dst[65536];
   z_stream stream;
   memset(&stream, 0, sizeof(stream));
@@ -33,13 +35,13 @@ int mr_guide_inflate(const char *input, const char *output, uint64_t limit,
     size_t wrote = sizeof(dst) - stream.avail_out;
     total += wrote;
     if (total > limit) { result = 2; break; }
-    if (fwrite(dst, 1, wrote, out) != wrote) { result = 4; break; }
+    if (mr_guide_disk_write(disk, output, out, dst, wrote) != 0) { result = 4; break; }
     if (code == Z_STREAM_END) complete = 1;
     else if (code != Z_OK || (!wrote && !stream.avail_in && feof(in))) break;
   }
   inflateEnd(&stream);
 files:
-  if (fclose(out) != 0 && result == 0) result = 4;
+  if (close(out) != 0 && result == 0) result = 4;
   fclose(in);
   if (result) remove(output);
   return result;

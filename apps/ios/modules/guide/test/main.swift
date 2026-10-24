@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 @main struct GuideFixtures {
   static func require(_ condition: @autoclosure () -> Bool, _ label: String) throws {
@@ -10,6 +11,7 @@ import Foundation
     }
     return value
   }
+  static func phaseIsFinal(_ scenario: String) -> Bool { scenario.hasPrefix("finalize") }
   static func main() throws {
     let args = CommandLine.arguments
     guard args.count == 3 else { throw GuideFailure("arguments") }
@@ -115,6 +117,66 @@ import Foundation
     try require(finished.wait(timeout: .now() + 3) == .success, "cancel-completion")
     try require(cancelledDownload["kind"] as? String == "cancelled", "cancel-download")
     owner.finish("cancel-download")
+    let beforeResources = try Data(contentsOf: manifest)
+    for scenario in ["normalize-total", "normalize-free", "finalize-total", "normalize-cancel", "finalize-cancel"] {
+      var growths = 0
+      var injected = false
+      var finalFlags = Set<Int32>()
+      var finalGrowths = 0
+      let beforeStats = owner.disk.inspect()
+      owner.disk.setPolicy { request in
+        if request.phase == "finalize" && request.growth > 0 { finalFlags.insert(request.flags); finalGrowths += 1 }
+        let isScratch = request.flags & (SQLITE_OPEN_TEMP_DB | SQLITE_OPEN_TRANSIENT_DB | SQLITE_OPEN_TEMP_JOURNAL | SQLITE_OPEN_SUBJOURNAL) != 0
+        let phase = scenario.hasPrefix("normalize") ? "normalize" : "finalize"
+        if request.phase != phase || request.growth == 0 || (phase == "finalize" && !isScratch && request.flags & SQLITE_OPEN_MAIN_DB == 0) { return GuideIOLimits() }
+        growths += 1
+        if growths < 3 { return GuideIOLimits() }
+        injected = true
+        if scenario.hasSuffix("cancel") { return GuideIOLimits(cancel: true) }
+        if scenario.hasSuffix("free") { return GuideIOLimits(available: UInt64(GuideBudget.free) + request.growth - 1) }
+        return GuideIOLimits(total: request.used + request.growth - 1)
+      }
+      let job = "resource-" + scenario
+      let result = prepare("/resources", job)
+      owner.disk.setPolicy(nil)
+      try require(injected, "resource-fault-not-preflight-" + scenario + "-flags-" + finalFlags.sorted().map(String.init).joined(separator: "-") + "-growths-" + String(finalGrowths))
+      if scenario.hasSuffix("cancel") {
+        try require(result["kind"] as? String == "cancelled", "cancelled-sql")
+        try require(owner.publish(lease, job, "invented")["kind"] as? String == "cancelled", "cancel-lease-publish")
+      } else {
+        try require(result["error"] as? String == "disk", "resource-refusal")
+        try require(owner.publish(lease, job, "invented")["kind"] as? String == "changed", "no-candidate-publish")
+      }
+      owner.finish(job)
+      let afterResources = try Data(contentsOf: manifest)
+      try require(afterResources == beforeResources, "exact-last-good-manifest")
+      owner.begin(lease, "last-good-" + scenario)
+      let kept = try value(owner.query(lease, db, "last-good-" + scenario, ["trusted"], now, "listing", 0, 0, -1))
+      try require((kept["rows"] as! [[String: Any]])[0]["title"] as? String == "News & weather", "last-good-query")
+      owner.finish("last-good-" + scenario)
+      let stats = owner.disk.inspect()
+      try require(stats.open_files == 0 && stats.temp_files == 0 && stats.sql_growth > beforeStats.sql_growth, "closed-sql-resources")
+      if phaseIsFinal(scenario) { try require(finalFlags.contains(where: { $0 & SQLITE_OPEN_MAIN_DB != 0 }), "actual-finalization-file") }
+      let remaining = try guideFiles(root).filter { $0.lastPathComponent.hasPrefix(".guide-") }
+      let accountFiles = try guideFiles(root.appendingPathComponent("provider-a"))
+      try require(remaining.isEmpty && accountFiles.allSatisfy { $0.lastPathComponent == "manifest.json" || $0.lastPathComponent == db + ".sqlite" }, "failed-job-owned-cleanup")
+      print("PASS resource refusal/cleanup/last-good", scenario, "after", growths, "growth checks")
+    }
+    let statsBeforeSuccess = owner.disk.inspect()
+    var normalizedGrowths = 0
+    var compactedGrowths = 0
+    owner.disk.setPolicy { request in
+      if request.growth > 0 && request.phase == "normalize" { normalizedGrowths += 1 }
+      if request.growth > 0 && request.phase == "finalize" && request.flags & SQLITE_OPEN_MAIN_DB != 0 { compactedGrowths += 1 }
+      return GuideIOLimits()
+    }
+    let resourceCandidate = try value(prepare("/resources", "resource-success"))["id"] as! String
+    owner.disk.setPolicy(nil)
+    let statsAfterSuccess = owner.disk.inspect()
+    try require(normalizedGrowths > 0 && compactedGrowths > 0 && statsAfterSuccess.sql_growth > statsBeforeSuccess.sql_growth && statsAfterSuccess.open_files == 0, "normal-sql-and-compaction-not-disabled")
+    owner.cancel("resource-success")
+    try require(owner.publish(lease, "resource-success", resourceCandidate)["kind"] as? String == "cancelled", "resource-success-not-published")
+    owner.finish("resource-success")
     // Failed refresh never changed the manifest. Restart prunes orphan and follows only last-good.
     let orphan = root.appendingPathComponent("provider-a/orphan.part")
     try Data("fake".utf8).write(to: orphan)
