@@ -236,6 +236,7 @@ vi.mock("../src/downloads.ts", async () => {
     replaceMissingDownload: async (ref: TitleRef) => {
       scenario.asked.push(`replace ${keyOf(ref)}`);
       queued(ref);
+      return { kind: "replaced", download: downloadOf(ref) };
     },
     playDownload: (id: string) => scenario.asked.push(`play ${id}`),
     removeDownload: async (id: string) => {
@@ -244,9 +245,9 @@ vi.mock("../src/downloads.ts", async () => {
     retryDownload: async (id: string) => {
       scenario.asked.push(`retry ${id}`);
       const found = [...scenario.episodes.values()].find((each) => each.id === id);
-      if (found?.title.kind === "episode") {
-        queued({ ...found.title, subscriptionId: found.subscription!.id });
-      }
+      if (found?.title.kind !== "episode") return "unchanged";
+      queued({ ...found.title, subscriptionId: found.subscription!.id });
+      return "queued";
     },
   };
 });
@@ -1202,6 +1203,61 @@ describe("a series' bulk download", () => {
       expect(scenario.episodes.get("a:101")?.status.kind).toBe("queued");
     });
   }
+
+  for (const choice of ["Automatic", "Home"]) {
+    it(`stops before the next episode once ${choice} is accepted, the same version still shown`, async () => {
+      providers("a", "b");
+      const held = Promise.withResolvers<void>();
+      scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+      const page = await mountSeries();
+      page.press("bulk-season-start");
+      choose("Download 3 episodes");
+      await ran();
+      page.openVersions()(choice);
+      await settled();
+      await React.act(async () => held.resolve());
+      await ran();
+      expect(scenario.asked).toEqual(["add a:101"]);
+      expect(scenario.alerts.at(-1)?.message).toBe(
+        "1 queued. Stopped before 2 episodes: a version was chosen meanwhile.",
+      );
+
+      // Confirmed afresh, the rest goes.
+      scenario.asked.length = 0;
+      page.press("bulk-season-start");
+      choose("Download 2 episodes");
+      await ran();
+      expect(scenario.asked).toEqual(["add a:102", "add a:103"]);
+    });
+  }
+
+  it("does nothing for a sheet answered once the version shown was accepted again", async () => {
+    providers("a", "b");
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    const sheet = scenario.menu!;
+    page.openVersions()("Home");
+    await settled();
+    React.act(() => sheet.pick(0));
+    await ran();
+    expect(scenario.asked).toEqual([]);
+    expect(scenario.alerts.at(-1)?.message).toBe("The version or its provider changed. Try again.");
+  });
+
+  it("keeps going when the version menu is cancelled", async () => {
+    providers("a", "b");
+    const held = Promise.withResolvers<void>();
+    scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    choose("Download 3 episodes");
+    await ran();
+    page.openVersions()("Cancel");
+    await settled();
+    await React.act(async () => held.resolve());
+    await ran();
+    expect(scenario.asked).toEqual(["add a:101", "add a:102", "add a:103"]);
+  });
 
   it("keeps going while the same version's details are drawn again", async () => {
     providers("a");

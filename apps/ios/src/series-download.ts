@@ -15,11 +15,16 @@ import { store, useStore } from "./store.ts";
 // shown, its provider's login as it was, and its episodes by their exact files, in the order the
 // series lists them (core's, specials and a playlist's own order included). An episode is queued
 // only if it still has no download, retried only if it still failed, and its missing copy
-// replaced only if the viewer asked and its file is still gone; any other is skipped. Before each
-// one the run stops for good when the viewer cancelled it, left these details or chose another
-// version (`stands`), or when that provider was removed or signed in anew. A request already
-// made settles and counts. What was queued stays queued whatever comes after it. One run goes at
-// a time.
+// replaced only if the viewer asked and its file is still gone; any other is skipped.
+//
+// The run stands while the viewer hasn't cancelled it, its provider's login is the very one it was
+// planned under, and the caller's word holds (`stands`): the details stay mounted, showing that
+// version, with no version accepted in their menu since, even the same one. Downloads pushed over
+// the details doesn't end it, so its progress shows there and Back returns to it. It is checked
+// before each episode. An addition already asked settles and counts, as downloads.ts fences it by
+// its own login. A retry, and a replacement's new addition, are written only while the run still
+// stands once their lookup or removal ended: those writes are the run's, not yet asked. What was
+// queued stays queued whatever comes after it. One run goes at a time.
 
 export type EpisodeRef = Extract<TitleRef, { kind: "episode" }>;
 
@@ -51,6 +56,8 @@ export interface Result {
   readonly added: number;
   readonly retried: number;
   readonly replaced: number;
+  /** Missing copies removed, then not queued again as the run stopped. */
+  readonly removed: number;
   /** Changed since the viewer confirmed, so left as they were. */
   readonly skipped: number;
   readonly failed: readonly { readonly ref: EpisodeRef; readonly error: string }[];
@@ -90,6 +97,7 @@ const NONE: Result = {
   added: 0,
   retried: 0,
   replaced: 0,
+  removed: 0,
   skipped: 0,
   failed: [],
   cancelled: 0,
@@ -103,7 +111,7 @@ function sameLogin(plan: Plan): boolean {
 }
 
 /** How an episode stands in the queue now. */
-function standing(ref: EpisodeRef): "none" | "held" | "failed" | "missing" {
+function statusOf(ref: EpisodeRef): "none" | "held" | "failed" | "missing" {
   const status = downloadOf(ref)?.status.kind;
   if (status === undefined) return "none";
   if (status === "failed" || status === "missing") return status;
@@ -116,7 +124,7 @@ function sorted(base: Omit<Plan, "seasons" | "held" | "add" | "retry" | "missing
   const missing: EpisodeRef[] = [];
   let held = 0;
   for (const ref of base.episodes) {
-    const now = standing(ref);
+    const now = statusOf(ref);
     if (now === "none") add.push(ref);
     else if (now === "failed") retry.push(ref);
     else if (now === "missing") missing.push(ref);
@@ -157,7 +165,7 @@ export function countDownload(details: SeriesDetails, version: OwnedId, scope: S
   const episodes = episodesIn(details, version, scope);
   return {
     total: episodes.length,
-    held: episodes.filter((ref) => standing(ref) === "held").length,
+    held: episodes.filter((ref) => statusOf(ref) === "held").length,
   };
 }
 
@@ -202,39 +210,43 @@ export function startDownload(
   running = me;
   lastFailed = null;
   runs.set({ id: me.id, phase: "running", done: 0, total, result: NONE });
+  /** Why the run no longer stands, or null while it does. */
+  const ended = (): Result["stopped"] =>
+    me.cancelled ? "cancelled" : !sameLogin(plan) ? "login" : !stands() ? "left" : null;
+  const standing = () => ended() === null;
   void (async () => {
     const failed: { ref: EpisodeRef; error: string }[] = [];
     let result = NONE;
     let done = 0;
     for (const { ref, was } of steps) {
       await yieldNow();
-      const stopped = me.cancelled
-        ? "cancelled"
-        : !stands()
-          ? "left"
-          : !sameLogin(plan)
-            ? "login"
-            : null;
+      const stopped = ended();
       if (stopped) {
         result = { ...result, stopped, cancelled: total - done };
         break;
       }
-      if (standing(ref) !== was) result = { ...result, skipped: result.skipped + 1 };
-      else {
-        try {
-          await ask(was, ref);
-          if (standing(ref) === "failed") throw new Error("It couldn't be queued again.");
-          result =
-            was === "none"
-              ? { ...result, added: result.added + 1 }
-              : was === "failed"
-                ? { ...result, retried: result.retried + 1 }
-                : { ...result, replaced: result.replaced + 1 };
-        } catch (cause) {
-          failed.push({ ref, error: describeError(appError(cause)) });
-          result = { ...result, failed: [...failed] };
-        }
+      let asked: Asked;
+      try {
+        asked = statusOf(ref) === was ? await ask(was, ref, standing) : "unchanged";
+      } catch (cause) {
+        failed.push({ ref, error: describeError(appError(cause)) });
+        asked = "failed";
       }
+      if (asked === "stopped" || asked === "removed") {
+        result = {
+          ...result,
+          stopped: ended() ?? "left",
+          cancelled: total - done,
+          removed: result.removed + (asked === "removed" ? 1 : 0),
+        };
+        break;
+      }
+      result =
+        asked === "failed"
+          ? { ...result, failed: [...failed] }
+          : asked === "unchanged"
+            ? { ...result, skipped: result.skipped + 1 }
+            : { ...result, [asked]: result[asked] + 1 };
       done++;
       runs.set({ id: me.id, phase: "running", done, total, result });
     }
@@ -245,16 +257,31 @@ export function startDownload(
   return me.id;
 }
 
-/** Asks the queue for one episode, by how it stood when confirmed. */
-async function ask(was: Was, ref: EpisodeRef): Promise<unknown> {
+/**
+ * What one episode's ask did: counted as such; `unchanged` as it changed meanwhile, so nothing
+ * was done; `stopped` before anything was written, or `removed`, a missing copy gone and not
+ * queued again, as the run no longer stood.
+ */
+type Asked = "added" | "retried" | "replaced" | "unchanged" | "stopped" | "removed" | "failed";
+
+/** Asks the queue for one episode, by how it stood when confirmed, while `stands` holds. */
+async function ask(was: Was, ref: EpisodeRef, stands: () => boolean): Promise<Asked> {
   switch (was) {
     case "none":
-      return addDownload(ref);
-    case "missing":
-      return replaceMissingDownload(ref);
+      await addDownload(ref);
+      return "added";
+    case "missing": {
+      const replaced = await replaceMissingDownload(ref, stands);
+      return replaced.kind === "replaced"
+        ? "replaced"
+        : replaced.kind === "stopped"
+          ? "removed"
+          : "unchanged";
+    }
     case "failed": {
       const download = downloadOf(ref);
-      return download && retryDownload(download.id);
+      const retried = download ? await retryDownload(download.id, stands) : "unchanged";
+      return retried === "queued" ? "retried" : retried;
     }
   }
 }

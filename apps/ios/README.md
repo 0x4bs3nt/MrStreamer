@@ -53,9 +53,12 @@ Cancel, Retry, Remove, Play offline and Delete as each state allows (`src/downlo
 `src/download-controls.tsx`). A series' details also offer Download remaining for the season shown
 and Review series download for every season: after a system sheet with the exact counts, they queue
 that version's episodes one at a time in the series' own order, specials included, retry failed ones
-and replace a missing copy only when asked, never one Watch is playing. Cancel remaining stops
-before the next episode; leaving, another version or a new login stops it too, and what was queued
-stays (`src/series-download.ts`, `src/series-download-row.tsx`). Play and Resume always stream; a
+and replace a missing copy only when asked, never one Watch is playing. It goes on while Downloads
+is opened over the details. Cancel remaining stops it before the next episode, as do closing the
+details, another version, any version accepted in the menu, the same one included, and a new login
+or the provider's removal; what was queued stays. An addition already asked settles, but a retry or
+a missing copy's new addition is only written while the run still stands
+(`src/series-download.ts`, `src/series-download-row.tsx`). Play and Resume always stream; a
 copy plays offline from Downloads,
 its menu and an episode's check. A download under way goes on in the background, but the next in
 the queue starts only once the app is open again: not yet the desktop's queue. What the desktop

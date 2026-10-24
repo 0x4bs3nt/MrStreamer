@@ -1123,18 +1123,33 @@ export function useDownloadOf(ref: TitleRef): Download | undefined {
   return downloadOf(ref);
 }
 
-/** Queues a failed download again, by the file type its provider lists now when it can say. */
-async function again(record: Stored): Promise<void> {
+/** Whether a caller still wants what it asked: by default, always. */
+type Stands = () => boolean;
+const always: Stands = () => true;
+
+/**
+ * How a retry ended: queued again; `unchanged` as that download is gone or no longer failed; or
+ * `stopped`, nothing written, as `stands` ended.
+ */
+export type Retried = "queued" | "unchanged" | "stopped";
+
+/**
+ * Queues a failed download again, by the file type its provider lists now when it can say: only
+ * that record, while it is still failed and `stands` still holds once the lookup answered.
+ */
+async function again(record: Stored, stands: Stands = always): Promise<Retried> {
   const ref: TitleRef = { ...record.title, subscriptionId: record.subscriptionId };
   const container = await titleFile(ref, AbortSignal.timeout(20_000)).then(
     (file) => file.container,
     () => record.container,
   );
   const latest = find(record.id);
-  if (latest?.state !== "failed") return;
+  if (latest?.state !== "failed") return "unchanged";
+  if (!stands()) return "stopped";
   update(record.id, () => ({ ...withoutFailure(latest), container, state: "queued" }));
   tell();
   wake();
+  return "queued";
 }
 
 /**
@@ -1211,32 +1226,50 @@ export async function removeDownload(id: string): Promise<void> {
 }
 
 /**
- * Downloads a movie or an episode anew whose copy's file is gone: its record goes, with the
- * copy's own progress, then it is queued as `addDownload` queues it. A copy whose file is there
- * after all stays and answers as it is. Rejects, changing nothing, while that copy is what Watch
- * opens or plays: the player may still read the file, so the viewer stops it first.
+ * How replacing a missing copy ended: queued anew; its file was there after all (`kept`); no
+ * missing copy of it, or it was queued again meanwhile by someone else (`unchanged`); or removed,
+ * then not queued again as `stands` ended (`stopped`).
  */
-export async function replaceMissingDownload(ref: TitleRef): Promise<Download> {
+export type Replaced =
+  | { readonly kind: "replaced"; readonly download: Download }
+  | { readonly kind: "kept" | "unchanged" | "stopped" };
+
+/**
+ * Downloads a movie or an episode anew whose copy's file is gone: its record goes, with the
+ * copy's own progress, then it is queued as `addDownload` queues it, only while `stands` still
+ * holds once the removal ended. A removal that ended stays. A copy whose file is there after all
+ * stays as it is. Rejects, changing nothing, while that copy is what Watch opens or plays: the
+ * player may still read the file, so the viewer stops it first.
+ */
+export async function replaceMissingDownload(
+  ref: TitleRef,
+  stands: Stands = always,
+): Promise<Replaced> {
   const record = doc.items.find((each) => sameTitle(each, ref));
-  if (record?.state === "complete") {
-    if (mediaOf(record).exists) {
-      missing.delete(record.id);
-      tell();
-      return addDownload(ref);
-    }
-    if (playingItem(playbackState.get().phase)?.id === copyKey(record.id)) {
-      throw new AppFailure({ kind: "unexpected", detail: "Stop playing this copy first." });
-    }
-    // Checked and removed in one go: nothing plays it in between.
-    await removeDownload(record.id);
+  if (record?.state !== "complete") return { kind: "unchanged" };
+  if (mediaOf(record).exists) {
+    missing.delete(record.id);
+    tell();
+    return { kind: "kept" };
   }
-  return addDownload(ref);
+  if (playingItem(playbackState.get().phase)?.id === copyKey(record.id)) {
+    throw new AppFailure({ kind: "unexpected", detail: "Stop playing this copy first." });
+  }
+  // Checked and removed in one go: nothing plays it in between.
+  await removeDownload(record.id);
+  if (!stands()) return { kind: "stopped" };
+  if (doc.items.some((each) => sameTitle(each, ref))) return { kind: "unchanged" };
+  // Asked at once: the login `addDownload` takes as it starts is the one `stands` just checked.
+  return { kind: "replaced", download: await addDownload(ref) };
 }
 
-/** Queues a failed download again. */
-export async function retryDownload(id: string): Promise<void> {
+/**
+ * Queues a failed download again, unless it is gone or no longer failed by the time its file type
+ * is looked up, or `stands` no longer holds then.
+ */
+export async function retryDownload(id: string, stands: Stands = always): Promise<Retried> {
   const record = find(id);
-  if (record?.state === "failed") await again(record);
+  return record?.state === "failed" ? again(record, stands) : "unchanged";
 }
 
 /**

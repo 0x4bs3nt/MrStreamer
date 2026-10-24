@@ -36,12 +36,15 @@ function summary(result: Result): string {
     result.retried > 0 ? `${result.retried} retried.` : null,
     result.replaced > 0 ? `${result.replaced} replaced.` : null,
     result.skipped > 0 ? `${result.skipped} changed meanwhile and stayed as they were.` : null,
+    result.removed > 0
+      ? `${result.removed} missing ${result.removed === 1 ? "copy" : "copies"} removed and not queued again.`
+      : null,
     failed ? `${result.failed.length} failed: ${failed.error}` : null,
     result.stopped === "cancelled" ? `Cancelled before ${before}.` : null,
     result.stopped === "login"
       ? `Stopped before ${before}: the provider signed in anew or was removed.`
       : null,
-    result.stopped === "left" ? `Stopped before ${before}: another version was chosen.` : null,
+    result.stopped === "left" ? `Stopped before ${before}: a version was chosen meanwhile.` : null,
   ].filter(Boolean);
   return said.length > 0 ? said.join(" ") : "Nothing was added.";
 }
@@ -70,7 +73,8 @@ const openDownloads = (tabs: TabsAt | null) => tabs && openOnTabs(tabs, "downloa
 
 /**
  * A bulk download's row for `scope` of `details`, the details of version `version` as shown:
- * `stands` is a Resume-style word of the screen, ending once it shows another version or goes.
+ * `stands` is the screen's word, ending once it goes, shows another version or a version is
+ * accepted in its menu. Downloads pushed over it leaves it standing.
  */
 export function SeriesDownloadRow({
   details,

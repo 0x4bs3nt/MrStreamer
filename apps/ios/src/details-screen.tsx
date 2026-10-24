@@ -158,6 +158,9 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
   const watchlist = useWatchlist();
   const state = useSavedState();
   const [picked, setPicked] = useState<OwnedId | typeof AUTOMATIC | null>(null);
+  // Rises as the menu accepts a version, Automatic or the one shown included, at once: a bulk
+  // download confirmed before goes no further (series-download-row.tsx).
+  const accepted = useRef(0);
   // The title as listed now, for a version menu answered after the lists changed; none once these
   // details are gone, as when the lists no longer have the title, though the sheet stays open.
   const listedNow = useRef<Title | null>(null);
@@ -279,6 +282,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
         // A choice is the viewer's newest ask: a Resume still waiting plays nothing (`request`).
         if (index === 0) {
           request();
+          accepted.current++;
           setPicked(AUTOMATIC);
           pickVersion(now, null);
           return;
@@ -286,6 +290,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
         const choice = choices[index - 1];
         if (!choice || !now.versions.some((each) => sameOwned(each, choice.version))) return;
         request();
+        accepted.current++;
         setPicked(choice.version);
         pickVersion(now, choice.version);
       },
@@ -417,6 +422,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
           title={shownTitle}
           version={version}
           sequence={sequence}
+          accepted={accepted}
           onVersions={chooseVersion}
         />
       ) : null}
@@ -501,15 +507,25 @@ function Seasons({
   title,
   version,
   sequence,
+  accepted,
   onVersions,
 }: {
   details: SeriesDetails;
   title: Title;
   version: OwnedId;
   sequence: number;
+  /** How many versions the menu accepted so far. */
+  accepted: { readonly current: number };
   onVersions: () => void;
 }) {
   const pressed = usePressed(ownedKey(version));
+  // The bulk downloads' word: the Resume word, also ended by a version accepted in the menu since,
+  // even the same one. Playing or stopping anything else leaves it standing.
+  const bulk = () => {
+    const word = pressed();
+    const at = accepted.current;
+    return { stands: () => accepted.current === at && word.stands() };
+  };
   const standing = useRead(
     ownedKey(version),
     useCallback(() => seriesViewing(version), [version]),
@@ -581,7 +597,7 @@ function Seasons({
         scope={{ kind: "season", season: shown.number }}
         label={shown.name}
         action="Download remaining"
-        stands={pressed}
+        stands={bulk}
       />
       {undoable ? (
         <View style={styles.undo} accessibilityLiveRegion="polite">
@@ -621,7 +637,7 @@ function Seasons({
           scope={{ kind: "series" }}
           label={title.title}
           action="Review series download"
-          stands={pressed}
+          stands={bulk}
         />
       ) : null}
     </View>

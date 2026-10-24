@@ -1212,6 +1212,148 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(statusOf(app, kept.id)).toBeUndefined();
     expect(app.downloadOf(plan.missing[0]!)?.status.kind).not.toBe("missing");
   });
+
+  // While the old record's removal still waits on the native side, the run stops: its new
+  // addition isn't the run's to make any more. Nothing stopping it, it is made.
+  for (const change of ["nothing", "Cancel remaining", "a new login", "leaving"] as const) {
+    it(`replaces a missing copy, once its removal ends, only while the run stands: ${change}`, async () => {
+      await install();
+      const app = await launch();
+      const { a } = await withProviders(app);
+      const { version, details } = await seriesDetails(app, a);
+      const season = details.seasons[0]!;
+      const only = { ...details, seasons: [{ ...season, episodes: season.episodes.slice(1, 2) }] };
+      const kept = await app.addDownload(episodeOf(season.episodes[1]!));
+      await until(() => isComplete(app, kept.id), "the copy", 20_000);
+      mediaFile(kept.id)!.delete();
+      appGoes("background");
+      appGoes("active");
+      const plan = app.planDownload(only, version, { kind: "season", season: season.number });
+      const { transfers } = await import("../src/download-task.ts");
+      const forget = transfers.forgetResume.bind(transfers);
+      const arrived = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const hold = vi.spyOn(transfers, "forgetResume").mockImplementationOnce(async (id) => {
+        arrived.resolve();
+        await released.promise;
+        await forget(id);
+      });
+      onTestFinished(() => {
+        released.resolve();
+        hold.mockRestore();
+      });
+      let mounted = true;
+      const id = app.startDownload(plan, { replace: true, stands: () => mounted })!;
+      await arrived.promise;
+      expect(doc().items).toEqual([]);
+      if (change === "Cancel remaining") app.cancelRemaining(id);
+      else if (change === "a new login") await app.update(a, { password: ONE.password });
+      else if (change === "leaving") mounted = false;
+      released.resolve();
+      await until(() => app.seriesRun()?.phase === "done", "the run");
+      const { result } = app.seriesRun()!;
+      if (change === "nothing") {
+        expect(result).toMatchObject({ replaced: 1, removed: 0, stopped: null });
+        expect(app.downloadOf(plan.missing[0]!)?.status.kind).not.toBe("missing");
+        return;
+      }
+      expect(result).toMatchObject({
+        replaced: 0,
+        removed: 1,
+        cancelled: 1,
+        stopped: { "Cancel remaining": "cancelled", "a new login": "login", leaving: "left" }[
+          change
+        ],
+      });
+      // The removal stays; nothing comes back and nothing new is queued, under either login.
+      expect(app.downloadList().items).toEqual([]);
+      expect(doc().items).toEqual([]);
+    });
+  }
+
+  // A failed episode's retry waits for its file type; meanwhile the viewer removes it, removes and
+  // downloads it anew, or the run no longer stands. Only that record's retry counts, and only a
+  // run that stands writes it.
+  for (const change of [
+    "removal",
+    "a new download of it",
+    "Cancel remaining",
+    "a new login",
+  ] as const) {
+    it(`retries a failed episode only as its record still stands: ${change}`, async () => {
+      await install();
+      let app = await launch();
+      const { a } = await withProviders(app);
+      const { version, details } = await seriesDetails(app, a);
+      const season = details.seasons[0]!;
+      const only = { ...details, seasons: [{ ...season, episodes: season.episodes.slice(1, 2) }] };
+      const ref = episodeOf(season.episodes[1]!);
+      native.free = 1;
+      const failed = await app.addDownload(ref);
+      await until(() => statusOf(app, failed.id)?.kind === "failed", "the disk to refuse it");
+      native.free = 64 * 1024 * 1024 * 1024;
+      // Launched anew, its file type is asked of the provider again.
+      app = await launch();
+      await until(() => app.titleLists().kind === "ready", "the title lists");
+      const plan = app.planDownload(only, version, { kind: "season", season: season.number });
+      expect(plan.retry).toHaveLength(1);
+      const arrived = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      memory.details = { arrived: arrived.resolve, released: released.promise };
+      const id = app.startDownload(plan, { replace: false, stands: () => true })!;
+      await arrived.promise;
+      let anew: Promise<Download> | null = null;
+      if (change === "removal") await app.removeDownload(failed.id);
+      else if (change === "a new download of it") {
+        await app.removeDownload(failed.id);
+        anew = app.addDownload(ref);
+      } else if (change === "Cancel remaining") app.cancelRemaining(id);
+      else await app.update(a, { password: ONE.password });
+      memory.details = null;
+      released.resolve();
+      await until(() => app.seriesRun()?.phase === "done", "the run");
+      const { result } = app.seriesRun()!;
+      expect(result.retried).toBe(0);
+      if (change === "removal" || change === "a new download of it") {
+        expect(result).toMatchObject({ skipped: 1, stopped: null });
+        const again = anew && (await anew);
+        // Nothing removed comes back; the new download is the viewer's own, once.
+        expect(app.downloadList().items.map((item) => item.id)).toEqual(again ? [again.id] : []);
+        expect(again?.id).not.toBe(failed.id);
+        return;
+      }
+      expect(result).toMatchObject({
+        cancelled: 1,
+        stopped: change === "Cancel remaining" ? "cancelled" : "login",
+      });
+      expect(statusOf(app, failed.id)?.kind).toBe("failed");
+      expect(doc().items.map((item: { state: string }) => item.state)).toEqual(["failed"]);
+    });
+  }
+
+  it("lets an addition already asked settle after Cancel remaining, asking for no other", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    const { version, details } = await seriesDetails(app, a);
+    const season = details.seasons[0]!;
+    const two = { ...details, seasons: [{ ...season, episodes: season.episodes.slice(1, 3) }] };
+    // Launched anew, the first addition asks the provider for the series again.
+    app = await launch();
+    await until(() => app.titleLists().kind === "ready", "the title lists");
+    const plan = app.planDownload(two, version, { kind: "season", season: season.number });
+    const arrived = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    memory.details = { arrived: arrived.resolve, released: released.promise };
+    const id = app.startDownload(plan, { replace: false, stands: () => true })!;
+    await arrived.promise;
+    app.cancelRemaining(id);
+    memory.details = null;
+    released.resolve();
+    await until(() => app.seriesRun()?.phase === "done", "the run");
+    expect(app.seriesRun()?.result).toMatchObject({ added: 1, cancelled: 1, stopped: "cancelled" });
+    expect(app.downloadList().items.map((item) => item.title.id)).toEqual([plan.add[0]!.id]);
+  });
 });
 
 /** The first fixture series' details from `subscriptionId`, as its details screen reads them. */
