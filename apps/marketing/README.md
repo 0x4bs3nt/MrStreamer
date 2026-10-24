@@ -369,7 +369,7 @@ Never run both. Two publishers on one project overwrite each other.
 
 ## Package availability
 
-`src/packages.ts` owns approved package destinations, exact commands, supported systems/architectures and independent publication receipts. Homebrew is published, last verified at 0.0.19; AUR stays unpublished and on hold. `scripts/pages.ts` omits unpublished or withdrawn package links and commands from built HTML. Withdrawal keeps the last verified version. The direct release feed never activates or changes package metadata.
+`src/packages.ts` owns approved package destinations, exact commands, supported systems/architectures and independent publication receipts. Homebrew and AUR are published, last verified at 0.0.19. AUR's `mrstreamer-bin` package revision is 0.0.19-1, maintained by 4bs3nt; its registry receipt points to the planning card's separate native-package and user-reported public-install evidence. `scripts/pages.ts` omits unpublished or withdrawn package links and commands from built HTML. Withdrawal keeps the last verified version. The direct release feed never activates or changes package metadata.
 
 The selected download A layout keeps the visitor's direct installer first and adds checked package alternatives to the matching system rows. OS detection selects neither an architecture nor an Arch distribution. Package links name their actual platform and architecture. Package links add no analytics collection; existing installer and Store events retain their vocabulary. The FAQ names the published route, and the public update guide explains quitting before replacement, version comparisons and reinstall limits. Never activate a route from a candidate recipe or an unpublished tap/AUR entry.
 
