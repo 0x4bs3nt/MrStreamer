@@ -94,6 +94,8 @@ vi.mock("expo-router", () => {
 vi.mock("expo-video", () => ({ isPictureInPictureSupported: () => true }));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("../src/downloads-screen.tsx", () => ({ DownloadsLink: () => null }));
+// This screen's native header is outside the renderer; its queue button has separate coverage.
+vi.mock("../src/download-status.tsx", () => ({ DownloadStatusButton: () => null }));
 vi.mock("../src/ui.tsx", async () => {
   const { createElement } = await import("react");
   return {
