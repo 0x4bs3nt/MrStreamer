@@ -50,7 +50,13 @@ movies, series and channels: 20 movies and 20 series at first, each kind with it
 for the next 20 until every match shows. A movie's details and each episode row have a download button whose
 symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
 Cancel, Retry, Remove, Play offline and Delete as each state allows (`src/downloads-screen.tsx`,
-`src/download-controls.tsx`). Play and Resume always stream; a copy plays offline from Downloads,
+`src/download-controls.tsx`). A series' details also offer Download remaining for the season shown
+and Review series download for every season: after a system sheet with the exact counts, they queue
+that version's episodes one at a time in the series' own order, specials included, retry failed ones
+and replace a missing copy only when asked, never one Watch is playing. Cancel remaining stops
+before the next episode; leaving, another version or a new login stops it too, and what was queued
+stays (`src/series-download.ts`, `src/series-download-row.tsx`). Play and Resume always stream; a
+copy plays offline from Downloads,
 its menu and an episode's check. A download under way goes on in the background, but the next in
 the queue starts only once the app is open again: not yet the desktop's queue. What the desktop
 does and iOS doesn't yet is tracked in the parity report on the iOS card.

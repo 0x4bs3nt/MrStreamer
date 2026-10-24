@@ -1,5 +1,5 @@
 import type { Download, DownloadStatus } from "@mrstreamer/contracts/downloads";
-import type { TitleRef } from "@mrstreamer/contracts/ondemand";
+import type { Episode as SeriesEpisode, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // Downloads through the app's own owners: the account, its two fake Xtream panels over HTTP (the
@@ -274,10 +274,20 @@ async function launch() {
   const viewing = await import("../src/viewing.ts");
   const downloads = await import("../src/downloads.ts");
   const playTitle = await import("../src/play-title.ts");
+  const series = await import("../src/series-download.ts");
   await account.restore();
   downloads.startDownloads();
   // `playback` too, whose `retry` another owner's shadows.
-  return { ...titles, ...playback, ...viewing, ...downloads, ...account, ...playTitle, playback };
+  return {
+    ...titles,
+    ...playback,
+    ...viewing,
+    ...downloads,
+    ...account,
+    ...playTitle,
+    ...series,
+    playback,
+  };
 }
 type App = Awaited<ReturnType<typeof launch>>;
 
@@ -1134,4 +1144,93 @@ describe("downloads", { timeout: 30_000 }, () => {
     const recorded = await app.progressOf({ movies: [{ subscriptionId: a, id: kept.title.id }] });
     expect(recorded[0]?.position).toBe(40);
   });
+
+  it("queues a season's remaining episodes of one provider, once each", async () => {
+    await install();
+    const app = await launch();
+    const { a, b } = await withProviders(app, true);
+    const { version, details } = await seriesDetails(app, a);
+    const season = details.seasons[0]!;
+    const [first] = season.episodes;
+    await app.addDownload(episodeOf(first!));
+    const scope = { kind: "season", season: season.number } as const;
+    const plan = app.planDownload(details, version, scope);
+    expect(plan.held).toBe(1);
+    expect(plan.add.map((ref) => ref.id)).toEqual(season.episodes.slice(1).map((each) => each.id));
+
+    const asked = two.fileRequests();
+    const id = app.startDownload(plan, { replace: false, stands: () => true });
+    await until(() => app.seriesRun()?.phase === "done", "the run");
+    expect(app.seriesRun()).toMatchObject({ id, total: season.episodes.length - 1 });
+    expect(app.seriesRun()?.result).toMatchObject({
+      added: season.episodes.length - 1,
+      failed: [],
+    });
+    const records = app.downloadList().items.filter((item) => item.title.kind === "episode");
+    expect(records.map((item) => item.title.id).toSorted()).toEqual(
+      season.episodes.map((each) => each.id).toSorted(),
+    );
+    // The other provider lists the same ids: none of its episodes is queued or asked for.
+    expect(records.every((item) => item.subscription?.id === a)).toBe(true);
+    expect(b).not.toBeNull();
+    expect(two.fileRequests()).toBe(asked);
+    expect(app.planDownload(details, version, scope).add).toEqual([]);
+  });
+
+  it("replaces a missing copy only once the copy playing stops", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const { version, details } = await seriesDetails(app, a);
+    const season = details.seasons[0]!;
+    // Its second episode, an MP4 the player opens itself, alone in its season.
+    const only = { ...details, seasons: [{ ...season, episodes: season.episodes.slice(1, 2) }] };
+    const kept = await app.addDownload(episodeOf(season.episodes[1]!));
+    await until(() => isComplete(app, kept.id), "the copy", 20_000);
+    app.playDownload(kept.id);
+    await until(() => memory.played.length === 1, "the copy to open");
+    mediaFile(kept.id)!.delete();
+    appGoes("background");
+    appGoes("active");
+    expect(statusOf(app, kept.id)?.kind).toBe("missing");
+
+    const plan = app.planDownload(only, version, { kind: "season", season: season.number });
+    expect(plan.missing).toHaveLength(1);
+    const playing = app.startDownload(plan, { replace: true, stands: () => true })!;
+    await until(() => app.seriesRun()?.phase === "done", "the run");
+    expect(app.seriesRun()?.result.failed).toEqual([
+      { ref: plan.missing[0], error: "Stop playing this copy first." },
+    ]);
+    expect(statusOf(app, kept.id)?.kind).toBe("missing");
+
+    await app.playback.stop();
+    const retry = app.planRetry(playing)!;
+    expect(retry.missing).toEqual(plan.missing);
+    app.startDownload(retry, { replace: true, stands: () => true });
+    await until(() => app.seriesRun()?.phase === "done", "the retry");
+    expect(app.seriesRun()?.result).toMatchObject({ replaced: 1, failed: [] });
+    expect(statusOf(app, kept.id)).toBeUndefined();
+    expect(app.downloadOf(plan.missing[0]!)?.status.kind).not.toBe("missing");
+  });
+});
+
+/** The first fixture series' details from `subscriptionId`, as its details screen reads them. */
+async function seriesDetails(app: App, subscriptionId: string) {
+  const lists = app.titleLists();
+  if (lists.kind !== "ready") throw new Error("No titles");
+  const version = { subscriptionId, id: String(episode().series.id) };
+  const title = app.titleOf(lists.index, "series", version)!;
+  const details = await app.detailsOf({ ...title, ...version });
+  if (details.kind !== "series") throw new Error("Not a series");
+  return { version, details };
+}
+
+/** An episode's ref as its row's download button queues it. */
+const episodeOf = (each: SeriesEpisode): TitleRef => ({
+  kind: "episode",
+  subscriptionId: each.subscriptionId,
+  id: each.id,
+  seriesId: each.seriesId,
+  season: each.season,
+  episode: each.number,
 });

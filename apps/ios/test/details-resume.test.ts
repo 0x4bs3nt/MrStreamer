@@ -163,6 +163,8 @@ vi.mock("../src/viewing.ts", () => ({
 }));
 vi.mock("../src/downloads.ts", () => ({
   useDownloadOf: () => undefined,
+  useDownloads: () => undefined,
+  downloadOf: () => undefined,
   downloadList: () => ({ items: [], bytes: 0, free: null, ended: 0 }),
   addDownload: async () => undefined,
   playDownload: () => undefined,
@@ -175,7 +177,8 @@ vi.mock("../src/watchlist.ts", () => ({
   saveTitle: () => undefined,
   removeTitle: () => undefined,
 }));
-vi.mock("../src/sources.ts", () => ({ loginOf: () => [] }));
+vi.mock("../src/sources.ts", () => ({ loginOf: () => [], currentSource: () => undefined }));
+vi.mock("../src/header.tsx", () => ({ useTabs: () => null, openOnTabs: () => undefined }));
 const listeners = vi.hoisted(() => new Map<string, (payload: unknown) => void>());
 vi.mock("expo-video", () => ({
   createVideoPlayer: () => ({

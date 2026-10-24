@@ -49,6 +49,7 @@ import { members, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
 import { Docked, loadingStatus, PlaceholderLines, Placeholders, Shape } from "./loading.tsx";
 import { openDetails, versionOf } from "./resume.ts";
+import { SeriesDownloadRow } from "./series-download-row.tsx";
 import { pickedVersion, pickVersion, useSavedState } from "./storage.ts";
 import {
   detailsOf,
@@ -66,7 +67,8 @@ import { removeTitle, saveTitle, savedEntry, useWatchlist } from "./watchlist.ts
 // A movie's or series' details, pushed on the Movies or Series tab: the backdrop with one glass
 // capsule over it (Play or Resume, Save, and for a movie Download), the facts, the version menu,
 // and for a series its seasons as text tabs over episode rows with stills, how far each got and
-// each one's download button. Long-press marks an episode watched or unwatched, with the
+// each one's download button, with the season's and the whole series' bulk downloads
+// (series-download-row.tsx). Long-press marks an episode watched or unwatched, with the
 // desktop's Undo line, and offers its download's actions. Play and Resume always stream; a
 // download plays offline from its own menu, from an episode's check, and from Downloads. Closing
 // Watch comes back here, as it lies over the navigation.
@@ -573,6 +575,14 @@ function Seasons({
       ) : (
         <Text style={styles.seasonName}>{shown.name}</Text>
       )}
+      <SeriesDownloadRow
+        details={details}
+        version={version}
+        scope={{ kind: "season", season: shown.number }}
+        label={shown.name}
+        action="Download remaining"
+        stands={pressed}
+      />
       {undoable ? (
         <View style={styles.undo} accessibilityLiveRegion="polite">
           <Text style={styles.undoText}>{undoable.label}</Text>
@@ -604,6 +614,16 @@ function Seasons({
           />
         );
       })}
+      {details.seasons.length > 1 ? (
+        <SeriesDownloadRow
+          details={details}
+          version={version}
+          scope={{ kind: "series" }}
+          label={title.title}
+          action="Review series download"
+          stands={pressed}
+        />
+      ) : null}
     </View>
   );
 }

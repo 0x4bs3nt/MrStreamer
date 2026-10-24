@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // A film's details while the providers listing it change: a version picked from a provider that
 // is removed meanwhile gives way to one still listed. And its download: the button queues the
-// version shown, a copy offers Play offline from its menu, and Play keeps streaming. The real
+// version shown, a copy offers Play offline from its menu, and Play keeps streaming. A series'
+// season and whole-series downloads queue the version shown, one episode at a time, through the
+// real series-download.ts over the recorded downloads owner and signed-in logins. The real
 // screen runs with React DOM on a happy-dom window, as provider-form.test.ts does; React Native's
 // views stand in as plain elements, menus answer as the test picks, Play records the version it
 // plays and the downloads owner records what it was asked. The version picked is kept by the
@@ -29,14 +31,37 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 const scenario = vi.hoisted(() => ({
   lists: { kind: "idle" } as { kind: "idle" } | { kind: "ready"; index: unknown },
   members: [] as Array<{ entry: { id: string }; label: string; needsSecret?: boolean }>,
-  /** The version menu last shown: its options, and what picking one does. */
-  menu: null as { options: readonly string[]; pick: (index: number) => void } | null,
+  /** The system sheet last shown: its words, options, and what picking one does. */
+  menu: null as {
+    title: string | undefined;
+    message: string | undefined;
+    options: readonly string[];
+    pick: (index: number) => void;
+  } | null,
+  /** Alerts shown, newest last, with their buttons. */
+  alerts: [] as {
+    title: string;
+    message: string | undefined;
+    buttons: readonly { text: string; onPress?: () => void }[];
+  }[],
   played: [] as OwnedId[],
   /** How far each version got, as the viewing record answers. */
   progress: [] as TitleProgress[],
   /** The film's download as the owner has it, and what it was asked to do. */
   download: undefined as Download | undefined,
   asked: [] as string[],
+  /** Episodes' downloads, by "subscription:id", and who hears them change. */
+  episodes: new Map<string, Download>(),
+  heard: new Set<() => void>(),
+  /** What an episode's addition waits for, or how it fails, before it is queued. */
+  adding: (_ref: TitleRef): Promise<void> | void => undefined,
+  /** The signed-in login of each provider, as sources.ts holds it. */
+  sources: new Map<string, object>([
+    ["a", {}],
+    ["b", {}],
+  ]),
+  /** Screens opened on a tab. */
+  opened: [] as string[],
   /**
    * How each read of the film's details answers, given the version read and what shows facts
    * known before the answer; by default, never.
@@ -62,13 +87,19 @@ vi.mock("react-native", async () => {
     }: Props & { disabled?: boolean; onPress: () => void }) =>
       createElement("button", { "data-testid": testID, disabled, onClick: onPress }, children),
     StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {} },
-    Alert: { alert: () => undefined },
+    Alert: {
+      alert: (
+        title: string,
+        message?: string,
+        buttons: readonly { text: string; onPress?: () => void }[] = [],
+      ) => scenario.alerts.push({ title, message, buttons }),
+    },
     ActionSheetIOS: {
       showActionSheetWithOptions: (
-        { options }: { options: readonly string[] },
+        { title, message, options }: { title?: string; message?: string; options: string[] },
         pick: (index: number) => void,
       ) => {
-        scenario.menu = { options, pick };
+        scenario.menu = { title, message, options, pick };
       },
     },
   };
@@ -160,25 +191,91 @@ vi.mock("../src/viewing.ts", () => ({
   seriesViewing: async () => ({ progress: [], marks: [] }),
   undoMark: async () => undefined,
 }));
-vi.mock("../src/downloads.ts", () => ({
-  useDownloadOf: () => scenario.download,
-  downloadList: () => ({
-    items: scenario.download ? [scenario.download] : [],
-    bytes: 0,
-    free: null,
-    ended: 0,
-  }),
-  addDownload: async (ref: TitleRef) => {
-    scenario.asked.push(`add ${ref.subscriptionId}:${ref.id}`);
-  },
-  playDownload: (id: string) => scenario.asked.push(`play ${id}`),
-  removeDownload: async (id: string) => {
-    scenario.asked.push(`remove ${id}`);
-  },
-  retryDownload: async (id: string) => {
-    scenario.asked.push(`retry ${id}`);
-  },
+vi.mock("../src/sources.ts", () => ({
+  currentSource: (id: string) => scenario.sources.get(id),
 }));
+vi.mock("../src/header.tsx", () => ({
+  useTabs: () => ({ tab: "series", above: 0 }),
+  openOnTabs: ({ tab }: { tab: string }, screen: string) =>
+    scenario.opened.push(`${tab}/${screen}`),
+}));
+vi.mock("../src/downloads.ts", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const keyOf = (ref: TitleRef) => `${ref.subscriptionId}:${ref.id}`;
+  const downloadOf = (ref: TitleRef) => scenario.episodes.get(keyOf(ref)) ?? scenario.download;
+  const subscribe = (listener: () => void) => {
+    scenario.heard.add(listener);
+    return () => scenario.heard.delete(listener);
+  };
+  let version = 0;
+  /** Queues an episode as the owner would, telling the screens. */
+  const queued = (ref: TitleRef) => {
+    if (ref.kind !== "episode") return;
+    scenario.episodes.set(keyOf(ref), episodeDownload(ref, "queued"));
+    version++;
+    for (const listener of scenario.heard) listener();
+  };
+  return {
+    useDownloadOf: (ref: TitleRef) => {
+      useSyncExternalStore(subscribe, () => version);
+      return downloadOf(ref);
+    },
+    useDownloads: () => useSyncExternalStore(subscribe, () => version),
+    downloadOf,
+    downloadList: () => ({
+      items: [...scenario.episodes.values(), ...(scenario.download ? [scenario.download] : [])],
+      bytes: 0,
+      free: null,
+      ended: 0,
+    }),
+    addDownload: async (ref: TitleRef) => {
+      scenario.asked.push(`add ${keyOf(ref)}`);
+      await scenario.adding(ref);
+      queued(ref);
+    },
+    replaceMissingDownload: async (ref: TitleRef) => {
+      scenario.asked.push(`replace ${keyOf(ref)}`);
+      queued(ref);
+    },
+    playDownload: (id: string) => scenario.asked.push(`play ${id}`),
+    removeDownload: async (id: string) => {
+      scenario.asked.push(`remove ${id}`);
+    },
+    retryDownload: async (id: string) => {
+      scenario.asked.push(`retry ${id}`);
+      const found = [...scenario.episodes.values()].find((each) => each.id === id);
+      if (found?.title.kind === "episode") {
+        queued({ ...found.title, subscriptionId: found.subscription!.id });
+      }
+    },
+  };
+});
+/** An episode's download in `kind`, as the owner lists it. */
+function episodeDownload(
+  ref: TitleRef,
+  kind: "queued" | "complete" | "missing" | "failed",
+): Download {
+  if (ref.kind !== "episode") throw new Error("Not an episode");
+  const { subscriptionId, ...title } = ref;
+  return {
+    id: `d-${subscriptionId}-${ref.id}`,
+    title,
+    subscription: { id: subscriptionId, name: subscriptionId },
+    name: "Same series (EN)",
+    episodeName: null,
+    year: null,
+    duration: null,
+    originalLanguage: null,
+    posterUrl: null,
+    wideUrl: null,
+    size: null,
+    status:
+      kind === "failed"
+        ? { kind, failure: { kind: "app", error: { kind: "unexpected", detail: "Stopped." } } }
+        : { kind },
+    progress: null,
+  };
+}
 vi.mock("../src/watchlist.ts", () => ({
   useWatchlist: () => [],
   savedEntry: () => undefined,
@@ -277,6 +374,14 @@ let unmount = () => {};
 afterEach(() => {
   unmount();
   scenario.menu = null;
+  scenario.alerts.length = 0;
+  scenario.episodes.clear();
+  scenario.adding = () => undefined;
+  scenario.sources = new Map([
+    ["a", {}],
+    ["b", {}],
+  ]);
+  scenario.opened.length = 0;
   scenario.played.length = 0;
   scenario.download = undefined;
   scenario.asked.length = 0;
@@ -795,5 +900,344 @@ describe("a film's facts", () => {
 
     await React.act(async () => shows.get("b:1")?.(factsOf("Cabin's saved story.")));
     expect(page.text()).toContain("Cabin's saved story.");
+  });
+});
+
+/** An episode of series 2 as `subscriptionId`'s details list it. */
+const listed = (subscriptionId: string, id: string, season: number, number: number) => ({
+  subscriptionId,
+  id,
+  seriesId: "2",
+  season,
+  number,
+  title: `Episode ${id}`,
+  plot: null,
+  duration: null,
+  stillUrl: null,
+  airDate: null,
+});
+
+/**
+ * Series 2's details from `subscriptionId`: Season 1, Specials, Season 2, in that order, with the
+ * playlist's own order when `order` is given.
+ */
+function seriesFacts(subscriptionId: string, order?: readonly string[]) {
+  const at = (id: string, season: number, number: number) =>
+    listed(subscriptionId, id, season, number);
+  return {
+    kind: "series",
+    plot: null,
+    directors: [],
+    cast: [],
+    genres: [],
+    duration: null,
+    backdropUrl: null,
+    title: {},
+    seasons: [
+      {
+        number: 1,
+        name: "Season 1",
+        posterUrl: null,
+        episodes: [at("101", 1, 1), at("102", 1, 2), at("103", 1, 3)],
+      },
+      { number: 0, name: "Specials", posterUrl: null, episodes: [at("900", 0, 1)] },
+      {
+        number: 2,
+        name: "Season 2",
+        posterUrl: null,
+        episodes: [at("201", 2, 1), at("202", 2, 2)],
+      },
+    ],
+    ...(order ? { episodeOrder: order } : {}),
+  };
+}
+
+const episodeRef = (subscriptionId: string, id: string, season = 1, episode = 1): TitleRef => ({
+  kind: "episode",
+  subscriptionId,
+  id,
+  seriesId: "2",
+  season,
+  episode,
+});
+/** Gives `subscriptionId`'s episode `id` a download in `kind`. */
+function has(
+  subscriptionId: string,
+  id: string,
+  kind: "queued" | "complete" | "missing" | "failed",
+) {
+  scenario.episodes.set(
+    `${subscriptionId}:${id}`,
+    episodeDownload(episodeRef(subscriptionId, id), kind),
+  );
+}
+
+/** Lets a run go through its episodes, each a turn of the timers apart. */
+async function ran() {
+  for (let at = 0; at < 12; at++) {
+    await React.act(async () => await new Promise((done) => setTimeout(done, 0)));
+  }
+}
+
+/** Series 2 as `version` opens it, its details answered by `facts` of the version read. */
+async function mountSeries(
+  version = "a:2",
+  facts = (read: string) => seriesFacts(read.split(":")[0]!),
+) {
+  scenario.details = async (read) => facts(read);
+  const page = mount({ kind: "series", version });
+  await settled();
+  return page;
+}
+
+/** Picks the sheet's option starting with `label`. */
+function choose(label: string) {
+  const menu = scenario.menu;
+  if (!menu) throw new Error("No sheet");
+  const at = menu.options.findIndex((each) => each.startsWith(label));
+  if (at < 0) throw new Error(`No "${label}" in ${menu.options.join(", ")}`);
+  React.act(() => menu.pick(at));
+}
+
+/** Presses the last alert's `label`. */
+function answer(label: string) {
+  const button = scenario.alerts.at(-1)?.buttons.find((each) => each.text === label);
+  if (!button) throw new Error(`No "${label}" in the last alert`);
+  React.act(() => button.onPress?.());
+}
+
+describe("a series' bulk download", () => {
+  it("counts the season shown and queues its remaining episodes of the version shown", async () => {
+    providers("a", "b");
+    has("a", "101", "complete");
+    has("a", "102", "queued");
+    // The other provider's episode of the same id is its own download.
+    has("b", "103", "complete");
+    const page = await mountSeries();
+    expect(page.text()).toContain("2 of 3 saved or queued");
+
+    page.press("bulk-season-start");
+    expect(scenario.menu).toMatchObject({
+      title: "Download Season 1?",
+      message:
+        "3 episodes. 2 already saved or queued. Size unavailable. Uses the selected version.",
+      options: ["Download 1 episode", "Cancel"],
+    });
+    choose("Download 1 episode");
+    await ran();
+    expect(scenario.asked).toEqual(["add a:103"]);
+    expect(scenario.alerts.at(-1)).toMatchObject({ title: "Season 1", message: "1 queued." });
+    expect(page.text()).toContain("3 of 3 saved or queued");
+  });
+
+  it("reviews the whole series in its own order, specials included, each exact file once", async () => {
+    providers("a", "b");
+    const order = ["201", "101", "900", "102", "202", "103"];
+    const page = await mountSeries("a:2", (read) => {
+      const facts = seriesFacts(read.split(":")[0]!, order);
+      const [first, specials, second] = facts.seasons;
+      // Details that list a file twice, or another provider's file, queue neither again.
+      return {
+        ...facts,
+        seasons: [
+          { ...first!, episodes: [...first!.episodes, listed("b", "104", 1, 4)] },
+          specials!,
+          { ...second!, episodes: [...second!.episodes, first!.episodes[0]!] },
+        ],
+      };
+    });
+    expect(page.text()).toContain("Whole series · 6 episodes");
+    page.press("bulk-series-start");
+    expect(scenario.menu).toMatchObject({
+      title: "Download all of Same series?",
+      message: "6 episodes in 3 seasons. Size unavailable. Uses the selected version.",
+      options: ["Download 6 episodes", "Cancel"],
+    });
+    choose("Download 6 episodes");
+    await ran();
+    expect(scenario.asked).toEqual(order.map((id) => `add a:${id}`));
+    expect(scenario.alerts.at(-1)?.message).toBe("6 queued.");
+  });
+
+  it("follows the season listing, specials where listed, without a playlist order", async () => {
+    providers("a");
+    const page = await mountSeries();
+    page.press("bulk-series-start");
+    choose("Download 6 episodes");
+    await ran();
+    expect(scenario.asked).toEqual(
+      ["101", "102", "103", "900", "201", "202"].map((id) => `add a:${id}`),
+    );
+  });
+
+  it("retries failed ones, replaces a missing copy only when asked, and skips what changed since", async () => {
+    providers("a");
+    has("a", "101", "failed");
+    has("a", "102", "missing");
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    expect(scenario.menu?.message).toBe(
+      "3 episodes. 1 failed and will be retried. 1 saved file is missing. Size unavailable. Uses the selected version.",
+    );
+    expect(scenario.menu?.options).toEqual([
+      "Download 2 episodes",
+      "Download 2 and replace 1 missing",
+      "Cancel",
+    ]);
+    choose("Download 2 episodes");
+    await ran();
+    expect(scenario.asked).toEqual(["retry d-a-101", "add a:103"]);
+
+    // Asked again for the missing copy; meanwhile the viewer queued another episode by hand.
+    scenario.asked.length = 0;
+    has("a", "101", "failed");
+    scenario.episodes.delete("a:103");
+    page.press("bulk-season-start");
+    has("a", "103", "queued");
+    choose("Download 2 and replace 1 missing");
+    await ran();
+    expect(scenario.asked).toEqual(["retry d-a-101", "replace a:102"]);
+    expect(scenario.alerts.at(-1)?.message).toBe(
+      "1 retried. 1 replaced. 1 changed meanwhile and stayed as they were.",
+    );
+  });
+
+  it("keeps what was queued when one fails, and Retry failed asks for that one alone", async () => {
+    providers("a");
+    let refused = true;
+    scenario.adding = (ref) => {
+      if (ref.id === "102" && refused) {
+        refused = false;
+        throw new Error("The provider didn't answer");
+      }
+    };
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    choose("Download 3 episodes");
+    await ran();
+    expect(scenario.asked).toEqual(["add a:101", "add a:102", "add a:103"]);
+    expect(scenario.alerts.at(-1)?.message).toMatch(/^2 queued\. 1 failed: /);
+    expect(page.text()).toContain("2 of 3 saved or queued");
+
+    scenario.asked.length = 0;
+    answer("Retry failed");
+    await ran();
+    expect(scenario.asked).toEqual(["add a:102"]);
+    expect(scenario.alerts.at(-1)?.message).toBe("1 queued.");
+  });
+
+  it("stops at Cancel remaining, the addition already asked settling", async () => {
+    providers("a");
+    const held = Promise.withResolvers<void>();
+    scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    choose("Download 3 episodes");
+    await ran();
+    expect(page.text()).toContain("Adding 1 of 3");
+    page.press("bulk-season-cancel");
+    await React.act(async () => held.resolve());
+    await ran();
+    expect(scenario.asked).toEqual(["add a:101"]);
+    expect(scenario.episodes.get("a:101")?.status.kind).toBe("queued");
+    expect(scenario.alerts.at(-1)?.message).toBe("1 queued. Cancelled before 2 episodes.");
+    expect(page.text()).toContain("1 of 3 saved or queued");
+  });
+
+  it("runs once however often it is pressed and confirmed", async () => {
+    providers("a");
+    const held = Promise.withResolvers<void>();
+    scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    const first = scenario.menu!;
+    page.press("bulk-season-start");
+    const second = scenario.menu!;
+    React.act(() => first.pick(0));
+    React.act(() => first.pick(0));
+    await ran();
+    React.act(() => second.pick(0));
+    expect(scenario.alerts.at(-1)?.message).toBe(
+      "Episodes of another download are still being added.",
+    );
+    // The whole series waits while the season's run goes.
+    page.press("bulk-series-start");
+    expect(scenario.menu).toBe(second);
+    await React.act(async () => held.resolve());
+    await ran();
+    expect(scenario.asked).toEqual(["add a:101", "add a:102", "add a:103"]);
+  });
+
+  it("does nothing for a sheet answered once another version shows", async () => {
+    providers("a", "b");
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    const sheet = scenario.menu!;
+    page.openVersions()("Cabin");
+    await settled();
+    React.act(() => sheet.pick(0));
+    await ran();
+    expect(scenario.asked).toEqual([]);
+    expect(scenario.alerts.at(-1)?.message).toBe("The version or its provider changed. Try again.");
+  });
+
+  for (const change of ["another version", "a new login", "the provider's removal", "leaving"]) {
+    it(`stops before the next episode on ${change}`, async () => {
+      providers("a", "b");
+      const held = Promise.withResolvers<void>();
+      scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+      const page = await mountSeries();
+      page.press("bulk-season-start");
+      choose("Download 3 episodes");
+      await ran();
+      if (change === "another version") {
+        page.openVersions()("Cabin");
+        await settled();
+      } else if (change === "a new login") scenario.sources.set("a", {});
+      else if (change === "the provider's removal") scenario.sources.delete("a");
+      else unmount();
+      await React.act(async () => held.resolve());
+      await ran();
+      expect(scenario.asked).toEqual(["add a:101"]);
+      expect(scenario.episodes.get("a:101")?.status.kind).toBe("queued");
+    });
+  }
+
+  it("keeps going while the same version's details are drawn again", async () => {
+    providers("a");
+    const held = Promise.withResolvers<void>();
+    scenario.adding = (ref) => (ref.id === "101" ? held.promise : undefined);
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    choose("Download 3 episodes");
+    await ran();
+    // TMDB's metadata renames titles: the lists and the screen draw again.
+    providers("a");
+    page.render();
+    await settled();
+    await React.act(async () => held.resolve());
+    await ran();
+    expect(scenario.asked).toEqual(["add a:101", "add a:102", "add a:103"]);
+  });
+
+  it("asks nothing while the provider isn't signed in", async () => {
+    providers("a");
+    scenario.sources.delete("a");
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    expect(scenario.menu).toBeNull();
+    expect(scenario.alerts.at(-1)?.title).toBe("Couldn't download Season 1");
+    expect(scenario.asked).toEqual([]);
+  });
+
+  it("opens Downloads on the series tab once everything is saved or queued", async () => {
+    providers("a");
+    for (const id of ["101", "102", "103"]) has("a", id, "complete");
+    const page = await mountSeries();
+    page.press("bulk-season-start");
+    expect(scenario.menu).toBeNull();
+    expect(scenario.alerts.at(-1)?.title).toBe("All 3 episodes are saved or queued.");
+    answer("Open Downloads");
+    expect(scenario.opened).toEqual(["series/downloads"]);
   });
 });

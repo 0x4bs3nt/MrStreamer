@@ -1210,6 +1210,29 @@ export async function removeDownload(id: string): Promise<void> {
   wake();
 }
 
+/**
+ * Downloads a movie or an episode anew whose copy's file is gone: its record goes, with the
+ * copy's own progress, then it is queued as `addDownload` queues it. A copy whose file is there
+ * after all stays and answers as it is. Rejects, changing nothing, while that copy is what Watch
+ * opens or plays: the player may still read the file, so the viewer stops it first.
+ */
+export async function replaceMissingDownload(ref: TitleRef): Promise<Download> {
+  const record = doc.items.find((each) => sameTitle(each, ref));
+  if (record?.state === "complete") {
+    if (mediaOf(record).exists) {
+      missing.delete(record.id);
+      tell();
+      return addDownload(ref);
+    }
+    if (playingItem(playbackState.get().phase)?.id === copyKey(record.id)) {
+      throw new AppFailure({ kind: "unexpected", detail: "Stop playing this copy first." });
+    }
+    // Checked and removed in one go: nothing plays it in between.
+    await removeDownload(record.id);
+  }
+  return addDownload(ref);
+}
+
 /** Queues a failed download again. */
 export async function retryDownload(id: string): Promise<void> {
   const record = find(id);
