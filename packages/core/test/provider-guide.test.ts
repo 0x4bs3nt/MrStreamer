@@ -87,3 +87,23 @@ describe("provider guide transport", () => {
     await expect(provider.liveGuide()).rejects.toMatchObject({ error: { kind: "invalid-login" } });
   });
 });
+
+it.each(["http://[private-canary", "file:///fixture-user/private-canary"])(
+  "providerFetch reports an accurate safe refusal for %s",
+  async (location) => {
+    const request = providerFetch(
+      async () => new Response(null, { status: 302, headers: { Location: location } }),
+      login,
+    );
+    const failure = await request(original).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(failure).toBeInstanceOf(TypeError);
+    if (!(failure instanceof Error)) throw new Error("missing safe failure");
+    expect(failure.message).not.toMatch(/too many/);
+    expect(failure.message).toMatch(/valid URL|http or https/);
+    expect(failure.message).not.toContain("private-canary");
+    expect(failure.message).not.toContain(location);
+  },
+);

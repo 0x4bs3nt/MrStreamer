@@ -131,6 +131,20 @@ int main(int argc, char **argv) {
   assert(mr_guide_vfs_destroy(parallel_vfs) == SQLITE_OK);
   mr_guide_disk_destroy(parallel); assert(rmdir(threads_root) == 0);
   pthread_cond_destroy(&concurrent.changed); pthread_mutex_destroy(&concurrent.lock);
+  /* Zero-byte metadata and overwrite/rename/deletion must work below the growth floor. */
+  mr_guide_disk *low = mr_guide_disk_create(root, 256 * MIB, UINT64_MAX / 2, 32 * MIB); assert(low);
+  char marker[4096], renamed[4096];
+  snprintf(marker, sizeof(marker), "%s/revoked", root);
+  snprintf(renamed, sizeof(renamed), "%s/renamed", root);
+  assert(mr_guide_disk_atomic(low, marker, NULL, 0) == SQLITE_OK);
+  struct stat metadata; assert(stat(marker, &metadata) == 0 && metadata.st_size == 0);
+  assert(mr_guide_disk_atomic(low, renamed, "x", 1) == SQLITE_FULL);
+  assert(mr_guide_disk_replace(low, marker, renamed) == SQLITE_OK);
+  int fd = open(dbpath, O_WRONLY); assert(fd >= 0);
+  assert(mr_guide_disk_write(low, dbpath, fd, "x", 1) == SQLITE_OK); assert(close(fd) == 0);
+  assert(unlink(renamed) == 0);
+  assert(mr_guide_disk_atomic(low, root, NULL, 0) != SQLITE_OK); /* Real rename error remains visible. */
+  mr_guide_disk_destroy(low);
   mr_guide_disk_destroy(disk);
   assert(unlink(dbpath) == 0 && files(root) == 0 && rmdir(root) == 0);
   puts("PASS production disk/VFS: default preserved, unique registrations, visible temp lifetimes, overflow, hint/mmap bypasses, before-growth total/free refusals, real spilled-sort refusal, last-good SQL and VACUUM cleanup");

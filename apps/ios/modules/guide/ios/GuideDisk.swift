@@ -19,8 +19,8 @@ final class GuideDisk {
   let raw: OpaquePointer
   private let policyLock = NSLock()
   private var policy: ((GuideIORequest) -> GuideIOLimits)?
-  init(root: URL) throws {
-    guard let raw = mr_guide_disk_create(root.path, UInt64(GuideBudget.disk), UInt64(GuideBudget.free), UInt64(GuideBudget.database)) else { throw GuideFailure("disk") }
+  init(root: URL, freeFloor: UInt64 = UInt64(GuideBudget.free)) throws {
+    guard let raw = mr_guide_disk_create(root.path, UInt64(GuideBudget.disk), freeFloor, UInt64(GuideBudget.database)) else { throw GuideFailure("disk") }
     self.raw = raw
   }
   deinit { mr_guide_disk_destroy(raw) }

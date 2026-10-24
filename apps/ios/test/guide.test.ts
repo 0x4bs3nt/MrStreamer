@@ -274,3 +274,247 @@ describe("native transport adapter", () => {
     expect(urls).toHaveLength(2);
   });
 });
+
+describe("guide control and publication lifecycle", () => {
+  it("keeps the authorized cache readable while a replacement activation is pending", async () => {
+    const { owner, native, control, sources } = setup();
+    await owner.restore(["a"]);
+    owner.setPart(part());
+    sources.set("a", source);
+    const gate = deferred<void>();
+    const attach = native.attach;
+    native.attach = async (...args) => {
+      await gate.promise;
+      return attach(...args);
+    };
+    control.query = async () => ({
+      kind: "ok",
+      value: { guideId: "trusted.tv", rows: [programme], more: false },
+    });
+    const activating = owner.attach("a");
+    const row = (await owner.listings(["a:1"])).get("a:1");
+    gate.resolve();
+    await activating;
+    expect(row?.now?.title).toBe("News");
+  });
+
+  it("retries a background-cancelled cold refresh on foreground without a failure backoff", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at);
+    const { native, control } = guideFixture();
+    const held = deferred<Awaited<ReturnType<GuideNative["prepare"]>>>();
+    let prepares = 0;
+    control.prepare = async () =>
+      ++prepares === 1 ? held.promise : { kind: "failed", error: "network" };
+    const owner = createGuide(
+      () => native,
+      Date.now,
+      () => source,
+    );
+    try {
+      await owner.attach("a");
+      await vi.advanceTimersByTimeAsync(0);
+      owner.background();
+      held.resolve({ kind: "cancelled" });
+      await vi.advanceTimersByTimeAsync(30000);
+      owner.foreground();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prepares).toBe(2);
+    } finally {
+      owner.background();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["background", "deadline", "removal", "replacement"] as const)(
+    "reconciles a committed publication after %s while rejecting retired identities",
+    async (change) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(at);
+      const { native, control } = guideFixture();
+      const sources = new Map([["a", source]]);
+      const owner = createGuide(
+        () => native,
+        Date.now,
+        (key) => sources.get(key),
+      );
+      control.activations.set("a", {
+        lease: "restored",
+        generation: { id: "old", fetchedAt: at, until: at + 86400_000 },
+      });
+      await owner.restore(["a"]);
+      await owner.attach("a");
+      owner.setPart(part());
+      control.prepare = async () => ({ kind: "ok", value: { kind: "candidate", id: "candidate" } });
+      const committed = deferred<void>(),
+        ack = deferred<void>();
+      const publish = native.publish;
+      native.publish = async (...args) => {
+        const result = await publish(...args);
+        committed.resolve();
+        await ack.promise;
+        return result;
+      };
+      native.query = async (_lease, generation) =>
+        control.activations.get("a")?.generation?.id === generation
+          ? {
+              kind: "ok",
+              value: {
+                guideId: "trusted.tv",
+                rows: [{ ...programme, stop: at + 86400_000, title: generation }],
+                more: false,
+              },
+            }
+          : { kind: "changed" };
+      try {
+        const refreshing = owner.refresh("a");
+        await committed.promise;
+        const current = control.activations.get("a")?.generation?.id;
+        if (change === "background") owner.background();
+        if (change === "deadline") await vi.advanceTimersByTimeAsync(180000);
+        if (change === "removal") await owner.forget("a");
+        if (change === "replacement") sources.set("a", { ...source, revision: 2 });
+        ack.resolve();
+        await refreshing;
+        const row = (await owner.listings(["a:1"])).get("a:1");
+        if (change === "removal" || change === "replacement") expect(row?.now).toBeNull();
+        else {
+          expect(row?.now?.title).toBe(current);
+          expect(owner.status("a")).toMatchObject({ availability: "available", error: null });
+        }
+      } finally {
+        ack.resolve();
+        owner.background();
+        vi.useRealTimers();
+      }
+    },
+  );
+});
+
+describe("guide results after final asynchronous cleanup", () => {
+  it.each(["listings", "schedule", "programme"] as const)(
+    "revalidates %s after removal, catalogue/generation replacement and abort during cleanup",
+    async (method) => {
+      for (const change of ["removal", "part", "generation", "abort"] as const) {
+        const { owner, native, control, sources } = setup();
+        await owner.restore(["a"]);
+        sources.set("a", source);
+        await owner.attach("a");
+        owner.setPart(part());
+        control.query = async () => ({
+          kind: "ok",
+          value: { guideId: "trusted.tv", rows: [programme], more: false },
+        });
+        const from = new Date(at);
+        from.setHours(0, 0, 0, 0);
+        const until = new Date(from);
+        until.setDate(until.getDate() + 1);
+        const day = { from: from.getTime(), until: until.getTime() };
+        const detail = (await owner.schedule("a:1", day)).programmes[0]!.detail;
+        const held = deferred<void>(),
+          reached = deferred<void>();
+        const baseQuery = native.query,
+          baseCancel = native.cancel;
+        let readJob = "";
+        native.query = async (...args) => {
+          readJob = args[2];
+          return baseQuery(...args);
+        };
+        native.cancel = async (job) => {
+          if (job === readJob) {
+            reached.resolve();
+            await held.promise;
+          }
+          await baseCancel(job);
+        };
+        const controller = new AbortController();
+        const options = { signal: controller.signal };
+        const pending =
+          method === "listings"
+            ? owner.listings(["a:1"], options)
+            : method === "schedule"
+              ? owner.schedule("a:1", day, undefined, options)
+              : owner.programme(detail, options);
+        await reached.promise;
+        if (change === "removal") await owner.forget("a");
+        if (change === "part") owner.setPart(part());
+        if (change === "generation") {
+          control.prepare = async () => ({ kind: "ok", value: { kind: "candidate", id: "new" } });
+          await owner.refresh("a");
+        }
+        if (change === "abort") controller.abort();
+        held.resolve();
+        const result = await pending;
+        if (result instanceof Map) expect(result.get("a:1")?.now, change).toBeNull();
+        else if (result && "programmes" in result) expect(result.programmes, change).toEqual([]);
+        else expect(result, change).toBeNull();
+      }
+    },
+  );
+
+  it.each(["removal", "part", "generation", "abort"])(
+    "revalidates every earlier alias after a later batch: %s",
+    async (change) => {
+      const { owner, control, sources } = setup();
+      await owner.restore(["a"]);
+      sources.set("a", source);
+      await owner.attach("a");
+      const value = part(),
+        first = value.channels[0]!;
+      owner.setPart({ ...value, byId: new Map([...value.byId, ["third-alias", first]]) });
+      const held = deferred<Awaited<ReturnType<GuideNative["query"]>>>(),
+        reached = deferred<void>();
+      let calls = 0;
+      control.query = async () => {
+        if (++calls === 3) {
+          reached.resolve();
+          return held.promise;
+        }
+        return { kind: "ok", value: { guideId: "trusted.tv", rows: [programme], more: false } };
+      };
+      const controller = new AbortController();
+      const pending = owner.listings(["a:1", "a:2", "a:third-alias"], {
+        signal: controller.signal,
+      });
+      await reached.promise;
+      if (change === "removal") await owner.forget("a");
+      if (change === "part") owner.setPart(part());
+      if (change === "generation") {
+        control.prepare = async () => ({ kind: "ok", value: { kind: "candidate", id: "new" } });
+        await owner.refresh("a");
+      }
+      if (change === "abort") controller.abort();
+      held.resolve({ kind: "ok", value: { guideId: "trusted.tv", rows: [], more: false } });
+      const result = await pending;
+      expect([...result.values()].every((value) => value.now === null && value.next === null)).toBe(
+        true,
+      );
+    },
+  );
+
+  it("does not return a saved result after the query budget expires during drain", async () => {
+    vi.useFakeTimers();
+    const { owner, native, control } = setup();
+    try {
+      await owner.restore(["a"]);
+      owner.setPart(part());
+      control.query = async () => ({
+        kind: "ok",
+        value: { guideId: "trusted.tv", rows: [programme], more: false },
+      });
+      const held = deferred<void>(),
+        reached = deferred<void>();
+      native.cancel = async () => {
+        reached.resolve();
+        await held.promise;
+      };
+      const pending = owner.listings(["a:1"]);
+      await reached.promise;
+      await vi.advanceTimersByTimeAsync(2001);
+      held.resolve();
+      expect((await pending).get("a:1")?.now).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

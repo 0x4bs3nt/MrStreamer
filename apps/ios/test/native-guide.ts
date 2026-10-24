@@ -56,6 +56,7 @@ export function guideFixture() {
     },
     begin(_lease, job) {
       calls.push(`begin:${job}`);
+      return true;
     },
     async cancel(job) {
       cancelled.add(job);

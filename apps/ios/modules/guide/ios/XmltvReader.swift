@@ -1,26 +1,100 @@
 import Foundation
 
-/** Bounded lexical preflight before Foundation allocates attribute/entity strings. UTF-8 only.
-    XMLParser remains the XML grammar authority. DTDs and all entity declarations are refused. */
-func guidePreflight(_ file: URL, _ job: GuideJob) throws {
+/** XML declarations use XML S whitespace, including tabs and CR/LF. Validate the bounded
+    declaration grammar before Foundation can select a non-UTF-8 decoder. */
+private func guideUTF8Declaration(_ token: [UInt8]) -> Bool {
+  guard token.count >= 8, token.suffix(2).elementsEqual([63, 62]) else { return false }
+  let end = token.count - 2
+  var position = 5, names = [String]()
+  func spaces() -> Bool {
+    let start = position
+    while position < end && [UInt8(9), 10, 13, 32].contains(token[position]) { position += 1 }
+    return position > start
+  }
+  guard spaces() else { return false }
+  while position < end {
+    let start = position
+    while position < end && ((65...90).contains(token[position]) || (97...122).contains(token[position])) { position += 1 }
+    let name = String(bytes: token[start..<position], encoding: .utf8) ?? ""
+    guard ["version", "encoding", "standalone"].contains(name), !names.contains(name) else { return false }
+    if names.isEmpty && name != "version" { return false }
+    if name == "encoding" && names.contains("standalone") { return false }
+    _ = spaces()
+    guard position < end, token[position] == 61 else { return false }; position += 1
+    _ = spaces()
+    guard position < end, token[position] == 34 || token[position] == 39 else { return false }
+    let quote = token[position]; position += 1
+    let valueStart = position
+    while position < end && token[position] != quote { position += 1 }
+    guard position < end, let value = String(bytes: token[valueStart..<position], encoding: .utf8) else { return false }
+    position += 1
+    if name == "version" && value != "1.0" && value != "1.1" { return false }
+    if name == "encoding" && value.lowercased() != "utf-8" { return false }
+    if name == "standalone" && value != "yes" && value != "no" { return false }
+    names.append(name)
+    if position == end { return true }
+    guard spaces() else { return false }
+  }
+  return !names.isEmpty
+}
+
+/** Accept only the external XMLTV header grammar. The declaration is blanked before XMLParser,
+    so neither an external subset nor an entity can be resolved by the parser. */
+private func guideExternalDoctype(_ token: [UInt8]) -> Bool {
+  var position = 9 // <!DOCTYPE
+  func spaces() -> Bool {
+    let start = position
+    while position < token.count && [UInt8(9), 10, 13, 32].contains(token[position]) { position += 1 }
+    return position > start
+  }
+  func word() -> String {
+    let start = position
+    while position < token.count && ((65...90).contains(token[position]) || (97...122).contains(token[position])) { position += 1 }
+    return String(bytes: token[start..<position], encoding: .utf8) ?? ""
+  }
+  func literal() -> Bool {
+    guard position < token.count, token[position] == 34 || token[position] == 39 else { return false }
+    let quote = token[position]; position += 1
+    let start = position
+    while position < token.count && token[position] != quote { position += 1 }
+    guard position > start, position < token.count,
+          String(bytes: token[start..<position], encoding: .utf8) != nil else { return false }
+    position += 1
+    return true
+  }
+  guard spaces(), word() == "tv", spaces() else { return false }
+  let kind = word()
+  guard kind == "SYSTEM" || kind == "PUBLIC", spaces(), literal() else { return false }
+  if kind == "PUBLIC" && (!spaces() || !literal()) { return false }
+  _ = spaces()
+  return position == token.count - 1 && token[position] == 62
+}
+
+/** Bound raw allocations before XMLParser. Returns the one safe external declaration's byte range.
+    Subsets, ENTITY, duplicate/late declarations and all other <! markup remain refused. */
+func guidePreflight(_ file: URL, _ job: GuideJob) throws -> Range<Int>? {
   let handle = try FileHandle(forReadingFrom: file); defer { try? handle.close() }
   var token = [UInt8](); token.reserveCapacity(GuideBudget.token)
   var inTag = false, quote: UInt8 = 0
   var depth = 0, elementDepth = 0, elementBytes = 0, textBytes = 0
   var bytes = 0
   var sawTag = false
+  var rootSeen = false
+  var offset = 0, tokenStart = 0
+  var external: Range<Int>?
   while let data = try handle.read(upToCount: 65536), !data.isEmpty {
     try job.check()
     bytes += data.count
     if bytes > GuideBudget.plain { throw GuideFailure("body") }
     for byte in data {
+      defer { offset += 1 }
       if byte == 0 { throw GuideFailure("xml") } // UTF-16/32 cannot bypass the byte-level guards.
       if elementDepth > 0 {
         elementBytes += 1
         if elementBytes > GuideBudget.token { throw GuideFailure("element") }
       }
       if !inTag {
-        if byte == 60 { inTag = true; sawTag = true; token = [byte]; quote = 0; textBytes = 0 }
+        if byte == 60 { inTag = true; sawTag = true; tokenStart = offset; token = [byte]; quote = 0; textBytes = 0 }
         else {
           if !sawTag && ![UInt8(9), 10, 13, 32, 239, 187, 191].contains(byte) { throw GuideFailure("xml") }
           textBytes += 1; if textBytes > GuideBudget.token { throw GuideFailure("element") }
@@ -31,7 +105,8 @@ func guidePreflight(_ file: URL, _ job: GuideJob) throws {
       if token.count > GuideBudget.token { throw GuideFailure("element") }
       let comment = token.starts(with: [60, 33, 45, 45])
       let cdata = token.starts(with: [60, 33, 91, 67, 68, 65, 84, 65, 91])
-      if token.count >= 9 && token[1] == 33 && !comment && !cdata { throw GuideFailure("xml") }
+      let doctype = token.starts(with: [60, 33, 68, 79, 67, 84, 89, 80, 69])
+      if token.count >= 9 && token[1] == 33 && !comment && !cdata && !doctype { throw GuideFailure("xml") }
       if comment {
         if !token.suffix(3).elementsEqual([45, 45, 62]) { continue }
       } else if cdata {
@@ -41,14 +116,17 @@ func guidePreflight(_ file: URL, _ job: GuideJob) throws {
         if byte == 34 || byte == 39 { quote = byte; continue }
         if byte != 62 { continue }
       }
-      if token.starts(with: [60, 63, 120, 109, 108, 32]) {
-        let declaration = String(bytes: token, encoding: .utf8)?.lowercased() ?? ""
-        if declaration.contains("encoding") && !declaration.contains("encoding=\"utf-8\"") && !declaration.contains("encoding='utf-8'") { throw GuideFailure("xml") }
+      if token.starts(with: [60, 63, 120, 109, 108]), token.count > 5,
+         [UInt8(9), 10, 13, 32].contains(token[5]), !guideUTF8Declaration(token) { throw GuideFailure("xml") }
+      if doctype {
+        guard !rootSeen, depth == 0, external == nil, guideExternalDoctype(token) else { throw GuideFailure("xml") }
+        external = tokenStart..<(offset + 1)
       }
-      if !comment && !cdata && token.count > 2 && token[1] != 63 {
+      if !comment && !cdata && !doctype && token.count > 2 && token[1] != 63 {
         if token[1] == 33 { throw GuideFailure("xml") }
         let closing = token[1] == 47
         let selfClosing = token.count >= 2 && token[token.count - 2] == 47
+        if !closing && depth == 0 { rootSeen = true }
         let start = closing ? 2 : 1
         let name = String(bytes: token[start...].prefix { $0 != 32 && $0 != 9 && $0 != 10 && $0 != 13 && $0 != 47 && $0 != 62 }, encoding: .utf8) ?? ""
         if closing {
@@ -65,6 +143,7 @@ func guidePreflight(_ file: URL, _ job: GuideJob) throws {
     }
   }
   if inTag || depth != 0 { throw GuideFailure("xml") }
+  return external
 }
 
 /** XMLTV timestamps are UTC without an offset. Calendar validation rejects normalized bad dates. */
@@ -96,6 +175,7 @@ func guideTime(_ raw: String?) -> Double? {
 final class XmltvReader: NSObject, XMLParserDelegate {
   private let index: GuideIndex
   private let job: GuideJob
+  private let disk: GuideDisk
   private let password: String
   private var stack = [String]()
   private var channel: String?
@@ -109,9 +189,17 @@ final class XmltvReader: NSObject, XMLParserDelegate {
   private var opened = false
   private var closed = false
   private var failure: Error?
-  init(index: GuideIndex, job: GuideJob, login: [String]) { self.index = index; self.job = job; password = login.count > 1 ? login[1] : "" }
+  init(index: GuideIndex, job: GuideJob, disk: GuideDisk, login: [String]) { self.index = index; self.job = job; self.disk = disk; password = login.count > 1 ? login[1] : "" }
   func run(_ file: URL) throws {
-    try guidePreflight(file, job)
+    if let external = try guidePreflight(file, job) {
+      // Overwrite only the bounded declaration, without a second XML spool or growth.
+      // XMLParser sees whitespace rather than a DTD, so the system identifier is never opened.
+      let handle = try FileHandle(forUpdating: file)
+      defer { try? handle.close() }
+      try job.check(); try handle.seek(toOffset: UInt64(external.lowerBound))
+      try disk.write(Data(repeating: 32, count: external.count), to: file, handle: handle)
+    }
+    try job.check()
     guard let stream = InputStream(url: file) else { throw GuideFailure("disk") }
     let parser = XMLParser(stream: stream); parser.delegate = self
     parser.shouldResolveExternalEntities = false

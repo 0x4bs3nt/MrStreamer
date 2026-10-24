@@ -18,7 +18,8 @@ export type GuideProblem =
   | "time"
   | "disk"
   | "reply"
-  | "unavailable";
+  | "unavailable"
+  | "busy";
 export interface Generation {
   readonly id: string;
   readonly fetchedAt: number;
@@ -49,7 +50,7 @@ export interface GuideNative {
   attach(id: string, revision: number): Promise<Activation>;
   revoke(id: string): void;
   forget(id: string): Promise<boolean>;
-  begin(lease: string, job: string): void;
+  begin(lease: string, job: string): boolean;
   cancel(job: string): Promise<void>;
   prepare(
     lease: string,

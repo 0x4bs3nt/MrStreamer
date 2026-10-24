@@ -28,18 +28,24 @@ struct GuideActivation {
 final class GuideJob {
   let id: String
   let lease: String
-  let deadline: TimeInterval
+  let owner: String?
+  let active = DispatchGroup()
+  var closing = false // GuideOwner lock. Queued work cannot start once closing.
+  private var deadline: TimeInterval
   private let lock = NSLock()
   private var cancelled = false
   var task: URLSessionTask?
-  init(_ id: String, _ lease: String) {
-    self.id = id; self.lease = lease
+  init(_ id: String, _ lease: String, owner: String? = nil) {
+    self.id = id; self.lease = lease; self.owner = owner
     self.deadline = ProcessInfo.processInfo.systemUptime + 180
   }
   func cancel() { lock.lock(); cancelled = true; let t = task; lock.unlock(); t?.cancel() }
   func setTask(_ next: URLSessionTask) { lock.lock(); task = next; let stop = cancelled; lock.unlock(); if stop { next.cancel() } }
+  func limit(seconds: TimeInterval) {
+    lock.lock(); deadline = min(deadline, ProcessInfo.processInfo.systemUptime + seconds); lock.unlock()
+  }
   func check() throws {
-    lock.lock(); let stop = cancelled; lock.unlock()
+    lock.lock(); let stop = cancelled, deadline = self.deadline; lock.unlock()
     if stop { throw GuideFailure("cancelled") }
     if ProcessInfo.processInfo.systemUptime > deadline { throw GuideFailure("time") }
   }

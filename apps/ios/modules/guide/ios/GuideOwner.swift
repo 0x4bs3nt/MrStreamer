@@ -5,6 +5,13 @@ private final class GuideInflateContext {
   init(job: GuideJob) { self.job = job }
 }
 
+private final class GuideWork {
+  let job: GuideJob
+  let completion: ([String: Any]) -> Void
+  var started = false // GuideOwner lock.
+  init(job: GuideJob, completion: @escaping ([String: Any]) -> Void) { self.job = job; self.completion = completion }
+}
+
 /** Native publication, lease revocation and read pins share one lock. IO work uses utility queues. */
 final class GuideOwner {
   let root: URL
@@ -15,14 +22,17 @@ final class GuideOwner {
   private var candidates = [String: (owner: String, job: String, generation: GuideGeneration)]()
   private var pins = [URL: Int]()
   private var blocked = Set<String>()
-  let ingestQueue = DispatchQueue(label: "mrstreamer.guide.ingest", qos: .utility)
-  let reads: OperationQueue = { let queue = OperationQueue(); queue.maxConcurrentOperationCount = 2; queue.qualityOfService = .utility; return queue }()
-  init(root: URL) throws {
+  private var operations = [UUID: GuideWork]()
+  private var restoring = false
+  private let control = DispatchQueue(label: "mrstreamer.guide.control", qos: .utility)
+  private let ingestQueue = DispatchQueue(label: "mrstreamer.guide.ingest", qos: .utility)
+  private let reads: OperationQueue = { let queue = OperationQueue(); queue.maxConcurrentOperationCount = 2; queue.qualityOfService = .utility; return queue }()
+  init(root: URL, freeFloor: UInt64 = UInt64(GuideBudget.free)) throws {
     self.root = root
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     var excluded = root; var values = URLResourceValues(); values.isExcludedFromBackup = true
     try excluded.setResourceValues(values)
-    self.disk = try GuideDisk(root: root)
+    self.disk = try GuideDisk(root: root, freeFloor: freeFloor)
   }
   private func directory(_ id: String) throws -> URL {
     guard guideOpaque(id) else { throw GuideFailure("changed") }
@@ -91,9 +101,9 @@ final class GuideOwner {
     lock.lock(); defer { lock.unlock() }
     let dir = try directory(id)
     let marker = try revocation(id)
-    if blocked.contains(id) || FileManager.default.fileExists(atPath: marker.path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
+    if restoring || blocked.contains(id) || FileManager.default.fileExists(atPath: marker.path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
     if let current = sources[id], current.revision == revision { return current.payload }
-    if let current = sources[id] { for job in jobs.values where job.lease == current.lease { job.cancel() } }
+    if let current = sources[id] { for job in jobs.values where job.lease == current.lease { cancelLocked(job) } }
     let activation = GuideActivation(lease: UUID().uuidString, revision: revision, generation: sources[id]?.generation ?? readGeneration(id))
     sources[id] = activation
     return activation.payload
@@ -101,39 +111,137 @@ final class GuideOwner {
   func revoke(_ id: String) {
     lock.lock(); defer { lock.unlock() }
     blocked.insert(id)
-    if let source = sources.removeValue(forKey: id) { for job in jobs.values where job.lease == source.lease { job.cancel() } }
+    sources.removeValue(forKey: id)
+    for job in jobs.values where job.owner == id { cancelLocked(job) }
   }
   func forget(_ id: String) -> Bool {
     lock.lock(); defer { lock.unlock() }
     revoke(id)
     do {
-      let dir = try directory(id)
-      // Keep the tombstone outside the account directory, even if that directory refuses writes.
-      // A failed deletion must never let restore or attach reopen this identity's old cache.
-      let marker = try revocation(id)
-      try disk.atomic(Data(), to: marker)
-      if pins.keys.contains(where: { $0.deletingLastPathComponent() == dir }) { return false }
-      if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
-      try FileManager.default.removeItem(at: marker)
+      let dir = try directory(id), marker = try revocation(id)
+      let fm = FileManager.default
+      let busy = jobs.values.contains { $0.owner == id && $0.active.wait(timeout: .now()) != .success }
+      let pinned = pins.keys.contains { $0.deletingLastPathComponent() == dir }
+      if !fm.fileExists(atPath: dir.path) && !fm.fileExists(atPath: marker.path) && !busy && !pinned {
+        blocked.remove(id)
+        return true
+      }
+      // A zero-byte tombstone is metadata, not guide growth. OS errors still count.
+      var marked = false
+      do { try disk.atomic(Data(), to: marker); marked = true } catch { /* Deletion may still succeed. */ }
+      if busy || pinned { return false }
+      do {
+        if fm.fileExists(atPath: dir.path) { try fm.removeItem(at: dir) }
+      } catch { return false } // Keep a successfully written marker and the blocked identity.
+      if marked || fm.fileExists(atPath: marker.path) { try fm.removeItem(at: marker) }
       blocked.remove(id)
       candidates = candidates.filter { $0.value.owner != id }
       return true
     } catch { return false }
   }
-  func begin(_ lease: String, _ id: String) {
+  @discardableResult
+  func begin(_ lease: String, _ id: String) -> Bool {
     lock.lock(); defer { lock.unlock() }
-    guard guideOpaque(id), jobs[id] == nil, jobs.count < 128, sources.values.contains(where: { $0.lease == lease }) else { return }
-    jobs[id] = GuideJob(id, lease)
+    guard !restoring, guideOpaque(id), jobs[id] == nil, jobs.count < 128,
+          let owner = sources.first(where: { $0.value.lease == lease })?.key else { return false }
+    jobs[id] = GuideJob(id, lease, owner: owner)
+    return true
+  }
+  private func cancelLocked(_ job: GuideJob) {
+    job.closing = true; job.cancel()
+    // Queued work has no resources to drain. Resolve it now, without waiting for its queue.
+    let queued = operations.filter { $0.value.job === job && !$0.value.started }
+    for (key, work) in queued {
+      operations.removeValue(forKey: key)
+      control.async { work.completion(["kind": "cancelled"]) }
+    }
   }
   func cancel(_ id: String) {
     lock.lock(); defer { lock.unlock() }
-    jobs[id]?.cancel()
+    if let job = jobs[id] { cancelLocked(job) }
   }
-  func finish(_ id: String) {
+  private func retire(_ id: String, _ job: GuideJob) {
     lock.lock(); defer { lock.unlock() }
+    guard jobs[id] === job else { return }
+    if job.active.wait(timeout: .now()) != .success {
+      job.active.notify(queue: control) { self.retire(id, job) }
+      return
+    }
     jobs.removeValue(forKey: id)
     let dropped = candidates.filter { $0.value.job == id }
-    for (key, value) in dropped { if let path = try? file(value.owner, key, part: true) { try? FileManager.default.removeItem(at: path) }; candidates.removeValue(forKey: key) }
+    for (key, value) in dropped {
+      if let path = try? file(value.owner, key, part: true) { try? FileManager.default.removeItem(at: path) }
+      candidates.removeValue(forKey: key)
+    }
+  }
+  func finish(_ id: String) {
+    lock.lock(); let job = jobs[id]; lock.unlock()
+    if let job = job { retire(id, job) }
+  }
+  func cancelAsync(_ id: String, completion: @escaping () -> Void) {
+    lock.lock()
+    guard let job = jobs[id] else { lock.unlock(); completion(); return }
+    cancelLocked(job)
+    job.active.notify(queue: control) { self.retire(id, job); completion() }
+    lock.unlock()
+  }
+  private func submit(_ lease: String, _ id: String, read: Bool = false, short: Bool = false,
+                      work: @escaping () -> [String: Any], completion: @escaping ([String: Any]) -> Void) {
+    lock.lock()
+    guard let job = jobs[id], job.lease == lease, !job.closing else {
+      lock.unlock(); completion(["kind": "changed"]); return
+    }
+    let key = UUID(), operation = GuideWork(job: job, completion: completion)
+    operations[key] = operation
+    lock.unlock()
+    let run = {
+      self.lock.lock()
+      guard self.operations[key] === operation, !job.closing else { self.lock.unlock(); return }
+      operation.started = true; job.active.enter()
+      self.lock.unlock()
+      let result = work() // Core methods close files/statements before returning.
+      self.lock.lock(); self.operations.removeValue(forKey: key); self.lock.unlock()
+      job.active.leave()
+      completion(result)
+    }
+    if read { reads.addOperation(run) }
+    else if short { control.async(execute: run) }
+    else { ingestQueue.async(execute: run) }
+  }
+  func attachAsync(_ id: String, _ revision: Int, completion: @escaping (Result<[String: Any], GuideFailure>) -> Void) {
+    control.async {
+      do { completion(.success(try self.attach(id, revision))) }
+      catch let error as GuideFailure { completion(.failure(error)) }
+      catch { completion(.failure(GuideFailure("disk"))) }
+    }
+  }
+  func forgetAsync(_ id: String, completion: @escaping (Bool) -> Void) {
+    lock.lock(); revoke(id)
+    let affected = jobs.filter { $0.value.owner == id }
+    let drained = DispatchGroup()
+    for (key, _) in affected { drained.enter(); cancelAsync(key) { drained.leave() } }
+    drained.notify(queue: control) { completion(self.forget(id)) }
+    lock.unlock()
+  }
+  func restoreAsync(_ ids: [String], completion: @escaping ([[String: Any]]) -> Void) {
+    lock.lock(); restoring = true
+    let drained = DispatchGroup()
+    for key in Array(jobs.keys) { drained.enter(); cancelAsync(key) { drained.leave() } }
+    drained.notify(queue: control) {
+      let restored = self.restore(ids)
+      self.lock.lock(); self.restoring = false; self.lock.unlock()
+      completion(restored)
+    }
+    lock.unlock()
+  }
+  func prepareAsync(_ lease: String, _ id: String, _ url: String, _ headers: [String: String], _ login: [String], _ now: Double, _ from: Double, _ until: Double, completion: @escaping ([String: Any]) -> Void) {
+    submit(lease, id, work: { self.prepare(lease, id, url, headers, login, now, from, until) }, completion: completion)
+  }
+  func publishAsync(_ lease: String, _ id: String, _ candidate: String, completion: @escaping ([String: Any]) -> Void) {
+    submit(lease, id, short: true, work: { self.publish(lease, id, candidate) }, completion: completion)
+  }
+  func queryAsync(_ lease: String, _ generation: String, _ id: String, _ ids: [String], _ at: Double, _ mode: String, _ from: Double, _ until: Double, _ after: Double, completion: @escaping ([String: Any]) -> Void) {
+    submit(lease, id, read: true, work: { self.query(lease, generation, id, ids, at, mode, from, until, after) }, completion: completion)
   }
   private func context(_ lease: String, _ id: String) throws -> (String, GuideJob) {
     guard let owner = sources.first(where: { $0.value.lease == lease })?.key, let job = jobs[id], job.lease == lease else { throw GuideFailure("changed") }
@@ -142,8 +250,9 @@ final class GuideOwner {
   func prepare(_ lease: String, _ id: String, _ url: String, _ headers: [String: String], _ login: [String], _ now: Double, _ from: Double, _ until: Double) -> [String: Any] {
     guideResult {
       lock.lock(); let captured: (String, GuideJob)
-      do { captured = try context(lease, id) } catch { lock.unlock(); throw error }; lock.unlock()
+      do { captured = try context(lease, id); captured.1.active.enter() } catch { lock.unlock(); throw error }; lock.unlock()
       let (owner, job) = captured
+      defer { job.active.leave() }
       guard now.isFinite, from.isFinite, until.isFinite, from < now, until > now, until - from < 10 * 86400000 else { throw GuideFailure("time") }
       let dir = try directory(owner)
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -170,7 +279,7 @@ final class GuideOwner {
         } else { xml = closed }
         let last: Double = try {
           let index = try GuideIndex(part, job: job, disk: disk, create: true)
-          try XmltvReader(index: index, job: job, login: login).run(xml)
+          try XmltvReader(index: index, job: job, disk: disk, login: login).run(xml)
           return try index.finish(now: now, from: from, until: until)
         }()
         let generation = GuideGeneration(id: key, fetchedAt: now, until: last)
@@ -185,6 +294,7 @@ final class GuideOwner {
     guideResult {
       lock.lock(); defer { lock.unlock() }
       let (owner, job) = try context(lease, id)
+      job.active.enter(); defer { job.active.leave() }
       guard let candidate = candidates[key], candidate.owner == owner, candidate.job == id else { throw GuideFailure("changed") }
       try job.check(); try disk.check()
       let source = try file(owner, key, part: true), destination = try file(owner, key)
@@ -203,16 +313,22 @@ final class GuideOwner {
       let owner: String, job: GuideJob, path: URL
       do {
         (owner, job) = try context(lease, id)
+        job.limit(seconds: 2) // Includes association selection and SQLite progress callbacks.
         guard sources[owner]?.generation?.id == generation else { throw GuideFailure("changed") }
         path = try file(owner, generation); pins[path, default: 0] += 1
+        job.active.enter()
       } catch { lock.unlock(); throw error }
       lock.unlock()
-      defer { lock.lock(); pins[path, default: 1] -= 1; if pins[path] == 0 { pins.removeValue(forKey: path) }; prune(owner); lock.unlock() }
-      let index = try GuideIndex(path, job: job, disk: disk, create: false)
-      let result = try index.query(ids: ids, at: at, mode: mode, from: from, until: until, after: after)
+      defer { lock.lock(); pins[path, default: 1] -= 1; if pins[path] == 0 { pins.removeValue(forKey: path) }; prune(owner); lock.unlock(); job.active.leave() }
+      let result: [String: Any] = try {
+        let index = try GuideIndex(path, job: job, disk: disk, create: false)
+        return try index.query(ids: ids, at: at, mode: mode, from: from, until: until, after: after)
+      }()
       lock.lock(); defer { lock.unlock() }; _ = try context(lease, id)
       return result
     }
   }
-  func background() { lock.lock(); for job in jobs.values { job.cancel() }; lock.unlock() }
+  func background() {
+    lock.lock(); for key in Array(jobs.keys) { cancelAsync(key) {} }; lock.unlock()
+  }
 }

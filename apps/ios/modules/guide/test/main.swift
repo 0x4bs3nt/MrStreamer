@@ -2,8 +2,8 @@ import Foundation
 import SQLite3
 
 @main struct GuideFixtures {
-  static func require(_ condition: @autoclosure () -> Bool, _ label: String) throws {
-    if !condition() { throw GuideFailure(label) }
+  static func require(_ condition: @autoclosure () throws -> Bool, _ label: String) throws {
+    if try !condition() { throw GuideFailure(label) }
   }
   static func value(_ result: [String: Any]) throws -> [String: Any] {
     guard result["kind"] as? String == "ok", let value = result["value"] as? [String: Any] else {
@@ -108,8 +108,8 @@ import SQLite3
     owner.begin(lease, "cancel-download")
     let finished = DispatchSemaphore(value: 0)
     var cancelledDownload = [String: Any]()
-    owner.ingestQueue.async {
-      cancelledDownload = owner.prepare(lease, "cancel-download", base + "/slow", [:], ["fixture", "canary-secret"], now, now - 86400000, now + 7 * 86400000)
+    owner.prepareAsync(lease, "cancel-download", base + "/slow", [:], ["fixture", "canary-secret"], now, now - 86400000, now + 7 * 86400000) {
+      cancelledDownload = $0
       finished.signal()
     }
     Thread.sleep(forTimeInterval: 0.1)
@@ -117,6 +117,8 @@ import SQLite3
     try require(finished.wait(timeout: .now() + 3) == .success, "cancel-completion")
     try require(cancelledDownload["kind"] as? String == "cancelled", "cancel-download")
     owner.finish("cancel-download")
+    try controls(owner, lease, db, root, base, now)
+    try xmlHeaders(owner, lease, base, now)
     let beforeResources = try Data(contentsOf: manifest)
     for scenario in ["normalize-total", "normalize-free", "finalize-total", "normalize-cancel", "finalize-cancel"] {
       var growths = 0

@@ -271,10 +271,10 @@ export function nextProviderRedirect(input: {
     start = new URL(input.original);
     next = new URL(input.location, input.current);
   } catch {
-    throw new TypeError(t("It redirected too many times."));
+    throw new TypeError(t("The server address is not a valid URL."));
   }
   if (!["http:", "https:"].includes(next.protocol)) {
-    throw new TypeError(t("It redirected too many times."));
+    throw new TypeError(t("The server address must start with http or https."));
   }
   if (exposesLogin(start, next, input.login)) {
     throw new TypeError(

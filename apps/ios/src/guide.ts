@@ -8,6 +8,7 @@ import {
   type GuideNative,
   type GuideProblem,
   type Query,
+  type Result,
 } from "./guide-native.ts";
 import type { Part } from "./library.ts";
 import { currentSource, type Source } from "./sources.ts";
@@ -38,6 +39,7 @@ interface Entry {
   generation: Generation | null;
   failedAt: number;
   refresh?: Promise<void>;
+  refreshAbort?: AbortController;
   readonly jobs: Set<string>;
 }
 interface Token {
@@ -73,6 +75,7 @@ export function createGuide(
   let sequence = 0;
   let era = 0;
   let foreground = true;
+  let foregroundCycle = 0;
   let listeners = 0;
   let clock: ReturnType<typeof setInterval> | undefined;
   let lifecycle: readonly { remove(): void }[] = [];
@@ -119,7 +122,7 @@ export function createGuide(
     usable(value.generation) &&
     sourceOf(value.part.subscriptionId) === value.entry.source;
   const cancelEntry = (entry: Entry) => {
-    if (entry.refresh) entry.failedAt = now();
+    entry.refreshAbort?.abort();
     invalidate(entry);
     for (const job of entry.jobs) void cancel(job);
   };
@@ -138,15 +141,18 @@ export function createGuide(
     if (entry.refresh) return entry.refresh;
     if (!explicit && now() - entry.failedAt < 15 * 60_000) return;
     const source = entry.source;
+    const lease = entry.activation.lease;
     const job = id();
     entry.jobs.add(job);
+    const controller = new AbortController();
+    const startedCycle = foregroundCycle;
+    entry.refreshAbort = controller;
     entry.refresh = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let expired = false;
       try {
         const native = port();
-        native.begin(entry.activation.lease, job);
-        const controller = new AbortController();
+        if (!native.begin(entry.activation.lease, job)) throw new GuideFault("busy");
         timer = setTimeout(() => {
           expired = true;
           entry.failedAt = now();
@@ -154,7 +160,7 @@ export function createGuide(
           controller.abort();
           void cancel(job);
         }, 180_000);
-        const wanted = () => !expired && foreground && stands(key, entry);
+        const wanted = () => !controller.signal.aborted && foreground && stands(key, entry);
         update(key, { activity: "loading", error: null });
         if (!source.provider.liveGuideRequest) throw new GuideFault("unavailable");
         const request = await source.provider.liveGuideRequest(controller.signal);
@@ -179,16 +185,17 @@ export function createGuide(
           now(),
           wanted,
         );
-        if (!wanted()) return;
-        if (result.kind === "failed") throw new GuideFault(result.error);
-        if (result.kind === "cancelled") entry.failedAt = now();
+        // An ok publish is already committed. Background/deadline cannot roll it back.
+        // Source/entry replacement still rejects the receipt, including remove/re-add.
+        if (!stands(key, entry) || entry.activation.lease !== lease) return;
         if (result.kind === "ok") {
           entry.generation = result.value;
           invalidate(entry);
+          entry.failedAt = -Infinity;
           update(key, { availability: "available", error: null });
-        }
+        } else if (wanted() && result.kind === "failed") throw new GuideFault(result.error);
       } catch (cause) {
-        if (stands(key, entry) && foreground) {
+        if (stands(key, entry) && foreground && (!controller.signal.aborted || expired)) {
           entry.failedAt = now();
           update(key, {
             error: expired ? "time" : cause instanceof GuideFault ? cause.problem : "network",
@@ -199,7 +206,19 @@ export function createGuide(
         await cancel(job);
         entry.jobs.delete(job);
         delete entry.refresh;
-        if (stands(key, entry)) update(key, { activity: "idle" });
+        delete entry.refreshAbort;
+        if (stands(key, entry)) {
+          update(key, { activity: "idle" });
+          // A foreground event while cancellation drained gets one fresh attempt.
+          if (
+            foreground &&
+            foregroundCycle !== startedCycle &&
+            controller.signal.aborted &&
+            !expired &&
+            status(key).stale
+          )
+            void refresh(key, false);
+        }
       }
     })();
     return entry.refresh;
@@ -239,7 +258,10 @@ export function createGuide(
     const native = port();
     const job = id();
     value.entry.jobs.add(job);
-    native.begin(value.entry.activation.lease, job);
+    if (!native.begin(value.entry.activation.lease, job)) {
+      value.entry.jobs.delete(job);
+      throw new GuideFault("busy");
+    }
     const cancel = () => {
       void native.cancel(job);
     };
@@ -249,8 +271,9 @@ export function createGuide(
       expired = true;
       cancel();
     }, 2000);
+    let result: Result<Query>;
     try {
-      const result = await native.query(
+      result = await native.query(
         value.entry.activation.lease,
         value.generation.id,
         job,
@@ -261,15 +284,19 @@ export function createGuide(
         day.until,
         value.start,
       );
-      return !expired && !signal?.aborted && validToken(value) && result.kind === "ok"
-        ? result.value
-        : null;
     } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", cancel);
-      await native.cancel(job);
-      value.entry.jobs.delete(job);
+      try {
+        await native.cancel(job);
+      } finally {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", cancel);
+        value.entry.jobs.delete(job);
+      }
     }
+    // Cleanup is an asynchronous boundary too. Validate at the final public return.
+    return !expired && !signal?.aborted && validToken(value) && result.kind === "ok"
+      ? result.value
+      : null;
   }
   const tick = () => {
     for (const key of entries.keys()) {
@@ -328,9 +355,18 @@ export function createGuide(
       if (!source) return;
       const before = entries.get(key);
       if (before?.source === source) return;
+      let pending: Entry | undefined;
       if (before) {
-        entries.delete(key);
         cancelEntry(before);
+        pending = {
+          activation: before.activation,
+          source,
+          generation: before.generation,
+          failedAt: -Infinity,
+          jobs: new Set(),
+          ...(before.part ? { part: before.part } : {}),
+        };
+        entries.set(key, pending);
       }
       const version = (versions.get(key) ?? 0) + 1;
       versions.set(key, version);
@@ -338,13 +374,16 @@ export function createGuide(
         connect();
         const activation = await port().attach(key, source.revision);
         if (sourceOf(key) !== source || versions.get(key) !== version || cycle !== era) return;
-        const entry: Entry = {
+        const entry: Entry = pending ?? {
           activation,
           source,
           generation: activation.generation,
           failedAt: -Infinity,
           jobs: new Set(),
         };
+        invalidate(entry);
+        entry.activation = activation;
+        entry.generation = activation.generation;
         const part = parts.get(key);
         if (part) entry.part = part;
         entries.set(key, entry);
@@ -382,6 +421,7 @@ export function createGuide(
     },
     refresh,
     foreground() {
+      foregroundCycle++;
       foreground = true;
       if (listeners && !clock) clock = setInterval(tick, 60_000);
       tick();
@@ -397,8 +437,8 @@ export function createGuide(
       options?: { readonly signal?: AbortSignal },
     ): Promise<ReadonlyMap<string, Listing>> {
       if (keys.length > 40) throw new GuideFault("reply");
-      const result = new Map<string, Listing>();
-      // At most two native reads in flight; every result binds the current catalogue and generation.
+      const answers = new Map<string, { capture: Token | null; answer: Query | null }>();
+      // Retain each requested alias independently. Later batches must not hide earlier captures.
       for (let offset = 0; offset < keys.length; offset += 2)
         await Promise.all(
           keys.slice(offset, offset + 2).map(async (key) => {
@@ -406,13 +446,21 @@ export function createGuide(
             const answer = captured
               ? await query(captured, "listing", { from: 0, until: 0 }, options?.signal)
               : null;
-            const at = now();
-            result.set(key, {
-              now: answer?.rows.find((row) => row.start <= at && row.stop > at) ?? null,
-              next: answer?.rows.find((row) => row.start > at) ?? null,
-            });
+            answers.set(key, { capture: captured, answer });
           }),
         );
+      const result = new Map<string, Listing>();
+      const at = now();
+      for (const [key, value] of answers) {
+        const rows =
+          !options?.signal?.aborted && value.capture && validToken(value.capture)
+            ? value.answer?.rows
+            : undefined;
+        result.set(key, {
+          now: rows?.find((row) => row.start <= at && row.stop > at) ?? null,
+          next: rows?.find((row) => row.start > at) ?? null,
+        });
+      }
       return result;
     },
     async schedule(
@@ -450,7 +498,8 @@ export function createGuide(
       )
         return { programmes: [], cursor: null };
       const answer = await query(captured, "day", day, options?.signal);
-      if (!answer?.guideId) return { programmes: [], cursor: null };
+      if (!answer?.guideId || options?.signal?.aborted || !validToken(captured))
+        return { programmes: [], cursor: null };
       const ids = [answer.guideId];
       const programmes = answer.rows.map(({ start, stop, title }) => ({
         start,
@@ -470,9 +519,8 @@ export function createGuide(
     ): Promise<Programme | null> {
       const captured = tokens.get(detail);
       if (!captured || !validToken(captured)) return null;
-      return (
-        (await query(captured, "detail", { from: 0, until: 0 }, options?.signal))?.rows[0] ?? null
-      );
+      const answer = await query(captured, "detail", { from: 0, until: 0 }, options?.signal);
+      return !options?.signal?.aborted && validToken(captured) ? (answer?.rows[0] ?? null) : null;
     },
   };
   return service;

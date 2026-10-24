@@ -25,18 +25,52 @@ resources = ('<tv>' + ''.join(resource_rows) + '</tv>').encode()
 packed = gzip.compress(xml)
 bad = bytearray(packed); bad[-8] ^= 1
 routes = {'/resources': resources, '/pages': pages, '/plain': xml, '/slow': xml, '/split-gzip': packed[:3] + b'\x04' + packed[4:10] + (65530).to_bytes(2, 'little') + b'x' * 65530 + packed[10:], '/chunks': xml, '/gzip': packed, '/members': gzip.compress(xml[:len(xml)//2]) + gzip.compress(xml[len(xml)//2:]), '/http-gzip': packed, '/double-gzip': gzip.compress(packed), '/bad-crc': bytes(bad), '/truncated-gzip': packed[:-3], '/malformed': xml[:-5], '/dtd': b'<!DOCTYPE tv [<!ENTITY x "attack">]>' + xml[38:], '/attributes': b'<tv long="' + b'a' * 70000 + b'"/>', '/empty': b'<tv/>', '/ended': xml.replace(b'20261024', b'20261001'), '/secret': xml.replace(b'News &amp; weather', b'canary-secret'), '/false-positive': xml.replace(b'News &amp; weather', b'fixture News'), '/depth': b'<tv>' + b'<x>' * 33 + b'</x>' * 33 + b'</tv>', '/html': b'<html><body>login</body></html>'}
+body_xml = xml[xml.index(b'<tv>'):]
+dtd_requests = 0
+held_started = threading.Event()
+held_release = threading.Event()
+for label, separator in [('space', b' '), ('tab', b'\t'), ('lf', b'\n'), ('cr', b'\r')]:
+    for encoding in ['UTF-8', 'ISO-8859-1']:
+        routes['/encoding-' + label + '-' + encoding] = b'<?xml' + separator + b"version = '1.0'" + separator + b"encoding = '" + encoding.encode() + b"' standalone = 'no' ?>" + body_xml
+routes['/encoding-quoted'] = b'<?xml version="1.0" encoding="utf-8"?>' + body_xml
+routes['/doctype-duplicate'] = b'<!DOCTYPE tv SYSTEM "xmltv.dtd"><!DOCTYPE tv SYSTEM "xmltv.dtd">' + body_xml
+routes['/doctype-late'] = body_xml.replace(b'<tv>', b'<tv><!DOCTYPE tv SYSTEM "xmltv.dtd">')
+routes['/doctype-large'] = b'<!DOCTYPE tv SYSTEM "' + b'x' * 65536 + b'">' + body_xml
+routes['/entity'] = b'<!ENTITY x "attack">' + body_xml
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_): pass
     def do_GET(self):
+        global dtd_requests
+        if self.path == '/dtd-count':
+            body = str(dtd_requests).encode()
+        elif self.path == '/held-state':
+            body = b'yes' if held_started.is_set() else b'no'
+        elif self.path == '/release-held':
+            held_release.set(); body = b'ok'
+        elif self.path == '/xmltv.dtd':
+            dtd_requests += 1; body = b'<!ENTITY attack "forbidden">'
+        elif self.path in ['/doctype-system', '/doctype-public']:
+            url = ('http://127.0.0.1:' + str(self.server.server_port) + '/xmltv.dtd').encode()
+            head = b'<!DOCTYPE tv SYSTEM "' + url + b'">' if self.path == '/doctype-system' else b"<!DOCTYPE tv PUBLIC '-//XMLTV//DTD XMLTV//EN' '" + url + b"'>"
+            body = head + body_xml
+        elif self.path == '/held':
+            body = xml
+        else:
+            body = routes.get(self.path, b'')
         if self.path == '/redirect':
             self.send_response(302); self.send_header('Location', '/forbidden-follow'); self.end_headers(); return
         if self.path == '/forbidden-follow': raise RuntimeError('native followed redirect')
         if self.path == '/login': self.send_response(401); self.end_headers(); return
-        body = routes[self.path]
         self.send_response(200)
         if self.path in ['/http-gzip', '/double-gzip']: self.send_header('Content-Encoding', 'gzip')
         if self.path != '/chunks': self.send_header('Content-Length', str(len(body)))
         self.end_headers()
+        if self.path == '/held':
+            self.wfile.write(body[:20]); self.wfile.flush(); held_started.set()
+            held_release.wait(20)
+            try: self.wfile.write(body[20:]); self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError): pass
+            return
         size = 65536 if self.path == '/resources' else 1 if self.path == '/chunks' else 19
         for at in range(0, len(body), size):
             try:
@@ -63,7 +97,7 @@ try:
         disk_obj = str(out / ('disk-' + tag + '.o'))
         run('disk-object-' + tag, ['xcrun', '--sdk', sdk, 'clang', '-isysroot', sdkpath, '-target', target, '-std=c11', '-Wall', '-Wextra', '-Werror', '-c', 'ios/core/guide_disk.c', '-o', disk_obj])
         sources = sorted(str(p.relative_to(root)) for p in (root / 'ios').glob('*.swift') if p.name != 'GuideModule.swift')
-        run('swift-' + tag, ['xcrun', '--sdk', sdk, 'swiftc', '-swift-version', '5', '-sdk', sdkpath, '-target', target, '-parse-as-library', '-import-objc-header', 'ios/core/guide_system.h', *sources, 'test/main.swift', obj, disk_obj, '-lz', '-lsqlite3', '-o', str(out / ('fixtures-' + tag))])
+        run('swift-' + tag, ['xcrun', '--sdk', sdk, 'swiftc', '-swift-version', '5', '-sdk', sdkpath, '-target', target, '-parse-as-library', '-import-objc-header', 'ios/core/guide_system.h', *sources, *sorted(str(p.relative_to(root)) for p in (root / 'test').glob('*.swift')), obj, disk_obj, '-lz', '-lsqlite3', '-o', str(out / ('fixtures-' + tag))])
         if tag == 'mac':
             run('disk-observed', [str(out / 'disk-mac'), str(out / 'disk-scratch')])
             run('fixtures-mac', [str(out / 'fixtures-mac'), str(out / 'scratch'), 'http://127.0.0.1:' + str(server.server_port)])

@@ -86,6 +86,13 @@ static int owned(mr_guide_disk *disk, const char *path) {
 }
 static int capacity(mr_guide_disk *disk, uint64_t growth, int flags,
                     mr_guide_io_check check, void *context) {
+  if (!growth) {
+    // Metadata, overwrite and rename do not consume the guide growth reserve. A cancelled
+    // SQLite job still gets its guard; the underlying operation reports real OS IO failures.
+    uint64_t total = disk->total, available = UINT64_MAX;
+    disk->stats.checks++;
+    return check && check(context, flags, 0, 0, &total, &available) ? SQLITE_IOERR_WRITE : SQLITE_OK;
+  }
   uint64_t used = 0;
   unsigned entries = 0;
   int code = scan(disk->root, &used, 0, &entries);
@@ -312,10 +319,9 @@ static int open_file(sqlite3_vfs *base, sqlite3_filename name, sqlite3_file *res
   file->original = calloc(1, (size_t)vfs->original->szOsFile);
   if (!file->path || !file->original) { code = SQLITE_NOMEM; goto end; }
   file->remove_on_close |= !!(flags & SQLITE_OPEN_DELETEONCLOSE);
-  if (flags & SQLITE_OPEN_CREATE) {
-    code = capacity(vfs->disk, 0, flags, vfs->check, vfs->context);
-    if (code != SQLITE_OK) goto end;
-  }
+  /* A read open consumes no growth reserve, but still observes its job cancellation/deadline. */
+  code = capacity(vfs->disk, 0, flags, vfs->check, vfs->context);
+  if (code != SQLITE_OK) goto end;
   code = vfs->original->xOpen(vfs->original, name, file->original, flags & ~SQLITE_OPEN_DELETEONCLOSE, out_flags);
   if (code == SQLITE_OK) {
     result->pMethods = &io;

@@ -495,7 +495,7 @@ The provider guide foundation is `src/guide.ts`, fed by account restore, sign-in
 erasure lifecycle calls. It resolves only the current catalogue's trusted IDs, including stream
 aliases. The private Expo Guide module downloads on a utility callback queue, refuses automatic
 redirects, validates gzip and XML before indexing, and publishes complete immutable SQLite
-generations through one atomic manifest. Failed refreshes retain last-good data. Missing native
+generations through one atomic manifest. Cached queries and account controls run independently of unrelated ingestion; cancellation waits for the relevant job to close its resources. Failed refreshes retain last-good data, quiet background cancellation permits a foreground retry, and committed publication receipts reconcile the cache across lifecycle changes. Missing native
 bindings report unavailable. Removal and password replacement revoke work before awaited erasure,
 including when viewing history is kept. No Home, Live or schedule UI consumes it yet.
 
@@ -507,7 +507,7 @@ limits. Every guide connection uses a private non-default SQLite VFS. Sorting, j
 scratch files stay under the guide root and share before-growth disk/free-space checks with
 spools and manifest staging. Per-connection mmap, preallocation hints and WAL shared-memory
 writes are disabled. The free-space check reserves allocation rounding and 64 KiB metadata
-headroom; it cannot reserve space against unrelated filesystem writers. UTF-8 XML only; DTDs and entity declarations are refused. Programme prose follows the
+headroom for growth; zero-byte revocation metadata, overwrites, renames and deletion do not require that reserve. It cannot reserve space against unrelated filesystem writers. UTF-8 XML only; one bounded external XMLTV DOCTYPE is blanked before parsing, with no DTD resolution. Internal subsets and entity declarations are refused. Programme prose follows the
 existing catalogue password-substring policy: it refuses a raw password anywhere in saved text,
 including ordinary-word collisions, while usernames within prose are allowed. No guide artwork,
 provider URLs or request metadata is saved. `modules/guide/test/run.py` compiles the production
