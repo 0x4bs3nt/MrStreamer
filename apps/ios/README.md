@@ -117,6 +117,33 @@ once the SDK's react-native-screens is 4.30.0 or later.
 SDK 58 links prebuilt modules, which a patch can't reach, so `package.json` has autolinking build
 ExpoFileSystem, ExpoVideo and RNScreens from their patched source.
 
+## Managed native playback contract
+
+The pinned expo-video patch adds iOS contract version 1 on its existing player. After checking
+`mrStreamerPlaybackContract`, an imperative owner can use `replaceObservedAsync`,
+`detachObservedAsync`, `getObservedTracksAsync` and `selectObservedTrackAsync`, and subscribe to
+`playbackObservation`. Attempt IDs are increasing positive safe integers. Native item IDs name
+actual item objects. The first admission latches managed mode; legacy replacement and track
+setters then refuse writes with `ERR_OBSERVED_LEGACY_WRITE`. Expo's native property setters
+cannot throw, so the package's existing binding installs instance setters that call a synchronous
+native assertion. Native setters also refuse the write. The existing player remains the owner.
+Managed v1 accepts clear sources only. Any nonnil `source.drm` is rejected with
+`ERR_OBSERVED_DRM_UNSUPPORTED` before admission, without consuming its attempt ID or starting
+asset/key work. The legacy DRM path is unchanged.
+
+Detach retires immediately and awaits owned asset/track loads before returning its local receipt.
+`providerDisconnect: "unobservable"` cannot confirm a server connection has closed. A failed or
+pending detach keeps admission blocked. Failure events expose only allowlisted domains and numeric
+codes. Direct HLS HTTP causes may remain unknown; error-log numbers never become HTTP statuses.
+Managed items do not run independent HLS playlist discovery or hidden foreground/reset reloads.
+
+Track snapshots retain native option identity, item/group/revision, default/playable facts and
+native language tags, including options without a language. Subtitle `forcedOnly` uses the native
+forced characteristic. Loading, absent, ready-empty and unavailable groups are distinct. Selection
+acknowledges a request; selected IDs come from native readback. JS recovery, language policy and
+persistence are separate work. Native/Expo compilation and exact Release runtime acceptance remain
+outstanding for this source candidate. The scoped fixtures are in `test/native-player-r24`.
+
 ## How it is built
 
 Each responsibility has one owner, a plain module with a store the screens read:
