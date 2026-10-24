@@ -183,6 +183,37 @@ describe("guide public owner", () => {
     expect(owner.status("a").error).toBeNull();
     expect(control.cancelled.size).toBeGreaterThan(0);
   });
+  it("reports a whole-job deadline and backs off without an automatic retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(at);
+    try {
+      const { native, control } = guideFixture();
+      const held = deferred<Awaited<ReturnType<GuideNative["prepare"]>>>();
+      let prepares = 0;
+      control.prepare = () => {
+        prepares++;
+        return held.promise;
+      };
+      const owner = createGuide(
+        () => native,
+        Date.now,
+        () => source,
+      );
+      await owner.attach("a");
+      const refreshing = owner.refresh("a");
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(180000);
+      expect(owner.status("a").error).toBe("time");
+      held.resolve({ kind: "cancelled" });
+      await refreshing;
+      owner.foreground();
+      expect(prepares).toBe(1);
+      expect(owner.status("a")).toMatchObject({ activity: "idle", error: "time" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reports missing binding as unavailable, with no fake success", async () => {
     const owner = createGuide(() => {
       throw new Error("missing");

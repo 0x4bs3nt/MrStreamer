@@ -142,15 +142,17 @@ export function createGuide(
     entry.jobs.add(job);
     entry.refresh = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let expired = false;
       try {
         const native = port();
         native.begin(entry.activation.lease, job);
-        let expired = false;
         const controller = new AbortController();
         timer = setTimeout(() => {
           expired = true;
+          entry.failedAt = now();
+          if (stands(key, entry) && foreground) update(key, { error: "time" });
           controller.abort();
-          void native.cancel(job);
+          void cancel(job);
         }, 180_000);
         const wanted = () => !expired && foreground && stands(key, entry);
         update(key, { activity: "loading", error: null });
@@ -179,6 +181,7 @@ export function createGuide(
         );
         if (!wanted()) return;
         if (result.kind === "failed") throw new GuideFault(result.error);
+        if (result.kind === "cancelled") entry.failedAt = now();
         if (result.kind === "ok") {
           entry.generation = result.value;
           invalidate(entry);
@@ -187,7 +190,9 @@ export function createGuide(
       } catch (cause) {
         if (stands(key, entry) && foreground) {
           entry.failedAt = now();
-          update(key, { error: cause instanceof GuideFault ? cause.problem : "network" });
+          update(key, {
+            error: expired ? "time" : cause instanceof GuideFault ? cause.problem : "network",
+          });
         }
       } finally {
         clearTimeout(timer);
