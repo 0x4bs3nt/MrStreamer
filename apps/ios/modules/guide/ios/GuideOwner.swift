@@ -27,6 +27,10 @@ final class GuideOwner {
     guard guideOpaque(id) else { throw GuideFailure("changed") }
     return root.appendingPathComponent(id, isDirectory: true)
   }
+  private func revocation(_ id: String) throws -> URL {
+    _ = try directory(id)
+    return root.appendingPathComponent(id + ".revoked")
+  }
   private func manifest(_ id: String) throws -> URL { try directory(id).appendingPathComponent("manifest.json") }
   private func file(_ id: String, _ generation: String, part: Bool = false) throws -> URL {
     guard guideOpaque(generation) else { throw GuideFailure("changed") }
@@ -35,7 +39,7 @@ final class GuideOwner {
   private func readGeneration(_ id: String) -> GuideGeneration? {
     do {
       let dir = try directory(id)
-      if FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { return nil }
+      if FileManager.default.fileExists(atPath: try revocation(id).path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { return nil }
       let path = try manifest(id)
       let size = try path.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
       if size > 1024 { return nil }
@@ -63,13 +67,18 @@ final class GuideOwner {
     for job in jobs.values { job.cancel() }; sources.removeAll(); candidates.removeAll()
     let allowed = Set(active.filter(guideOpaque))
     if let files = try? guideFiles(root) {
-      for path in files where !allowed.contains(path.lastPathComponent) { try? FileManager.default.removeItem(at: path) }
+      for path in files where path.pathExtension != "revoked" && !allowed.contains(path.lastPathComponent) {
+        do {
+          try FileManager.default.removeItem(at: path)
+          try? FileManager.default.removeItem(at: root.appendingPathComponent(path.lastPathComponent + ".revoked"))
+        } catch { /* The active allowlist still refuses reads from retired identities. */ }
+      }
     }
     var result = [[String: Any]]()
     for id in allowed {
       guard let dir = try? directory(id) else { continue }
-      if FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) {
-        do { try FileManager.default.removeItem(at: dir); blocked.remove(id) } catch { blocked.insert(id); continue }
+      if FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) || FileManager.default.fileExists(atPath: (try? revocation(id).path) ?? "") {
+        if !forget(id) { continue }
       }
       let activation = GuideActivation(lease: UUID().uuidString, revision: 0, generation: readGeneration(id))
       sources[id] = activation; prune(id, orphans: true)
@@ -80,7 +89,7 @@ final class GuideOwner {
   func attach(_ id: String, _ revision: Int) throws -> [String: Any] {
     lock.lock(); defer { lock.unlock() }
     let dir = try directory(id)
-    if blocked.contains(id) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
+    if blocked.contains(id) || FileManager.default.fileExists(atPath: try revocation(id).path) || FileManager.default.fileExists(atPath: dir.appendingPathComponent("revoked").path) { throw GuideFailure("disk") }
     if let current = sources[id], current.revision == revision { return current.payload }
     if let current = sources[id] { for job in jobs.values where job.lease == current.lease { job.cancel() } }
     let activation = GuideActivation(lease: UUID().uuidString, revision: revision, generation: sources[id]?.generation ?? readGeneration(id))
@@ -97,11 +106,13 @@ final class GuideOwner {
     revoke(id)
     do {
       let dir = try directory(id)
-      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      // Keep the tombstone outside the account directory, even if that directory refuses writes.
       // A failed deletion must never let restore or attach reopen this identity's old cache.
-      try Data().write(to: dir.appendingPathComponent("revoked"), options: .atomic)
+      let marker = try revocation(id)
+      try Data().write(to: marker, options: .atomic)
       if pins.keys.contains(where: { $0.deletingLastPathComponent() == dir }) { return false }
-      try FileManager.default.removeItem(at: dir)
+      if FileManager.default.fileExists(atPath: dir.path) { try FileManager.default.removeItem(at: dir) }
+      try FileManager.default.removeItem(at: marker)
       blocked.remove(id)
       candidates = candidates.filter { $0.value.owner != id }
       return true
