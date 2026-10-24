@@ -103,7 +103,7 @@ export default function Settings() {
         role="button"
         onPress={() =>
           chooseMedia("audio", "Audio", [
-            { label: audioNames.default, value: { kind: "default" } },
+            { label: audioNames["follow-title"], value: { kind: "follow-title" } },
             { label: audioNames.original, value: { kind: "original" } },
             ...TITLE_LANGUAGES.map(({ code, name }) => ({
               label: name,
@@ -217,7 +217,7 @@ const mediaLanguageName = (code: string) =>
   TITLE_LANGUAGES.find((language) => language.code === code)?.name ?? languageName(code) ?? code;
 const deviceLanguage = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale).language;
 const systemLanguage = `System default (${mediaLanguageName(deviceLanguage)})`;
-const audioNames = { default: "File default", original: "Original language" };
+const audioNames = { "follow-title": "Follow title language", original: "Original language" };
 const subtitleNames = { "forced-only": "Only when forced", off: "Off" };
 const qualityNames: Record<Quality, string> = { uhd: "4K", fhd: "Full HD", hd: "HD", sd: "SD" };
 

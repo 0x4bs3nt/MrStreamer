@@ -6,7 +6,7 @@ import { readJson, writeJson } from "./files.ts";
 import { store, useStore, type Store } from "./store.ts";
 
 type Audio =
-  | { readonly kind: "default" }
+  | { readonly kind: "follow-title" }
   | { readonly kind: "original" }
   | { readonly kind: "language"; readonly language: TitleLanguage };
 type Subtitles =
@@ -18,7 +18,10 @@ type Subtitles =
 interface MediaPreferences {
   /** null keeps the device's language, including languages outside the offered choices. */
   readonly titleLanguage: TitleLanguage | null;
-  /** Default follows the file; original uses the title's original language when available. */
+  /**
+   * Follow-title targets effective title language; original targets originalLanguage.
+   * The later consumer falls back to the native playable default when unavailable.
+   */
   readonly audio: Audio;
   /** Forced-only needs actual native track facts, never provider name hints. */
   readonly subtitles: Subtitles;
@@ -41,7 +44,7 @@ function audioOf(value: unknown): Audio {
     const language = knownLanguage(value["language"]);
     if (value["kind"] === "language" && language) return { kind: "language", language };
   }
-  return { kind: "default" };
+  return { kind: "follow-title" };
 }
 
 function subtitlesOf(value: unknown): Subtitles {

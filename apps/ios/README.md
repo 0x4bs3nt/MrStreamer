@@ -161,8 +161,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
   accepted choices are written before rows update, and failed writes keep the previous choice.
   Titles keep the device language until changed, then rebuild the index and collections in tasks
   and read TMDB names/details/episodes in that language. Saved manual version picks still win.
-  Audio defaults to the file, with original/preferred-language options; subtitles default to
-  forced-only, with Off/preferred-language options. These track policies and Full HD default Live
+  Audio defaults to Follow title language, with original/preferred-language options. The later
+  consumer targets the effective title language and falls back to the native playable default
+  when unavailable. Subtitles default to forced-only, with Off/preferred-language options. These track policies and Full HD default Live
   quality are saved for later player/variant integration. They do not yet select native tracks,
   apply Live quality, remember per-item tracks or restart current playback.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's

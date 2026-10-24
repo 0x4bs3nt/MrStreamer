@@ -141,7 +141,7 @@ function choose(name: string, label: string) {
 it("renders four native Media rows with accepted defaults and the device language", () => {
   render();
   expect(row("title-language").textContent).toContain("System default (");
-  expect(row("audio").textContent).toContain("File default");
+  expect(row("audio").textContent).toContain("Follow title language");
   expect(row("subtitles").textContent).toContain("Only when forced");
   expect(row("live-quality").textContent).toContain("Full HD");
 });
@@ -185,4 +185,11 @@ it("a lost atomic write keeps the accepted row and reports a safe failure", asyn
       message: "Your previous choice is still saved. Try again.",
     },
   ]);
+});
+
+it("offers Follow title language explicitly and saves it after another audio policy", () => {
+  render();
+  choose("audio", "Original language");
+  choose("audio", "Follow title language");
+  expect(row("audio").textContent).toContain("Follow title language");
 });

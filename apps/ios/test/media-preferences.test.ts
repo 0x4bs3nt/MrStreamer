@@ -27,7 +27,7 @@ describe("accepted media preferences", () => {
     let app = await restart();
     expect(app.getMediaPreferences()).toEqual({
       titleLanguage: null,
-      audio: { kind: "default" },
+      audio: { kind: "follow-title" },
       subtitles: { kind: "forced-only" },
       liveQuality: "fhd",
     });
@@ -67,7 +67,7 @@ describe("accepted media preferences", () => {
     const app = await restart();
     expect(app.getMediaPreferences()).toEqual({
       titleLanguage: "fr",
-      audio: { kind: "default" },
+      audio: { kind: "follow-title" },
       subtitles: { kind: "off" },
       liveQuality: "hd",
     });
@@ -208,4 +208,16 @@ it("keeps the first accepted defaults when proposal move and pending cleanup are
   expect(app.getMediaPreferences().titleLanguage).toBeNull();
   native.sync = null;
   expect((await restart()).getMediaPreferences().titleLanguage).toBeNull();
+});
+
+it("saves follow-title as its own policy while later title-language choices remain independent", async () => {
+  let app = await restart();
+  app.updateMediaPreferences("audio", { kind: "original" });
+  app.updateMediaPreferences("audio", { kind: "follow-title" });
+  app.updateMediaPreferences("titleLanguage", "fr");
+  app = await restart();
+  expect(app.getMediaPreferences().audio).toEqual({ kind: "follow-title" });
+  expect(app.getMediaPreferences().titleLanguage).toBe("fr");
+  app.updateMediaPreferences("titleLanguage", null);
+  expect(app.getMediaPreferences().audio).toEqual({ kind: "follow-title" });
 });
