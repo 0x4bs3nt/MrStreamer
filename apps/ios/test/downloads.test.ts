@@ -1,6 +1,6 @@
 import type { Download, DownloadStatus } from "@mrstreamer/contracts/downloads";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // Downloads through the app's own owners: the account, its two fake Xtream panels over HTTP (the
 // desktop tests' fake provider, one connection each, a closed one freed 300 ms later as its
@@ -43,17 +43,25 @@ const memory = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 /** Set, the viewing record's saves of progress wait for it, as a busy record would. */
-const viewingSaves = vi.hoisted(() => ({ hold: null as Promise<void> | null }));
-vi.mock("../src/viewing.ts", async (original) => {
-  const viewing = await original<typeof import("../src/viewing.ts")>();
-  return {
-    ...viewing,
-    recordProgress: async (...args: Parameters<typeof viewing.recordProgress>) => {
-      await viewingSaves.hold;
-      return viewing.recordProgress(...args);
-    },
-  };
-});
+const viewingSaves: { hold: Promise<void> | null } = { hold: null };
+/**
+ * Has the next launch's viewing record hold its saves of progress while `viewingSaves.hold` is
+ * set, for the test that asks, until it ends. Other tests run the record as it is: errors from a
+ * wrapped record don't pass the app's `instanceof AppFailure` checks.
+ */
+function holdingViewingSaves() {
+  vi.doMock("../src/viewing.ts", async (original) => {
+    const viewing = await original<typeof import("../src/viewing.ts")>();
+    return {
+      ...viewing,
+      recordProgress: async (...args: Parameters<typeof viewing.recordProgress>) => {
+        await viewingSaves.hold;
+        return viewing.recordProgress(...args);
+      },
+    };
+  });
+  onTestFinished(() => vi.doUnmock("../src/viewing.ts"));
+}
 vi.mock("expo", () => import("./native-downloads.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
@@ -1024,6 +1032,61 @@ describe("downloads", { timeout: 30_000 }, () => {
     expect(copy?.subscription).toBeNull();
   });
 
+  for (const keepHistory of [true, false]) {
+    it(`tells no refused save when the provider of a loaded film is removed, keepHistory ${keepHistory}`, async () => {
+      await install();
+      const app = await launch();
+      const { a } = await withProviders(app);
+      const told = vi.fn();
+      app.onProgressRefused(told);
+      playFilm(app, a, movie().id);
+      await until(() => memory.played.length === 1, "the film");
+      const player = memory.player!;
+      player.emit("playingChange", { isPlaying: true });
+      Object.assign(player, { currentTime: 1200, duration: 6000 });
+      await expect(app.closeWatch()).resolves.toEqual({ saved: true });
+      player.emit("playingChange", { isPlaying: false });
+      await app.progressSettled();
+      // Removing it stops the film, whose last save then finds its subscription gone.
+      player.currentTime = 1300;
+      await app.remove(a, { keepHistory });
+      await app.progressSettled();
+      expect(app.playbackState.get().phase.kind).toBe("idle");
+      expect(told).not.toHaveBeenCalled();
+    });
+  }
+
+  it("still tells a save the viewing record refuses, once, until one is kept again", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const told = vi.fn();
+    app.onProgressRefused(told);
+    playFilm(app, a, movie().id);
+    await until(() => memory.played.length === 1, "the film");
+    const player = memory.player!;
+    player.emit("playingChange", { isPlaying: true });
+    Object.assign(player, { currentTime: 1200, duration: 6000 });
+    // viewing.json can't be written.
+    const blocked = new Folder(native.root, "documents", "viewing.json.next");
+    blocked.create();
+    await expect(app.closeWatch()).resolves.toMatchObject({ saved: false });
+    player.emit("playingChange", { isPlaying: false });
+    await app.progressSettled();
+    expect(told).toHaveBeenCalledOnce();
+    blocked.delete();
+    app.togglePause();
+    player.emit("playingChange", { isPlaying: true });
+    player.emit("playingChange", { isPlaying: false });
+    await app.progressSettled();
+    const film = { subscriptionId: a, id: String(movie().id) };
+    expect((await app.progressOf({ movies: [film] }))[0]?.position).toBe(1200);
+    blocked.create();
+    await expect(app.stop()).resolves.toMatchObject({ saved: false });
+    blocked.delete();
+    expect(told).toHaveBeenCalledTimes(2);
+  });
+
   it("plays a copy again from where Close just left it", async () => {
     await install();
     const app = await launch();
@@ -1044,6 +1107,7 @@ describe("downloads", { timeout: 30_000 }, () => {
 
   it("goes on to the next save only once both of a copy's saves ended, and says it wasn't kept", async () => {
     await install();
+    holdingViewingSaves();
     const app = await launch();
     const { a } = await withProviders(app);
     const kept = await app.addDownload(movieRef(a));

@@ -289,7 +289,8 @@ Each responsibility has one owner, a plain module with a store the screens read:
   saves go one at a time, in order, so a late one never overwrites a newer position, and Resume,
   Continue watching, Next and a copy's Play read where a title got to only once they ended. Closing
   Watch pauses what plays and saves where it got to, unless Picture in Picture or AirPlay already
-  shows it; Stop ends it. A refused save shows a system alert, once until a save is kept again.
+  shows it; Stop ends it. A refused save shows a system alert, once until a save is kept again;
+  one refused because its provider was removed meanwhile doesn't.
   A title or copy in a file AVPlayer can't open, such as Matroska, plays through a format
   session (`src/title-formats.ts`, `modules/title-formats`): native code reads the file, from the
   provider over one request at a time or from the phone, and serves it to this player as HLS on

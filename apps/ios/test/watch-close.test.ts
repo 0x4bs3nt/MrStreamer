@@ -280,6 +280,32 @@ describe("after Close", () => {
 });
 
 describe("a refused save", () => {
+  it("isn't told when the title's subscription went, says it wasn't kept, and leaves a run as it was", async () => {
+    const told = vi.fn();
+    onProgressRefused(told);
+    onTestFinished(() => onProgressRefused(null));
+    await watching(120);
+    const closing = closeWatch();
+    await settle();
+    saves[0]!.answer.reject(new AppFailure({ kind: "no-subscription" }));
+    await expect(closing).resolves.toEqual({ saved: false, error: { kind: "no-subscription" } });
+    expect(told).not.toHaveBeenCalled();
+    // A refusal, then a subscription gone, then a refusal again: one run, told once.
+    for (const refusal of [
+      new Error("disk full"),
+      new AppFailure({ kind: "no-subscription" }),
+      new Error("disk full"),
+    ]) {
+      togglePause();
+      playing();
+      playing(false);
+      await settle();
+      saves.at(-1)!.answer.reject(refusal);
+      await settle();
+    }
+    expect(told).toHaveBeenCalledOnce();
+  });
+
   it("is told once until a save is kept again", async () => {
     const told = vi.fn();
     onProgressRefused(told);

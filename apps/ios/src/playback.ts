@@ -265,7 +265,10 @@ const KEPT: Saved = { saved: true };
 let saving: Promise<Saved> = Promise.resolve(KEPT);
 /** Whether the latest save was refused, so a run of refusals is told once. */
 let refusing = false;
-/** Told when a save is refused after one that was kept; Watch registers it. */
+/**
+ * Told when a save is refused after one that was kept, unless its subscription went; Watch
+ * registers it.
+ */
 let refused: (() => void) | null = null;
 /** Told each failure's category, never its message; telemetry registers it. */
 let failed: ((failure: AnalyticsFailure) => void) | null = null;
@@ -301,9 +304,14 @@ function report(): Promise<Saved> {
       refusing = false;
       return KEPT;
     } catch (cause) {
-      if (!refusing) refused?.();
-      refusing = true;
-      return { saved: false, error: appError(cause) };
+      const error = appError(cause);
+      // A save whose subscription went, as removing its provider stops what plays, wasn't kept,
+      // but the viewer chose that: it isn't told, and leaves a run of refusals as it was.
+      if (error.kind !== "no-subscription") {
+        if (!refusing) refused?.();
+        refusing = true;
+      }
+      return { saved: false, error };
     }
   });
   return saving;
