@@ -117,6 +117,25 @@ export async function probeObservedPlayer(
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
     requireFact(confirmed, "fixture-audio-unconfirmed");
+    // Exercise consecutive real native group loads after selection has settled.
+    // Equivalent groups/options must preserve the revision and selected-ID readback.
+    const selected = await player.getObservedTracksAsync(identity);
+    const unchanged = await player.getObservedTracksAsync(identity);
+    requireFact(!("kind" in selected) && !("kind" in unchanged), "fixture-unchanged-query-stale");
+    requireFact(unchanged.revision === selected.revision, "fixture-unchanged-revision");
+    requireFact(
+      selected.selectedAudioId === sound.id &&
+        unchanged.selectedAudioId === selected.selectedAudioId &&
+        unchanged.selectedSubtitleId === selected.selectedSubtitleId,
+      "fixture-unchanged-selection",
+    );
+    const retainedSound = selected.audio.options.find((option) => option.id === sound.id);
+    requireFact(retainedSound, "fixture-unchanged-audio-missing");
+    const repeated = await player.selectObservedTrackAsync(identity, selected.revision, {
+      kind: "audio",
+      track: retainedSound,
+    });
+    requireFact(repeated.kind === "requested", "fixture-unchanged-selection-stale");
     const forged = await player.selectObservedTrackAsync(identity, tracks.revision, {
       kind: "audio",
       track: { ...sound, label: "not-the-exact-record" },
@@ -154,6 +173,7 @@ export async function probeObservedPlayer(
       eventCount: events.length,
       lastSequence,
       audioReadback: confirmed,
+      unchangedRevision: unchanged.revision,
       providerDisconnect: a.providerDisconnect,
     };
   } finally {

@@ -46,7 +46,7 @@ index b822fe0ab3287008e68a193ecf760db8cfc7af12..9b3f3bb938866fe3accec04c706e7d74
                      setForceRecreateCount((c)=>c + 1);
                  });
 diff --git a/build/VideoPlayer.types.d.ts b/build/VideoPlayer.types.d.ts
-index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a6f793bb34aba2add0fb1ae4a9fa09c2a77e9ac1 100644
+index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a026fc9f56256865d5f4115e37f54451e3877fc7 100644
 --- a/build/VideoPlayer.types.d.ts
 +++ b/build/VideoPlayer.types.d.ts
 @@ -5,6 +5,14 @@ import type { VideoThumbnail } from './VideoThumbnail';
@@ -96,8 +96,8 @@ index cd40efa277a1525d48e3c3c5ab5e7fa9c63a97b9..a6f793bb34aba2add0fb1ae4a9fa09c2
 +    code: ObservedSystemCode; underlying: readonly ObservedSystemCode[] }> | null;
 +}>;
 +type ObservedTrackIdentity = ObservedItemIdentity & Readonly<{ id: string; revision: number; isDefault: boolean; isPlayable: boolean }>;
-+export type ObservedAudioTrack = AudioTrack & ObservedTrackIdentity & Readonly<{ group: 'audio' }>;
-+export type ObservedSubtitleTrack = SubtitleTrack & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; forcedOnly: boolean }>;
++export type ObservedAudioTrack = Omit<AudioTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'audio'; language?: string }>;
++export type ObservedSubtitleTrack = Omit<SubtitleTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; language?: string; forcedOnly: boolean }>;
 +export type ObservedTrackGroup<T> = Readonly<{
 +  /** Absent is an observed nil group. Ready with no options is distinct from loading or failed discovery. */
 +  state: 'loading' | 'absent' | 'ready' | 'unavailable'; options: readonly T[];
@@ -644,10 +644,10 @@ index 3c2fde463a10c78546947dacd8c0fda67f0494c7..ceb10898958fbadc5cb03eb9576bba8c
        self.emit(event: event, payload: payload?.toDictionary(appContext: appContext))
      }
 diff --git a/ios/VideoPlayerAudioTracks.swift b/ios/VideoPlayerAudioTracks.swift
-index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2389ad890f406be2dcb13c6b18757f566488600f 100644
+index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..3b65e168210bd8251cd987331a3a1883d1f2809f 100644
 --- a/ios/VideoPlayerAudioTracks.swift
 +++ b/ios/VideoPlayerAudioTracks.swift
-@@ -21,15 +21,27 @@ class VideoPlayerAudioTracks {
+@@ -21,15 +21,28 @@ class VideoPlayerAudioTracks {
    func onNewPlayerItemLoaded(playerItem: AVPlayerItem?) async -> AudioTracksChangedEventPayload {
      let oldAvailableAudioTracks = availableAudioTracks
  
@@ -665,6 +665,7 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2389ad890f406be2dcb13c6b18757f56
 +      await MainActor.run {
 +        if self.owner?.usesObservedPlayback != true { self.availableAudioTracks = [] }
 +      }
++      await selectDefaultAudioTrackIfNeeded(for: playerItem)
 +      return AudioTracksChangedEventPayload(
 +        availableAudioTracks: availableAudioTracks,
 +        oldAvailableAudioTracks: oldAvailableAudioTracks
@@ -680,7 +681,7 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2389ad890f406be2dcb13c6b18757f56
  
      return AudioTracksChangedEventPayload(
        availableAudioTracks: availableAudioTracks,
-@@ -43,8 +55,8 @@ class VideoPlayerAudioTracks {
+@@ -43,8 +56,8 @@ class VideoPlayerAudioTracks {
      }
  
      if let group = currentItem.asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
@@ -691,7 +692,7 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2389ad890f406be2dcb13c6b18757f56
        }
        currentItem.select(option, in: group)
      }
-@@ -77,7 +89,7 @@ class VideoPlayerAudioTracks {
+@@ -77,7 +90,7 @@ class VideoPlayerAudioTracks {
      return availableAudioTracks
    }
  
@@ -700,7 +701,7 @@ index 9f2c63cc4b79cd9486e4e7693d9e9cfbb8a2a046..2389ad890f406be2dcb13c6b18757f56
      guard let playerItem,
        let audioGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible) else {
        return
-@@ -90,6 +102,7 @@ class VideoPlayerAudioTracks {
+@@ -90,6 +103,7 @@ class VideoPlayerAudioTracks {
  
      if let audioOption = audioGroup.defaultOption ?? audioGroup.options.first {
        await MainActor.run {
@@ -770,10 +771,10 @@ index fe34ffac1f93735a89a738bf1a4c63fa379fb37a..755a8795f509b49f461105093ccfa62c
    }
 diff --git a/ios/VideoPlayerObservation.swift b/ios/VideoPlayerObservation.swift
 new file mode 100644
-index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6796fe377
+index 0000000000000000000000000000000000000000..35e9dc33c369edb14e796cd354e3f2f4df73510b
 --- /dev/null
 +++ b/ios/VideoPlayerObservation.swift
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,399 @@
 +import AVFoundation
 +import ExpoModulesCore
 +import Foundation
@@ -1004,8 +1005,10 @@ index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6
 +    }
 +    if !attempt.terminalSent && (item.status == .failed || ref.status == .failed) {
 +      attempt.terminalSent = true
-+      let playerFailed = ref.status == .failed
-+      let error = playerFailed ? ref.error : item.urlAsset.transportError ?? item.error
++      // A terminal native error takes precedence over an earlier asset/group load error.
++      let itemError = item.status == .failed ? item.error : nil
++      let playerFailed = ref.status == .failed && itemError == nil
++      let error = itemError ?? (playerFailed ? ref.error : item.urlAsset.transportError)
 +      emitObserved(attempt, kind: "failure", values: ["terminal": true,
 +        "failure": ObservedFailure.system(error, origin: playerFailed ? "player" : "item")])
 +    }
@@ -1053,10 +1056,10 @@ index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6
 +    let facts: NSDictionary = ["audio": audioFacts, "subtitles": subtitleFacts,
 +      "audioState": groups.audioState, "subtitleState": groups.subtitleState,
 +      "offAllowed": groups.subtitles?.allowsEmptySelection ?? false]
-+    let changedIdentity = attempt.audio !== groups.audio || attempt.subtitles !== groups.subtitles ||
++    let groupsChanged = attempt.audio != groups.audio || attempt.subtitles != groups.subtitles ||
 +      !sameObservedOptions(attempt.audioOptions, groups.audio?.options ?? []) ||
 +      !sameObservedOptions(attempt.subtitleOptions, groups.subtitles?.options ?? [])
-+    if changedIdentity || attempt.facts != facts {
++    if groupsChanged || attempt.facts != facts {
 +      attempt.revision += 1
 +      attempt.facts = facts
 +    }
@@ -1105,8 +1108,8 @@ index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6
 +        return ["kind": "unavailable"]
 +      }
 +      let option = (kind == "audio" ? attempt.audioOptions : attempt.subtitleOptions)[index]
-+      guard group.options[index] === option else { return ["kind": "stale"] }
-+      if item.currentMediaSelection.selectedMediaOption(in: group) !== option { item.select(option, in: group) }
++      guard group.options[index] == option else { return ["kind": "stale"] }
++      if item.currentMediaSelection.selectedMediaOption(in: group) != option { item.select(option, in: group) }
 +    }
 +    // Acknowledges the request only. Selection notifications/query supply actual readback.
 +    return ["kind": "requested"]
@@ -1143,7 +1146,7 @@ index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6
 +  guard let group else { return [] }
 +  return group.options.enumerated().map { index, option in
 +    var record: [String: Any] = ["id": String(index), "group": kind,
-+      "label": option.displayName, "isDefault": group.defaultOption === option,
++      "label": option.displayName, "isDefault": group.defaultOption == option,
 +      "isPlayable": option.isPlayable, "autoSelect": !option.hasMediaCharacteristic(.isAuxiliaryContent)]
 +    if let language = option.extendedLanguageTag ?? option.locale?.identifier { record["language"] = language }
 +    if let name = option.commonMetadata.first(where: { $0.commonKey == .commonKeyTitle })?.stringValue { record["name"] = name }
@@ -1163,13 +1166,13 @@ index 0000000000000000000000000000000000000000..43e88954fc40b3cf8d03ea3910e695f6
 +}
 +
 +private func sameObservedOptions(_ lhs: [AVMediaSelectionOption], _ rhs: [AVMediaSelectionOption]) -> Bool {
-+  lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { $0 === $1 }
++  lhs == rhs
 +}
 +
 +private func selectedObservedId(_ item: AVPlayerItem, group: AVMediaSelectionGroup?) -> Any {
 +  guard let group, let option = item.currentMediaSelection.selectedMediaOption(in: group),
-+    let index = group.options.firstIndex(where: { $0 === option }) else { return NSNull() }
-+  return String(index)
++    let id = group.trackId(of: option) else { return NSNull() }
++  return id
 +}
 diff --git a/ios/VideoPlayerObservationFacts.swift b/ios/VideoPlayerObservationFacts.swift
 new file mode 100644
@@ -1637,7 +1640,7 @@ index 257dc4ed09d36240eb53f7fe3aad4399e42d49b4..84414c5f47d31bedd9edf98504ef6b10
              setForceRecreateCount((c) => c + 1);
            });
 diff --git a/src/VideoPlayer.types.ts b/src/VideoPlayer.types.ts
-index 07a2cdf7ca129d069102d05071713d5aa4db5004..9edc05a06fccf6ea07d03b16ea44e550f7d3558a 100644
+index 07a2cdf7ca129d069102d05071713d5aa4db5004..1386952fea89e15ac54169c8cd224cc509eb768c 100644
 --- a/src/VideoPlayer.types.ts
 +++ b/src/VideoPlayer.types.ts
 @@ -7,6 +7,14 @@ import type { VideoThumbnail } from './VideoThumbnail';
@@ -1687,8 +1690,8 @@ index 07a2cdf7ca129d069102d05071713d5aa4db5004..9edc05a06fccf6ea07d03b16ea44e550
 +    code: ObservedSystemCode; underlying: readonly ObservedSystemCode[] }> | null;
 +}>;
 +type ObservedTrackIdentity = ObservedItemIdentity & Readonly<{ id: string; revision: number; isDefault: boolean; isPlayable: boolean }>;
-+export type ObservedAudioTrack = AudioTrack & ObservedTrackIdentity & Readonly<{ group: 'audio' }>;
-+export type ObservedSubtitleTrack = SubtitleTrack & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; forcedOnly: boolean }>;
++export type ObservedAudioTrack = Omit<AudioTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'audio'; language?: string }>;
++export type ObservedSubtitleTrack = Omit<SubtitleTrack, 'language'> & ObservedTrackIdentity & Readonly<{ group: 'subtitles'; language?: string; forcedOnly: boolean }>;
 +export type ObservedTrackGroup<T> = Readonly<{
 +  /** Absent is an observed nil group. Ready with no options is distinct from loading or failed discovery. */
 +  state: 'loading' | 'absent' | 'ready' | 'unavailable'; options: readonly T[];

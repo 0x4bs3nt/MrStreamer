@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   expo-file-system@58.0.9: 1c02d446bbb5d0806e390b22cc66f8868f20b17dcaa32297470186a1f7b0515f
-  expo-video@58.0.10: 534eee865a75450722d3f6f9bc4915046cde40465cb9589ef43f79a12384560b
+  expo-video@58.0.10: f3dc9cbbd63fc73c454173c1dd4f0865be6c12311fcd6c813744d0d72e54f8b7
   react-native-screens@4.29.0: 7478a45f2f5ae208c2c1c9e7ce8873ef365543dca44a849ea6a0e416301dea3e
   react-native@0.88.0-rc.4: a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c
 
@@ -85,7 +85,7 @@ importers:
         version: 58.0.4(expo-font@58.0.8)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       expo-video:
         specifier: 58.0.10
-        version: 58.0.10(patch_hash=534eee865a75450722d3f6f9bc4915046cde40465cb9589ef43f79a12384560b)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
+        version: 58.0.10(patch_hash=f3dc9cbbd63fc73c454173c1dd4f0865be6c12311fcd6c813744d0d72e54f8b7)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)
       react:
         specifier: 19.3.0
         version: 19.3.0
@@ -4191,7 +4191,7 @@ snapshots:
       react-native: 0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1)
       sf-symbols-typescript: 2.2.0
 
-  expo-video@58.0.10(patch_hash=534eee865a75450722d3f6f9bc4915046cde40465cb9589ef43f79a12384560b)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0):
+  expo-video@58.0.10(patch_hash=f3dc9cbbd63fc73c454173c1dd4f0865be6c12311fcd6c813744d0d72e54f8b7)(expo@58.0.9)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0):
     dependencies:
       expo: 58.0.9(@babel/core@7.29.7(supports-color@8.1.1))(@expo/metro-runtime@58.0.14)(expo-router@58.0.18)(react-native@0.88.0-rc.4(patch_hash=a93e046771a3ab9188f8f497a4d9922be224914051678391d5de0581db7fb25c)(@types/react@19.3.0)(react@19.3.0)(supports-color@8.1.1))(react@19.3.0)(supports-color@8.1.1)
       react: 19.3.0
