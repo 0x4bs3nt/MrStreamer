@@ -294,14 +294,22 @@ function Tiles({
       contentContainerStyle={styles.tiles}
     >
       {channels.map((channel) => {
-        const line =
-          channel.key === playing?.id ? playing.word : shelfOf(placeOf(library, channel));
+        const provider =
+          testID === "home-channel" && channel.ambiguous
+            ? library.labels.get(channel.subscriptionId)
+            : undefined;
+        const place = placeOf(library, channel);
+        const fallback =
+          provider && place.endsWith(` · ${provider}`)
+            ? place.slice(0, -provider.length - 3)
+            : place;
+        const line = channel.key === playing?.id ? playing.word : shelfOf(fallback);
         const programme = programmePresentation(programmes?.get(channel.key), now);
         return (
           <View key={channel.key} style={styles.tile}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={[channel.title, programme.line ?? line, programme.next]
+              accessibilityLabel={[channel.title, provider, programme.line ?? line, programme.next]
                 .filter(Boolean)
                 .join(", ")}
               onPress={() => onPress(channel)}
@@ -311,6 +319,7 @@ function Tiles({
               <ChannelLogo channel={channel} style={styles.tileLogo} large />
               <Text style={styles.tileName} numberOfLines={1}>
                 {channel.title}
+                {provider ? ` · ${provider}` : ""}
               </Text>
               {programmes ? (
                 <ProgrammeLines listing={programmes.get(channel.key)} fallback={line} at={now} />
@@ -323,7 +332,9 @@ function Tiles({
             {testID === "home-channel" ? (
               <TextButton
                 label="Schedule"
-                accessibilityLabel={`Schedule for ${channel.title}`}
+                accessibilityLabel={[`Schedule for ${channel.title}`, provider]
+                  .filter(Boolean)
+                  .join(", ")}
                 onPress={() => openSchedule("home", channel.key)}
                 testID={`home-schedule-${channel.key}`}
               />
@@ -499,6 +510,7 @@ function Stage({
                 : muted
                   ? "Muted"
                   : "Live";
+  const programmeShown = programmePresentation(programme, now);
   // The logo where the picture isn't: idle, connecting, failed, or shown elsewhere.
   const logo = channel && (phase.kind !== "playing" || !shows) ? channel : null;
   return (
@@ -521,7 +533,9 @@ function Stage({
         <Text style={styles.stageTitle} numberOfLines={1}>
           {title}
         </Text>
-        {programme?.now ? <ProgrammeLines listing={programme} fallback={line} at={now} /> : null}
+        {programmeShown.line || programmeShown.next ? (
+          <ProgrammeLines listing={programme} fallback="" at={now} textStyle={shadow} />
+        ) : null}
         {status ? (
           <Text style={styles.stageStatus} numberOfLines={2} testID="home-stage-status">
             {status}

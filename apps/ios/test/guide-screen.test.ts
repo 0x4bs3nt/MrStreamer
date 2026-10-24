@@ -6,6 +6,8 @@ import type { Catalogue } from "../src/account.ts";
 import type { Channel } from "../src/library.ts";
 import type { Query, Result } from "../src/guide-native.ts";
 import type { createGuide } from "../src/guide.ts";
+import { currentSource, dropSource, setSource } from "../src/sources.ts";
+import { xtreamProvider } from "@mrstreamer/core/xtream";
 import type { guideFixture } from "./native-guide.ts";
 import { finish } from "@mrstreamer/core/steps";
 import { combine, partSteps } from "../src/library.ts";
@@ -23,6 +25,7 @@ const state = vi.hoisted(() => ({
   fixture: null as ReturnType<typeof guideFixture> | null,
   params: {} as { channel?: string; detail?: string },
   focused: true,
+  focusContext: null as React.Context<boolean> | null,
   visible: 12,
   did: [] as unknown[],
   queries: [] as {
@@ -66,19 +69,23 @@ vi.mock("../src/guide.ts", async (original) => {
   state.owner = actual.createGuide(
     () => state.fixture!.native,
     () => Date.now(),
-    () => undefined,
+    (await import("../src/sources.ts")).currentSource,
   );
   return { ...actual, guide: state.owner };
 });
 vi.mock("expo-file-system", () => import("./native-files.ts"));
-vi.mock("expo-router", () => ({
-  useIsFocused: () => state.focused,
-  useLocalSearchParams: () => state.params,
-  router: {
-    push: (href: unknown) => state.did.push(href),
-    navigate: (href: unknown) => state.did.push(href),
-  },
-}));
+vi.mock("expo-router", async () => {
+  const { createContext, useContext } = await import("react");
+  state.focusContext = createContext(true);
+  return {
+    useIsFocused: () => useContext(state.focusContext!) && state.focused,
+    useLocalSearchParams: () => state.params,
+    router: {
+      push: (href: unknown) => state.did.push(href),
+      navigate: (href: unknown) => state.did.push(href),
+    },
+  };
+});
 vi.mock("../src/account.ts", () => ({
   useCatalogue: () => state.catalogue,
   useRoster: () => ({ kind: "ready", members: [] }),
@@ -302,16 +309,45 @@ async function click(label: string) {
 function answer(rows: readonly Programme[], more = false): Result<Query> {
   return { kind: "ok", value: { guideId: "trusted-1", rows, more } };
 }
+const tick = async () => {
+  await React.act(async () => {
+    vi.advanceTimersByTime(60_000);
+  });
+  await settle();
+};
+function holdQueries(reply: NonNullable<typeof state.answer>) {
+  const releases: (() => void)[] = [];
+  let holding = true;
+  state.answer = (...args) =>
+    holding
+      ? new Promise((resolve, reject) =>
+          releases.push(() => {
+            void reply(...args).then(resolve, reject);
+          }),
+        )
+      : reply(...args);
+  return {
+    release: async () => {
+      await React.act(async () => {
+        holding = false;
+        releases.splice(0).forEach((release) => release());
+      });
+      await settle();
+    },
+  };
+}
 beforeEach(async () => {
   vi.useFakeTimers({
     toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"],
   });
   vi.setSystemTime(at);
+  for (const id of ["a", "b", "c"]) dropSource(id);
   state.focused = true;
   state.visible = 12;
   state.params = {};
   state.did = [];
   state.queries = [];
+  for (const id of ["a", "b", "c"]) await fixture().native.forget(id);
   fixture().control.activations.clear();
   state.answer = async (_mode, ids) =>
     ids[0] === "trusted-1" ? answer([current, next]) : answer([]);
@@ -434,9 +470,8 @@ describe("selected A public guide UI with the real guide owner", () => {
     state.answer = async () => answer([]);
     await React.act(async () => owner().foreground());
     await settle();
-    expect(container.textContent).toContain("No programme information");
-    fixture().control.activations.clear();
-    await React.act(async () => owner().restore(["a"]));
+    expect(container.textContent).toContain(current.title);
+    await React.act(async () => owner().forget("a"));
     await settle();
     expect(container.textContent).toContain("No programme information");
     expect(container.textContent).not.toContain("Loading schedule");
@@ -557,6 +592,9 @@ describe("selected A public guide UI with the real guide owner", () => {
     await draw(React.createElement(Home));
     await settle();
     expect(container.textContent).toContain(next.title);
+    expect(container.querySelector('[data-testid="home-stage"]')?.textContent).toContain(
+      next.title,
+    );
     expect(container.querySelector('[role="progressbar"]')).toBeNull();
     expect(container.textContent).toContain("News");
     fixture().native.revoke("a");
@@ -583,5 +621,287 @@ describe("selected A public guide UI with the real guide owner", () => {
     } finally {
       fixture().native.restore = restore;
     }
+  });
+
+  it.each([
+    ["Home", Home],
+    ["Live", LiveHome],
+  ] as const)(
+    "keeps settled %s programmes mounted through a held minute read and failure",
+    async (_name, Screen) => {
+      await draw(React.createElement(Screen));
+      await settle();
+      const gate = holdQueries(async () =>
+        answer([{ ...current, title: "Updated broadcast" }, next]),
+      );
+      await tick();
+      expect(container.textContent).toContain(current.title);
+      expect(container.textContent).not.toContain("Loading programme");
+      await gate.release();
+      expect(container.textContent).toContain("Updated broadcast");
+      state.answer = async () => {
+        throw new Error("private read failure");
+      };
+      await tick();
+      expect(container.textContent).toContain("Updated broadcast");
+      expect(container.textContent).not.toContain("private read failure");
+    },
+  );
+
+  it("retains the represented schedule span across a held tick, mounted Programme and Back, then replaces both pages atomically", async () => {
+    state.params = { channel: "a:1" };
+    const pages = async (
+      _mode: string,
+      _ids: readonly string[],
+      _from: number,
+      _until: number,
+      after: number,
+    ) => (after < 0 ? answer([current], true) : answer([next]));
+    state.answer = pages;
+    let inspection = false;
+    const stack = () =>
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          state.focusContext!.Provider,
+          { value: !inspection },
+          React.createElement(ScheduleScreen, { origin: "home" }),
+        ),
+        inspection
+          ? React.createElement(
+              state.focusContext!.Provider,
+              { value: true },
+              React.createElement(ProgrammeScreen, { origin: "home" }),
+            )
+          : null,
+      );
+    await draw(stack());
+    await settle();
+    await click("Next day");
+    const representedDay = state.queries.at(-1)!.from;
+    await click("Show more");
+    const schedule = container.querySelector('[data-testid="guide-schedule"]')!;
+    const row = schedule.querySelector(`[data-testid="programme-${next.start}"]`);
+    let gate = holdQueries(pages);
+    await tick();
+    expect(schedule.textContent).toContain(current.title);
+    expect(schedule.textContent).toContain(next.title);
+    expect(schedule.querySelector(`[data-testid="programme-${next.start}"]`)).toBe(row);
+    await gate.release();
+    expect(schedule.textContent).toContain(next.title);
+    await click(`programme-${current.start}`);
+    state.params = (state.did.at(-1) as { params: typeof state.params }).params;
+    state.answer = async (mode, ids, from, until, after) =>
+      mode === "detail" ? answer([current]) : pages(mode, ids, from, until, after);
+    inspection = true;
+    await draw(stack());
+    await settle();
+    expect(schedule.textContent).toContain(next.title);
+    const dayReads = state.queries.filter((query) => query.mode === "day").length;
+    await tick();
+    expect(state.queries.filter((query) => query.mode === "day")).toHaveLength(dayReads);
+    gate = holdQueries(pages);
+    inspection = false;
+    await draw(stack());
+    await settle();
+    expect(schedule.textContent).toContain(next.title);
+    expect(schedule.textContent).not.toContain("Loading schedule");
+    expect(state.queries.filter((query) => query.mode === "day").at(-1)!.from).toBe(representedDay);
+    await gate.release();
+    expect(schedule.textContent).toContain(next.title);
+    let releaseSecond: (() => void) | undefined;
+    state.answer = async (_mode, _ids, _from, _until, after) =>
+      after < 0
+        ? answer([{ ...current, title: "New first page" }], true)
+        : new Promise((resolve) => {
+            releaseSecond = () => resolve(answer([{ ...next, title: "New second page" }]));
+          });
+    const activation = fixture().control.activations.get("a")!;
+    fixture().control.activations.set("a", {
+      ...activation,
+      generation: {
+        id: "new-generation",
+        fetchedAt: Date.now() + 1,
+        until: Date.now() + 86400_000,
+      },
+    });
+    await React.act(async () => {
+      await owner().restore(["a"]);
+    });
+    await settle();
+    expect(schedule.textContent).toContain(next.title);
+    expect(schedule.textContent).not.toContain("New first page");
+    expect(releaseSecond).toBeDefined();
+    await React.act(async () => releaseSecond?.());
+    await settle();
+    expect(schedule.textContent).toContain("New first page");
+    expect(schedule.textContent).toContain("New second page");
+    expect(schedule.textContent).not.toContain(current.title);
+    expect(schedule.textContent).not.toContain(next.title);
+    state.answer = async () => {
+      throw new Error("private refresh error");
+    };
+    await tick();
+    expect(schedule.textContent).toContain("New second page");
+    expect(schedule.textContent).toContain("Couldn't update schedule");
+  });
+
+  it("fences source replacement with the same catalogue and retires held answers from the previous login", async () => {
+    const provider = xtreamProvider(
+      { server: "https://fixture.test", username: "fixture", password: "canary" },
+      { userAgent: "fixture" },
+    );
+    await React.act(async () => {
+      setSource("a", { revision: 1, provider, login: [] });
+      await owner().attach("a");
+    });
+    const catalogue = state.catalogue;
+    const oldLease = fixture().control.activations.get("a")!.lease;
+    await draw(React.createElement(Home));
+    await settle();
+    expect(container.textContent).toContain(current.title);
+    const gate = holdQueries(async (_mode, _ids, _from, _until, _after, lease) =>
+      answer([
+        { ...current, title: lease === oldLease ? "Retired source title" : "New source title" },
+      ]),
+    );
+    await tick();
+    await React.act(async () => {
+      setSource("a", { revision: 2, provider, login: [] });
+      await owner().attach("a");
+    });
+    await settle();
+    expect(state.catalogue).toBe(catalogue);
+    expect(container.textContent).not.toContain(current.title);
+    await gate.release();
+    expect(container.textContent).toContain("New source title");
+    expect(container.textContent).not.toContain("Retired source title");
+    expect(currentSource("a")?.revision).toBe(2);
+  });
+
+  it("keeps visible and spoken provider identity with the same populated guide on two providers", async () => {
+    const a = part("a"),
+      b = part("b");
+    fixture().control.activations.set("b", {
+      lease: "lease-b",
+      generation: { id: "db-b", fetchedAt: Date.now(), until: Date.now() + 86400_000 },
+    });
+    await owner().restore(["a", "b"]);
+    owner().setPart(a);
+    owner().setPart(b);
+    state.catalogue = {
+      kind: "ready",
+      failing: [],
+      library: combine([
+        { label: "Home provider", part: a },
+        { label: "Cabin provider", part: b },
+      ]),
+    };
+    await draw(React.createElement(LiveHome));
+    await settle();
+    await click("Guide");
+    state.did = [];
+    for (const [id, label] of [
+      ["a", "Home provider"],
+      ["b", "Cabin provider"],
+    ]) {
+      const row = container.querySelector(`[data-testid="channel-${id}:1"]`)!;
+      expect(row.textContent).toContain(current.title);
+      expect(row.textContent).toContain(label);
+      expect(row.getAttribute("aria-label")).toContain(label);
+      expect(row.getAttribute("aria-label")).toContain(current.title);
+      expect(
+        container.querySelector(`[data-testid="schedule-${id}:1"]`)?.getAttribute("aria-label"),
+      ).toContain(label);
+      await click(`channel-${id}:1`);
+      await click(`schedule-${id}:1`);
+      expect(state.did).toContainEqual({ play: `${id}:1`, watch: true });
+      expect(state.did).toContainEqual({
+        pathname: "/live/schedule",
+        params: { channel: `${id}:1` },
+      });
+    }
+    await draw(React.createElement(Home));
+    await settle();
+    state.did = [];
+    for (const [id, label] of [
+      ["a", "Home provider"],
+      ["b", "Cabin provider"],
+    ]) {
+      const tile = container.querySelector(`[data-testid="home-channel-${id}:1"]`)!;
+      expect(tile.textContent).toContain(current.title);
+      expect(tile.textContent).toContain(label);
+      expect(tile.getAttribute("aria-label")).toContain(label);
+      expect(tile.getAttribute("aria-label")).toContain(current.title);
+      expect(
+        container
+          .querySelector(`[data-testid="home-schedule-${id}:1"]`)
+          ?.getAttribute("aria-label"),
+      ).toContain(label);
+      await click(`home-channel-${id}:1`);
+      await click(`home-schedule-${id}:1`);
+      expect(state.did).toContainEqual({ play: `${id}:1`, watch: false });
+      expect(state.did).toContainEqual({ pathname: "/schedule", params: { channel: `${id}:1` } });
+    }
+  });
+
+  it("keeps inspected programme text mounted across a held minute read and settles retired details", async () => {
+    state.params = { channel: "a:1" };
+    state.answer = async () => answer([current]);
+    await draw(React.createElement(ScheduleScreen, { origin: "live" }));
+    await settle();
+    await click(`programme-${current.start}`);
+    state.params = (state.did.at(-1) as { params: typeof state.params }).params;
+    await draw(React.createElement(ProgrammeScreen, { origin: "live" }));
+    await settle();
+    const detail = container.querySelector('[data-testid="guide-programme"]')!;
+    const text = detail.textContent;
+    const gate = holdQueries(async () => answer([current]));
+    await tick();
+    expect(detail.textContent).toBe(text);
+    expect(detail.textContent).toContain(current.description);
+    await gate.release();
+    fixture().control.activations.set("a", {
+      ...fixture().control.activations.get("a")!,
+      generation: { id: "replacement", fetchedAt: Date.now() + 1, until: Date.now() + 86400_000 },
+    });
+    await React.act(async () => owner().restore(["a"]));
+    await settle();
+    expect(detail.textContent).toContain("Programme unavailable");
+    expect(detail.textContent).not.toContain("Loading programme");
+  });
+
+  it("does not append a held Show more reply over a refresh and keeps known rows after failed pagination", async () => {
+    state.params = { channel: "a:1" };
+    const pages = async (
+      _mode: string,
+      _ids: readonly string[],
+      _from: number,
+      _until: number,
+      after: number,
+    ) => (after < 0 ? answer([current], true) : answer([next]));
+    state.answer = pages;
+    await draw(React.createElement(ScheduleScreen, { origin: "live" }));
+    await settle();
+    const gate = holdQueries(pages);
+    await click("Show more");
+    await tick();
+    expect(container.textContent).toContain(current.title);
+    await gate.release();
+    expect(container.querySelectorAll(`[data-testid="programme-${current.start}"]`)).toHaveLength(
+      1,
+    );
+    await click("Show more");
+    expect(container.querySelectorAll(`[data-testid="programme-${next.start}"]`)).toHaveLength(1);
+    // Start a new day so its own initial page has an independent valid cursor.
+    await click("Next day");
+    state.answer = async () => {
+      throw new Error("private pagination error");
+    };
+    await click("Show more");
+    expect(container.textContent).toContain(current.title);
+    expect(container.textContent).toContain("Couldn't update schedule");
+    expect(container.textContent).not.toContain("private pagination error");
   });
 });

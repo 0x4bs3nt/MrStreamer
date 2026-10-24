@@ -1,10 +1,11 @@
 import type { Listing, Programme } from "@mrstreamer/contracts/guide";
 import { router, useIsFocused } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View, type StyleProp, type TextStyle } from "react-native";
 import { guide, type Day, type DayPage, type GuideStatus } from "./guide.ts";
 import { usePlayback } from "./playback.ts";
 import type { Library } from "./library.ts";
+import { currentSource, onSignedIn } from "./sources.ts";
 import { colors } from "./ui.tsx";
 
 export type GuideOrigin = "home" | "live";
@@ -39,49 +40,88 @@ export const programmeRange = (programme: Pick<Programme, "start" | "stop">) =>
   `${programmeTime(programme.start)}–${programmeTime(programme.stop)}`;
 
 const nothing = () => () => {};
-/** Only a focused screen subscribes. The existing owner supplies the clock and native lifecycle. */
-export function useGuideOwner() {
+const authorityOf = (ids: readonly string[], snapshot: ReturnType<typeof guide.getSnapshot>) =>
+  ids
+    .map((id) => {
+      const status = snapshot.get(id);
+      return status?.availability === "none"
+        ? "none"
+        : status?.fetchedAt == null
+          ? "cold"
+          : "cache";
+    })
+    .join(":");
+const revisionOf = (ids: readonly string[]) =>
+  JSON.stringify(ids.map((id) => guide.getSnapshot().get(id)?.fetchedAt ?? null));
+
+/** Focus owns subscriptions, not settled presentation. Source revisions contain no private inputs. */
+export function useGuideOwner(subscriptionIds: readonly string[] = []) {
   const inStack = useIsFocused();
   const { watch } = usePlayback();
   const focused = inStack && !watch;
+  const signature = JSON.stringify([...new Set(subscriptionIds)]);
+  const ids = useMemo(() => JSON.parse(signature) as string[], [signature]);
+  const getSources = useCallback(
+    () => JSON.stringify(ids.map((id) => currentSource(id)?.revision ?? null)),
+    [ids],
+  );
   const subscribe = useCallback(
     (listener: () => void) => (focused ? guide.subscribe(listener) : nothing()),
     [focused],
   );
+  const subscribeSources = useCallback(
+    (listener: () => void) => (focused ? onSignedIn(listener) : nothing()),
+    [focused],
+  );
   const snapshot = useSyncExternalStore(subscribe, guide.getSnapshot);
-  return { snapshot, focused, now: Date.now() };
+  const sources = useSyncExternalStore(subscribeSources, getSources);
+  const authority = authorityOf(ids, snapshot);
+  const identity = useMemo(() => ({ sources, authority }), [sources, authority]);
+  const valid = useCallback(
+    () => getSources() === sources && authorityOf(ids, guide.getSnapshot()) === authority,
+    [getSources, sources, ids, authority],
+  );
+  return { snapshot, focused, now: Date.now(), identity, valid, revision: revisionOf(ids) };
 }
 
-/** Current-request presentation only. Changed keys, catalogue, clock or focus retire old answers. */
-export function useGuideRead<T>(load: (signal: AbortSignal) => Promise<T>) {
-  const { snapshot, focused, now } = useGuideOwner();
+/** Keep the same authorized presentation mounted while its next read is pending or fails. */
+export function useGuideRead<T>(
+  load: (signal: AbortSignal) => Promise<T>,
+  subscriptionIds: readonly string[],
+) {
+  const { snapshot, focused, now, identity, valid } = useGuideOwner(subscriptionIds);
+  const request = useMemo(() => ({ load, identity }), [load, identity]);
   const [result, setResult] = useState<{
-    load: typeof load;
+    request: typeof request;
     snapshot: typeof snapshot;
-    value?: T;
+    value: T | undefined;
     failed: boolean;
   } | null>(null);
   useEffect(() => {
-    if (!focused) {
-      setResult(null);
-      return;
-    }
+    if (!focused) return;
     const controller = new AbortController();
     void load(controller.signal).then(
       (value) => {
-        if (!controller.signal.aborted) setResult({ load, snapshot, value, failed: false });
+        if (!controller.signal.aborted && valid())
+          setResult({ request, snapshot, value, failed: false });
       },
       () => {
-        if (!controller.signal.aborted) setResult({ load, snapshot, failed: true });
+        if (!controller.signal.aborted && valid())
+          setResult((before) => ({
+            request,
+            snapshot,
+            value: before?.request === request ? before.value : undefined,
+            failed: true,
+          }));
       },
     );
     return () => controller.abort();
-  }, [load, snapshot, focused]);
-  const current = focused && result?.load === load && result.snapshot === snapshot ? result : null;
+  }, [request, load, snapshot, focused, valid]);
+  const current = result?.request === request ? result : null;
   return {
     value: current?.value,
     failed: current?.failed ?? false,
-    pending: focused && current === null,
+    pending: focused && (!current || current.snapshot !== snapshot),
     snapshot,
     now,
   };
@@ -91,99 +131,124 @@ export function useGuideListings(keys: readonly string[], catalogue: Library | n
   const signature = JSON.stringify(keys.slice(0, 40));
   const requested = useMemo(() => JSON.parse(signature) as string[], [signature]);
   const load = useCallback(
-    (signal: AbortSignal) => {
-      // The caller supplies its visible slice, never the whole catalogue.
-      return guide.listings(
+    (signal: AbortSignal) =>
+      guide.listings(
         requested.filter((key) => catalogue?.byKey.has(key)),
         { signal },
-      );
-    },
+      ),
     [requested, catalogue],
   );
-  return useGuideRead(load);
+  return useGuideRead(
+    load,
+    requested.map((key) => key.slice(0, key.indexOf(":"))),
+  );
 }
 
-/** One paged schedule for the current channel/day/generation. No cross-request row cache. */
+/** Reload the represented page span atomically; never append with a prior generation's cursor. */
 export function useGuideSchedule(key: string, day: Day, catalogue: Library) {
-  const { snapshot, focused, now } = useGuideOwner();
-  const request = useCallback(
-    (cursor: string | undefined, signal: AbortSignal) => {
-      if (!catalogue.byKey.has(key)) return Promise.resolve({ programmes: [], cursor: null });
-      return guide.schedule(key, day, cursor, { signal });
-    },
-    [key, day.from, day.until, catalogue, snapshot],
+  const ids = useMemo(() => [key.slice(0, key.indexOf(":"))], [key]);
+  const { snapshot, focused, now, identity, valid, revision } = useGuideOwner(ids);
+  const request = useMemo(
+    () => ({ key, day: { from: day.from, until: day.until }, catalogue, identity }),
+    [key, day.from, day.until, catalogue, identity],
   );
-  const [result, setResult] = useState<{
+  type Page = {
     request: typeof request;
     page: DayPage;
+    pages: number;
+    revision: string;
     failed: boolean;
-    loading: boolean;
-  } | null>(null);
-  const active = useRef<{
-    request: typeof request;
-    controller: AbortController;
-    busy: boolean;
-  } | null>(null);
+  };
+  type Work = { controller: AbortController; busy: boolean };
+  const [result, setResult] = useState<Page | null>(null);
+  const settled = useRef(result);
+  settled.current = result;
+  const active = useRef<Work | null>(null);
+  const [busy, setBusy] = useState<Work | null>(null);
   const read = useCallback(
-    (cursor?: string) => {
+    (append = false) => {
       const work = active.current;
-      if (!work || work.request !== request || work.busy || work.controller.signal.aborted) return;
+      if (!work || work.busy || work.controller.signal.aborted) return;
+      const before = settled.current?.request === request ? settled.current : null;
+      const version = revisionOf(ids);
+      const notification = guide.getSnapshot();
+      if (append && (!before?.page.cursor || before.revision !== version)) return;
       work.busy = true;
-      setResult((before) => (before?.request === request ? { ...before, loading: true } : null));
-      void request(cursor, work.controller.signal)
-        .then(
-          (page) => {
-            if (work.controller.signal.aborted || active.current !== work) return;
-            setResult((before) => ({
+      setBusy(work);
+      const wanted = () =>
+        guide.getSnapshot() === notification &&
+        active.current === work &&
+        !work.controller.signal.aborted &&
+        valid() &&
+        revisionOf(ids) === version;
+      const commit = (page: Page) => {
+        settled.current = page;
+        setResult(page);
+      };
+      void (async () => {
+        try {
+          let cursor = append ? (before?.page.cursor ?? undefined) : undefined;
+          let programmes = append && before ? [...before.page.programmes] : [];
+          let pages = append && before ? before.pages : 0;
+          const count = append ? 1 : (before?.pages ?? 1);
+          for (let index = 0; index < count; index++) {
+            const page = await guide.schedule(request.key, request.day, cursor, {
+              signal: work.controller.signal,
+            });
+            if (!wanted()) return;
+            programmes = [...programmes, ...page.programmes];
+            pages++;
+            cursor = page.cursor ?? undefined;
+            if (!cursor) break;
+          }
+          // An immutable day cannot become empty during a routine read refusal. Keep known rows.
+          if (!append && programmes.length === 0 && before?.page.programmes.length) {
+            commit({ ...before, failed: true });
+          } else
+            commit({
               request,
-              page:
-                cursor && before?.request === request
-                  ? {
-                      programmes: [...before.page.programmes, ...page.programmes],
-                      cursor: page.cursor,
-                    }
-                  : page,
+              page: { programmes, cursor: cursor ?? null },
+              pages,
+              revision: version,
               failed: false,
-              loading: false,
-            }));
-          },
-          () => {
-            if (work.controller.signal.aborted || active.current !== work) return;
-            setResult((before) => ({
+            });
+        } catch {
+          if (wanted())
+            commit({
               request,
-              page: before?.request === request ? before.page : { programmes: [], cursor: null },
+              page: before?.page ?? { programmes: [], cursor: null },
+              pages: before?.pages ?? 1,
+              revision: before?.revision ?? version,
               failed: true,
-              loading: false,
-            }));
-          },
-        )
-        .finally(() => {
+            });
+        } finally {
           work.busy = false;
-        });
+          setBusy((current) => (current === work ? null : current));
+        }
+      })();
     },
-    [request],
+    [request, ids, valid],
   );
   useEffect(() => {
-    if (!focused) {
-      setResult(null);
-      return;
-    }
-    const work = { request, controller: new AbortController(), busy: false };
+    if (!focused) return;
+    const work = { controller: new AbortController(), busy: false };
     active.current = work;
     read();
     return () => {
       work.controller.abort();
       if (active.current === work) active.current = null;
     };
-  }, [request, read, focused]);
-  const current = focused && result?.request === request ? result : null;
+  }, [request, snapshot, focused, read]);
+  const current = result?.request === request ? result : null;
+  const loading = focused && (!current || (busy !== null && active.current === busy));
+  const stale = current !== null && current.revision !== revision;
   return {
     page: current?.page,
     failed: current?.failed ?? false,
-    loading: focused && (!current || current.loading),
-    more: () => {
-      if (current?.page.cursor) read(current.page.cursor);
-    },
+    loading,
+    stale,
+    more: () => read(true),
+    canLoadMore: focused && !loading && !stale,
     snapshot,
     now,
   };
@@ -206,9 +271,10 @@ export function programmePresentation(listing: Listing | undefined, at: number) 
   const ongoing = current && current.start <= at && current.stop > at ? current : null;
   return {
     line: ongoing ? `${ongoing.title} · ${programmeRange(ongoing)}` : null,
-    next: listing?.next
-      ? `Next ${programmeTime(listing.next.start)} · ${listing.next.title}`
-      : null,
+    next:
+      listing?.next && listing.next.start > at
+        ? `Next ${programmeTime(listing.next.start)} · ${listing.next.title}`
+        : null,
     progress: ongoing
       ? Math.max(0, Math.min(1, (at - ongoing.start) / (ongoing.stop - ongoing.start)))
       : null,
@@ -231,19 +297,23 @@ export function ProgrammeLines({
   listing,
   fallback,
   at,
+  textStyle,
 }: {
   listing: Listing | undefined;
   fallback: string;
   at: number;
+  textStyle?: StyleProp<TextStyle>;
 }) {
   const shown = programmePresentation(listing, at);
   return (
     <>
-      <Text style={styles.line} numberOfLines={2}>
-        {shown.line ?? fallback}
-      </Text>
+      {shown.line || fallback ? (
+        <Text style={[styles.line, textStyle]} numberOfLines={2}>
+          {shown.line ?? fallback}
+        </Text>
+      ) : null}
       {shown.next ? (
-        <Text style={styles.line} numberOfLines={1}>
+        <Text style={[styles.line, textStyle]} numberOfLines={1}>
           {shown.next}
         </Text>
       ) : null}

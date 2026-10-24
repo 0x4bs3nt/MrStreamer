@@ -86,12 +86,14 @@ export const ChannelRow = memo(function ChannelRow({
   onFavourite,
   programme,
   programmeHint,
+  providerLabel,
   onSchedule,
 }: {
   channel: Channel;
   detail: string;
   programme?: ReactNode;
   programmeHint?: string;
+  providerLabel?: string | undefined;
   onSchedule?: ((channel: Channel) => void) | undefined;
   /** How the channel stands while it is the one playing (`channelStatus`), in place of `detail`. */
   status: string | null;
@@ -106,10 +108,16 @@ export const ChannelRow = memo(function ChannelRow({
     <View style={[styles.row, { height }, onFavourite && styles.starred]}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={[channel.title, favourite && "favourite", status?.toLowerCase()]
+        accessibilityLabel={[
+          channel.title,
+          providerLabel,
+          favourite && "favourite",
+          programmeHint,
+          status?.toLowerCase(),
+        ]
           .filter(Boolean)
           .join(", ")}
-        accessibilityHint={programmeHint ?? detail}
+        accessibilityHint={programmeHint ? undefined : detail}
         {...(onFavourite
           ? {
               accessibilityActions: [{ name: "activate" }, { name: "favourite", label: star }],
@@ -140,7 +148,9 @@ export const ChannelRow = memo(function ChannelRow({
       {onSchedule ? (
         <TextButton
           label="Schedule"
-          accessibilityLabel={`Schedule for ${channel.title}`}
+          accessibilityLabel={[`Schedule for ${channel.title}`, providerLabel]
+            .filter(Boolean)
+            .join(", ")}
           onPress={() => onSchedule(channel)}
           testID={`schedule-${channel.key}`}
         />

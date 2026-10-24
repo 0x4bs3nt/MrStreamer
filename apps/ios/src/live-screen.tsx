@@ -37,7 +37,15 @@ import { channelStatus, usePlayback } from "./playback.ts";
 import { useSavedState, writeState } from "./storage.ts";
 import { store, useStore } from "./store.ts";
 import { ShelfHead, TextTabs } from "./titles-ui.tsx";
-import { ChannelLogo, ChannelRow, colors, Message, Notice, useRowHeight } from "./ui.tsx";
+import {
+  ChannelLogo,
+  ChannelRow,
+  colors,
+  Message,
+  Notice,
+  TextButton,
+  useRowHeight,
+} from "./ui.tsx";
 
 // Live, in Movies' and Series' shape: a large title, its Favourites row, which opens every
 // favourite (favourites-screen.tsx), and Find countries or categories, which finds them by name
@@ -396,40 +404,49 @@ function ChannelList({
                 </Text>
               ))}
               {messages.includes("Guide unavailable") ? (
-                <Pressable accessibilityRole="button" onPress={openSettings}>
-                  <Text style={styles.note}>Provider settings</Text>
-                </Pressable>
+                <TextButton label="Provider settings" onPress={openSettings} />
               ) : null}
             </>
           ) : null}
         </View>
       }
-      renderItem={({ item }) => (
-        <ChannelRow
-          channel={item}
-          detail={library.placeOf.get(item.key) ?? ""}
-          status={item.key === playing?.id ? playing.word : null}
-          height={height}
-          onPress={onPress}
-          favourite={favourites.has(item.key)}
-          onFavourite={starChannel}
-          programmeHint={[
-            programmePresentation(read.value?.get(item.key), read.now).line ??
-              library.placeOf.get(item.key),
-            programmePresentation(read.value?.get(item.key), read.now).next,
-          ]
-            .filter(Boolean)
-            .join(", ")}
-          programme={
-            <ProgrammeLines
-              listing={read.value?.get(item.key)}
-              fallback={library.placeOf.get(item.key) ?? "No programme information"}
-              at={read.now}
-            />
-          }
-          onSchedule={schedule ? (channel) => openSchedule("live", channel.key) : undefined}
-        />
-      )}
+      renderItem={({ item }) => {
+        const provider = item.ambiguous ? library.labels.get(item.subscriptionId) : undefined;
+        const place = library.placeOf.get(item.key) ?? "";
+        const programme = programmePresentation(read.value?.get(item.key), read.now);
+        const showsProgramme = programme.line !== null || programme.next !== null;
+        // Without programme data, the existing category/place line already names the provider.
+        const fallback =
+          showsProgramme && provider && place.endsWith(` · ${provider}`)
+            ? place.slice(0, -provider.length - 3)
+            : place;
+        return (
+          <ChannelRow
+            channel={item}
+            detail={place}
+            providerLabel={provider}
+            status={item.key === playing?.id ? playing.word : null}
+            height={height}
+            onPress={onPress}
+            favourite={favourites.has(item.key)}
+            onFavourite={starChannel}
+            programmeHint={[programme.line ?? fallback, programme.next].filter(Boolean).join(", ")}
+            programme={
+              <>
+                {showsProgramme && provider ? (
+                  <Text style={styles.provider}>{provider}</Text>
+                ) : null}
+                <ProgrammeLines
+                  listing={read.value?.get(item.key)}
+                  fallback={fallback || "No programme information"}
+                  at={read.now}
+                />
+              </>
+            }
+            onSchedule={schedule ? (channel) => openSchedule("live", channel.key) : undefined}
+          />
+        );
+      }}
       getItemLayout={(_, index) => ({ length: height, offset: top + height * index, index })}
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ paddingBottom: inset }}
@@ -754,6 +771,7 @@ function Country({
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000000" },
   pressed: { opacity: 0.6 },
+  provider: { color: colors.text, fontSize: 13, marginTop: 2 },
   note: { color: colors.text, fontSize: 15, marginHorizontal: 16, marginVertical: 12 },
   find: {
     flexDirection: "row",

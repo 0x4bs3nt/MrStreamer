@@ -530,8 +530,14 @@ including when viewing history is kept.
 
 `src/guide-ui.tsx` reads the owner's immutable snapshot only while the screen is focused. Live
 queries at most 40 visible channels, Home at most 12 including Stage, with the existing two native
-read workers. Screen requests abort and retire on key, catalogue, owner snapshot, day and focus
-changes. There is no UI polling clock, guide cache, provider request or XML parser. The owner's
+read workers. Channel/day/catalogue changes, source revision changes from the existing sign-in
+owner, removal and authoritative cache loss retire presentation and late answers. Routine owner
+notifications reload the current request while settled rows stay mounted, including across blur,
+refocus and Programme/Back. Pending work aborts and subscriptions stop when the screen blurs.
+Schedule refreshes replace the represented page span atomically; Show more never appends with a
+prior generation's cursor. Failed/refused replacements retain known rows, mark stale generation
+presentation, and keep outdated cursors disabled until a valid replacement. Ambiguous channels
+retain their provider's visible/spoken label beside populated programmes and on Schedule actions. There is no UI polling clock, guide cache, provider request or XML parser. The owner's
 foreground minute notifications update progress and Today after midnight. Stale last-good data
 stays marked; cold, missing, discarded and failed reads finish with honest empty/unavailable
 copy. Provider settings is the recovery entry. There is no pull-to-refresh or promised queued

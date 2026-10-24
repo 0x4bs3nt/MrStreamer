@@ -58,7 +58,9 @@ function Schedule({
           month: "short",
           day: "numeric",
         });
-  const message = guideMessage(schedule.snapshot.get(channel.subscriptionId));
+  const message = schedule.stale
+    ? "Guide may be out of date"
+    : guideMessage(schedule.snapshot.get(channel.subscriptionId));
   return (
     <FlatList
       style={styles.screen}
@@ -84,7 +86,9 @@ function Schedule({
             </Text>
             <TextButton label="Next day" onPress={() => setChosen(localDay(day.from, 1).from)} />
           </View>
-          {chosen !== null ? <TextButton label="Today" onPress={() => setChosen(null)} /> : null}
+          {chosen !== null && day.from !== today ? (
+            <TextButton label="Today" onPress={() => setChosen(null)} />
+          ) : null}
           <GuideNotice message={message} origin={origin} />
         </>
       }
@@ -111,13 +115,13 @@ function Schedule({
           {schedule.page?.cursor ? (
             <TextButton
               label={schedule.loading ? "Loading…" : "Show more"}
-              disabled={schedule.loading}
+              disabled={!schedule.canLoadMore}
               onPress={schedule.more}
               testID="guide-more"
             />
           ) : null}
           {schedule.failed && (schedule.page?.programmes.length ?? 0) > 0 ? (
-            <Message text="Couldn't load more programmes" />
+            <Message text="Couldn't update schedule" />
           ) : null}
         </>
       }
@@ -138,7 +142,7 @@ export function ProgrammeScreen({ origin }: { origin: GuideOrigin }) {
       channel && library ? guide.programme(detail, { signal }) : Promise.resolve(null),
     [channel, library, detail],
   );
-  const read = useGuideRead(load);
+  const read = useGuideRead(load, channel ? [channel.subscriptionId] : []);
   const listing = useMemo(() => ({ now: read.value ?? null, next: null }), [read.value]);
   const progress = programmePresentation(listing, read.now).progress;
   if (!channel || !library) return <Message text="Channel unavailable" />;
