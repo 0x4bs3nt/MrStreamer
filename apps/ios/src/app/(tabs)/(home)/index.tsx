@@ -1,3 +1,4 @@
+import type { Listing } from "@mrstreamer/contracts/guide";
 import { collectionRows } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
 import { VideoView } from "expo-video";
@@ -13,6 +14,12 @@ import {
 import { failureOf } from "../../../errors.ts";
 import { useFavourites } from "../../../favourites.ts";
 import { Glass, IconButton } from "../../../glass.tsx";
+import {
+  openSchedule,
+  ProgrammeLines,
+  programmePresentation,
+  useGuideListings,
+} from "../../../guide-ui.tsx";
 import { tabHref } from "../../../header.tsx";
 import type { Channel, Library } from "../../../library.ts";
 import { Docked, libraryStatus, Placeholders, Shape, useDockInset } from "../../../loading.tsx";
@@ -37,7 +44,7 @@ import {
   useTitleLists,
 } from "../../../titles.ts";
 import { PlaceholderShelf, Shelf, ShelfHead } from "../../../titles-ui.tsx";
-import { ChannelLogo, colors, Message, Notice } from "../../../ui.tsx";
+import { ChannelLogo, colors, Message, Notice, TextButton } from "../../../ui.tsx";
 import { removeFromContinue } from "../../../viewing.ts";
 import { useWatchlist, watchlistRows } from "../../../watchlist.ts";
 
@@ -51,7 +58,7 @@ const MOVIES = 20;
  * Favourites, Continue watching, the watchlist and Movies for you. The headings of Favourites
  * and the watchlist are always there, with nothing saved too, and open all of it. On now lists
  * the channels watched lately, or the first of the country last chosen in Live until there are
- * any; their programmes join when iOS reads a guide. Favourites lists those that open now
+ * any; their programmes use the guide owner, with category fallback. Favourites lists those that open now
  * (favourites.ts), in their order; a tile previews its channel on the Stage, as On now's do.
  * Downloads join Home as they come to iOS.
  * Until channels and movies first come, still shapes hold On now and Movies for you; what loads
@@ -102,6 +109,11 @@ export default function Home() {
         ? (library?.byKey.get(playback.phase.item.id) ?? null)
         : null;
 
+  const guideKeys = [
+    ...new Set([...(shown ? [shown.key] : []), ...onNow.map((channel) => channel.key)]),
+  ].slice(0, ON_NOW);
+  const programmes = useGuideListings(guideKeys, library);
+
   return (
     <Docked status={status}>
       <Content>
@@ -117,10 +129,19 @@ export default function Home() {
                   ? placeOf(library, suggested)
                   : ""
           }
+          programme={shown ? programmes.value?.get(shown.key) : undefined}
+          now={programmes.now}
           onPlay={() => suggested && preview(suggested)}
         />
         {library && onNow.length > 0 ? (
-          <OnNow channels={onNow} library={library} playing={playing} onPress={preview} />
+          <OnNow
+            channels={onNow}
+            library={library}
+            playing={playing}
+            onPress={preview}
+            programmes={programmes.value}
+            now={programmes.now}
+          />
         ) : catalogue.kind === "loading" ? (
           <OnNowPlaceholder />
         ) : null}
@@ -172,11 +193,15 @@ function OnNow({
   library,
   playing,
   onPress,
+  programmes,
+  now,
 }: {
   channels: readonly Channel[];
   library: Library;
   playing: ChannelStatus | null;
   onPress: (channel: Channel) => void;
+  programmes: ReadonlyMap<string, Listing> | undefined;
+  now: number;
 }) {
   return (
     <View style={styles.block}>
@@ -198,6 +223,8 @@ function OnNow({
         library={library}
         playing={playing}
         onPress={onPress}
+        programmes={programmes}
+        now={now}
         testID="home-channel"
       />
     </View>
@@ -248,6 +275,8 @@ function Tiles({
   playing,
   onPress,
   testID,
+  programmes,
+  now = Date.now(),
 }: {
   channels: readonly Channel[];
   library: Library;
@@ -255,6 +284,8 @@ function Tiles({
   onPress: (channel: Channel) => void;
   /** Each tile's, before its channel's key. */
   testID: string;
+  programmes?: ReadonlyMap<string, Listing> | undefined;
+  now?: number;
 }) {
   return (
     <ScrollView
@@ -263,27 +294,56 @@ function Tiles({
       contentContainerStyle={styles.tiles}
     >
       {channels.map((channel) => {
-        const line =
-          channel.key === playing?.id ? playing.word : shelfOf(placeOf(library, channel));
+        const provider =
+          testID === "home-channel" && channel.ambiguous
+            ? library.labels.get(channel.subscriptionId)
+            : undefined;
+        const place = placeOf(library, channel);
+        const fallback =
+          provider && place.endsWith(` · ${provider}`)
+            ? place.slice(0, -provider.length - 3)
+            : place;
+        const line = channel.key === playing?.id ? playing.word : shelfOf(fallback);
+        const programme = programmePresentation(programmes?.get(channel.key), now);
         return (
-          <Pressable
-            key={channel.key}
-            accessibilityRole="button"
-            accessibilityLabel={[channel.title, line].filter(Boolean).join(", ")}
-            onPress={() => onPress(channel)}
-            style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
-            testID={`${testID}-${channel.key}`}
-          >
-            <ChannelLogo channel={channel} style={styles.tileLogo} large />
-            <Text style={styles.tileName} numberOfLines={1}>
-              {channel.title}
-            </Text>
-            {line ? (
-              <Text style={styles.tileLine} numberOfLines={1}>
-                {line}
+          <View key={channel.key} style={styles.tile}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={[channel.title, provider, programme.line ?? line, programme.next]
+                .filter(Boolean)
+                .join(", ")}
+              onPress={() => onPress(channel)}
+              style={({ pressed }) => [styles.tile, pressed && styles.pressed]}
+              testID={`${testID}-${channel.key}`}
+            >
+              <ChannelLogo channel={channel} style={styles.tileLogo} large />
+              <Text style={styles.tileName} numberOfLines={1}>
+                {channel.title}
               </Text>
+              {provider ? (
+                <Text style={styles.tileLine} numberOfLines={2}>
+                  {provider}
+                </Text>
+              ) : null}
+              {programmes ? (
+                <ProgrammeLines listing={programmes.get(channel.key)} fallback={line} at={now} />
+              ) : line ? (
+                <Text style={styles.tileLine} numberOfLines={1}>
+                  {line}
+                </Text>
+              ) : null}
+            </Pressable>
+            {testID === "home-channel" ? (
+              <TextButton
+                label="Schedule"
+                accessibilityLabel={[`Schedule for ${channel.title}`, provider]
+                  .filter(Boolean)
+                  .join(", ")}
+                onPress={() => openSchedule("home", channel.key)}
+                testID={`home-schedule-${channel.key}`}
+              />
             ) : null}
-          </Pressable>
+          </View>
         );
       })}
     </ScrollView>
@@ -420,6 +480,8 @@ function Stage({
   channel,
   line,
   onPlay,
+  programme,
+  now,
 }: {
   playback: Playback;
   /** The channel playing, or the one Play starts. */
@@ -427,6 +489,8 @@ function Stage({
   /** Under the name while idle: why this channel. */
   line: string;
   onPlay: () => void;
+  programme: Listing | undefined;
+  now: number;
 }) {
   const { phase, watch, pip, external, muted } = playback;
   const shows =
@@ -450,6 +514,7 @@ function Stage({
                 : muted
                   ? "Muted"
                   : "Live";
+  const programmeShown = programmePresentation(programme, now);
   // The logo where the picture isn't: idle, connecting, failed, or shown elsewhere.
   const logo = channel && (phase.kind !== "playing" || !shows) ? channel : null;
   return (
@@ -472,6 +537,9 @@ function Stage({
         <Text style={styles.stageTitle} numberOfLines={1}>
           {title}
         </Text>
+        {programmeShown.line || programmeShown.next ? (
+          <ProgrammeLines listing={programme} fallback="" at={now} textStyle={shadow} />
+        ) : null}
         {status ? (
           <Text style={styles.stageStatus} numberOfLines={2} testID="home-stage-status">
             {status}

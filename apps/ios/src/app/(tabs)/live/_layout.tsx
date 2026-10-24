@@ -13,6 +13,8 @@ export default function LiveLayout() {
       <Stack.Screen name="category" options={{ title: "" }} />
       <Stack.Screen name="favourites" options={{ title: "Favourites" }} />
       <Stack.Screen name="discover" options={{ title: "" }} />
+      <Stack.Screen name="schedule" options={{ title: "Schedule" }} />
+      <Stack.Screen name="programme" options={{ title: "Programme" }} />
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
       <Stack.Screen name="provider" options={{ title: "" }} />

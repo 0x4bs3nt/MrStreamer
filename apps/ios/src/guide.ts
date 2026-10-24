@@ -308,6 +308,8 @@ export function createGuide(
   };
   const service = {
     status,
+    /** Immutable owner snapshot for React; notifications also carry the foreground minute tick. */
+    getSnapshot: state.get,
     subscribe(listener: () => void) {
       const stop = state.subscribe(listener);
       listeners++;
@@ -480,16 +482,10 @@ export function createGuide(
         day.until - day.from > GUIDE_DAY_MS
       )
         throw new GuideFault("time");
-      const midnight = new Date(day.from);
-      const tomorrow = new Date(midnight);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      if (
-        midnight.getHours() ||
-        midnight.getMinutes() ||
-        midnight.getSeconds() ||
-        midnight.getMilliseconds() ||
-        tomorrow.getTime() !== day.until
-      )
+      const date = new Date(day.from);
+      const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const tomorrow = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+      if (start.getTime() !== day.from || tomorrow.getTime() !== day.until)
         throw new GuideFault("time");
       const captured = cursor ? tokens.get(cursor) : capture(key);
       if (

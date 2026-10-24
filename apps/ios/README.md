@@ -44,8 +44,7 @@ A movie or an episode plays in Watch from where it stopped. Home leads with the 
 channels to preview (On now: recent ones, else the country last chosen in Live), Favourites (its
 heading always there, opening the list on Home's stack: `favourites`), Continue watching, the watchlist
 (its heading always there, opening all of it on Home's stack: `watchlist`)
-and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
-channel's category where the desktop shows its programme. The guide data service now owns native ingestion and bounded queries; Home and Live programme UI remains a separate unit. Search finds
+and Movies for you, which falls back to the provider's own list without TMDB. Home's On now and Stage and Live's channel rows use the same guide owner for actual now/next, local times and static programme progress, retaining category fallback in gaps. Live adds Guide alongside For you, Categories and All, with the country filter preserved. Channel taps still play in Watch; the separate Schedule action opens a pushed day without playing. Home tiles still preview. Schedule and programme routes stay on their originating Home or Live stack, retaining Back and browse context. Day controls use local calendar midnights, page at most 128 programme rows with Show more, and inspect one opaque programme detail. Only Watch live starts playback; there is no catch-up. Search finds
 movies, series and channels: 20 movies and 20 series at first, each kind with its own Show more
 for the next 20 until every match shows. A movie's details and each episode row have a download button whose
 symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
@@ -527,7 +526,34 @@ aliases. The private Expo Guide module downloads on a utility callback queue, re
 redirects, validates gzip and XML before indexing, and publishes complete immutable SQLite
 generations through one atomic manifest. Cached queries and account controls run independently of unrelated ingestion; cancellation waits for the relevant job to close its resources. Failed refreshes retain last-good data, quiet background cancellation permits a foreground retry, and committed publication receipts reconcile the cache across lifecycle changes. Missing native
 bindings report unavailable. Removal and password replacement revoke work before awaited erasure,
-including when viewing history is kept. No Home, Live or schedule UI consumes it yet.
+including when viewing history is kept.
+
+`src/guide-ui.tsx` reads the owner's immutable snapshot only while the screen is focused. Live
+queries at most 40 visible channels, Home at most 12 including Stage, with the existing two native
+read workers. Channel/day/catalogue changes, source revision changes from the existing sign-in
+owner, removal and authoritative cache loss retire presentation and late answers. Routine owner
+notifications reload the current request while settled rows stay mounted, including across blur,
+refocus and Programme/Back. Pending work aborts and subscriptions stop when the screen blurs.
+Schedule refreshes replace the represented page span atomically; Show more never appends with a
+prior generation's cursor. Failed/refused replacements retain known rows, mark stale generation
+presentation, and keep outdated cursors disabled until a valid replacement. Ambiguous channels
+retain their provider's visible/spoken label beside populated programmes and on Schedule actions.
+There is no UI polling clock, guide cache, provider request or XML parser. The owner's
+foreground minute notifications update progress and Today after midnight. Stale last-good data
+stays marked; cold, missing, discarded and failed reads finish with honest empty/unavailable
+copy. Provider settings is the recovery entry. There is no pull-to-refresh or promised queued
+retry: a pending attach suppresses refresh, and failed attach needs the existing account sign-in
+path. The Expo bridge and native UI geometry, VoiceOver, Dynamic Type, rotation and physical
+phone performance still need the exact-app verification below; source tests do not establish them.
+
+Focused source verification is `pnpm exec vitest run apps/ios/test/guide-screen.test.ts`.
+For native acceptance, open Home, preview a tile, open its Schedule and a programme, then Back;
+open Live > Guide, choose/clear a country, star a channel, open Schedule, change local days and
+Show more, inspect details and press Watch live. Return through native Back to the same day and
+country. Repeat with cold/missing/stale/failed guide, account recovery, a held read during
+provider replacement/removal, foreground and local midnight on 23/25-hour DST days. Check large
+text, VoiceOver's separate Play/Schedule actions, rotation and scrolling during ingestion on the
+exact Expo/Hermes native candidate. These native checks remain UNRUN by this source unit.
 
 Initial native refusals are 32 MiB delivered callback bytes, 64 MiB inflated XML, 64 KiB raw
 tokens/channel/programme elements, depth 32, 250,000 input programme rows, 10,000 kept programme
