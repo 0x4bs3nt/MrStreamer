@@ -308,6 +308,8 @@ export function createGuide(
   };
   const service = {
     status,
+    /** Immutable owner snapshot for React; notifications also carry the foreground minute tick. */
+    getSnapshot: state.get,
     subscribe(listener: () => void) {
       const stop = state.subscribe(listener);
       listeners++;

@@ -23,6 +23,13 @@ import { failureOf } from "./errors.ts";
 import { starChannel, useFavouriteKeys } from "./favourites.ts";
 import { FavouritesEntry } from "./favourites-screen.tsx";
 import { Glass, IconButton } from "./glass.tsx";
+import {
+  guideMessage,
+  openSchedule,
+  ProgrammeLines,
+  programmePresentation,
+  useGuideListings,
+} from "./guide-ui.tsx";
 import { tabHref } from "./header.tsx";
 import type { Channel, Library, Region, Shelf } from "./library.ts";
 import { Docked, libraryStatus, loadingStatus, PlaceholderRows, useDockInset } from "./loading.tsx";
@@ -34,7 +41,7 @@ import { ChannelLogo, ChannelRow, colors, Message, Notice, useRowHeight } from "
 
 // Live, in Movies' and Series' shape: a large title, its Favourites row, which opens every
 // favourite (favourites-screen.tsx), and Find countries or categories, which finds them by name
-// in every provider's channels (live-discover.tsx), then For you, Categories and All as text
+// in every provider's channels (live-discover.tsx), then For you, Categories, All and Guide as text
 // tabs, with the country first in their row, reading All countries until one is chosen. All lists
 // every channel of every provider and country once, in a virtualised list of rows of one fixed
 // height, and is where Live opens at launch. For you leads with the channel watched last and Play,
@@ -42,12 +49,11 @@ import { ChannelLogo, ChannelRow, colors, Message, Notice, useRowHeight } from "
 // as a tile. A category's shelf or tile opens all its channels, pushed on Live's stack. Nothing
 // plays until a tile, a row or Play is pressed, and each plays in Watch; a row's star stars or
 // unstars its channel and plays nothing. A "country" is the
-// provider's group, which can be a language or a label. Rows and tiles show the channel's category
-// or quality until iOS reads a guide, which brings now and next. While channels first load, still
+// provider's group, which can be a language or a label. Rows read actual now/next for at most 40 visible channels, with category fallback. Guide adds a separate Schedule action. While channels first load, still
 // rows hold the list's place; what loads or failed by provider is the status line at the bottom,
 // with Retry and Settings, over the channels already there.
 
-type Tab = "for-you" | "categories" | "all";
+type Tab = "for-you" | "categories" | "all" | "guide";
 
 /** How many channels a shelf of For you shows. */
 const TILES = 12;
@@ -267,9 +273,13 @@ function Browse({ library }: { library: Library }) {
         { value: "for-you", label: "For you" },
         { value: "categories", label: "Categories" },
         { value: "all", label: "All" },
+        { value: "guide", label: "Guide" },
       ]
-    : [{ value: "all", label: "All" }];
-  const tab = browsable ? kept.tab : "all";
+    : [
+        { value: "all", label: "All" },
+        { value: "guide", label: "Guide" },
+      ];
+  const tab = browsable || kept.tab === "guide" ? kept.tab : "all";
   // A country chosen before is kept by name: one a refresh took away says so until another is.
   const gone = kept.region !== null && region === null ? kept.region : null;
   const countries = library.regions.length > 1 || gone !== null;
@@ -313,7 +323,8 @@ function Browse({ library }: { library: Library }) {
       library={library}
       channels={region?.channels ?? library.channels}
       header={header}
-      testID="live-list"
+      testID={tab === "guide" ? "live-guide" : "live-list"}
+      schedule={tab === "guide"}
     />
   );
 }
@@ -327,21 +338,47 @@ function ChannelList({
   channels,
   header,
   testID,
+  schedule = false,
 }: {
   library: Library;
   channels: readonly Channel[];
   header: ReactNode;
   testID: string;
+  schedule?: boolean;
 }) {
-  const height = useRowHeight();
+  const height = useRowHeight() + Math.round(58 * useWindowDimensions().fontScale);
   const inset = useDockInset();
   const playing = channelStatus(usePlayback().phase);
   const favourites = useFavouriteKeys();
   const [top, setTop] = useState(0);
+  const [visible, setVisible] = useState<readonly string[]>(() =>
+    channels.slice(0, 12).map((channel) => channel.key),
+  );
+  const onVisible = useCallback(
+    ({ viewableItems }: { viewableItems: { item: Channel; isViewable: boolean }[] }) => {
+      const keys = viewableItems
+        .filter((item) => item.isViewable)
+        .slice(0, 40)
+        .map((item) => item.item.key);
+      setVisible((before) => (before.join("\n") === keys.join("\n") ? before : keys));
+    },
+    [],
+  );
+  const read = useGuideListings(visible, library);
+  const messages = [
+    ...new Set(
+      visible
+        .map((key) => guideMessage(read.snapshot.get(library.byKey.get(key)?.subscriptionId ?? "")))
+        .filter(Boolean),
+    ),
+  ];
   const onPress = useCallback((channel: Channel) => watch(library, channel), [library]);
   // Rows draw again when a star or what plays changes.
   const playingNow = playing && `${playing.id} ${playing.word}`;
-  const extraData = useMemo(() => ({ favourites, playingNow }), [favourites, playingNow]);
+  const extraData = useMemo(
+    () => ({ favourites, playingNow, read: read.value }),
+    [favourites, playingNow, read.value],
+  );
   return (
     <FlatList
       style={styles.screen}
@@ -349,7 +386,23 @@ function ChannelList({
       keyExtractor={(channel) => channel.key}
       extraData={extraData}
       ListHeaderComponent={
-        <View onLayout={(event) => setTop(event.nativeEvent.layout.height)}>{header}</View>
+        <View onLayout={(event) => setTop(event.nativeEvent.layout.height)}>
+          {header}
+          {schedule ? (
+            <>
+              {messages.map((message) => (
+                <Text key={message} style={styles.note}>
+                  {message}
+                </Text>
+              ))}
+              {messages.includes("Guide unavailable") ? (
+                <Pressable accessibilityRole="button" onPress={openSettings}>
+                  <Text style={styles.note}>Provider settings</Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : null}
+        </View>
       }
       renderItem={({ item }) => (
         <ChannelRow
@@ -360,12 +413,29 @@ function ChannelList({
           onPress={onPress}
           favourite={favourites.has(item.key)}
           onFavourite={starChannel}
+          programmeHint={[
+            programmePresentation(read.value?.get(item.key), read.now).line ??
+              library.placeOf.get(item.key),
+            programmePresentation(read.value?.get(item.key), read.now).next,
+          ]
+            .filter(Boolean)
+            .join(", ")}
+          programme={
+            <ProgrammeLines
+              listing={read.value?.get(item.key)}
+              fallback={library.placeOf.get(item.key) ?? "No programme information"}
+              at={read.now}
+            />
+          }
+          onSchedule={schedule ? (channel) => openSchedule("live", channel.key) : undefined}
         />
       )}
       getItemLayout={(_, index) => ({ length: height, offset: top + height * index, index })}
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={{ paddingBottom: inset }}
-      initialNumToRender={16}
+      onViewableItemsChanged={onVisible}
+      viewabilityConfig={{ itemVisiblePercentThreshold: 10 }}
+      initialNumToRender={12}
       maxToRenderPerBatch={16}
       windowSize={9}
       removeClippedSubviews

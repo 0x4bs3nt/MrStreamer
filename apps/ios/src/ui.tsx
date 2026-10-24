@@ -1,7 +1,7 @@
 import type { ListedChannel } from "@mrstreamer/core/catalogue/variants";
 import { SymbolView } from "expo-symbols";
 import type { Channel } from "./library.ts";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import {
   Image,
   Pressable,
@@ -84,9 +84,15 @@ export const ChannelRow = memo(function ChannelRow({
   onPress,
   favourite = false,
   onFavourite,
+  programme,
+  programmeHint,
+  onSchedule,
 }: {
   channel: Channel;
   detail: string;
+  programme?: ReactNode;
+  programmeHint?: string;
+  onSchedule?: ((channel: Channel) => void) | undefined;
   /** How the channel stands while it is the one playing (`channelStatus`), in place of `detail`. */
   status: string | null;
   height: number;
@@ -103,7 +109,7 @@ export const ChannelRow = memo(function ChannelRow({
         accessibilityLabel={[channel.title, favourite && "favourite", status?.toLowerCase()]
           .filter(Boolean)
           .join(", ")}
-        accessibilityHint={detail}
+        accessibilityHint={programmeHint ?? detail}
         {...(onFavourite
           ? {
               accessibilityActions: [{ name: "activate" }, { name: "favourite", label: star }],
@@ -123,11 +129,22 @@ export const ChannelRow = memo(function ChannelRow({
             {channel.title}
             {tags ? <Text style={styles.tags}>{`  ${tags}`}</Text> : null}
           </Text>
-          <Text style={styles.detail} numberOfLines={1}>
-            {status ?? detail}
-          </Text>
+          {programme ?? (
+            <Text style={styles.detail} numberOfLines={1}>
+              {status ?? detail}
+            </Text>
+          )}
+          {programme && status ? <Text style={styles.detail}>{status}</Text> : null}
         </View>
       </Pressable>
+      {onSchedule ? (
+        <TextButton
+          label="Schedule"
+          accessibilityLabel={`Schedule for ${channel.title}`}
+          onPress={() => onSchedule(channel)}
+          testID={`schedule-${channel.key}`}
+        />
+      ) : null}
       {onFavourite ? (
         <Pressable
           accessibilityElementsHidden
@@ -197,8 +214,10 @@ export function TextButton({
   disabled,
   destructive,
   testID,
+  accessibilityLabel,
 }: {
   label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   disabled?: boolean;
   destructive?: boolean;
@@ -207,6 +226,7 @@ export function TextButton({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled: disabled ?? false }}
       disabled={disabled}
       onPress={onPress}
