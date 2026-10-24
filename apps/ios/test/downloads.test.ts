@@ -1215,17 +1215,27 @@ describe("downloads", { timeout: 30_000 }, () => {
 
   // While the old record's removal still waits on the native side, the run stops: its new
   // addition isn't the run's to make any more. Nothing stopping it, it is made.
-  for (const change of ["nothing", "Cancel remaining", "a new login", "leaving"] as const) {
-    it(`replaces a missing copy, once its removal ends, only while the run stands: ${change}`, async () => {
+  for (const [change, count] of [
+    ["nothing", 1],
+    ["Cancel remaining", 1],
+    ["a new login", 1],
+    ["leaving", 1],
+    ["Cancel remaining", 2],
+  ] as const) {
+    it(`replaces a missing copy, once its removal ends, only while the run stands: ${change}, ${count} missing`, async () => {
       await install();
       const app = await launch();
       const { a } = await withProviders(app);
       const { version, details } = await seriesDetails(app, a);
       const season = details.seasons[0]!;
-      const only = { ...details, seasons: [{ ...season, episodes: season.episodes.slice(1, 2) }] };
-      const kept = await app.addDownload(episodeOf(season.episodes[1]!));
-      await until(() => isComplete(app, kept.id), "the copy", 20_000);
-      mediaFile(kept.id)!.delete();
+      const episodes = season.episodes.slice(1, count + 1);
+      const only = { ...details, seasons: [{ ...season, episodes }] };
+      const copies: Download[] = [];
+      for (const episode of episodes) copies.push(await app.addDownload(episodeOf(episode)));
+      for (const copy of copies) {
+        await until(() => isComplete(app, copy.id), "the copy", 20_000);
+        mediaFile(copy.id)!.delete();
+      }
       appGoes("background");
       appGoes("active");
       const plan = app.planDownload(only, version, { kind: "season", season: season.number });
@@ -1245,7 +1255,9 @@ describe("downloads", { timeout: 30_000 }, () => {
       let mounted = true;
       const id = app.startDownload(plan, { replace: true, stands: () => mounted })!;
       await arrived.promise;
-      expect(doc().items).toEqual([]);
+      expect(doc().items).toEqual(
+        copies.slice(1).map((copy) => expect.objectContaining({ id: copy.id })),
+      );
       if (change === "Cancel remaining") app.cancelRemaining(id);
       else if (change === "a new login") await app.update(a, { password: ONE.password });
       else if (change === "leaving") mounted = false;
@@ -1260,14 +1272,21 @@ describe("downloads", { timeout: 30_000 }, () => {
       expect(result).toMatchObject({
         replaced: 0,
         removed: 1,
-        cancelled: 1,
+        cancelled: count - 1,
         stopped: { "Cancel remaining": "cancelled", "a new login": "login", leaving: "left" }[
           change
         ],
       });
-      // The removal stays; nothing comes back and nothing new is queued, under either login.
-      expect(app.downloadList().items).toEqual([]);
-      expect(doc().items).toEqual([]);
+      expect(app.seriesRun()).toMatchObject({ done: 1, total: count });
+      expect(result.removed + result.cancelled).toBe(count);
+      // Only the first copy was asked for: its removal stays, while unasked copies stay missing.
+      expect(app.downloadList().items.map((item) => item.id)).toEqual(
+        copies.slice(1).map((copy) => copy.id),
+      );
+      expect(doc().items).toEqual(
+        copies.slice(1).map((copy) => expect.objectContaining({ id: copy.id })),
+      );
+      for (const copy of copies.slice(1)) expect(statusOf(app, copy.id)?.kind).toBe("missing");
     });
   }
 

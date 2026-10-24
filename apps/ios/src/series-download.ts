@@ -233,6 +233,7 @@ export function startDownload(
         asked = "failed";
       }
       if (asked === "stopped" || asked === "removed") {
+        if (asked === "removed") done++;
         result = {
           ...result,
           stopped: ended() ?? "left",
