@@ -111,6 +111,7 @@ function Separator() {
 const PRIMARY: Record<Download["status"]["kind"], { symbol: SFSymbol; label: string }> = {
   queued: { symbol: "xmark", label: "Cancel download" },
   waiting: { symbol: "xmark", label: "Cancel download" },
+  paused: { symbol: "xmark", label: "Cancel download" },
   transferring: { symbol: "xmark", label: "Cancel download" },
   failed: { symbol: "arrow.clockwise", label: "Retry" },
   complete: { symbol: "play.fill", label: "Play offline" },
@@ -121,6 +122,7 @@ const PRIMARY: Record<Download["status"]["kind"], { symbol: SFSymbol; label: str
 const SWIPED: Record<Download["status"]["kind"], string> = {
   queued: "Cancel",
   waiting: "Cancel",
+  paused: "Cancel",
   transferring: "Cancel",
   failed: "Remove",
   complete: "Delete",

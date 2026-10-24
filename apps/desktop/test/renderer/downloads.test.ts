@@ -221,6 +221,344 @@ describe("the Downloads page", () => {
   });
 });
 
+describe("the queue on the Downloads page", () => {
+  const running = download({
+    id: "running",
+    name: "Severance",
+    status: {
+      kind: "transferring",
+      received: 980_000_000,
+      size: 2_100_000_000,
+      rate: null,
+      restarted: false,
+    },
+  });
+  const waiting = download({ id: "waiting", name: "Dune: Part Two", status: { kind: "waiting" } });
+  const held = download({
+    id: "held",
+    name: "Attila",
+    status: { kind: "paused", received: 310_000_000, size: 2_000_000_000 },
+  });
+  const next = download({ id: "next", name: "The Bear", status: { kind: "queued" } });
+  const refused = download({
+    id: "refused",
+    name: "Planet Earth III",
+    status: {
+      kind: "failed",
+      failure: { kind: "stream", failure: { kind: "refused", status: 403 } },
+    },
+  });
+  const answered = () => {
+    for (const method of [
+      "downloads.pause",
+      "downloads.resume",
+      "downloads.move",
+      "downloads.pauseAll",
+      "downloads.resumeAll",
+    ] as const)
+      ipc.always(method, null);
+  };
+  const rowOf = (page: HTMLElement, id: string) =>
+    page.querySelector<HTMLElement>(`[data-download="${id}"]`)!;
+  const order = (page: HTMLElement) =>
+    [...page.querySelectorAll<HTMLElement>("[data-download]")].map(
+      (row) => row.dataset["download"],
+    );
+
+  it("tells paused from waiting and offers each row what fits its place", async () => {
+    ipc.always("downloads.list", list([running, waiting, held, next, refused]));
+    answered();
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const row = (id: string) => rowOf(page, id);
+    expect(row("held").textContent).toContain("Paused · 310 MB of 2 GB");
+    expect(row("waiting").textContent).toContain("Waiting while Home IPTV plays");
+    // The transfer leads with no arrows; the failed one has Retry and Delete only.
+    expect(row("running").querySelector("[data-move]")).toBeNull();
+    expect(button(row("running"), "Pause")).toBeDefined();
+    expect(row("refused").querySelector("[data-move], [data-hold]")).toBeNull();
+    expect(button(row("refused"), "Retry")).toBeDefined();
+    // Up stops at the first waiting, Down at the last.
+    expect(labelled(row("waiting"), "Move Dune: Part Two up")?.disabled).toBe(true);
+    expect(labelled(row("waiting"), "Move Dune: Part Two down")?.disabled).toBe(false);
+    expect(labelled(row("next"), "Move The Bear down")?.disabled).toBe(true);
+    await click(button(row("running"), "Pause"));
+    await click(button(row("held"), "Resume"));
+    await click(labelled(row("held"), "Move Attila down"));
+    expect(ipc.argsOf("downloads.pause")).toEqual([{ id: "running" }]);
+    expect(ipc.argsOf("downloads.resume")).toEqual([{ id: "held" }]);
+    expect(ipc.argsOf("downloads.move")).toEqual([{ id: "held", by: 1 }]);
+    // Pause all while anything can be paused, then Resume all once everything is.
+    await click(button(page, "Pause all"));
+    expect(ipc.argsOf("downloads.pauseAll")).toHaveLength(1);
+    const pausedAs = (item: Download): Download => ({
+      ...item,
+      status: { kind: "paused", received: 0, size: null },
+    });
+    await changed(
+      list([held, pausedAs(running), pausedAs(waiting), pausedAs(next), refused]),
+      () => button(page, "Resume all") !== undefined,
+    );
+    await click(button(page, "Resume all"));
+    expect(ipc.argsOf("downloads.resumeAll")).toHaveLength(1);
+    expect(button(page, "Pause all")).toBeUndefined();
+  });
+
+  it("keeps the keyboard on the control pressed as its row moves, and on the other arrow at an end", async () => {
+    ipc.always("downloads.list", list([running, waiting, held, next]));
+    answered();
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const up = () => labelled(rowOf(page, "next"), "Move The Bear up")!;
+    await act(async () => up().focus());
+    await click(up());
+    expect(ipc.argsOf("downloads.move")).toEqual([{ id: "next", by: -1 }]);
+    await changed(
+      list([running, waiting, next, held]),
+      () => order(page).join() === "running,waiting,next,held",
+    );
+    expect(document.activeElement).toBe(up());
+    // Main's list with the row moved can come before its answer to the move.
+    const answer = ipc.hold("downloads.move");
+    await click(up());
+    await changed(
+      list([running, next, waiting, held]),
+      () => order(page).join() === "running,next,waiting,held",
+    );
+    // First now, it goes no earlier: Down has the keyboard, and keeps it once the answer comes.
+    expect(document.activeElement).toBe(labelled(rowOf(page, "next"), "Move The Bear down"));
+    await act(async () => answer.resolve(null));
+    expect(document.activeElement).toBe(labelled(rowOf(page, "next"), "Move The Bear down"));
+    // Paused from the keyboard, the row's Resume has it once its row says so.
+    const hold = () => rowOf(page, "next").querySelector<HTMLButtonElement>("[data-hold]")!;
+    await act(async () => hold().focus());
+    await click(hold());
+    expect(ipc.argsOf("downloads.pause")).toEqual([{ id: "next" }]);
+    await changed(
+      list([
+        running,
+        waiting,
+        { ...next, status: { kind: "paused", received: 0, size: null } },
+        held,
+      ]),
+      () => hold().textContent === "Resume",
+    );
+    expect(document.activeElement).toBe(hold());
+    // Pressed with the pointer, nothing takes the keyboard.
+    await act(async () => (document.activeElement as HTMLElement).blur());
+    await click(labelled(rowOf(page, "held"), "Move Attila up"));
+    await changed(
+      list([
+        running,
+        waiting,
+        held,
+        { ...next, status: { kind: "paused", received: 0, size: null } },
+      ]),
+      () => order(page).join() === "running,waiting,held,next",
+    );
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  /**
+   * The rows of a move that main keeps while an older list, made before it, still takes away a
+   * row above it: the transfer, then B, C and D waiting, D moved up past C.
+   */
+  const passing = () => {
+    const [b, c, d] = ["B", "C", "D"].map((name) =>
+      download({ id: name.toLowerCase(), name, status: { kind: "queued" } }),
+    );
+    return { b: b!, c: c!, d: d! };
+  };
+
+  it("keeps a move's keyboard through an older list that only took a row above it away, its answer first", async () => {
+    const { b, c, d } = passing();
+    ipc.always("downloads.list", list([running, b, c, d]));
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const up = () => labelled(rowOf(page, "d"), "Move D up")!;
+    await act(async () => up().focus());
+    const answer = ipc.hold("downloads.move");
+    await click(up());
+    await act(async () => answer.resolve(null));
+    // Made before the move: B went, D is no further up than C.
+    await changed(list([running, c, d]), () => order(page).join() === "running,c,d");
+    await changed(list([running, d, c]), () => order(page).join() === "running,d,c");
+    expect(up().disabled).toBe(true);
+    expect(document.activeElement).toBe(labelled(rowOf(page, "d"), "Move D down"));
+  });
+
+  it("keeps a move's keyboard through an older list that only took a row above it away, that list first", async () => {
+    const { b, c, d } = passing();
+    ipc.always("downloads.list", list([running, b, c, d]));
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const up = () => labelled(rowOf(page, "d"), "Move D up")!;
+    await act(async () => up().focus());
+    const answer = ipc.hold("downloads.move");
+    await click(up());
+    await changed(list([running, c, d]), () => order(page).join() === "running,c,d");
+    await act(async () => answer.resolve(null));
+    await changed(list([running, d, c]), () => order(page).join() === "running,d,c");
+    expect(up().disabled).toBe(true);
+    expect(document.activeElement).toBe(labelled(rowOf(page, "d"), "Move D down"));
+  });
+
+  it("ends a move's keyboard once the neighbour it moved around is gone, taking nothing later", async () => {
+    const { b, c, d } = passing();
+    ipc.always("downloads.list", list([running, b, c, d]));
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const up = () => labelled(rowOf(page, "d"), "Move D up")!;
+    await act(async () => up().focus());
+    const answer = ipc.hold("downloads.move");
+    await click(up());
+    await act(async () => answer.resolve(null));
+    // C went too: which neighbour main moved it around can't be told any more.
+    await changed(list([running, b, d]), () => order(page).join() === "running,b,d");
+    expect(document.activeElement).toBe(up());
+    await act(async () => up().blur());
+    await changed(list([running, d, b]), () => order(page).join() === "running,d,b");
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  /**
+   * The transfer, then B, C and D waiting, the pointer moving C down while the keyboard stays on
+   * B's Down: main moves B around D, though the window, still drawing B, C and D, showed C below.
+   */
+  async function movedAroundAnother(order: "answer first" | "list first") {
+    const { b, c, d } = passing();
+    ipc.always("downloads.list", list([running, b, c, d]));
+    ipc.always("downloads.move", null);
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const down = () => labelled(rowOf(page, "b"), "Move B down")!;
+    await act(async () => down().focus());
+    await click(labelled(rowOf(page, "c"), "Move C down"));
+    expect(document.activeElement).toBe(down());
+    const answer = ipc.hold("downloads.move");
+    await click(down());
+    expect(ipc.argsOf("downloads.move")).toEqual([
+      { id: "c", by: 1 },
+      { id: "b", by: 1 },
+    ]);
+    if (order === "answer first") await act(async () => answer.resolve(null));
+    await changed(list([running, b, d, c]), () => rows(page) === "running,b,d,c");
+    if (order === "list first") await act(async () => answer.resolve(null));
+    await changed(list([running, d, b, c]), () => rows(page) === "running,d,b,c");
+    expect(document.activeElement).toBe(down());
+    return { page, b, c, d };
+  }
+  const rows = (page: HTMLElement) => order(page).join();
+
+  for (const arrival of ["answer first", "list first"] as const) {
+    it(`leaves the keyboard to the row the viewer goes to after a move another move changed, ${arrival}`, async () => {
+      const { page, b, d } = await movedAroundAnother(arrival);
+      // The viewer goes on to C and cancels it: the keyboard was C's, so nothing takes it.
+      ipc.always("downloads.remove", null);
+      const cancel = button(rowOf(page, "c"), "Cancel")!;
+      await act(async () => cancel.focus());
+      await click(cancel);
+      expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "c" }]);
+      await changed(list([running, d, b]), () => rows(page) === "running,d,b");
+      expect(document.activeElement).toBe(document.body);
+    });
+  }
+
+  for (const leaving of ["before", "after"] as const) {
+    it(`takes no keyboard back for a move once the viewer went to another row ${leaving} its answer`, async () => {
+      const { b, c, d } = passing();
+      ipc.always("downloads.list", list([running, b, c, d]));
+      ipc.always("downloads.remove", null);
+      const page = await show(createElement(DownloadsPage), "[data-download]");
+      const up = () => labelled(rowOf(page, "d"), "Move D up")!;
+      await act(async () => up().focus());
+      const answer = ipc.hold("downloads.move");
+      await click(up());
+      if (leaving === "after") await act(async () => answer.resolve(null));
+      const cancel = button(rowOf(page, "c"), "Cancel")!;
+      await act(async () => cancel.focus());
+      await click(cancel);
+      if (leaving === "before") await act(async () => answer.resolve(null));
+      // Main moved D past C, then took C away, both told in one list: the keyboard went with C.
+      await changed(list([running, b, d]), () => rows(page) === "running,b,d");
+      expect(document.activeElement).toBe(document.body);
+    });
+  }
+
+  it("keeps a paused transfer's keyboard through an older list, on the row's Resume and Pause", async () => {
+    const [p, q] = ["P", "Q"].map((name) =>
+      download({ id: name.toLowerCase(), name, status: { kind: "queued" } }),
+    );
+    const paused = { kind: "paused", received: 0, size: null } as const;
+    const moving = { ...running, id: "a", name: "A" };
+    ipc.always("downloads.list", list([moving, { ...p!, status: paused }, q!]));
+    answered();
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const hold = () => rowOf(page, "a").querySelector<HTMLButtonElement>("[data-hold]")!;
+    await act(async () => hold().focus());
+    await click(hold());
+    // Made before the pause: P went. Then A paused takes its place after Q.
+    await changed(list([moving, q!]), () => rows(page) === "a,q");
+    await changed(list([q!, { ...moving, status: paused }]), () => rows(page) === "q,a");
+    expect(hold().textContent).toBe("Resume");
+    expect(document.activeElement).toBe(hold());
+    await click(hold());
+    await changed(list([moving, q!]), () => rows(page) === "a,q");
+    expect(hold().textContent).toBe("Pause");
+    expect(document.activeElement).toBe(hold());
+  });
+
+  it("hands the keyboard to Up when a move takes the row to the bottom", async () => {
+    const { b, c } = passing();
+    ipc.always("downloads.list", list([running, b, c]));
+    answered();
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const down = () => labelled(rowOf(page, "b"), "Move B down")!;
+    await act(async () => down().focus());
+    await click(down());
+    await changed(list([running, c, b]), () => rows(page) === "running,c,b");
+    expect(down().disabled).toBe(true);
+    expect(document.activeElement).toBe(labelled(rowOf(page, "b"), "Move B up"));
+  });
+
+  it("hands the keyboard to the other arrow where the browser drops it as the arrow turns off", async () => {
+    // Chromium can take the keyboard from a button as it is turned off, before anything runs.
+    const setAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (this: Element, name: string, value: string) {
+      setAttribute.call(this, name, value);
+      if (name === "disabled" && this === document.activeElement) (this as HTMLElement).blur();
+    };
+    try {
+      const { b, c, d } = passing();
+      ipc.always("downloads.list", list([running, b, c, d]));
+      answered();
+      const page = await show(createElement(DownloadsPage), "[data-download]");
+      const up = () => labelled(rowOf(page, "d"), "Move D up")!;
+      await act(async () => up().focus());
+      await click(up());
+      await changed(list([running, c, d]), () => rows(page) === "running,c,d");
+      await changed(list([running, d, c]), () => rows(page) === "running,d,c");
+      expect(up().disabled).toBe(true);
+      expect(document.activeElement).toBe(labelled(rowOf(page, "d"), "Move D down"));
+    } finally {
+      Element.prototype.setAttribute = setAttribute;
+    }
+  });
+
+  it("says a change it couldn't keep, and keeps the control to press again", async () => {
+    ipc.always("downloads.list", list([running, next]));
+    const unwritten = { kind: "unexpected", detail: "database is locked" } as const;
+    ipc.refuse("downloads.pause", unwritten);
+    ipc.refuse("downloads.pauseAll", unwritten);
+    const page = await show(createElement(DownloadsPage), "[data-download]");
+    const alert = (within: HTMLElement) => within.querySelector('[role="alert"]')?.textContent;
+    await click(button(rowOf(page, "next"), "Pause"));
+    expect(alert(rowOf(page, "next"))).toBe("Couldn't save. Try again.");
+    await click(button(page, "Pause all"));
+    expect(alert(page.querySelector("h1")!.parentElement!.parentElement!)).toBe(
+      "Couldn't save. Try again.",
+    );
+    ipc.always("downloads.pause", null);
+    await click(button(rowOf(page, "next"), "Pause"));
+    expect(alert(rowOf(page, "next"))).toBeUndefined();
+    expect(ipc.argsOf("downloads.pause")).toEqual([{ id: "next" }, { id: "next" }]);
+  });
+});
+
 describe("with no subscription saved", () => {
   it("opens the copies from Connect, and Add subscription goes back to the form", async () => {
     ipc.always("subscription.list", []);
@@ -460,6 +798,19 @@ describe("a movie's Download in its details", () => {
     expect(button(details, "Watch offline")).toBeDefined();
   });
 
+  it("says it is paused and resumes it", async () => {
+    ipc.always(
+      "downloads.list",
+      list([download({ status: { kind: "paused", received: 40, size: 100 } })]),
+    );
+    ipc.always("downloads.resume", null);
+    const details = await show(createElement(MovieDownload, { title: ref }), "button");
+    await until(() => labelled(details, "Paused, resume download") !== null);
+    expect(labelled(details, "Paused, resume download")?.textContent).toBe("Paused · Resume");
+    await click(labelled(details, "Paused, resume download"));
+    expect(ipc.argsOf("downloads.resume")).toEqual([{ id: "d1" }]);
+  });
+
   it("is another version's own: a download of one version isn't shown for another", async () => {
     ipc.always("downloads.list", list([download({ title: { kind: "movie", id: "other" } })]));
     const details = await show(createElement(MovieDownload, { title: ref }), "button");
@@ -518,6 +869,23 @@ describe("the top bar's word on the downloads", () => {
     expect(notice(bar)).toBeNull();
     // Every change came as main's event: the list was read once.
     expect(ipc.argsOf("downloads.list")).toHaveLength(1);
+  });
+
+  it("says Paused, quietly, once only paused downloads are left, before one that stopped", async () => {
+    useUi.setState({ view: "movies" });
+    const failed = download({
+      id: "full",
+      status: { kind: "failed", failure: { kind: "disk-full", needed: null } },
+    });
+    ipc.always(
+      "downloads.list",
+      list([download({ id: "held", status: { kind: "paused", received: 5, size: 10 } }), failed]),
+    );
+    const bar = await show(createElement(WindowBar), "header");
+    await until(() => notice(bar)?.textContent === "Paused");
+    expect(notice(bar)?.getAttribute("aria-label")).toBe("Downloads, Paused");
+    expect(notice(bar)?.className).toContain("text-muted-foreground");
+    await changed(list([failed]), () => notice(bar)?.textContent === "Download stopped");
   });
 
   it("leaves the Downloads page to say it while its name is in the bar", async () => {

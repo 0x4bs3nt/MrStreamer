@@ -1,8 +1,8 @@
 // Download in a title's details: beside a movie's Play and Watchlist, and as an icon on each
 // episode's row. One control says how the download of that exact version stands and does the one
-// thing that fits: Download, Cancel while it is queued or transfers, Retry after it failed, and
-// Watch offline once it is on this computer, with Delete in the menu beside it. There is no
-// automatic download of future episodes.
+// thing that fits: Download, Cancel while it is queued or transfers, Resume once the viewer paused
+// it on the Downloads page, Retry after it failed, and Watch offline once it is on this computer,
+// with Delete in the menu beside it. There is no automatic download of future episodes.
 import { Menu } from "@base-ui/react/menu";
 import type { ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -36,13 +36,15 @@ function useDownload(title: TitleRef) {
     mutationFn: (id: string) => call("downloads.remove", { id }),
   });
   const retry = useMutation({ mutationFn: (id: string) => call("downloads.retry", { id }) });
-  const error = add.error ?? remove.error ?? retry.error;
+  const resume = useMutation({ mutationFn: (id: string) => call("downloads.resume", { id }) });
+  const error = add.error ?? remove.error ?? retry.error ?? resume.error;
   return {
     download,
-    busy: add.isPending || remove.isPending || retry.isPending,
+    busy: add.isPending || remove.isPending || retry.isPending || resume.isPending,
     add: () => add.mutate(),
     remove: (id: string) => remove.mutate(id),
     retry: (id: string) => retry.mutate(id),
+    resume: (id: string) => resume.mutate(id),
     error: error ? describeError(appError(error)) : null,
   };
 }
@@ -63,12 +65,19 @@ function shortly(failure: DownloadFailure): string {
 
 /** A movie's Download, beside Play and Watchlist. */
 export function MovieDownload({ title }: { title: TitleRef }) {
-  const { download, busy, add, remove, retry, error } = useDownload(title);
+  const { download, busy, add, remove, retry, resume, error } = useDownload(title);
   return (
     <>
       <DownloadPill faces={<MovieFaces />}>
         <span className="flex min-w-0 [&>button]:w-full [&>button]:px-4">
-          <MovieState download={download} busy={busy} add={add} remove={remove} retry={retry} />
+          <MovieState
+            download={download}
+            busy={busy}
+            add={add}
+            remove={remove}
+            retry={retry}
+            resume={resume}
+          />
         </span>
       </DownloadPill>
       {error && <p className="order-last basis-full text-sm text-destructive">{error}</p>}
@@ -101,6 +110,9 @@ function MovieFaces() {
           {t(label)} · {t("Cancel")}
         </Button>
       ))}
+      <Button render={<span />} size="lg" className="px-4">
+        {t("Paused")} · {t("Resume download")}
+      </Button>
       <Button render={<span />} size="lg" className="px-4 tabular-nums">
         <Progress value={1} className="w-12" />
         {formatPercent(1)}
@@ -140,12 +152,14 @@ function MovieState({
   add,
   remove,
   retry,
+  resume,
 }: {
   download: Download | null;
   busy: boolean;
   add: () => void;
   remove: (id: string) => void;
   retry: (id: string) => void;
+  resume: (id: string) => void;
 }) {
   if (!download) {
     return (
@@ -173,6 +187,20 @@ function MovieState({
         >
           <span className="min-w-0 truncate">
             {status.kind === "queued" ? t("Queued") : t("Waiting for playback")} · {t("Cancel")}
+          </span>
+        </Button>
+      );
+    case "paused":
+      return (
+        <Button
+          variant="secondary"
+          size="lg"
+          disabled={busy}
+          aria-label={t("Paused, resume download")}
+          onClick={() => resume(id)}
+        >
+          <span className="min-w-0 truncate">
+            {t("Paused")} · {t("Resume download")}
           </span>
         </Button>
       );
@@ -266,7 +294,7 @@ function MovieState({
 
 /** Every episode action keeps the same icon target; its state is written in the facts line. */
 export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "episode" }> }) {
-  const { download, busy, add, remove, retry, error } = useDownload(title);
+  const { download, busy, add, remove, retry, resume, error } = useDownload(title);
   const label = episodeLabel(title.season, title.episode);
   const shared = {
     variant: "ghost",
@@ -307,6 +335,16 @@ export function EpisodeDownload({ title }: { title: Extract<TitleRef, { kind: "e
           onClick={() => remove(id)}
         >
           <X />
+        </Button>
+      );
+    case "paused":
+      return (
+        <Button
+          {...shared}
+          aria-label={t("Resume download of {title}", { title: label })}
+          onClick={() => resume(id)}
+        >
+          <ArrowDownToLine />
         </Button>
       );
     case "transferring": {
@@ -360,17 +398,19 @@ export function EpisodeDownloadStatus({ download }: { download: Download | null 
         ? t("Queued")
         : status.kind === "waiting"
           ? t("Waiting")
-          : status.kind === "failed"
-            ? shortly(status.failure)
-            : status.kind === "missing"
-              ? t("Missing")
-              : transferred(download) === null
-                ? [t("Downloading"), status.received > 0 ? formatBytes(status.received) : null]
-                    .filter(Boolean)
-                    .join(" ")
-                : t("Downloading {percent}", {
-                    percent: formatPercent(Math.floor(transferred(download)! * 100) / 100),
-                  });
+          : status.kind === "paused"
+            ? t("Paused")
+            : status.kind === "failed"
+              ? shortly(status.failure)
+              : status.kind === "missing"
+                ? t("Missing")
+                : transferred(download) === null
+                  ? [t("Downloading"), status.received > 0 ? formatBytes(status.received) : null]
+                      .filter(Boolean)
+                      .join(" ")
+                  : t("Downloading {percent}", {
+                      percent: formatPercent(Math.floor(transferred(download)! * 100) / 100),
+                    });
   return (
     <span
       className={

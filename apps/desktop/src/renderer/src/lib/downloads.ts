@@ -133,6 +133,17 @@ export function statusLine(download: Download): string {
       return download.subscription
         ? t("Waiting while {subscription} plays", { subscription: download.subscription.name })
         : t("Waiting for playback");
+    case "paused":
+      if (status.received === 0) return t("Paused");
+      return [
+        t("Paused"),
+        status.size
+          ? t("{received} of {size}", {
+              received: formatBytes(status.received),
+              size: formatBytes(status.size),
+            })
+          : formatBytes(status.received),
+      ].join(" · ");
     case "transferring": {
       if (status.size === null || status.size === 0) {
         return status.received > 0 ? formatBytes(status.received) : t("Starting");
@@ -160,8 +171,10 @@ export function statusLine(download: Download): string {
   }
 }
 
-/** How far a transfer is, from 0 to 1, when its size is known. */
+/** How far a transfer is, or got before it was paused, from 0 to 1, when its size is known. */
 export function transferred(download: Download): number | null {
   const { status } = download;
-  return status.kind === "transferring" && status.size ? status.received / status.size : null;
+  return (status.kind === "transferring" || status.kind === "paused") && status.size
+    ? status.received / status.size
+    : null;
 }

@@ -5,6 +5,9 @@
 // watched here. Its bytes and artwork are files in the app's downloads folder (services/downloads.ts).
 // Erasing an account's viewing data leaves these rows: a copy is the viewer's until they delete it.
 // A row this build can't read, as one a later build wrote, is left as it is, and so are its files.
+// A key a record doesn't declare is read and written back with it: what a pause and a place in
+// the queue add (`pausedAt`, `order`) are optional keys of that kind, so a build before them reads
+// such a record, ignores both and keeps them through its own writes.
 import type { DatabaseSync } from "node:sqlite";
 import type { DownloadFailure } from "@mrstreamer/contracts/downloads";
 import { RawTitleRef } from "@mrstreamer/contracts/ondemand";
@@ -14,7 +17,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { t } from "@mrstreamer/core/i18n";
-import { attempt, Database, unavailable } from "./database.ts";
+import { attempt, Database, transaction, unavailable } from "./database.ts";
 import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** What was kept of a title's details for its copy, shown without asking anyone. */
@@ -61,6 +64,13 @@ const Stored = lazy(() =>
     state: "'queued' | 'failed' | 'complete'",
     /** Why it failed, as `DownloadFailure` says; only while failed. */
     "failure?": "object",
+    /** When the viewer paused it, while queued: it waits until resumed. */
+    "pausedAt?": "number",
+    /**
+     * Its place among the unfinished downloads; one without sorts by `addedAt`, as an older build
+     * added it.
+     */
+    "order?": "number",
     /** The whole file's size, once known. */
     size: "number.integer >= 0 | null",
     /** Bytes in the partial file, or of the copy once complete. */
@@ -96,6 +106,8 @@ export class DownloadStore extends Context.Service<
     readonly list: Effect.Effect<Inventory, Failed>;
     /** Stores a download's record, new or changed. */
     put(download: StoredDownload): Effect.Effect<void, Failed>;
+    /** Stores several records in one transaction: all of them, or none when it fails. */
+    putMany(downloads: readonly StoredDownload[]): Effect.Effect<void, Failed>;
     remove(id: string): Effect.Effect<void, Failed>;
   }
 >()("mrstreamer/DownloadStore") {}
@@ -135,6 +147,14 @@ export const downloadStoreLayer = Layer.effect(
           attempt(() => {
             write.run(download.id, download.addedAt, JSON.stringify(Stored().assert(download)));
           }),
+        putMany: (downloads: readonly StoredDownload[]) =>
+          attempt(() =>
+            transaction(db, () => {
+              for (const download of downloads) {
+                write.run(download.id, download.addedAt, JSON.stringify(Stored().assert(download)));
+              }
+            }),
+          ),
         remove: (id: string) =>
           attempt(() => {
             remove.run(id);
@@ -169,5 +189,5 @@ function failureOf(stored: object): DownloadFailure {
  */
 function closed(detail: () => string): DownloadStore["Service"] {
   const fail = Effect.suspend(() => unavailable(detail()));
-  return { list: fail, put: () => fail, remove: () => fail };
+  return { list: fail, put: () => fail, putMany: () => fail, remove: () => fail };
 }

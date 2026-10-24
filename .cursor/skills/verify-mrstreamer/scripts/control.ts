@@ -11,6 +11,7 @@ import { startFakeHls } from "../../../../apps/desktop/test/fake-hls.ts";
 import { hlsCompatibilityScenario, hlsCompatibilityCatchupScenario } from "./hls-compatibility.ts";
 import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
+import { runDownloadsQueue } from "./downloads-queue.ts";
 import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-labels.ts";
 import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
 import { homeStageScenario, stageChannel, stageLogo, stageStreams } from "./home-stage.ts";
@@ -81,8 +82,10 @@ const scenarios = [
 type Scenario = (typeof scenarios)[number];
 const [command, selected] = process.argv.slice(2);
 if (command === "--help" || !command) {
-  console.log(`Usage: pnpm verify:desktop doctor | ${scenarios.join(" | ")}
+  console.log(`Usage: pnpm verify:desktop doctor | ${scenarios.join(" | ")} | downloads-queue
        pnpm verify:desktop downloads <locale>, as fr-FR: Downloads in another interface language
+       pnpm verify:desktop downloads-queue [--previous <executable>]: pause and order the queue,
+         with an earlier build's executable (0.0.19's unpacked AppImage) started between
 Run from the repo root, after pnpm install --frozen-lockfile and pnpm build.
 On headless Linux: xvfb-run -a pnpm verify:desktop <scenario>
 Each scenario owns a fresh app/profile/ports and retains proof in .local/verification/.`);
@@ -92,6 +95,14 @@ Each scenario owns a fresh app/profile/ports and retains proof in .local/verific
   const build = await preflight();
   if (!build.display) throw new Error("No display. Use xvfb-run -a pnpm verify:desktop downloads.");
   await runDownloads(build, selected);
+} else if (
+  command === "downloads-queue" &&
+  (selected === undefined || (selected === "--previous" && process.argv[4]))
+) {
+  const build = await preflight();
+  if (!build.display)
+    throw new Error("No display. Use xvfb-run -a pnpm verify:desktop downloads-queue.");
+  await runDownloadsQueue(build, selected ? process.argv[4] : undefined);
 } else if (scenarios.some((scenario) => scenario === command) && selected === undefined) {
   await run(command as Scenario);
 } else {

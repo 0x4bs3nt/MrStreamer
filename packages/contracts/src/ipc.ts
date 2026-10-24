@@ -503,6 +503,22 @@ export const ipcInputs = {
   "downloads.remove": () => type({ id: "string > 0" }),
   /** Puts a failed download back in the queue. */
   "downloads.retry": () => type({ id: "string > 0" }),
+  /**
+   * Pauses an unfinished download that hasn't failed. A transfer stops: its request ends, its
+   * partial file stays.
+   */
+  "downloads.pause": () => type({ id: "string > 0" }),
+  /** Lets a paused download take its turn again. */
+  "downloads.resume": () => type({ id: "string > 0" }),
+  /** Pauses every unfinished download that hasn't failed. */
+  "downloads.pauseAll": none,
+  /** Resumes every paused download. */
+  "downloads.resumeAll": none,
+  /**
+   * Moves a download waiting its turn, paused or not, one place earlier (-1) or later (1) among
+   * those waiting. The transfer under way stays where it is.
+   */
+  "downloads.move": () => type({ id: "string > 0", by: "-1 | 1" }),
   /** Remembers how far a copy played here, with the copy alone. */
   "downloads.recordProgress": () =>
     type({ id: "string > 0", position: "number >= 0", duration: "number > 0" }),
@@ -774,6 +790,18 @@ export interface IpcOutputs {
   "downloads.add": Download;
   "downloads.remove": null;
   "downloads.retry": null;
+  /**
+   * Once the pause is written down; for a transfer, also once its request ended, its partial file
+   * closed and where it stopped is kept. Fails, changing nothing, when the pause can't be written
+   * down. A transfer stopped before where it got to could be written down fails too, its pause kept
+   * on disk: the list says it failed, with Retry, until the next start.
+   */
+  "downloads.pause": null;
+  "downloads.resume": null;
+  "downloads.pauseAll": null;
+  "downloads.resumeAll": null;
+  /** Once the new order is written down; fails, changing nothing, when it can't be. */
+  "downloads.move": null;
   "downloads.recordProgress": null;
   "updates.status": UpdateStatus;
   /** Chooses Stable or Nightly and checks what it offers; installs and removes nothing. */

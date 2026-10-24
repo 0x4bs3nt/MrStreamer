@@ -1,5 +1,5 @@
 // Loaded into the verified app's main process with NODE_OPTIONS=--require, for the downloads
-// scenario only. It records every outbound TCP connection and UDP send main makes, so the proof
+// scenarios only. It records every outbound TCP connection and UDP send main makes, so the proof
 // can say what main asked of the network and when, and it answers artwork hosts from the run's
 // loopback picture server: fixtures replace the external image CDN as they replace TMDB's API.
 // It changes nothing else. Chromium's own requests are recorded over CDP by the scenario.

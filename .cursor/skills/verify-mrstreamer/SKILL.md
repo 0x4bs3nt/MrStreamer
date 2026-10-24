@@ -44,6 +44,7 @@ pnpm verify:desktop guide-grid
 pnpm verify:desktop titles
 pnpm verify:desktop watchlist
 pnpm verify:desktop downloads
+pnpm verify:desktop downloads-queue
 pnpm verify:desktop language
 ```
 

@@ -1222,6 +1222,12 @@ export const nl: Translation = {
   // The top bar's word on the downloads.
   "Download stopped": "Download gestopt",
   "Downloads, {status}": "Downloads, {status}",
+  "Pause download": "Pauzeren",
+  "Resume download": "Hervatten",
+  "Pause all": "Alles pauzeren",
+  "Resume all": "Alles hervatten",
+  "Paused, resume download": "Gepauzeerd, download hervatten",
+  "Resume download of {title}": "Download van {title} hervatten",
   // The close button on a playback error.
   "Close message": "Melding sluiten",
   // Whole-series downloads.

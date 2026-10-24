@@ -90,6 +90,9 @@ export function statusLine(download: Download): string {
       return download.subscription
         ? t("Waiting while {subscription} plays", { subscription: download.subscription.name })
         : t("Waiting for playback");
+    // The desktop's pause; this app's own queue has none yet.
+    case "paused":
+      return t("Paused");
     case "transferring": {
       const done = transferred(download);
       if (done === null || status.size === null) {
@@ -126,6 +129,8 @@ export function stateWord(download: Download): string {
       return "Queued";
     case "waiting":
       return "Waiting";
+    case "paused":
+      return "Paused";
     case "transferring": {
       const done = transferred(download);
       return done === null ? "Downloading" : `Downloading ${percentOf(done)}`;
@@ -148,6 +153,8 @@ function buttonLabel(download: Download | undefined): string {
       return "Queued, download";
     case "waiting":
       return "Waiting for playback, download";
+    case "paused":
+      return "Paused, download";
     case "transferring":
       return stateWord(download);
     case "failed":
@@ -220,6 +227,7 @@ export function actionsOf(download: Download): readonly DownloadAction[] {
   switch (status.kind) {
     case "queued":
     case "waiting":
+    case "paused":
     case "transferring":
       return [{ label: "Cancel download", destructive: true, run: () => cancel(download.id) }];
     case "failed":
@@ -281,6 +289,7 @@ const SYMBOLS: Record<Download["status"]["kind"] | "none", SFSymbol> = {
   none: "arrow.down",
   queued: "clock",
   waiting: "pause.circle",
+  paused: "pause.circle",
   transferring: "arrow.down.circle",
   failed: "arrow.clockwise",
   complete: "checkmark",

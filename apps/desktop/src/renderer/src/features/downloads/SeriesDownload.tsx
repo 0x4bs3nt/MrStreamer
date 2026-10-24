@@ -22,8 +22,9 @@ import { cn } from "../../lib/utils.ts";
 import { episodeRef } from "../../player/title-player.ts";
 import { DownloadPill } from "./DownloadControls.tsx";
 
+/** In the queue, paused or not: already queued for the series' counts, and what Cancel the rest ends. */
 const queued = (download: Download) =>
-  ["queued", "waiting", "transferring"].includes(download.status.kind);
+  ["queued", "waiting", "paused", "transferring"].includes(download.status.kind);
 type Result = {
   readonly revision: number;
   readonly added: number;

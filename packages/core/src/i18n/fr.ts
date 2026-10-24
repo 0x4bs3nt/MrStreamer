@@ -1284,6 +1284,12 @@ export const fr: Translation = {
   // The top bar's word on the downloads.
   "Download stopped": "Téléchargement arrêté",
   "Downloads, {status}": "Téléchargements, {status}",
+  "Pause download": "Mettre en pause",
+  "Resume download": "Reprendre",
+  "Pause all": "Tout mettre en pause",
+  "Resume all": "Tout reprendre",
+  "Paused, resume download": "En pause, reprendre le téléchargement",
+  "Resume download of {title}": "Reprendre le téléchargement de {title}",
   // The close button on a playback error.
   "Close message": "Fermer le message",
   // Whole-series downloads.

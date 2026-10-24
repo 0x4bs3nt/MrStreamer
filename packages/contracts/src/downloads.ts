@@ -23,6 +23,17 @@ export type DownloadStatus =
   | { readonly kind: "queued" }
   /** Its subscription plays something, which has the provider's connection until it stops. */
   | { readonly kind: "waiting" }
+  /**
+   * The viewer paused it. It keeps its place in the queue and its partial file, and takes its
+   * turn again only once resumed: playback ending never resumes it.
+   */
+  | {
+      readonly kind: "paused";
+      /** Bytes in its partial file, as last written down. */
+      readonly received: number;
+      /** The whole file's size, when the provider said. */
+      readonly size: number | null;
+    }
   | {
       readonly kind: "transferring";
       readonly received: number;
@@ -69,7 +80,11 @@ export interface Download {
   readonly progress: { readonly position: number; readonly duration: number } | null;
 }
 
-/** Every download, queue first in the order added, then the finished ones, newest first. */
+/**
+ * Every download: the queue first, in the order it goes (the transfer under way, then the others
+ * waiting their turn, paused ones in their place, then the failed ones), then the finished ones,
+ * newest first.
+ */
 export interface DownloadList {
   readonly items: readonly Download[];
   /** Bytes the app's downloads take on this computer, partial ones included. */

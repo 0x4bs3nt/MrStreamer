@@ -13,6 +13,15 @@
 // ../downloads/transfer.ts). It becomes a copy once every byte is on disk: the partial is flushed,
 // renamed, and only then marked complete. Quitting keeps the queue and its partial files.
 //
+// The queue goes in the viewer's order: each unfinished download has its place (`order`, or when
+// it was added for one an older build added), a new one goes last, and moving one swaps it with
+// its neighbour among those waiting, the transfer under way staying put. A paused one keeps its
+// place and its partial file and is passed over until resumed. Its pause is the viewer's alone:
+// written down before its transfer is stopped, so nothing can take it meanwhile, and never
+// written or cleared by playback taking the connection back. Paused is no stored state: an older
+// build reads such a download as queued and transfers it, in the order downloads were added,
+// keeping both keys for this build to find again.
+//
 // Only what the database says decides which folders are no download's: when it can't be read,
 // nothing is listed, queued or cleaned up, and each call says so. A row this build can't read
 // keeps its folder for the build that wrote it.
@@ -89,8 +98,29 @@ export class Downloads extends Context.Service<
      * the copy closes first; a transfer stops, and its request ends, before its files go.
      */
     remove(id: string): Effect.Effect<void, Failed>;
-    /** Queues a failed download again. */
+    /** Queues a failed download again, in its place. */
     retry(id: string): Effect.Effect<void, Failed>;
+    /**
+     * Pauses an unfinished download that hasn't failed. The pause is written down first, so the
+     * queue can't take the download meanwhile; a transfer then stops, and this answers once its
+     * request ended, its partial file closed and where it stopped is written down. Fails, changing
+     * nothing, when the pause can't be written down: a transfer goes on. A transfer stopped before
+     * where it got to can't be written down fails too, its pause and partial file kept on disk:
+     * until the next start, this run lists it as failed, with Retry.
+     */
+    pause(id: string): Effect.Effect<void, Failed>;
+    /** Lets a paused download take its turn again, going on from its partial file where proven. */
+    resume(id: string): Effect.Effect<void, Failed>;
+    /** Pauses every unfinished download that hasn't failed, as `pause` does, in one write. */
+    readonly pauseAll: Effect.Effect<void, Failed>;
+    /** Resumes every paused download, in one write. */
+    readonly resumeAll: Effect.Effect<void, Failed>;
+    /**
+     * Moves a download waiting its turn, paused or not, one place earlier (-1) or later (1) among
+     * those waiting. The transfer under way neither moves nor stops. Fails, changing nothing, when
+     * the new order can't be written down.
+     */
+    move(id: string, by: -1 | 1): Effect.Effect<void, Failed>;
     recordProgress(id: string, position: number, duration: number): Effect.Effect<void, Failed>;
     /** A complete copy, for playback to open; fails when it isn't, or its file is gone. */
     copy(id: string): Effect.Effect<LocalCopy, Failed>;
@@ -123,8 +153,11 @@ interface Active {
   rate: number | null;
   /** Settles once its request is over, the partial closed and its lease given back. */
   over: Promise<void>;
-  /** Settles once what it ended with is written down: a copy, a failure, or where it stopped. */
-  settled: Promise<void>;
+  /**
+   * Settles once what it ended with is written down: a copy, a failure, or where it stopped. Says
+   * why, when that couldn't be written down.
+   */
+  settled: Promise<Failed | null>;
 }
 
 function make(deps: DownloadsDeps) {
@@ -179,6 +212,28 @@ function make(deps: DownloadsDeps) {
       const latest = records.get(id);
       if (latest) write(change(latest));
     };
+    /** Writes several records in one transaction and keeps them: all of them, or none. */
+    const writeAll = (changed: readonly StoredDownload[]) => {
+      if (changed.length === 0) return;
+      Effect.runSync(store.putMany(changed));
+      for (const record of changed) records.set(record.id, record);
+    };
+
+    /** A download's place in the queue: its own, or when it was added, as an older build kept it. */
+    const placeOf = (record: StoredDownload) => record.order ?? record.addedAt;
+    /** The unfinished downloads in queue order; one placed alike keeps the order it was read in. */
+    const unfinished = () =>
+      [...records.values()]
+        .filter((record) => record.state !== "complete")
+        .toSorted((a, b) => placeOf(a) - placeOf(b));
+    /** The place after every unfinished download's: where a new one goes. */
+    const lastPlace = () => {
+      let last = 0;
+      for (const record of records.values()) {
+        if (record.state !== "complete") last = Math.max(last, placeOf(record));
+      }
+      return last + 1;
+    };
 
     // A copy renamed into place as the app stopped, before it was written down as complete.
     for (const record of records.values()) {
@@ -187,8 +242,9 @@ function make(deps: DownloadsDeps) {
         record.size !== null &&
         (yield* Effect.promise(() => disk.size(mediaOf(record)))) === record.size
       ) {
+        const { pausedAt: _pausedAt, order: _order, ...rest } = record;
         const complete: StoredDownload = {
-          ...record,
+          ...rest,
           state: "complete",
           received: record.size,
           completedAt: Date.now(),
@@ -268,9 +324,11 @@ function make(deps: DownloadsDeps) {
                   rate: active.rate,
                   restarted: active.restarted,
                 }
-              : busy.has(record.subscriptionId)
-                ? { kind: "waiting" }
-                : { kind: "queued" },
+              : record.pausedAt !== undefined
+                ? { kind: "paused", received: record.received, size: record.size }
+                : busy.has(record.subscriptionId)
+                  ? { kind: "waiting" }
+                  : { kind: "queued" },
       progress: record.progress && {
         position: record.progress.position,
         duration: record.progress.duration,
@@ -281,7 +339,10 @@ function make(deps: DownloadsDeps) {
       const owners = yield* accounts;
       const busy = yield* coordination.busy;
       const all = [...records.values()];
-      const queue = all.filter((record) => record.state !== "complete");
+      // The transfer leads, then those waiting their turn in their order, then the failed ones.
+      const queue = unfinished();
+      const leads = (record: StoredDownload) =>
+        record.state === "queued" && record.id === active?.id;
       const copies = all
         .filter((record) => record.state === "complete")
         .toSorted((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
@@ -290,7 +351,12 @@ function make(deps: DownloadsDeps) {
         return disk.free(root);
       });
       return {
-        items: [...queue, ...copies].map((record) => downloadOf(record, owners, busy)),
+        items: [
+          ...queue.filter(leads),
+          ...queue.filter((record) => record.state === "queued" && !leads(record)),
+          ...queue.filter((record) => record.state === "failed"),
+          ...copies,
+        ].map((record) => downloadOf(record, owners, busy)),
         bytes: all.reduce(
           (sum, record) => sum + (active?.id === record.id ? active.received : record.received),
           0,
@@ -331,7 +397,26 @@ function make(deps: DownloadsDeps) {
       }, CHANGES_MS);
     };
 
-    /** Starts the next transfer the queue can have now, if none goes on. */
+    /**
+     * The first download the queue may start now, in its order: queued, not paused, and of a
+     * subscription that plays nothing and didn't refuse its connection in this choice.
+     */
+    const firstAllowed = (busy: ReadonlySet<string>, refused: ReadonlySet<string>) =>
+      unfinished().find(
+        (record) =>
+          record.state === "queued" &&
+          record.pausedAt === undefined &&
+          !busy.has(record.subscriptionId) &&
+          !refused.has(record.subscriptionId),
+      );
+
+    /**
+     * Starts the first download allowed to go, if none goes on. Its subscription's connection is
+     * lent under playback's admission, which can wait on an open or a removal: the queue may have
+     * been reordered, paused or emptied meanwhile. Whatever is first then starts, when the lease is
+     * its subscription's; otherwise the lease goes back and the choice is made again from the queue
+     * as it is.
+     */
     let picking = false;
     let again = false;
     const next = async (): Promise<void> => {
@@ -341,23 +426,33 @@ function make(deps: DownloadsDeps) {
       }
       picking = true;
       try {
-        do {
-          again = false;
+        // Subscriptions that lent nothing in this choice: something of theirs plays. Woken
+        // meanwhile, as when playback stopped, the queue forgets them: they may lend now.
+        const refused = new Set<string>();
+        for (;;) {
           if (active || closing) return;
-          const busy = await Effect.runPromise(coordination.busy);
-          for (const record of records.values()) {
-            if (record.state !== "queued" || busy.has(record.subscriptionId)) continue;
-            const lent = await Effect.runPromise(coordination.lend(record.subscriptionId));
-            if (!lent) continue;
-            // Removed, or the app began to close, while it waited for its lease.
-            if (closing || records.get(record.id) !== record) {
-              lent.release();
-              continue;
-            }
-            start(record, lent);
-            break;
+          if (again) refused.clear();
+          again = false;
+          const chosen = firstAllowed(await Effect.runPromise(coordination.busy), refused);
+          if (!chosen) {
+            if (!again) return;
+            continue;
           }
-        } while (again);
+          const lent = await Effect.runPromise(coordination.lend(chosen.subscriptionId));
+          if (!lent) {
+            refused.add(chosen.subscriptionId);
+            continue;
+          }
+          const busy = await Effect.runPromise(coordination.busy);
+          if (again) refused.clear();
+          // Read only now: the app may have begun to close while the lease was asked for.
+          const first = closing ? undefined : firstAllowed(busy, refused);
+          if (first?.subscriptionId === chosen.subscriptionId) {
+            start(first, lent);
+            return;
+          }
+          lent.release();
+        }
       } finally {
         picking = false;
       }
@@ -378,7 +473,7 @@ function make(deps: DownloadsDeps) {
         restarted: record.restarted,
         rate: null,
         over: Promise.resolve(),
-        settled: Promise.resolve(),
+        settled: Promise.resolve(null),
       };
       active = transferring;
       tell();
@@ -403,20 +498,22 @@ function make(deps: DownloadsDeps) {
           if (failure === "stopped") finished?.("interrupted");
           else if (failure) finished?.("failed", downloadFailure(failure));
           else finished?.(outcome.kind === "stopped" ? "interrupted" : "success");
+          return null;
         })
         .catch((cause) => {
           finished?.("failed", "app");
           console.warn("[downloads] couldn't keep how a transfer ended", cause);
+          const failure = cause instanceof Failed ? cause : failedWith(cause);
           // Failed as far as this run knows, so the queue doesn't take it again and again.
           const latest = records.get(record.id);
           if (latest?.state === "queued") {
-            const failure = cause instanceof Failed ? cause : failedWith(cause);
             records.set(record.id, {
               ...latest,
               state: "failed",
               failure: { kind: "app", error: failure.error },
             });
           }
+          return failure;
         })
         .finally(() => {
           active = null;
@@ -550,8 +647,9 @@ function make(deps: DownloadsDeps) {
       }
       if (!records.has(id)) return "stopped";
       missing.delete(id);
+      // A copy has no place in the queue, and a pause asked for as it finished pauses nothing.
       update(id, (latest) => {
-        const { failure: _failure, ...rest } = latest;
+        const { failure: _failure, pausedAt: _pausedAt, order: _order, ...rest } = latest;
         return {
           ...rest,
           state: "complete",
@@ -562,6 +660,17 @@ function make(deps: DownloadsDeps) {
           completedAt: Date.now(),
         };
       });
+    };
+
+    /**
+     * Stops the transfer under way, its pause already written down: done once its request ended,
+     * its partial file closed and where it stopped is kept. Fails, the transfer stopped all the
+     * same, when where it stopped can't be kept.
+     */
+    const stopPaused = async (transferring: Active) => {
+      transferring.controller.abort();
+      const failure = await transferring.settled;
+      if (failure) throw failure;
     };
 
     /**
@@ -644,7 +753,7 @@ function make(deps: DownloadsDeps) {
             Effect.gen(function* () {
               if (known.state === "failed") {
                 yield* attempt(async () =>
-                  update(known.id, ({ failure: _failure, ...rest }) => ({
+                  update(known.id, ({ failure: _failure, pausedAt: _pausedAt, ...rest }) => ({
                     ...rest,
                     state: "queued",
                   })),
@@ -684,6 +793,8 @@ function make(deps: DownloadsDeps) {
             identity: null,
             restarted: false,
             addedAt: Date.now(),
+            // Last in the queue, so a season added episode by episode keeps their order.
+            order: lastPlace(),
             completedAt: null,
             progress: null,
           };
@@ -709,10 +820,75 @@ function make(deps: DownloadsDeps) {
           const record = records.get(id);
           if (!record) throw notFound();
           if (record.state !== "failed") return;
-          const { failure: _failure, ...rest } = record;
+          // Retry asks for the transfer, so a pause an older build kept through the failure goes.
+          const { failure: _failure, pausedAt: _pausedAt, ...rest } = record;
           write({ ...rest, state: "queued" });
           tell();
           wake();
+        }),
+
+      pause: (id: string) =>
+        attempt(async () => {
+          const record = records.get(id);
+          if (!record) throw notFound();
+          if (record.state !== "queued") return;
+          if (record.pausedAt === undefined) {
+            write({ ...record, pausedAt: Date.now() });
+            tell();
+          }
+          if (active?.id === id) await stopPaused(active);
+        }),
+
+      resume: (id: string) =>
+        attempt(async () => {
+          const record = records.get(id);
+          if (!record) throw notFound();
+          if (record.state !== "queued" || record.pausedAt === undefined) return;
+          const { pausedAt: _pausedAt, ...rest } = record;
+          write(rest);
+          tell();
+          wake();
+        }),
+
+      pauseAll: attempt(async () => {
+        const at = Date.now();
+        writeAll(
+          [...records.values()]
+            .filter((record) => record.state === "queued" && record.pausedAt === undefined)
+            .map((record) => ({ ...record, pausedAt: at })),
+        );
+        tell();
+        if (active && records.get(active.id)?.pausedAt !== undefined) await stopPaused(active);
+      }),
+
+      resumeAll: attempt(async () => {
+        writeAll(
+          [...records.values()]
+            .filter((record) => record.state === "queued" && record.pausedAt !== undefined)
+            .map(({ pausedAt: _pausedAt, ...rest }) => rest),
+        );
+        tell();
+        wake();
+      }),
+
+      move: (id: string, by: -1 | 1) =>
+        attempt(async () => {
+          const record = records.get(id);
+          if (!record) throw notFound();
+          const queue = unfinished();
+          const waiting = queue.filter((each) => each.state === "queued" && each.id !== active?.id);
+          const from = waiting.indexOf(record);
+          const other = waiting[from + by];
+          if (from < 0 || !other) return;
+          // Swapped in the whole queue, then every unfinished download given its place from 1, so
+          // two an older build added at the same moment swap too, and the rest keep their order.
+          const order = queue.with(queue.indexOf(record), other).with(queue.indexOf(other), record);
+          writeAll(
+            order.flatMap((each, index) =>
+              each.order === index + 1 ? [] : [{ ...each, order: index + 1 }],
+            ),
+          );
+          tell();
         }),
 
       recordProgress: (id: string, position: number, duration: number) =>

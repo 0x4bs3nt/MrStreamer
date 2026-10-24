@@ -1,6 +1,6 @@
 // Downloads in the top bar, as quiet as the update notice: the arrow and how far the one transfer
-// is, else that the next download waits for playback or is queued, else that one stopped, until
-// Retry or Delete on the Downloads page. The bar reads what it says from the list main keeps
+// is, else that the next download waits for playback or is queued, else that the viewer paused
+// what is left, else that one stopped, until Retry or Delete on the Downloads page. The bar reads what it says from the list main keeps
 // current (`useDownloadsStatus`), so nothing is asked while a transfer runs, and renders again only
 // when what it says changes. Pressing it opens Downloads, leaving a title that plays as its Back
 // does. Enter and Space on it press it, as on any button: the players' keys leave both to it
@@ -21,12 +21,12 @@ type Progress =
   | { readonly kind: "percent"; readonly percent: number }
   /** The provider didn't say the size: bytes so far, none at the start. */
   | { readonly kind: "received"; readonly bytes: number }
-  | { readonly kind: "waiting" | "queued" | "stopped" };
+  | { readonly kind: "waiting" | "queued" | "paused" | "stopped" };
 
 /**
- * The download the bar speaks for: the transfer, else the first that waits, else the first queued.
- * A failure speaks only when nothing else is left, and only while Retry can still reach its
- * subscription. Copies, complete or with their file gone, say nothing.
+ * The download the bar speaks for: the transfer, else the first that waits, else the first queued,
+ * else a paused one. A failure speaks only when nothing else is left, and only while Retry can
+ * still reach its subscription. Copies, complete or with their file gone, say nothing.
  */
 function progressOf({ items }: DownloadList): Progress | null {
   for (const { status } of items) {
@@ -35,7 +35,7 @@ function progressOf({ items }: DownloadList): Progress | null {
       ? { kind: "percent", percent: Math.floor((status.received / status.size) * 100) }
       : { kind: "received", bytes: status.received };
   }
-  for (const kind of ["waiting", "queued"] as const) {
+  for (const kind of ["waiting", "queued", "paused"] as const) {
     if (items.some((item) => item.status.kind === kind)) return { kind };
   }
   return items.some((item) => item.status.kind === "failed" && item.subscription)
@@ -53,12 +53,14 @@ function words(progress: Progress): string {
       return t("Waiting");
     case "queued":
       return t("Queued");
+    case "paused":
+      return t("Paused");
     case "stopped":
       return t("Download stopped");
   }
 }
 
-/** What the notice says, in the window's language; `quiet` while the next download waits or is queued. */
+/** What the notice says, in the window's language; `quiet` unless it tells of a transfer or a failure. */
 export type DownloadsStatus = { readonly text: string; readonly quiet: boolean };
 
 /** What the notice says now, or null while there is nothing to say. */
@@ -68,7 +70,7 @@ export function useDownloadsStatus(): DownloadsStatus | null {
   if (!progress) return null;
   return {
     text: words(progress),
-    quiet: progress.kind === "waiting" || progress.kind === "queued",
+    quiet: progress.kind === "waiting" || progress.kind === "queued" || progress.kind === "paused",
   };
 }
 

@@ -398,6 +398,18 @@ it("cancels only unfinished files in this version, leaving completed and failed 
   await until(() => expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "d-0-1" }]));
 });
 
+it("counts a paused episode as queued, adds it no second time, and cancels it with the rest", async () => {
+  const page = await mount([download(episodes[0]!, { kind: "paused", received: 10, size: 100 })]);
+  await page.open();
+  expect(document.querySelector('[role="menu"]')?.textContent).toContain("Already queued1");
+  await page.click("Download 4 episodes");
+  await until(() => expect(ipc.argsOf("downloads.add")).toHaveLength(4));
+  expect(ipc.argsOf("downloads.add").map(({ title }) => title.id)).not.toContain("0-1");
+  await page.open();
+  await page.click("Cancel the rest");
+  await until(() => expect(ipc.argsOf("downloads.remove")).toEqual([{ id: "d-0-1" }]));
+});
+
 it("replaces a missing copy through Delete then Add and keeps unrelated copies", async () => {
   const page = await mount([
     download(episodes[0]!, { kind: "missing" }),

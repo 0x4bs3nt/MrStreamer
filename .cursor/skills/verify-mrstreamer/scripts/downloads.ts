@@ -835,7 +835,10 @@ export async function runDownloads(
     };
     const focused: Record<string, unknown> = { width: narrowest };
     notices["focusAcrossFolds"] = focused;
-    await online.click("Cancel the held download", `(${row(heldId)})?.querySelector('button')`);
+    await online.click(
+      "Cancel the held download",
+      `[...(${row(heldId)})?.querySelectorAll('button') ?? []].find(b => b.textContent.trim() === ${JSON.stringify(t("Cancel"))})`,
+    );
     await online.wait(
       async () => provider!.activeStreams() === 0 && !(await online.exists(row(heldId))),
     );

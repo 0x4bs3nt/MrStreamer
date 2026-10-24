@@ -9,7 +9,7 @@ Source of truth for desktop and website verification paths. Run the relevant bas
 | [Live TV](live-tv.md)                 | `live-tv`                                     | List, guide grid (`guide-grid`), favourites, recovery, codecs, captions, catch-up (`catch-up`)  |
 | [Movies and series](titles.md)        | `titles`                                      | Search, filters, version selection, movie/episode playback, languages                           |
 | [Watchlist](watchlist.md)             | `watchlist`                                   | Toggle removal, Home entry, restart persistence, keyboard, unavailable titles                   |
-| [Downloads](downloads.md)             | `downloads`                                   | Preemption, cancel/retry/delete, offline restart, removed subscription, network record          |
+| [Downloads](downloads.md)             | `downloads`                                   | Preemption, cancel/retry/delete, pause/order (`downloads-queue`), offline restart, removal      |
 | [Interface language](language.md)     | `language`                                    | Five languages, keyboard pick, restart, System default, unknown saved value, player and titles  |
 | [Settings](settings.md)               | `settings`                                    | Local search, eleven sections, focus, drafts, failed retry, text scaling, restart, `controls`   |
 | [Viewing preferences](preferences.md) | `preferences`                                 | Settings/player track publication, independent edits, drafts, ordering and restart              |

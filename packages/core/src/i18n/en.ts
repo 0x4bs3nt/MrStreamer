@@ -1196,6 +1196,13 @@ export const en = {
   // The top bar's word on the downloads.
   "Download stopped": "Download stopped",
   "Downloads, {status}": "Downloads, {status}",
+  // A download's own Pause and Resume, which some languages word otherwise than the player's.
+  "Pause download": "Pause",
+  "Resume download": "Resume",
+  "Pause all": "Pause all",
+  "Resume all": "Resume all",
+  "Paused, resume download": "Paused, resume download",
+  "Resume download of {title}": "Resume download of {title}",
   // The close button on a playback error.
   "Close message": "Close message",
   // Whole-series downloads.
