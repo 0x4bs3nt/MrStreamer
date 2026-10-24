@@ -20,7 +20,8 @@ import { openFormat, type FormatSession } from "./title-formats.ts";
 // accessory above the tabs controls it. Nothing opens a second stream for a preview. Playing
 // something else, stopping, removing its subscription and a failure each let go of the stream,
 // so its local readers drain. Provider disconnect is unobservable. A download gives its
-// subscription's connection back before a stream opens (`onReclaim`); a downloaded copy plays from the phone and takes none.
+// subscription's connection back before a stream opens (`onReclaim`); a downloaded copy plays
+// from the phone and takes none.
 //
 // A movie or episode in a file AVPlayer can't open, such as Matroska, plays through a format
 // session (`title-formats.ts`): the file is read natively, over one request to the provider at a
@@ -178,14 +179,15 @@ export function playingItem(phase: Phase): Playing | null {
  * A request of the viewer's that waits before it plays or opens anything, as a series' resume
  * waits for its details, or Next episode for how the episodes stand. It stands until the viewer
  * asks for something newer: any other request, any channel or title played, Stop, removing a
- * subscription or another screen. Whatever waited checks `stands()` before acting, so a late
- * answer never replaces what the viewer chose since, nor opens Watch over Connect.
+ * subscription or another screen. Close, setting Watch aside and Picture in Picture changes
+ * also retire deferred viewer actions. Whatever waited checks `stands()` before acting, so a
+ * late answer never replaces what the viewer chose since, nor opens Watch over Connect.
  */
 export interface Request {
   stands(): boolean;
 }
 
-/** Rises with every request, play, Stop and move to another screen: only the latest stands. */
+/** Rises with viewer requests and Watch/navigation context changes: only the latest stands. */
 let requests = 0;
 /** The screen the viewer is on, as navigation reports it. */
 let screen = "";
@@ -208,8 +210,8 @@ export function onScreen(path: string) {
 
 /** Whether setting Watch aside paused what played, so bringing Watch back plays it again. */
 let resumeOnReturn = false;
-/** Watch was set aside while the stream loaded: it pauses as soon as it starts. */
-let pauseOnStart = false;
+/** Deferred loading Pause, or Watch's own pause while away. Returning clears only the latter. */
+let pauseOnStart: false | "viewer" | "away" = false;
 /**
  * Close silenced what it paused, which had sound: Play from paused brings that sound back. A new
  * play, Stop, Watch shown again and the viewer's own mute or unmute each end it.
@@ -359,10 +361,28 @@ let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
 let endPictureInPicture: (() => void) | null = null;
 /**
- * Takes a subscription's connection back from a download before a stream of it opens; downloads.ts registers it. Resolves once the download's request ended
- * and the provider had a moment to free it; rejects when it didn't end, and the stream fails.
+ * Takes a subscription's connection back from a download before a stream opens; downloads.ts
+ * registers it. Resolves once the request ended and the provider had a moment to free it;
+ * rejects when it didn't end, and the stream fails.
  */
 let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
+
+/** Abort this pre-reader wait only. Downloads still owns and settles the real reclaim. */
+async function reclaimBeforeLookup(resource: Resource, subscriptionId: string) {
+  if (!reclaim) return;
+  const { signal } = resource.controller;
+  let abort = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    await Promise.race([reclaim(subscriptionId), cancelled]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
 
 /**
  * Tells a title's owner how far it got, if it got anywhere, after the saves asked before.
@@ -590,20 +610,20 @@ function observe(event: PlaybackObservation) {
         current.loaded = true;
         current.options.outcome?.(true);
       }
-      if (checkpoint) clearInterval(checkpoint);
-      checkpoint = playing ? setInterval(report, CHECKPOINT_MS) : null;
+      if (playing) checkpoint ??= setInterval(report, CHECKPOINT_MS);
+      else if (checkpoint !== null) {
+        clearInterval(checkpoint);
+        checkpoint = null;
+      }
       if (!playing && phase.kind === "playing") report();
-      state.set((s) => ({
-        ...s,
-        phase: {
-          kind: playing
-            ? "playing"
-            : phase.kind === "loading" && !pauseOnStart
-              ? "loading"
-              : "paused",
-          item: phase.item,
-        },
-      }));
+      const kind = playing
+        ? "playing"
+        : phase.kind === "loading" && !pauseOnStart
+          ? "loading"
+          : "paused";
+      if (kind !== phase.kind) {
+        state.set((s) => ({ ...s, phase: { kind, item: phase.item } }));
+      }
     }
   }
 }
@@ -641,7 +661,8 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
   requests++;
   release();
   const controller = new AbortController();
-  const source = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
+  let signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
+  let sourceBound = signedIn !== undefined;
   let drained!: () => void;
   let uncertain!: (cause: Error) => void;
   let opened!: () => void;
@@ -655,7 +676,9 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     controller,
     subscriptionId: item.subscriptionId,
     sourceStands: () =>
-      item.subscriptionId === null || currentSource(item.subscriptionId) === source,
+      item.subscriptionId === null ||
+      !sourceBound ||
+      currentSource(item.subscriptionId) === signedIn,
     formats: [],
     closed,
     drained,
@@ -698,14 +721,19 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       muted,
     };
   });
-  let stage: "readers" | "lookup" | "native" = "readers";
+  let stage: "readers" | "lookup" | "native" = "native";
   try {
     if (player().mrStreamerPlaybackContract !== 1) throw new Error("Player contract unavailable.");
+    stage = "readers";
     await waitForReaders(resource);
     if (!stands(resource)) return;
     stage = "lookup";
-    if (item.subscriptionId !== null) await reclaim?.(item.subscriptionId);
+    if (item.subscriptionId !== null) await reclaimBeforeLookup(resource, item.subscriptionId);
     if (!stands(resource)) return;
+    if (!sourceBound) {
+      signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
+      sourceBound = true;
+    }
     const source = await open(controller.signal);
     if (!stands(resource)) return;
     let playable = {
@@ -816,7 +844,7 @@ export function togglePause() {
   resumeOnReturn = false;
   const { phase } = state.get();
   if (phase.kind === "playing" || phase.kind === "loading") {
-    pauseOnStart = true;
+    pauseOnStart = phase.kind === "loading" ? "viewer" : false;
     player().pause();
   } else if (phase.kind === "paused") {
     pauseOnStart = false;
@@ -942,7 +970,7 @@ export function openWatch() {
   if (pip) endPictureInPicture?.();
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
   const resume = aside && resumeOnReturn;
-  if (resume) pauseOnStart = false;
+  if (pauseOnStart === "away") pauseOnStart = false;
   resumeOnReturn = false;
   if (!resume || (phase.kind !== "playing" && phase.kind !== "paused")) return;
   if (phase.item.live) retry();
@@ -966,7 +994,9 @@ export function closeWatch(): Promise<Saved> {
   const away = !pip && !external;
   if (away) {
     resumeOnReturn = false;
-    if (phase.kind === "playing" || phase.kind === "loading") pauseOnStart = true;
+    if ((phase.kind === "playing" || phase.kind === "loading") && !pauseOnStart) {
+      pauseOnStart = "away";
+    }
     soundOnPlay = !muted;
     if (phase.kind === "playing") player().pause();
   }
@@ -987,7 +1017,9 @@ export function setAside() {
   const { phase, external } = state.get();
   if (phase.kind === "idle" || external) return void closeWatch();
   resumeOnReturn = phase.kind === "playing" || phase.kind === "loading";
-  if (phase.kind === "playing" || phase.kind === "loading") pauseOnStart = true;
+  if ((phase.kind === "playing" || phase.kind === "loading") && !pauseOnStart) {
+    pauseOnStart = "away";
+  }
   if (phase.kind === "playing") player().pause();
   // Paused, it makes no sound; played again from the accessory, it plays as Watch would.
   player().muted = false;

@@ -37,7 +37,12 @@ vi.mock("expo-secure-store", () => ({
   setItemAsync: async (key: string, value: string) => void scenario.keychain.set(key, value),
   deleteItemAsync: async (key: string) => void scenario.keychain.delete(key),
 }));
-vi.mock("expo-video", () => ({ createVideoPlayer: () => nativePlayer() }));
+vi.mock("expo-video", () => ({
+  createVideoPlayer: () =>
+    nativePlayer((source) => {
+      scenario.played.push(source.uri);
+    }),
+}));
 
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
 vi.mock("react-native", async () => {

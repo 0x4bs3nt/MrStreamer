@@ -242,7 +242,7 @@ describe("managed playback ownership", () => {
     expect(ended).not.toHaveBeenCalled();
   });
 
-  it("Close and manual pause retain resources and stale playing never resumes intent", async () => {
+  it("Close retains readers and its pause until the viewer asks to play", async () => {
     const a = await start();
     event(a);
     void owner.closeWatch();
@@ -255,6 +255,51 @@ describe("managed playback ownership", () => {
     owner.togglePause();
     event(a, "playing", 5);
     expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it("native Play after in-app Pause accepts later ordered state without another pause", async () => {
+    const a = await start();
+    event(a);
+    owner.togglePause();
+    event(a, "paused", 2);
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.pause.mockClear();
+    event(a, "playing", 3);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+    expect(port.detachObservedAsync).not.toHaveBeenCalled();
+  });
+
+  it("returning to Watch clears a connecting stream's Close pause", async () => {
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    stop = () => lookup.resolve({ url: "file:clear.mp4", container: "mp4" });
+    const playing = owner.play(item("a"), () => lookup.promise, options);
+    await tick();
+    void owner.closeWatch();
+    owner.openWatch();
+    lookup.resolve(await source());
+    await playing;
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 });
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "playing" } });
+  });
+
+  it("returning to Watch preserves the viewer's explicit Pause during loading", async () => {
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    stop = () => lookup.resolve({ url: "file:clear.mp4", container: "mp4" });
+    const playing = owner.play(item("a"), () => lookup.promise, options);
+    await tick();
+    owner.togglePause();
+    void owner.closeWatch();
+    owner.openWatch();
+    lookup.resolve(await source());
+    await playing;
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 });
+    expect(port.pause).toHaveBeenCalledOnce();
+    event({ attemptId: 1, itemId: 1 }, "paused", 2);
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
   });
 
   it("reset fails once and requires an explicit Retry", async () => {
@@ -347,6 +392,10 @@ describe("managed playback ownership", () => {
     await owner.play(item("a"), lookup, options);
     expect(lookup).not.toHaveBeenCalled();
     expect(port.replaceAsync).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase).toMatchObject({
+      kind: "failed",
+      error: "The player stopped. Try again.",
+    });
     port.mrStreamerPlaybackContract = 1;
     port.replaceObservedAsync.mockRejectedValue(new Error("https://private.invalid/password"));
     await start("b");
@@ -411,26 +460,32 @@ it("does not repeat an old detach or let its event change the replacement", asyn
   expect(owner.playbackState.get().phase).toMatchObject({ kind: "playing", item: { id: "b" } });
 });
 
-it("a source revision change stops pending lookup and a late answer cannot attach", async () => {
-  const { xtreamProvider } = await import("@mrstreamer/core/xtream");
-  const sources = await import("../src/sources.ts");
-  const provider = xtreamProvider(
-    { server: "http://fixture.invalid", username: "fixture", password: "fixture" },
-    { userAgent: "MrStreamer fixture" },
-  );
-  sources.setSource("sub", { revision: 1, provider, login: [] });
-  const lookup = deferred<Awaited<ReturnType<typeof source>>>();
-  const playing = owner.play(item("a"), () => lookup.promise, options);
-  await tick();
-  sources.setSource("sub", { revision: 2, provider, login: [] });
-  expect(owner.playbackState.get().phase.kind).toBe("idle");
-  expect(owner.playbackState.get().closing).toEqual(["sub"]);
-  lookup.resolve(await source());
-  await playing;
-  await tick();
-  expect(port.replaceObservedAsync).not.toHaveBeenCalled();
-  expect(owner.playbackState.get().closing).toEqual([]);
-});
+it.each(["replace", "drop", "replace-and-restore"] as const)(
+  "a bound source change cancels lookup even for %s",
+  async (change) => {
+    const { xtreamProvider } = await import("@mrstreamer/core/xtream");
+    const sources = await import("../src/sources.ts");
+    const provider = xtreamProvider(
+      { server: "http://fixture.invalid", username: "fixture", password: "fixture" },
+      { userAgent: "MrStreamer fixture" },
+    );
+    const original = { revision: 1, provider, login: [] };
+    sources.setSource("sub", original);
+    const lookup = deferred<Awaited<ReturnType<typeof source>>>();
+    const playing = owner.play(item("a"), () => lookup.promise, options);
+    await tick();
+    if (change === "drop") sources.dropSource("sub");
+    else sources.setSource("sub", { revision: 2, provider, login: [] });
+    if (change === "replace-and-restore") sources.setSource("sub", original);
+    expect(owner.playbackState.get().phase.kind).toBe("idle");
+    expect(owner.playbackState.get().closing).toEqual(["sub"]);
+    lookup.resolve(await source());
+    await playing;
+    await tick();
+    expect(port.replaceObservedAsync).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().closing).toEqual([]);
+  },
+);
 
 it("queries fresh facts for current ready and track observations without choosing defaults", async () => {
   const identity = await start();
@@ -464,3 +519,93 @@ it("queries fresh facts for current ready and track observations without choosin
   expect(port.getObservedTracksAsync).toHaveBeenCalledTimes(2);
   expect(port.selectObservedTrackAsync).not.toHaveBeenCalled();
 });
+
+it("an initially absent source can restore during reclaim before lookup binds it", async () => {
+  const { xtreamProvider } = await import("@mrstreamer/core/xtream");
+  const sources = await import("../src/sources.ts");
+  const provider = xtreamProvider(
+    { server: "http://fixture.invalid", username: "fixture", password: "fixture" },
+    { userAgent: "MrStreamer fixture" },
+  );
+  const reclaim = deferred<void>();
+  stop = () => reclaim.resolve();
+  owner.onReclaim(() => reclaim.promise);
+  const lookup = vi.fn(async () => {
+    expect(sources.sourceOf("sub").provider).toBe(provider);
+    return source();
+  });
+  const playing = owner.play(item("a"), lookup, options);
+  await tick();
+  sources.setSource("sub", { revision: 1, provider, login: [] });
+  expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "loading" } });
+  expect(lookup).not.toHaveBeenCalled();
+  reclaim.resolve();
+  await playing;
+  expect(lookup).toHaveBeenCalledOnce();
+  expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
+});
+
+it("an obsolete pre-reader reclaim does not hold another provider's selection", async () => {
+  const first = deferred<void>();
+  stop = () => first.resolve();
+  const reclaim = vi.fn((id: string) => (id === "s1" ? first.promise : Promise.resolve()));
+  owner.onReclaim(reclaim);
+  const oldLookup = vi.fn(source);
+  const old = owner.play(item("a", "s1"), oldLookup, options);
+  await tick();
+  expect(reclaim).toHaveBeenCalledExactlyOnceWith("s1");
+  const newLookup = vi.fn(source);
+  const next = owner.play(item("b", "s2"), newLookup, options);
+  await tick();
+  expect(newLookup).toHaveBeenCalledOnce();
+  expect(reclaim.mock.calls.map(([id]) => id)).toEqual(["s1", "s2"]);
+  await next;
+  first.resolve();
+  await old;
+  expect(oldLookup).not.toHaveBeenCalled();
+  expect(port.replaceObservedAsync.mock.calls.map((call) => call[1])).toEqual([2]);
+});
+
+it.each(["resolve", "reject"] as const)(
+  "a replacement still waits for its own same-provider reclaim when the old one later %s",
+  async (ending) => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    stop = () => {
+      first.resolve();
+      second.resolve();
+    };
+    const reclaim = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    owner.onReclaim(reclaim);
+    const oldLookup = vi.fn(source);
+    const old = owner.play(item("a"), oldLookup, options);
+    await tick();
+    const newLookup = vi.fn(source);
+    const next = owner.play(item("b"), newLookup, options);
+    await tick();
+    expect(reclaim).toHaveBeenCalledTimes(2);
+    expect(newLookup).not.toHaveBeenCalled();
+    if (ending === "resolve") first.resolve();
+    else first.reject(new Error("obsolete reclaim refused"));
+    await old;
+    await tick();
+    expect(newLookup).not.toHaveBeenCalled();
+    second.resolve();
+    await next;
+    expect(newLookup).toHaveBeenCalledOnce();
+    expect(oldLookup).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["close", "aside", "pip-start", "pip-stop"] as const)(
+  "Watch context %s retires deferred viewer requests",
+  async (change) => {
+    await start();
+    const request = owner.request();
+    expect(request.stands()).toBe(true);
+    if (change === "close") void owner.closeWatch();
+    else if (change === "aside") owner.setAside();
+    else owner.pictureInPicture(change === "pip-start");
+    expect(request.stands()).toBe(false);
+  },
+);
