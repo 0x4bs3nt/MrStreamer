@@ -1501,34 +1501,49 @@ describe("offline Next", { timeout: 30_000 }, () => {
     await app.stop();
   });
 
-  for (const change of ["Stop", "navigation", "target removed"] as const) {
-    it(`retires a Next waiting for its save when ${change}`, async () => {
-      holdingViewingSaves();
-      const { app, from, to } = await pair();
-      app.playDownload(from.id);
-      await until(() => memory.played.length === 1, "the copy");
-      memory.player!.ready();
-      memory.player!.currentTime = 40;
-      memory.player!.state(true);
-      const held = Promise.withResolvers<void>();
-      viewingSaves.hold = held.promise;
-      onTestFinished(() => {
+  for (const change of ["nothing", "Stop", "navigation", "target removed"] as const) {
+    it(
+      change === "nothing"
+        ? "advances after a held save with its provider still saved"
+        : `retires a Next waiting for its save when ${change}`,
+      async () => {
+        holdingViewingSaves();
+        const { app, a, from, to } = await pair();
+        app.playDownload(from.id);
+        await until(() => memory.played.length === 1, "the copy");
+        memory.player!.ready();
+        memory.player!.currentTime = 40;
+        memory.player!.state(true);
+        const held = Promise.withResolvers<void>();
+        viewingSaves.hold = held.promise;
+        onTestFinished(() => {
+          viewingSaves.hold = null;
+          held.resolve();
+        });
+        app.playNext();
+        await sleep(20);
+        expect(memory.played).toHaveLength(1);
+        if (change === "Stop") void app.stop();
+        else if (change === "navigation") app.request();
+        else if (change === "target removed") await app.removeDownload(to.id);
         viewingSaves.hold = null;
         held.resolve();
-      });
-      app.playNext();
-      await sleep(20);
-      expect(memory.played).toHaveLength(1);
-      if (change === "Stop") void app.stop();
-      else if (change === "navigation") app.request();
-      else await app.removeDownload(to.id);
-      viewingSaves.hold = null;
-      held.resolve();
-      await app.progressSettled();
-      await sleep(30);
-      expect(memory.played).toHaveLength(1);
-      await app.stop();
-    });
+        await app.progressSettled();
+        if (change === "nothing") {
+          await until(() => memory.played.length === 2, "the next local copy after its save");
+          expect(memory.played[1]?.uri).toBe(`file://${mediaFile(to.id)!.path}`);
+          if (from.title.kind !== "episode") throw new Error("Not an episode copy");
+          const viewed = await app.progressOf({
+            series: [{ subscriptionId: a, id: from.title.seriesId }],
+          });
+          expect(viewed.find((each) => each.title.id === from.title.id)?.position).toBe(40);
+        } else {
+          await sleep(30);
+          expect(memory.played).toHaveLength(1);
+        }
+        await app.stop();
+      },
+    );
   }
 
   for (const continuation of [
@@ -1550,6 +1565,8 @@ describe("offline Next", { timeout: 30_000 }, () => {
       memory.player!.ready();
       expect(item(app)).toMatchObject({ id: `copy:${from.id}`, next: false });
       expect(memory.played[0]?.uri).toBe(`file://${mediaFile(from.id)!.path}`);
+      memory.player!.currentTime = 30;
+      memory.player!.state(true);
       app.playNext();
       await app.progressSettled();
       await sleep(20);
@@ -1557,6 +1574,9 @@ describe("offline Next", { timeout: 30_000 }, () => {
       await app.stop();
       expect(doc().items.find((each: { id: string }) => each.id === from.id).continuation).toEqual(
         continuation,
+      );
+      expect(app.downloadList().items.find((each) => each.id === from.id)?.progress?.position).toBe(
+        30,
       );
     });
   }

@@ -44,8 +44,9 @@ import { recordProgress } from "./viewing.ts";
 //
 // A download names the exact provider file by its subscription and the provider's own ids, so
 // two providers' titles of one id never meet. Its record holds what the copy shows and plays
-// with: details, artwork kept in its folder, the file type, how far it got and how far it was
-// watched. No record holds an address, a header, a login or resume data. The file's address is
+// with: details, artwork kept in its folder, the file type, how far it got, how far it was
+// watched and the provider-ordered immediate successor of a newly saved episode. No record
+// holds an address, a header, a login or resume data. The file's address is
 // made from the subscription's login only as a transfer starts (`sources.ts`).
 //
 // One download transfers at a time, by `download-task.ts`: the app's native owner of a background
@@ -1283,6 +1284,7 @@ export async function retryDownload(id: string, stands: Stands = always): Promis
  * or Stop just saved counts; anything the viewer asks meanwhile, or the copy going, cancels it.
  * Its progress stays with the copy, and goes to its subscription's viewing record too while that
  * subscription is saved (`keepProgress`). A copy whose file is gone fails in Watch as unavailable.
+ * Manual Next follows only its saved immediate successor when that exact local copy is complete.
  */
 export function playDownload(id: string): void {
   const asked = request();
@@ -1433,16 +1435,16 @@ async function aboutOf(ref: TitleRef, signal: AbortSignal) {
   const after = details.kind === "series" ? nextEpisode(details, ref) : null;
   return {
     continuation: after
-      ? {
-          version: 1 as const,
+      ? ({
+          version: 1,
           title: {
-            kind: "episode" as const,
+            kind: "episode",
             id: after.id,
             seriesId: ref.seriesId,
             season: after.season,
             episode: after.number,
           },
-        }
+        } satisfies Infer<typeof Continuation>)
       : undefined,
     about: {
       name: series.title,
