@@ -34,6 +34,7 @@ const edges = vi.hoisted(() => ({
   opened: [] as Array<{ title: Title; asked: boolean }>,
   presses: new Map<string, () => void>(),
   retries: 0,
+  nativeGrid: false,
   members: [] as Array<{
     entry: { id: string };
     needsSecret: boolean;
@@ -123,25 +124,51 @@ vi.mock("react-native-safe-area-context", async () => {
   };
 });
 vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
+  const { createElement, Fragment, memo } = await import("react");
   const box = ({ children }: { children?: React.ReactNode }) =>
     createElement("div", null, children);
   return {
     View: box,
     Text: box,
     ScrollView: box,
+    Image: () => null,
+    useWindowDimensions: () => ({ width: 390, height: 844 }),
+    FlatList: memo(
+      ({
+        data,
+        renderItem,
+        ListHeaderComponent,
+        ListEmptyComponent,
+      }: {
+        data: readonly Title[];
+        renderItem: (info: { item: Title }) => React.ReactNode;
+        ListHeaderComponent?: React.ReactNode;
+        ListEmptyComponent?: React.ReactNode;
+      }) =>
+        createElement(
+          "div",
+          null,
+          ListHeaderComponent,
+          data.length
+            ? data.map((item) => createElement(Fragment, { key: item.key }, renderItem({ item })))
+            : ListEmptyComponent,
+        ),
+    ),
     Pressable: ({
       children,
       onPress,
       accessibilityLabel,
       accessibilityState,
+      testID,
     }: {
       children?: React.ReactNode;
       onPress?: () => void;
       accessibilityLabel?: string;
       accessibilityState?: { selected?: boolean };
+      testID?: string;
     }) => {
       if (onPress && accessibilityLabel) edges.presses.set(accessibilityLabel, onPress);
+      if (onPress && testID) edges.presses.set(`native:${testID}`, onPress);
       return createElement(
         "button",
         {
@@ -175,8 +202,10 @@ vi.mock("../src/ui.tsx", async () => {
       ),
   };
 });
-vi.mock("../src/titles-ui.tsx", async () => {
+vi.mock("../src/artwork-cache.ts", () => ({ useArtwork: () => ({ kind: "none" }) }));
+vi.mock("../src/titles-ui.tsx", async (importOriginal) => {
   const { createElement } = await import("react");
+  const actual = await importOriginal<typeof import("../src/titles-ui.tsx")>();
   /** A row or a grid as the ids of its titles. */
   const shown = (name: string, titles: readonly Title[]) =>
     createElement("section", { "data-shown": name }, titles.map(ownedKey).join(","));
@@ -212,6 +241,8 @@ vi.mock("../src/titles-ui.tsx", async () => {
       empty?: React.ReactNode;
       onPress: (title: Title) => void;
     }) => {
+      if (edges.nativeGrid)
+        return createElement(actual.PosterGrid, { titles, header, empty, onPress });
       for (const title of titles) edges.presses.set(`tile:${title.id}`, () => onPress(title));
       return createElement(
         "div",
@@ -452,6 +483,7 @@ describe("the collections Movies, Series, Home and details show", () => {
     edges.opened = [];
     edges.presses.clear();
     edges.retries = 0;
+    edges.nativeGrid = false;
     edges.roster.clear();
     edges.sources.clear();
     edges.known = null;
@@ -867,9 +899,101 @@ describe("the collections Movies, Series, Home and details show", () => {
     };
 
     it.each(["movie", "series"] as const)(
+      "fences absent-source %s native callbacks and recovers fresh taps without remounting",
+      async (kind) => {
+        const { CollectionScreen } = await import("../src/titles-screen.tsx");
+        const fixture = browseFixture(kind);
+        edges.nativeGrid = true;
+        edges.sources.set("a", { provider: { titleFile: () => null } });
+        list([["a", fixture.catalogue]]);
+        await until(() => titles.collectionsOf(kind) !== null, "collections");
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        const oldTap = edges.presses.get("native:title-en-hd");
+        expect(oldTap).toBeTypeOf("function");
+        const retained = titles.collectionsOf(kind);
+        const count = `4 of 4 ${kind === "movie" ? "movies" : "series"}`;
+        const loseSource = async () =>
+          React.act(async () => {
+            edges.sources.delete("a");
+            edges.members = edges.members.map((member) => ({
+              ...member,
+              needsSecret: true,
+              titles: {
+                kind: "failed",
+                error: { kind: "needs-secret" },
+                last: fixture.catalogue,
+                since: 1,
+              },
+            }));
+            for (const listener of edges.roster) listener();
+          });
+        const recoverSource = async () =>
+          React.act(async () => {
+            edges.sources.set("a", { provider: { titleFile: () => null } });
+            edges.members = edges.members.map((member) => ({
+              ...member,
+              needsSecret: false,
+              titles: {
+                kind: "failed",
+                error: { kind: "network" },
+                last: fixture.catalogue,
+                since: 2,
+              },
+            }));
+            for (const listener of edges.roster) listener();
+          });
+        await loseSource();
+        expect(titles.collectionsOf(kind)).toBe(retained);
+        expect(container.textContent).toContain(count);
+        expect(container.textContent).not.toContain("Catalogue unavailable");
+        await React.act(async () => oldTap?.());
+        expect(edges.opened).toEqual([]);
+        // This comes from the real memoized PosterTile's new native Pressable callback.
+        const missingTap = edges.presses.get("native:title-en-hd");
+        expect(missingTap).toBeTypeOf("function");
+        expect(missingTap).not.toBe(oldTap);
+        await press("native:title-en-hd");
+        expect(edges.opened).toEqual([]);
+        await click("Sort & filter");
+        expect(container.textContent).toContain(count);
+        await click("Reset");
+        await click(`Show 4 ${kind === "movie" ? "movies" : "series"}`);
+        await recoverSource();
+        expect(titles.collectionsOf(kind)).toBe(retained);
+        await press("native:title-en-hd");
+        expect(edges.opened).toHaveLength(1);
+        expect(edges.opened[0]).toMatchObject({
+          title: { kind, subscriptionId: "a", id: "en-hd" },
+          asked: false,
+        });
+        await React.act(async () => {
+          oldTap?.();
+          missingTap?.();
+        });
+        expect(edges.opened).toHaveLength(1);
+
+        // An initially absent source is fenced too; later recovery needs no route remount.
+        await draw(React.createElement("div"));
+        await loseSource();
+        edges.opened = [];
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        const initiallyMissingTap = edges.presses.get("native:title-en-hd");
+        expect(container.textContent).toContain(count);
+        await press("native:title-en-hd");
+        expect(edges.opened).toEqual([]);
+        await recoverSource();
+        await press("native:title-en-hd");
+        expect(edges.opened).toHaveLength(1);
+        await React.act(async () => initiallyMissingTap?.());
+        expect(edges.opened).toHaveLength(1);
+      },
+    );
+
+    it.each(["movie", "series"] as const)(
       "shows %s collection controls, counts, matching activation and reset",
       async (kind) => {
         const { CollectionScreen } = await import("../src/titles-screen.tsx");
+        edges.sources.set("a", { provider: { titleFile: () => null } });
         list([["a", browseFixture(kind).catalogue]]);
         await until(() => titles.collectionsOf(kind) !== null, "fixture collections");
         await draw(React.createElement(CollectionScreen, { kind, id: "all" }));

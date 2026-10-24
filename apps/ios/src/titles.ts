@@ -406,6 +406,7 @@ export function collectionSelection(kind: TitleKind, collections: Collections) {
       : [],
   );
   return (title: Title): boolean => {
+    const source = sources.get(title.subscriptionId);
     const now = shown.get();
     const listed = snapshot.made
       ? kindOf(snapshot.lists.index, kind).byId.get(ownedKey(title))
@@ -414,7 +415,8 @@ export function collectionSelection(kind: TitleKind, collections: Collections) {
       now.made?.[kind].collections === collections &&
       snapshot.made !== null &&
       sameLists(snapshot.listed, listedOf(members())) &&
-      currentSource(title.subscriptionId) === sources.get(title.subscriptionId) &&
+      source !== undefined &&
+      currentSource(title.subscriptionId) === source &&
       listed?.key === title.key
     );
   };
