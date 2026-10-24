@@ -24,13 +24,11 @@ export function openProgramme(origin: GuideOrigin, channel: string, detail: stri
   });
 }
 
-/** Calendar arithmetic preserves the local day's 23/25-hour DST boundaries. */
+/** A calendar day's first valid instant, including a DST transition that skips midnight. */
 export function localDay(at: number, offset = 0): Day {
-  const from = new Date(at);
-  from.setHours(0, 0, 0, 0);
-  from.setDate(from.getDate() + offset);
-  const until = new Date(from);
-  until.setDate(until.getDate() + 1);
+  const date = new Date(at);
+  const from = new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset);
+  const until = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
   return { from: from.getTime(), until: until.getTime() };
 }
 

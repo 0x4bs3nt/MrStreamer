@@ -530,6 +530,33 @@ describe("selected A public guide UI with the real guide owner", () => {
       else process.env.TZ = oldZone;
     }
   });
+  it("navigates real local day boundaries when midnight is skipped", async () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Santiago";
+    try {
+      vi.setSystemTime(new Date(2026, 8, 6, 12));
+      state.params = { channel: "a:1" };
+      state.answer = async () => answer([]);
+      await install();
+      await draw(React.createElement(ScheduleScreen, { origin: "live" }));
+      await settle();
+      const from = new Date(2026, 8, 6).getTime();
+      const until = new Date(2026, 8, 7).getTime();
+      expect(state.queries.at(-1)).toMatchObject({ from, until });
+      expect(until - from).toBe(23 * 3600_000);
+      expect(container.textContent).not.toContain("Guide unavailable");
+      await click("Next day");
+      expect(state.queries.at(-1)).toMatchObject({
+        from: until,
+        until: new Date(2026, 8, 8).getTime(),
+      });
+      await click("Previous day");
+      expect(state.queries.at(-1)).toMatchObject({ from, until });
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
   it("retires held listings on provider removal and never paints the old channel after replacement", async () => {
     const releases: ((value: Result<Query>) => void)[] = [];
     state.answer = (_mode, _ids, _from, _until, _after, lease) =>

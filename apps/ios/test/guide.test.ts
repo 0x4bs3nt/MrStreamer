@@ -167,6 +167,48 @@ describe("guide public owner", () => {
     ).rejects.toMatchObject({ problem: "time" });
     expect(await owner.schedule("a:1", day, "invented")).toEqual(empty);
   });
+  it("reads the local calendar day when midnight is skipped", async () => {
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Santiago";
+    try {
+      const when = new Date(2026, 8, 6, 12).getTime();
+      const from = new Date(2026, 8, 6);
+      const until = new Date(2026, 8, 7);
+      expect(from.getHours()).toBe(1);
+      expect(until.getTime() - from.getTime()).toBe(23 * 3600_000);
+      const { native, control } = guideFixture();
+      control.activations.set("a", {
+        lease: "midnight",
+        generation: { id: "day", fetchedAt: when, until: until.getTime() },
+      });
+      const owner = createGuide(
+        () => native,
+        () => when,
+        () => undefined,
+      );
+      await owner.restore(["a"]);
+      owner.setPart(part());
+      control.query = async () => ({
+        kind: "ok",
+        value: {
+          guideId: "trusted.tv",
+          rows: [{ ...programme, start: when - 60000, stop: when + 60000 }],
+          more: false,
+        },
+      });
+      const day = { from: from.getTime(), until: until.getTime() };
+      expect((await owner.schedule("a:1", day)).programmes).toHaveLength(1);
+      await expect(owner.schedule("a:1", { ...day, from: day.from + 1 })).rejects.toMatchObject({
+        problem: "time",
+      });
+      await expect(
+        owner.schedule("a:1", { ...day, until: day.until + 3600_000 }),
+      ).rejects.toMatchObject({ problem: "time" });
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+    }
+  });
   it("cancels quietly on background and never accepts a replaced source's late generation", async () => {
     const { owner, control, sources } = setup();
     await owner.restore(["a"]);
