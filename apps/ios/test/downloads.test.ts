@@ -1,3 +1,4 @@
+import { guideFixture } from "./native-guide.ts";
 import type { Download, DownloadStatus } from "@mrstreamer/contracts/downloads";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -811,6 +812,7 @@ describe("downloads", { timeout: 30_000 }, () => {
       Object.assign(globalThis, {
         expo: {
           modules: {
+            Guide: guideFixture().native,
             TitleFormats: {
               create: () => undefined,
               open: async () => ({ kind: "session", playlist: "file:session.m3u8" }),

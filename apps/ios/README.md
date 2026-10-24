@@ -36,7 +36,7 @@ channels to preview (On now: recent ones, else the country last chosen in Live),
 heading always there, opening the list on Home's stack: `favourites`), Continue watching, the watchlist
 (its heading always there, opening all of it on Home's stack: `watchlist`)
 and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
-channel's category where the desktop shows its programme: iOS reads no guide yet. Search finds
+channel's category where the desktop shows its programme. The guide data service now owns native ingestion and bounded queries; Home and Live programme UI remains a separate unit. Search finds
 movies, series and channels: 20 movies and 20 series at first, each kind with its own Show more
 for the next 20 until every match shows. A movie's details and each episode row have a download button whose
 symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
@@ -490,3 +490,23 @@ onmac run -- apps/ios/scripts/testflight.sh upload
 so it runs without Metro, the fixtures or a launch argument, then prints the commit, identifier,
 version and build it archived. `upload` sends that archive to App Store Connect for internal
 testers only. The app's record has to exist there first; the API can't create one.
+
+The provider guide foundation is `src/guide.ts`, fed by account restore, sign-in, catalogue and
+erasure lifecycle calls. It resolves only the current catalogue's trusted IDs, including stream
+aliases. The private Expo Guide module downloads on a utility callback queue, refuses automatic
+redirects, validates gzip and XML before indexing, and publishes complete immutable SQLite
+generations through one atomic manifest. Failed refreshes retain last-good data. Missing native
+bindings report unavailable. Removal and password replacement revoke work before awaited erasure,
+including when viewing history is kept. No Home, Live or schedule UI consumes it yet.
+
+Initial native refusals are 32 MiB delivered callback bytes, 64 MiB inflated XML, 64 KiB raw
+tokens/channel/programme elements, depth 32, 250,000 input programme rows, 10,000 kept programme
+channel IDs, 32 MiB per database, 256 MiB total guide disk and a 256 MiB free-space floor.
+These are conservative budgets to measure on devices, not phone-safety or exact compressed-wire
+limits. UTF-8 XML only; DTDs and entity declarations are refused. Programme prose follows the
+existing catalogue password-substring policy: it refuses a raw password anywhere in saved text,
+including ordinary-word collisions, while usernames within prose are allowed. No guide artwork,
+provider URLs or request metadata is saved. `modules/guide/test/run.py` compiles the production
+core against Mac, simulator and device SDKs and runs fake-only host fixtures. It excludes the Expo
+wrapper, does not install an app, and cannot establish Release/Hermes registration or iOS runtime
+acceptance. Full native application and hardware verification remain required before release.

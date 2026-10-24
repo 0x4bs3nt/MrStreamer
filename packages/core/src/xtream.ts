@@ -143,6 +143,12 @@ export function xtreamProvider(account: XtreamAccount, options: XtreamOptions): 
     password: account.password,
   });
 
+  const guideRequest = () => ({
+    kind: "request" as const,
+    url: `${account.server}/xmltv.php?${credentials}`,
+    headers: { "User-Agent": options.userAgent, Accept: "application/xml" },
+  });
+
   /** Reads an API answer with `read`, turning network and HTTP failures into typed errors. */
   async function request<A>(
     params: string,
@@ -253,12 +259,18 @@ export function xtreamProvider(account: XtreamAccount, options: XtreamOptions): 
       };
     },
 
+    async liveGuideRequest(signal) {
+      signal?.throwIfAborted();
+      return guideRequest();
+    },
+
     async liveGuide(signal) {
       const timeout = AbortSignal.timeout(GUIDE_TIMEOUT_MS);
       let response: Response;
       try {
-        response = await fetchImpl(`${account.server}/xmltv.php?${credentials}`, {
-          headers: { "User-Agent": options.userAgent, Accept: "application/xml" },
+        const request = guideRequest();
+        response = await fetchImpl(request.url, {
+          headers: request.headers,
           signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         });
       } catch (cause) {

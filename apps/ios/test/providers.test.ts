@@ -1,3 +1,4 @@
+import { guideFixture } from "./native-guide.ts";
 import type { Episode, Season, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import { nextUnwatched } from "@mrstreamer/core/viewing/episodes";
@@ -1252,5 +1253,67 @@ describe("a launch with saved subscriptions", () => {
     await settle();
     await new Promise((done) => setTimeout(done, 200));
     expect(two.titleListRequests()).toBe(before);
+  });
+});
+
+describe("guide identity erasure through account lifecycle", () => {
+  it("awaits guide deletion before writing a replacement password and blocks failed deletion", async () => {
+    const fixture = guideFixture();
+    vi.stubGlobal("expo", { modules: { Guide: fixture.native } });
+    try {
+      const app = await launch();
+      const id = await app.add({ server: one.url, ...ONE });
+      if (!id) throw new Error("cancelled");
+      const before = new Map(memory.keychain);
+      fixture.control.refused.add(id);
+      await expect(app.update(id, { password: ONE.password })).rejects.toMatchObject({
+        error: { kind: "unexpected" },
+      });
+      expect(memory.keychain).toEqual(before);
+      expect(fixture.control.calls).toContain(`revoke:${id}`);
+      fixture.control.refused.delete(id);
+      let release!: (value: boolean) => void;
+      fixture.control.forget = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const updating = app.update(id, { password: ONE.password });
+      await until(() => release !== undefined);
+      expect(memory.keychain).toEqual(before);
+      release(true);
+      await updating;
+    } finally {
+      vi.stubGlobal("expo", { modules: { Guide: guideFixture().native } });
+    }
+  });
+
+  it("keeps removal committed while awaiting guide forget, including keepHistory, then reuses only an erased identity", async () => {
+    const fixture = guideFixture();
+    vi.stubGlobal("expo", { modules: { Guide: fixture.native } });
+    try {
+      const app = await launch();
+      const id = await app.add({ server: one.url, ...ONE });
+      if (!id) throw new Error("cancelled");
+      let release!: (value: boolean) => void;
+      fixture.control.forget = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const removing = app.remove(id, { keepHistory: true });
+      await until(() => release !== undefined);
+      expect(ids(app)).not.toContain(id);
+      expect(fixture.control.calls).toContain(`revoke:${id}`);
+      release(false);
+      await removing;
+      fixture.control.refused.add(id);
+      await expect(app.add({ server: one.url, ...ONE })).rejects.toMatchObject({
+        error: { kind: "unexpected" },
+      });
+      fixture.control.refused.delete(id);
+      fixture.control.forget = async () => true;
+      expect(await app.add({ server: one.url, ...ONE })).toBe(id);
+    } finally {
+      vi.stubGlobal("expo", { modules: { Guide: guideFixture().native } });
+    }
   });
 });
