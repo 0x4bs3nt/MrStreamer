@@ -28,6 +28,7 @@ const scenario = vi.hoisted(() => ({
   title: "",
 }));
 
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   type Props = {

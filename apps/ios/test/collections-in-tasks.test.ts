@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import * as React from "react";
 import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
@@ -58,7 +60,8 @@ const edges = vi.hoisted(() => ({
   watching: new Set<() => void>(),
 }));
 
-vi.mock("expo-file-system", () => ({ File: class {}, Paths: { cache: "/cache" } }));
+vi.mock("expo-file-system", () => import("./native-files.ts"));
+const { native } = await import("./native-files.ts");
 vi.mock("../src/account.ts", async () => {
   const { useSyncExternalStore } = await import("react");
   const subscribe = (listener: () => void) => {
@@ -479,6 +482,9 @@ describe("the collections Movies, Series, Home and details show", () => {
   let shift = 0;
   beforeEach(async () => {
     vi.resetModules();
+    rmSync(join(native.root, "documents"), { force: true, recursive: true });
+    mkdirSync(join(native.root, "documents"));
+    native.sync = null;
     edges.members = [];
     edges.opened = [];
     edges.presses.clear();
@@ -497,6 +503,45 @@ describe("the collections Movies, Series, Home and details show", () => {
     titles = await import("../src/titles.ts");
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the prior complete view through sliced A-B-A language rebuilds of unchanged lists", async () => {
+    const prefs = await import("../src/media-preferences.ts");
+    prefs.updateMediaPreferences("titleLanguage", "en");
+    subscribe("a", "b");
+    await until(() => titles.titlesWorkedOut(), "initial English index");
+    const before = indexed();
+    const oldMovie = titles.collectionsOf("movie");
+    const oldSeries = titles.collectionsOf("series");
+    expect(before).not.toBeNull();
+    prefs.updateMediaPreferences("titleLanguage", "nl");
+    expect(indexed()).toBe(before);
+    expect(titles.collectionsOf("movie")).toBe(oldMovie);
+    expect(titles.collectionsOf("series")).toBe(oldSeries);
+    // Let obsolete work actually start in its first bounded task before replacing it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    prefs.updateMediaPreferences("titleLanguage", "en");
+    const { views, bare } = await watch(
+      () => indexed() !== before && titles.titlesWorkedOut(),
+      "replacement English index",
+    );
+    expect(bare).toBe(0);
+    expect(views.length).toBeGreaterThan(0);
+    const expected = indexCatalogue(
+      [
+        { subscriptionId: "a", catalogue },
+        { subscriptionId: "b", catalogue },
+      ],
+      "en",
+    );
+    for (const view of views) {
+      expect(view.index).not.toBeNull();
+      if (!view.index) throw new Error("Incomplete view");
+      for (const kind of ["movie", "series"] as const) {
+        expect(kindOf(view.index, kind).titles).toEqual(kindOf(expected, kind).titles);
+        expect(madeOf(view[kind], kind, view.index)).toBe(true);
+      }
+    }
+  });
 
   const subscribe = (...ids: string[]) => list(ids.map((id) => [id, catalogue]));
   /** Subscriptions with these lists, as their provider gave them, in this order. */

@@ -57,6 +57,7 @@ import {
   type Saved,
 } from "./details-cache.ts";
 import { inTasks } from "./library.ts";
+import { getMediaPreferences, onMediaPreferences } from "./media-preferences.ts";
 import { currentSource, sourceOf, type Source } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
@@ -106,6 +107,7 @@ interface Made {
   readonly index: IndexedCatalogue;
   readonly version: number;
   readonly collections: Collections;
+  readonly epoch: number;
 }
 
 /**
@@ -193,7 +195,15 @@ export const useTitleTimings = () => useStore(timings);
 
 const locale = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale);
 /** The viewer's language, which version of a title shows first and which names TMDB gives. */
-export const language = locale.language;
+export let language: string = getMediaPreferences().titleLanguage ?? locale.language;
+/** A-B-A is three distinct runs, even when the language string agrees again. */
+let languageEpoch = 0;
+interface ReadingLanguage {
+  readonly language: string;
+  readonly epoch: number;
+}
+const readingLanguage = (): ReadingLanguage => ({ language, epoch: languageEpoch });
+const currentLanguage = (reading: ReadingLanguage) => reading.epoch === languageEpoch;
 const region = locale.region ?? "US";
 
 const TMDB_KEY = process.env.EXPO_PUBLIC_TMDB_KEY ?? "";
@@ -230,6 +240,7 @@ const metadata = metadataStore({
 
 /** The lists the index was made of, or is being made of. */
 let indexed: readonly Listed[] = [];
+let indexedEpoch = -1;
 let indexing: AbortController | null = null;
 /**
  * Whether saved titles a launch reads wait for each other to be indexed together (`relist`): until
@@ -287,7 +298,10 @@ const listedOf = (all: readonly Member[]): Listed[] =>
 export function titlesWorkedOut(): boolean {
   const listed = listedOf(members());
   const now = shown.get();
-  return listed.length === 0 || (now.made !== null && sameLists(now.listed, listed));
+  return (
+    listed.length === 0 ||
+    (now.made !== null && now.made.movie.epoch === languageEpoch && sameLists(now.listed, listed))
+  );
 }
 
 /**
@@ -320,7 +334,7 @@ function relist() {
     return;
   }
   if (gone) shown.set({ lists: { kind: "loading" }, made: null });
-  else if (sameLists(listed, indexed)) return;
+  else if (indexedEpoch === languageEpoch && sameLists(listed, indexed)) return;
   // Pending launch passwords reserve their possible title reads too. Those already read wait
   // for them until the app opens, including its deadline; late answers join normally after that.
   if (batching && readingSaved("titles")) {
@@ -330,25 +344,26 @@ function relist() {
     return;
   }
   indexed = listed;
+  indexedEpoch = languageEpoch;
   indexing?.abort();
   const controller = new AbortController();
   indexing = controller;
-  void index(listed, controller.signal);
+  void index(listed, controller.signal, readingLanguage());
 }
 
-async function index(listed: readonly Listed[], signal: AbortSignal) {
+async function index(listed: readonly Listed[], signal: AbortSignal, reading: ReadingLanguage) {
   // Indexing 25,000 movies held the JS thread for a third of a second or more in a Release build
   // on the iOS simulator, so both kinds are worked out a few slices per task, starting after the
   // answer that brought the lists, and only a finished index shows, with its collections: what
   // showed before stays meanwhile, and screens never index a kind while they draw.
-  const wanted = () => !signal.aborted;
+  const wanted = () => !signal.aborted && currentLanguage(reading);
   const started = Date.now();
-  const index = await inTasks(indexSteps(listed, language), wanted);
+  const index = await inTasks(indexSteps(listed, reading.language), wanted);
   if (!index) return;
   const took = Date.now() - started;
   const version = metadataVersion.get();
-  const movie = await make("movie", index, version, wanted);
-  const series = movie && (await make("series", index, version, wanted));
+  const movie = await make("movie", index, version, wanted, reading);
+  const series = movie && (await make("series", index, version, wanted, reading));
   if (!movie || !series || !wanted()) return;
   const fetched = Math.max(
     0,
@@ -362,7 +377,7 @@ async function index(listed: readonly Listed[], signal: AbortSignal) {
   alignWatchlist(index);
   // TMDB's metadata for what is listed, the newest first, once the lists show.
   setTimeout(() => {
-    if (!signal.aborted) metadata.want(wantedOf(index), language);
+    if (wanted()) metadata.want(wantedOf(index), reading.language);
   }, 0);
 }
 
@@ -455,7 +470,7 @@ export function collectionsOf(kind: TitleKind): Collections | null {
  */
 function collect(kind: TitleKind) {
   const now = shown.get();
-  if (!now.made) return;
+  if (!now.made || now.made[kind].epoch !== languageEpoch) return;
   const { index } = now.lists;
   const kept = now.made[kind];
   const current = kept.version === metadataVersion.get() && kept.collections.validAt(Date.now());
@@ -466,15 +481,16 @@ function collect(kind: TitleKind) {
 
 /** Makes `kind`'s collections of `index` again, to show in place of those before while it shows. */
 async function remake(kind: TitleKind, index: IndexedCatalogue) {
+  const reading = readingLanguage();
   const shows = () => {
     const now = shown.get();
-    return now.made !== null && now.lists.index === index;
+    return currentLanguage(reading) && now.made !== null && now.lists.index === index;
   };
-  const made = await make(kind, index, metadataVersion.get(), shows).finally(() => {
+  const made = await make(kind, index, metadataVersion.get(), shows, reading).finally(() => {
     if (making.get(kind) === index) making.delete(kind);
   });
   const now = shown.get();
-  if (!made || !now.made || now.lists.index !== index) return;
+  if (!made || !now.made || !shows()) return;
   const both = kind === "movie" ? { ...now.made, movie: made } : { ...now.made, series: made };
   shown.set({ ...now, made: both });
   collect(kind);
@@ -489,6 +505,7 @@ async function make(
   index: IndexedCatalogue,
   version: number,
   wanted: () => boolean,
+  reading: ReadingLanguage,
 ): Promise<Made | null> {
   // Ranking 25,000 movies and their series with TMDB's metadata, then sorting their lists, held
   // the JS thread for 60 to 95 ms at once in a Release build on the iOS simulator, each time the
@@ -498,16 +515,16 @@ async function make(
     madeSteps({
       kind,
       titles: kindOf(index, kind).titles,
-      language,
+      language: reading.language,
       metadata: (id) => metadata.get(tk, id),
-      names: (id) => metadata.name(tk, id, language),
+      names: (id) => metadata.name(tk, id, reading.language),
       services: metadata.services(tk),
       expiresAt: (id) => metadata.expiresAt(tk, id),
       now: Date.now(),
     }),
     wanted,
   );
-  return collections && { index, version, collections };
+  return collections && { index, version, collections, epoch: reading.epoch };
 }
 
 /**
@@ -575,6 +592,7 @@ export function* searchTitlesSteps(
   query: string,
   limit: number,
 ): Steps<{ readonly titles: Title[]; readonly total: number }> {
+  const viewerLanguage = language;
   const tk = tmdbKind(kind);
   const page = yield* searchPageSteps(
     index,
@@ -582,7 +600,7 @@ export function* searchTitlesSteps(
     query,
     (title) => {
       if (!title.tmdbId) return "";
-      const shown = metadata.name(tk, title.tmdbId, language);
+      const shown = metadata.name(tk, title.tmdbId, viewerLanguage);
       return {
         ...(shown ? { title: shown.name, original: shown.original } : {}),
         names: metadata.searchAliases(tk, title.tmdbId),
@@ -594,15 +612,19 @@ export function* searchTitlesSteps(
   const due = pacer();
   for (const title of page.titles) {
     if (due()) yield;
-    titles.push(named(title));
+    titles.push(namedIn(title, viewerLanguage));
   }
   return { ...page, titles };
 }
 
 /** A title with TMDB's name for the viewer, once known, as collections show it. */
 export function named(title: Title): Title {
+  return namedIn(title, language);
+}
+
+function namedIn(title: Title, viewerLanguage: string): Title {
   if (!title.tmdbId) return title;
-  const found = metadata.name(tmdbKind(title.kind), title.tmdbId, language);
+  const found = metadata.name(tmdbKind(title.kind), title.tmdbId, viewerLanguage);
   return found ? { ...title, title: found.name, originalTitle: found.original } : title;
 }
 
@@ -729,14 +751,15 @@ async function detailsUnder(
   title: Title,
   source: Source,
   show: ((details: TitleDetails) => void) | undefined,
+  reading: ReadingLanguage,
 ): Promise<TitleDetails> {
   const id = title.subscriptionId;
-  const stands = () => savable(id, source);
-  const about = aboutOf(title);
+  const stands = () => currentLanguage(reading) && savable(id, source);
+  const about = aboutOf(title, reading);
   const shown = (raw: ProviderDetails, known: TitleAbout | null) =>
     title.kind === "movie"
       ? movieDetails(title, raw, known)
-      : seriesDetails(title, raw, known, language);
+      : seriesDetails(title, raw, known, reading.language);
   const early = async (raw: ProviderDetails) => {
     const known = about ? await about.now : null;
     if (show && stands()) show(shown(raw, known));
@@ -765,11 +788,23 @@ async function detailsUnder(
  * before the result: saved ones while the provider and TMDB are asked. Nothing of a login replaced
  * or removed since is shown or answered.
  */
-export function detailsOf(
+export async function detailsOf(
   title: Title,
   show?: (details: TitleDetails) => void,
 ): Promise<TitleDetails> {
-  return underLogin(title.subscriptionId, (source) => detailsUnder(title, source, show));
+  // A replaced language never answers through the old callback. A caller still waiting is
+  // read again in the latest language, while login replacement keeps its existing authority.
+  for (;;) {
+    const reading = readingLanguage();
+    try {
+      const value = await underLogin(title.subscriptionId, (source) =>
+        detailsUnder(title, source, show, reading),
+      );
+      if (currentLanguage(reading)) return value;
+    } catch (cause) {
+      if (currentLanguage(reading)) throw cause;
+    }
+  }
 }
 
 /**
@@ -835,7 +870,8 @@ function tmdbAnswer<A>(
 /** What TMDB says of a title for the viewer, by kind, TMDB id and language. */
 const abouts = new Map<string, Answer<TitleAbout>>();
 
-function aboutOf(title: Title): Answer<TitleAbout> | null {
+function aboutOf(title: Title, reading: ReadingLanguage): Answer<TitleAbout> | null {
+  const { language } = reading;
   const { kind, tmdbId } = title;
   if (!client || !tmdbId || title.adult) return null;
   return tmdbAnswer(
@@ -843,7 +879,8 @@ function aboutOf(title: Title): Answer<TitleAbout> | null {
     `${kind}|${tmdbId}|${language}`,
     () => readAbout(kind, tmdbId, language),
     (signal) => client.about(tmdbKind(kind), tmdbId, language, signal),
-    (saved) => writeAbout(kind, tmdbId, language, saved),
+    (saved) =>
+      currentLanguage(reading) ? writeAbout(kind, tmdbId, language, saved) : Promise.resolve(),
   );
 }
 
@@ -864,6 +901,8 @@ export async function episodesOf(
   season: Season,
   show?: (episodes: readonly EpisodeDetails[]) => void,
 ): Promise<readonly EpisodeDetails[]> {
+  const reading = readingLanguage();
+  const { language } = reading;
   const { tmdbId } = title;
   if (!client || !tmdbId || title.adult) return seasonEpisodes(season, []);
   const id = title.subscriptionId;
@@ -876,7 +915,8 @@ export async function episodesOf(
       `${tmdbId}|${number}|${asked}`,
       () => readSeason(tmdbId, number, asked),
       (signal) => client.season(tmdbId, number, asked, signal),
-      (saved) => writeSeason(tmdbId, number, asked, saved),
+      (saved) =>
+        currentLanguage(reading) ? writeSeason(tmdbId, number, asked, saved) : Promise.resolve(),
     ),
   );
   const worked = (told: readonly (readonly EpisodeAbout[] | null)[]) =>
@@ -886,10 +926,11 @@ export async function episodesOf(
     );
   if (show) {
     const now = await Promise.all(answers.map((answer) => answer.now));
-    if (stands()) show(worked(now));
+    if (stands() && currentLanguage(reading)) show(worked(now));
   }
   const told = await Promise.all(answers.map((answer) => answer.final));
   if (!stands()) throw new AppFailure({ kind: "no-subscription" });
+  if (!currentLanguage(reading)) return episodesOf(title, season, show);
   return worked(told);
 }
 
@@ -933,6 +974,19 @@ function forgetLogins() {
     if (currentSource(each.subscriptionId) !== each.source) asked.delete(key);
   }
 }
+
+onMediaPreferences(() => {
+  const next = getMediaPreferences().titleLanguage ?? locale.language;
+  if (next === language) return;
+  language = next;
+  languageEpoch++;
+  // Abort old metadata demand immediately, before the replacement index is ready. Cached
+  // answers remain owned by the shared metadata store and keyed by their actual language.
+  metadata.want([], language);
+  abouts.clear();
+  seasons.clear();
+  relist();
+});
 
 onRoster(forgetLogins);
 onRoster(relist);

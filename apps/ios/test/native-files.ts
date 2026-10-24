@@ -45,6 +45,8 @@ interface Native {
    * settles stands for the app stopping there. Null: each goes ahead at once.
    */
   gate: ((operation: FileOperation, path: string) => Promise<void> | undefined) | null;
+  /** The synchronous atomic JSON boundary: observes or refuses a write/move before it runs. */
+  sync: ((operation: "write" | "move", path: string) => void) | null;
   /** Answers true for a file whose deletion the disk refuses. Null: every deletion goes ahead. */
   undeletable: ((path: string) => boolean) | null;
   /**
@@ -69,6 +71,7 @@ export const native: Native = ((
   pauseMs: 0,
   held: null,
   gate: null,
+  sync: null,
   undeletable: null,
   sizeOf: null,
 });
@@ -119,6 +122,7 @@ export class File {
     return this.textSync();
   }
   writeSync(text: string) {
+    native.sync?.("write", this.path);
     writeFileSync(this.path, text);
   }
   async write(text: string) {
@@ -126,6 +130,7 @@ export class File {
     writeFileSync(this.path, text);
   }
   moveSync(to: File) {
+    native.sync?.("move", this.path);
     renameSync(this.path, to.path);
   }
   /** As on iOS: with `overwrite`, the file there is deleted, then this one moved in its place. */

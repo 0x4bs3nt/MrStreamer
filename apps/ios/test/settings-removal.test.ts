@@ -36,6 +36,7 @@ const scenario = vi.hoisted(() => ({
   remove: (() => Promise.resolve()) as Removal,
 }));
 
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   type Props = { children?: React.ReactNode; testID?: string };

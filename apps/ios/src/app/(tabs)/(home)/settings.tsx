@@ -1,7 +1,10 @@
 import type { AnalyticsSettings } from "@mrstreamer/contracts/analytics";
+import { QUALITIES, type Quality } from "@mrstreamer/contracts/library";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import type { AccountStatus } from "@mrstreamer/contracts/subscription";
 import { formatDate } from "@mrstreamer/core/i18n";
+import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
+import { languageName } from "@mrstreamer/core/ondemand/tracks";
 import Constants from "expo-constants";
 import { router } from "expo-router";
 import { SymbolView } from "expo-symbols";
@@ -30,6 +33,11 @@ import { DownloadsLink } from "../../../downloads-screen.tsx";
 import { failureOf } from "../../../errors.ts";
 import { tabHref, useTabs, type Tab } from "../../../header.tsx";
 import { licences } from "../../../licences.ts";
+import {
+  getMediaPreferences,
+  updateMediaPreferences,
+  useMediaPreferences,
+} from "../../../media-preferences.ts";
 import { openLink } from "../../../open-link.ts";
 import { setStatistics, useStatistics } from "../../../telemetry/index.ts";
 import { hasTmdb, useMetadataStatus, useTitleTimings } from "../../../titles.ts";
@@ -39,7 +47,7 @@ const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
 
 /**
  * Settings as one list: the providers first, each a row with Add provider under them, then
- * Downloads, a row with what they take that opens them, Privacy with the privacy policy
+ * Downloads, a row with what they take that opens them, Media policies, Privacy with its policy
  * in the browser, and About with Licences. M3U playlists and guide sources come here as they come
  * to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and notice, as
  * the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and what it
@@ -48,6 +56,7 @@ const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
 export default function Settings() {
   const roster = useRoster();
   const statistics = useStatistics();
+  const media = useMediaPreferences();
   const tab = useTabs()?.tab ?? "(home)";
   if (roster.kind !== "ready") return null;
   return (
@@ -68,6 +77,75 @@ export default function Settings() {
 
       <Section name="Downloads" />
       <DownloadsLink onPress={() => router.push(tabHref(tab, "downloads"))} />
+
+      <Section name="Media" />
+      <Opens
+        label="Titles language"
+        value={
+          media.titleLanguage === null ? systemLanguage : mediaLanguageName(media.titleLanguage)
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("titleLanguage", "Titles language", [
+            { label: systemLanguage, value: null },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({ label: name, value: code })),
+          ])
+        }
+        testID="settings-title-language"
+      />
+      <Opens
+        label="Audio"
+        value={
+          media.audio.kind === "language"
+            ? mediaLanguageName(media.audio.language)
+            : audioNames[media.audio.kind]
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("audio", "Audio", [
+            { label: audioNames.default, value: { kind: "default" } },
+            { label: audioNames.original, value: { kind: "original" } },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({
+              label: name,
+              value: { kind: "language" as const, language: code },
+            })),
+          ])
+        }
+        testID="settings-audio"
+      />
+      <Opens
+        label="Subtitles"
+        value={
+          media.subtitles.kind === "language"
+            ? mediaLanguageName(media.subtitles.language)
+            : subtitleNames[media.subtitles.kind]
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("subtitles", "Subtitles", [
+            { label: subtitleNames["forced-only"], value: { kind: "forced-only" } },
+            { label: subtitleNames.off, value: { kind: "off" } },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({
+              label: name,
+              value: { kind: "language" as const, language: code },
+            })),
+          ])
+        }
+        testID="settings-subtitles"
+      />
+      <Opens
+        label="Live quality"
+        value={qualityNames[media.liveQuality]}
+        role="button"
+        onPress={() =>
+          chooseMedia(
+            "liveQuality",
+            "Live quality",
+            QUALITIES.map((quality) => ({ label: qualityNames[quality], value: quality })),
+          )
+        }
+        testID="settings-live-quality"
+      />
 
       <Section name="Privacy" />
       <View style={styles.toggle}>
@@ -132,6 +210,41 @@ export default function Settings() {
       {__DEV__ ? <Development /> : null}
       <View style={styles.end} />
     </ScrollView>
+  );
+}
+
+const mediaLanguageName = (code: string) =>
+  TITLE_LANGUAGES.find((language) => language.code === code)?.name ?? languageName(code) ?? code;
+const deviceLanguage = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale).language;
+const systemLanguage = `System default (${mediaLanguageName(deviceLanguage)})`;
+const audioNames = { default: "File default", original: "Original language" };
+const subtitleNames = { "forced-only": "Only when forced", off: "Off" };
+const qualityNames: Record<Quality, string> = { uhd: "4K", fhd: "Full HD", hd: "HD", sd: "SD" };
+
+/** A system sheet commits only a picked value; Cancel has no action. */
+function chooseMedia<K extends keyof ReturnType<typeof getMediaPreferences>>(
+  field: K,
+  title: string,
+  choices: readonly {
+    readonly label: string;
+    readonly value: ReturnType<typeof getMediaPreferences>[K];
+  }[],
+) {
+  ActionSheetIOS.showActionSheetWithOptions(
+    {
+      title,
+      options: [...choices.map(({ label }) => label), "Cancel"],
+      cancelButtonIndex: choices.length,
+    },
+    (index) => {
+      const choice = choices[index];
+      if (choice && !updateMediaPreferences(field, choice.value)) {
+        Alert.alert(
+          "Couldn't save media preference",
+          "Your previous choice is still saved. Try again.",
+        );
+      }
+    },
   );
 }
 
