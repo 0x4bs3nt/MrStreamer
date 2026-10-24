@@ -308,6 +308,8 @@ export const fr: Translation = {
   "It redirected too many times.": "L'adresse a redirigé trop de fois.",
   "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.":
     "L'adresse a redirigé vers une adresse non chiffrée contenant vos identifiants, Mr. Streamer s'est donc arrêté.",
+  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.":
+    "La playlist du flux indiquait une adresse non chiffrée contenant vos identifiants, Mr. Streamer s'est donc arrêté.",
   "Subtitle file is too large.": "Le fichier de sous-titres est trop volumineux.",
   "Subtitle file has too many cues.": "Le fichier de sous-titres contient trop de répliques.",
   "Subtitle file has no supported, valid cues.":

@@ -84,7 +84,7 @@ import { audioTracks, languageCode, subtitleTracks } from "@mrstreamer/core/onde
 import { Diagnostics } from "@mrstreamer/core/diagnostics";
 import { PlaybackCoordination } from "./playback-coordination.ts";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
-import type { Provider } from "@mrstreamer/core/provider";
+import { withoutAddresses, type Provider } from "@mrstreamer/core/provider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -268,7 +268,10 @@ interface SessionBase {
   readonly token: string;
   /** What the UI's player decodes. */
   readonly decoders: ReadonlySet<Codec>;
-  /** Requests the upstream addresses through the provider, which never sends the login unencrypted. */
+  /**
+   * Requests the upstream addresses through the provider, which keeps the login it recognizes off
+   * http after an https address.
+   */
   readonly request: Provider["request"];
   /** Aborts every upstream request of this session when its scope closes. */
   readonly closed: AbortController;
@@ -745,7 +748,7 @@ function make(deps: PlaybackDeps) {
         stands ? Effect.void : Effect.fail(new Failed({ error: { kind: "no-subscription" } })),
       );
     const { port } = yield* Effect.acquireRelease(
-      Effect.promise(() => listen((request, response) => void serve(request, response))),
+      Effect.promise(() => listen(serve)),
       ({ server }) =>
         Effect.sync(() => {
           server.closeAllConnections();
@@ -778,14 +781,17 @@ function make(deps: PlaybackDeps) {
       servers: 0,
     });
 
-    async function serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    async function serve(
+      request: IncomingMessage,
+      response: ServerResponse,
+      url: URL,
+    ): Promise<void> {
       response.setHeader("Access-Control-Allow-Origin", "*");
       response.setHeader("Cache-Control", "no-store");
       if (request.method === "OPTIONS") {
         response.writeHead(204, { "Access-Control-Allow-Headers": "Range" }).end();
         return;
       }
-      const url = new URL(request.url ?? "/", base);
       // /hls/<token>/<ffmpeg>/<number>.ts and /hls/<token>/<ffmpeg>/list: what an ffmpeg makes
       // for a receiver.
       const made = /^\/hls\/([\w-]+)\/([\w-]+)\/(?:(\d{1,9})\.ts|(list))$/.exec(url.pathname);
@@ -803,8 +809,7 @@ function make(deps: PlaybackDeps) {
           response.writeHead(410).end();
           return;
         }
-        void maker.receiver.receive(made[2]!, index, request, response);
-        return;
+        return maker.receiver.receive(made[2]!, index, request, response);
       }
       if (request.headers.expect) response.writeContinue();
       // /stream/<token>.ts, /stream/<token>.m3u8 and its /stream/<token>/<address id>,
@@ -1043,7 +1048,14 @@ function make(deps: PlaybackDeps) {
           const input = await openHlsTsInput(
             variant.url,
             async (address, signal) => {
-              const answer = await connect(session, address, variant.headers, signal, []);
+              const answer = await connect(
+                session,
+                address,
+                variant.headers,
+                signal,
+                [],
+                variant.url,
+              );
               if (!answer.ok) throw new HlsInputFailure(answer.failure);
               return answer.response;
             },
@@ -1473,24 +1485,33 @@ function make(deps: PlaybackDeps) {
       const range: Record<string, string> = request.headers.range
         ? { Range: request.headers.range }
         : {};
-      // With what the player adds: delivery directives (_HLS_msn) to a low-latency playlist.
-      const requestFor = (address: string, headers: Readonly<Record<string, string>>) => {
+      // With what the player adds: delivery directives (_HLS_msn) to a low-latency playlist. Every
+      // address the stream's playlists name is held to the stream's own, `variant.url`.
+      const requestFor = (address: string, variant: LiveSession["variants"][number]) => {
         const upstreamUrl = new URL(address);
         for (const [name, value] of url.searchParams) upstreamUrl.searchParams.set(name, value);
-        return connect(session, upstreamUrl.href, { ...headers, ...range }, signal, []);
+        return connect(
+          session,
+          upstreamUrl.href,
+          { ...variant.headers, ...range },
+          signal,
+          [],
+          variant.url,
+        );
       };
 
       try {
         if (id !== null) {
           const address = addresses.addressOf(subtitle ? id.slice(5) : id);
-          if (!address) {
-            response.writeHead(410).end();
-            return;
-          }
+          // The stream whose playlists named it: the one the session delivers.
           const variant =
             session.variants.find((each) => each.id === session.delivered.variantId) ??
             session.variants[0];
-          const upstream = await requestFor(address, variant?.headers ?? {});
+          if (!address || !variant) {
+            response.writeHead(410).end();
+            return;
+          }
+          const upstream = await requestFor(address, variant);
           const opened = upstream.ok ? await readStart(upstream.response, address) : null;
           if (signal.aborted) {
             void opened?.reader.cancel().catch(() => {});
@@ -1515,7 +1536,7 @@ function make(deps: PlaybackDeps) {
           : session.variants;
         let failure: StreamFailure = noStream;
         for (const variant of variants) {
-          const upstream = await requestFor(variant.url, variant.headers);
+          const upstream = await requestFor(variant.url, variant);
           const opened = upstream.ok ? await readStart(upstream.response, variant.url) : null;
           if (signal.aborted) {
             void opened?.reader.cancel().catch(() => {});
@@ -3102,7 +3123,8 @@ function make(deps: PlaybackDeps) {
 
     /**
      * Requests `url` through the session's provider, retrying briefly when it refuses: it can take
-     * a moment to free the connection of a request we just closed.
+     * a moment to free the connection of a request we just closed. `from` is the stream's own
+     * address when one of its playlists named `url`, which is held to that address's encryption.
      */
     async function connect(
       session: Session,
@@ -3110,6 +3132,7 @@ function make(deps: PlaybackDeps) {
       headers: Readonly<Record<string, string>>,
       signal: AbortSignal,
       retryDelays: readonly number[] = REFUSED_RETRY_DELAYS_MS,
+      from = url,
     ): Promise<{ ok: true; response: Response } | { ok: false; failure: StreamFailure }> {
       for (let attempt = 0; ; attempt++) {
         const timeout = new AbortController();
@@ -3120,10 +3143,11 @@ function make(deps: PlaybackDeps) {
           if (session.kind === "title")
             session.headers.forEach((value, name) => requested.set(name, value));
           new Headers(headers).forEach((value, name) => requested.set(name, value));
-          response = await session.request(url, {
-            headers: requested,
-            signal: AbortSignal.any([signal, timeout.signal]),
-          });
+          response = await session.request(
+            url,
+            { headers: requested, signal: AbortSignal.any([signal, timeout.signal]) },
+            from,
+          );
         } catch (cause) {
           return {
             ok: false,
@@ -3170,7 +3194,7 @@ function make(deps: PlaybackDeps) {
       Effect.gen(function* () {
         const listening = yield* Effect.tryPromise({
           try: () =>
-            listen((request, response) => {
+            listen((request, response, url) => {
               const session = sessions.get(id);
               if (!session?.lan) return void response.writeHead(410).end();
               response.setHeader("Access-Control-Allow-Origin", "*");
@@ -3181,8 +3205,8 @@ function make(deps: PlaybackDeps) {
                 return void response
                   .writeHead(204, { "Access-Control-Allow-Headers": "Range" })
                   .end();
-              if (session.receiver) void session.receiver.serve(request, response);
-              else response.writeHead(410).end();
+              if (session.receiver) return session.receiver.serve(request, response, url);
+              response.writeHead(410).end();
             }, receiver.address),
           catch: () => new Failed({ error: { kind: "output", failure: { kind: "no-network" } } }),
         });
@@ -3947,16 +3971,36 @@ function textRelay(): TextRelay {
 /**
  * Starts the proxy on a free port: loopback's, or `host`'s for a receiver on the local network. A
  * request may take as long as it likes to arrive: ffmpeg's reports are requests that last as long
- * as its run, and Node would end one after five minutes.
+ * as its run, and Node would end one after five minutes. `handle` gets each request with its
+ * target read as an address. Node's parser takes some that are none, such as `http://[`: those
+ * are answered 400 before anything else looks at them. A request `handle` fails ends there, its
+ * error logged without addresses, instead of being left unhandled.
  */
 function listen(
-  handle: (request: IncomingMessage, response: ServerResponse) => void,
+  handle: (request: IncomingMessage, response: ServerResponse, url: URL) => void | Promise<void>,
   host = "127.0.0.1",
 ): Promise<{ server: Server; port: number }> {
+  const answer = async (request: IncomingMessage, response: ServerResponse) => {
+    // Only the path and query count: the origin is the server's own.
+    const url = URL.parse(request.url ?? "/", "http://proxy.invalid");
+    if (!url) return void response.writeHead(400).end();
+    try {
+      await handle(request, response, url);
+    } catch (cause) {
+      console.error(
+        "[proxy] a request failed:",
+        withoutAddresses(cause instanceof Error ? cause.message : "unknown"),
+      );
+      if (response.headersSent) response.destroy();
+      else response.writeHead(500).end();
+    }
+  };
+  const answered = (request: IncomingMessage, response: ServerResponse) =>
+    void answer(request, response);
   return new Promise((resolve, reject) => {
-    const http = createServer({ requestTimeout: 0 }, handle);
+    const http = createServer({ requestTimeout: 0 }, answered);
     // A request that asks before it sends, "Expect: 100-continue", is told to by its handler.
-    http.on("checkContinue", handle);
+    http.on("checkContinue", answered);
     http.once("error", reject);
     http.listen(0, host, () => {
       const address = http.address();

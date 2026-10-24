@@ -11,7 +11,12 @@ import {
 } from "@mrstreamer/core/playlist/import";
 import type { PlaylistMapping } from "@mrstreamer/contracts/playlist";
 import { m3uReader, type PlaylistEntry } from "@mrstreamer/core/playlist/m3u";
-import { providerFetch, type Provider, type ProviderOptions } from "@mrstreamer/core/provider";
+import {
+  providerFetch,
+  type Provider,
+  type ProviderLogin,
+  type ProviderOptions,
+} from "@mrstreamer/core/provider";
 import { t } from "@mrstreamer/core/i18n";
 import { bodySize, describeNetworkError } from "./xtream.ts";
 
@@ -277,14 +282,11 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
       };
     },
 
-    request(url, init) {
+    request(url, init, from = url) {
       // Title credentials belong to exact imported files. Live keeps its existing redirect policy.
-      return titleAddresses.has(url)
-        ? providerFetch(options.fetch ?? fetch, [...loginIn(account.link), ...loginIn(url)])(
-            url,
-            init,
-          )
-        : fetchImpl(url, init);
+      return titleAddresses.has(from)
+        ? providerFetch(options.fetch ?? fetch, loginIn(account.link, from))(url, init, from)
+        : fetchImpl(url, init, from);
     },
 
     /**
@@ -339,14 +341,40 @@ export function playlistProvider(account: PlaylistAccount, options: ProviderOpti
 }
 
 /**
- * What in a playlist link can be a login: the user and password before the host and every query
- * value, such as a token. Redirects never carry them from https to http.
+ * Query names a playlist link's login goes by. Their values are as much the login as the user and
+ * password before the host.
  */
-function loginIn(link: string): string[] {
-  const url = new URL(link);
-  return [decoded(url.username), decoded(url.password), ...url.searchParams.values()].filter(
-    Boolean,
-  );
+const LOGIN_NAMES: ReadonlySet<string> = new Set([
+  "username",
+  "user",
+  "password",
+  "pass",
+  "pwd",
+  "login",
+  "token",
+  "access_token",
+  "auth",
+  "key",
+  "apikey",
+  "api_key",
+  "secret",
+]);
+
+/**
+ * What in playlist links is a login (see `ProviderLogin`): the user and password before the host,
+ * and the values of `LOGIN_NAMES`. Any other query value, such as `output=ts`, can be a setting
+ * as well as a token under a name of the publisher's own, so it is uncertain.
+ */
+function loginIn(...links: string[]): ProviderLogin {
+  const secrets: string[] = [];
+  const uncertain: string[] = [];
+  for (const link of links) {
+    const url = new URL(link);
+    secrets.push(decoded(url.username), decoded(url.password));
+    for (const [name, value] of url.searchParams)
+      (LOGIN_NAMES.has(name.toLowerCase()) ? secrets : uncertain).push(value);
+  }
+  return { secrets, uncertain };
 }
 
 function decoded(text: string): string {

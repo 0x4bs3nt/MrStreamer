@@ -294,6 +294,8 @@ export const en = {
   "It redirected too many times.": "It redirected too many times.",
   "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.":
     "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.",
+  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.":
+    "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.",
   "Subtitle file is too large.": "Subtitle file is too large.",
   "Subtitle file has too many cues.": "Subtitle file has too many cues.",
   "Subtitle file has no supported, valid cues.": "Subtitle file has no supported, valid cues.",

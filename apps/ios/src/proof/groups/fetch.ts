@@ -15,7 +15,9 @@ export const cases: readonly ProofCase[] = [
     compare: "record",
     run: async (context) => {
       return perFetch(context, (fetchImpl) =>
-        outcome(() => providerFetch(fetchImpl, ["proof-secret"])(`${context.fixture}/redirect`)),
+        outcome(() =>
+          providerFetch(fetchImpl, { secrets: ["proof-secret"] })(`${context.fixture}/redirect`),
+        ),
       );
     },
   },

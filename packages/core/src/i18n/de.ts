@@ -301,6 +301,8 @@ export const de: Translation = {
   "It redirected too many times.": "Die Adresse hat zu oft umgeleitet.",
   "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.":
     "Die Adresse hat auf eine unverschlüsselte Adresse mit deinen Anmeldedaten umgeleitet, daher hat Mr. Streamer abgebrochen.",
+  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.":
+    "Die Playlist des Streams nannte eine unverschlüsselte Adresse mit deinen Anmeldedaten, daher hat Mr. Streamer abgebrochen.",
   "Subtitle file is too large.": "Die Untertiteldatei ist zu groß.",
   "Subtitle file has too many cues.": "Die Untertiteldatei hat zu viele Einträge.",
   "Subtitle file has no supported, valid cues.":

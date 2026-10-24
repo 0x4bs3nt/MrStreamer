@@ -299,6 +299,8 @@ export const nl: Translation = {
   "It redirected too many times.": "Het adres stuurde te vaak door.",
   "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.":
     "Het adres stuurde door naar een onversleuteld adres met je login erin, dus Mr. Streamer is gestopt.",
+  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.":
+    "De afspeellijst van de stream noemde een onversleuteld adres met je login erin, dus Mr. Streamer is gestopt.",
   "Subtitle file is too large.": "Het ondertitelbestand is te groot.",
   "Subtitle file has too many cues.": "Het ondertitelbestand heeft te veel regels.",
   "Subtitle file has no supported, valid cues.":

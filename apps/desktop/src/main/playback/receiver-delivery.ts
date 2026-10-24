@@ -146,7 +146,8 @@ export interface ReceiverTools {
 }
 
 interface ReceiverDeliveryBase {
-  serve(request: IncomingMessage, response: ServerResponse): Promise<void>;
+  /** Answers a request to the session's address on the local network, its target read as `url`. */
+  serve(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void>;
   receive(
     run: string,
     index: number | null,
@@ -267,17 +268,17 @@ function receiverRoute(
   token: string | undefined,
   lan: ReceiverLan,
   request: IncomingMessage,
+  url: URL,
   response: ServerResponse,
 ) {
-  // A path with ".." in it is resolved before it is matched, so it names nothing here.
-  const url = new URL(request.url ?? "/", lan.origin);
+  // A path with ".." in it was resolved before it is matched, so it names nothing here.
   const route = RECEIVER_ROUTE.exec(url.pathname);
   if (!route || route[1] !== token || (request.method !== "GET" && request.method !== "HEAD")) {
     response.writeHead(410).end();
     return null;
   }
   lan.requests++;
-  return { url, route };
+  return route;
 }
 
 /** A channel's LAN token, segment ring and converter, subordinate to its admitted session. */
@@ -303,10 +304,9 @@ export function liveReceiverDelivery(
     url: `${lan.origin}/r/${receiver.token}/live.m3u8`,
     run: runLive,
     epoch: (startS) => void receiver.epochs.push(startS),
-    async serve(request, response) {
-      const matched = receiverRoute(receiver.token, lan, request, response);
-      if (!matched) return;
-      const { url, route } = matched;
+    async serve(request, response, url) {
+      const route = receiverRoute(receiver.token, lan, request, url, response);
+      if (!route) return;
       const [, , playlist, , , made, address] = route;
       if (source.stream.kind === "hls" && (playlist === "live" || address !== undefined)) {
         await source.stream.passThrough(address ?? null, url, request, response, proxied);
@@ -628,10 +628,10 @@ export async function titleReceiverDelivery(
         subtitles: subtitle !== null,
       };
     },
-    async serve(request, response) {
-      const matched = receiverRoute(receiver.load?.token, lan, request, response);
-      if (!matched) return;
-      if (receiver.load) await serveReceiverTitle(receiver.load, matched.route, response);
+    async serve(request, response, url) {
+      const route = receiverRoute(receiver.load?.token, lan, request, url, response);
+      if (!route) return;
+      if (receiver.load) await serveReceiverTitle(receiver.load, route, response);
       else response.writeHead(410).end();
     },
     async receive(run, index, request, response) {

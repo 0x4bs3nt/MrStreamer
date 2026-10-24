@@ -170,10 +170,11 @@ export interface Provider {
     signal?: AbortSignal,
   ): Promise<ArchiveStream>;
   /**
-   * Requests an address `liveStream` or `titleFile` gave, the way `providerFetch` does: never
-   * sending the login unencrypted after an https address.
+   * Requests an address `liveStream`, `archiveStream` or `titleFile` gave, or, with that address
+   * as `from`, one its playlists named, the way `providerFetch` does: after an https address,
+   * sending http nothing that holds the login as it recognizes it.
    */
-  request(url: string, init?: RequestInit): Promise<Response>;
+  request(url: string, init?: RequestInit, from?: string): Promise<Response>;
   /**
    * The provider's programme guide, or that it has none. A playlist reads its first line again
    * for it, so a guide its publisher added, moved or dropped since is found.
@@ -216,30 +217,57 @@ const REDIRECTS: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 20;
 
 /**
- * Fetch for a provider's addresses, which carry `login`, its username and password. It follows
- * GET redirects itself and refuses one that `exposesLogin`, so an https address never sends the
- * login unencrypted. Its errors name no address beyond its origin.
+ * What of a provider's login its addresses and headers can carry, as its adapter knows it.
+ * `secrets` are the login for certain: an account's username and password, or a playlist link's
+ * user info and token. They count wherever they are, however short. `uncertain` values can be a
+ * token as well as a setting, such as the `output=ts` a panel's playlist link carries beside the
+ * login: those count only as a whole part (`whole`).
  */
-export function providerFetch(fetchImpl: typeof fetch, login: readonly string[]) {
-  return async (url: string, init: RequestInit = {}): Promise<Response> => {
+export interface ProviderLogin {
+  readonly secrets: readonly string[];
+  readonly uncertain?: readonly string[];
+}
+
+/**
+ * Fetch for a provider's addresses, which carry `login`. It follows GET redirects itself. After an
+ * https address it sends nothing to http that holds the login as `exposesLogin` reads it, and a
+ * header that holds it goes to no other origin (`sentWith`). `from` is
+ * the stream's address when its playlists named `url`, as they name variants, segments and keys:
+ * those are held to `from` as its redirects are. Its errors name no address beyond its origin.
+ */
+export function providerFetch(fetchImpl: typeof fetch, login: ProviderLogin) {
+  // An empty value would be in everything.
+  const known: ProviderLogin = {
+    secrets: login.secrets.filter(Boolean),
+    uncertain: login.uncertain?.filter(Boolean) ?? [],
+  };
+  return async (url: string, init: RequestInit = {}, from = url): Promise<Response> => {
     try {
-      const start = new URL(url);
-      let target = start;
+      const admitted = new URL(from);
+      const headers = new Headers(init.headers);
+      let target = new URL(url);
       for (let redirects = 0; ; redirects++) {
-        const response = await fetchImpl(target.href, { ...init, redirect: "manual" });
+        if (exposesLogin(admitted, target, known)) {
+          throw new TypeError(
+            redirects === 0
+              ? t(
+                  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.",
+                )
+              : t(
+                  "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.",
+                ),
+          );
+        }
+        const response = await fetchImpl(target.href, {
+          ...init,
+          headers: sentWith(headers, admitted, target, known),
+          redirect: "manual",
+        });
         const location = REDIRECTS.has(response.status) ? response.headers.get("location") : null;
         if (location === null) return response;
         void response.body?.cancel().catch(() => {});
         if (redirects === MAX_REDIRECTS) throw new TypeError(t("It redirected too many times."));
-        const next = new URL(location, target);
-        if (exposesLogin(start, next, login)) {
-          throw new TypeError(
-            t(
-              "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.",
-            ),
-          );
-        }
-        target = next;
+        target = new URL(location, target);
       }
     } catch (cause) {
       throw withoutAddress(cause);
@@ -248,27 +276,131 @@ export function providerFetch(fetchImpl: typeof fetch, login: readonly string[])
 }
 
 /**
- * Whether following a redirect to `target` sends the login unencrypted when the request started
- * at an https address: an http target whose user info, path segments or query values hold the
- * username or the password. One that holds neither, such as a stream's address with a token of
- * its own, is followed. The stricter rule, never following https to http, would be
- * `start.protocol === "https:" && target.protocol === "http:"`.
+ * Whether a request to `target` sends the login unencrypted, its stream's address `admitted`
+ * being https: an http target whose user info, path or query holds any of it (`holdsLogin`). Its
+ * host isn't looked at: a request names that in the clear over https too. One that holds none,
+ * such as a stream's address with a token of its own, is asked. The stricter rule, never following
+ * https to http, would be `admitted.protocol === "https:" && target.protocol === "http:"`.
  */
-function exposesLogin(start: URL, target: URL, login: readonly string[]): boolean {
-  if (start.protocol !== "https:" || target.protocol !== "http:") return false;
-  const parts = [
-    ...[target.username, target.password, ...target.pathname.split("/")].map(decoded),
-    ...target.searchParams.values(),
-  ];
-  return login.some((secret) => secret !== "" && parts.includes(secret));
+function exposesLogin(admitted: URL, target: URL, login: ProviderLogin): boolean {
+  if (admitted.protocol !== "https:" || target.protocol !== "http:") return false;
+  const { username, password, pathname, search, searchParams } = target;
+  const written: Carried[] = [{ text: username }, { text: password }, { text: pathname }];
+  // Uncertain values count in the query's values only: its names, as the `ts` of
+  // `?ts=1700000000`, name settings.
+  return holdsLogin(
+    login,
+    [...written, { text: search, query: true }],
+    [...written, ...Array.from(searchParams.values(), (text) => ({ text, query: true }))],
+  );
 }
 
-function decoded(text: string): string {
-  try {
-    return decodeURIComponent(text);
-  } catch {
-    return text;
+/**
+ * The headers a request to `target` carries: all of them at the origin of its stream's address,
+ * `admitted`. Elsewhere one that holds any of the login stays behind, except a Referer, which
+ * goes cut to its origin, as a browser sends one to another origin.
+ */
+function sentWith(headers: Headers, admitted: URL, target: URL, login: ProviderLogin): Headers {
+  if (target.origin === admitted.origin) return headers;
+  // A header reads as written, its "+" a plus; one that is an address, as a Referer is, has a
+  // query as well.
+  const holds = (text: string) =>
+    holdsLogin(login, [{ text }, { text: URL.parse(text)?.search ?? "", query: true }]);
+  const sent = new Headers();
+  headers.forEach((value, name) => {
+    if (!holds(value)) sent.set(name, value);
+    else if (name === "referer") {
+      const origin = URL.parse(value)?.origin;
+      if (origin && origin !== "null" && !holds(origin)) sent.set(name, `${origin}/`);
+    }
+  });
+  return sent;
+}
+
+/**
+ * Text a request carries: user info, a path or a header, where "+" is a plus, or a query, which
+ * servers read with "+" a space as well, as a form spells one.
+ */
+interface Carried {
+  readonly text: string;
+  readonly query?: boolean;
+}
+
+/**
+ * Whether texts hold any of `login`: a secret anywhere in one of `anywhere`, joined to other text
+ * as in `user:password` too, and an uncertain value as a whole part of one of `parts`. Each is
+ * read as written and decoded (`decodings`). Text still encoded after that counts as holding a
+ * secret: what it hides can't be told.
+ */
+function holdsLogin(login: ProviderLogin, anywhere: readonly Carried[], parts = anywhere): boolean {
+  const { secrets, uncertain = [] } = login;
+  return (
+    (secrets.length > 0 &&
+      anywhere.some(({ text, query }) => {
+        const { forms, deeper } = decodings(text, query);
+        return deeper || forms.some((form) => secrets.some((secret) => form.includes(secret)));
+      })) ||
+    parts.some(({ text, query }) =>
+      decodings(text, query).forms.some((form) => uncertain.some((value) => whole(form, value))),
+    )
+  );
+}
+
+/** How many times text is decoded after it is read as written. */
+const DECODINGS = 4;
+
+/**
+ * `text` as written and each text `decoded` reads from it, up to `DECODINGS` decodings deep. Each
+ * decoding of a query reads its "+" both as a plus and as a space, so every order counts: a
+ * server reads a form's "+" as a space, and code given the value can decode it again either way.
+ * A query's texts at most double with each decoding. `deeper` when one more decoding would read
+ * text none of these is.
+ */
+function decodings(
+  text: string,
+  query = false,
+): { readonly forms: readonly string[]; readonly deeper: boolean } {
+  const forms = new Set([text]);
+  for (let layer = [text], times = 0; ; times++) {
+    const next = new Set<string>();
+    for (const form of layer) {
+      for (const spaces of query ? [false, true] : [false]) {
+        const read = decoded(form, spaces);
+        if (!forms.has(read)) next.add(read);
+      }
+    }
+    if (next.size === 0 || times === DECODINGS) return { forms: [...forms], deeper: next.size > 0 };
+    for (const form of next) forms.add(form);
+    layer = [...next];
   }
+}
+
+/** What runs on in a name, as in `index.m3u8` or `seg_1.ts`: beside it, a value is part of one. */
+const NAME = /[\p{L}\p{N}\-._~]/u;
+
+/**
+ * Whether `value` is in `text` without a name's character right before or after it: a path
+ * segment, a query value or a part of one between separators, as in `auth=guest:k9x`, but not
+ * the `ts` of `index.ts`.
+ */
+function whole(text: string, value: string): boolean {
+  for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) {
+    if (!NAME.test(text[at - 1] ?? "") && !NAME.test(text[at + value.length] ?? "")) return true;
+  }
+  return false;
+}
+
+/**
+ * `text` decoded once: with `spaces`, "+" as a space first, then its percent escapes as UTF-8, as
+ * URLSearchParams decodes them. A byte order mark stays; bytes that are no UTF-8 read as U+FFFD,
+ * one for each character cut short or byte that starts none, and the characters beside them
+ * still decode; a `%` that encodes nothing stays as it is.
+ */
+function decoded(text: string, spaces: boolean): string {
+  const utf8 = new TextDecoder("utf-8", { ignoreBOM: true });
+  return (spaces ? text.replaceAll("+", " ") : text).replace(/(?:%[\da-f]{2})+/gi, (run) =>
+    utf8.decode(Uint8Array.from(run.slice(1).split("%"), (hex) => Number.parseInt(hex, 16))),
+  );
 }
 
 /**

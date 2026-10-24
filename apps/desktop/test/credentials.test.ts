@@ -48,13 +48,17 @@ async function app(fetchImpl: typeof fetch, tcpConnect?: TcpConnect) {
  * on `http://relay.test` play the fake provider's channel `/<id>.ts` without the login, like a
  * stream address with a token of its own. `asked` lists every address requested.
  */
-function httpsPanel(provider: FakeProvider, redirect: (url: URL) => string | null = () => null) {
+function httpsPanel(
+  provider: FakeProvider,
+  redirect: (url: URL) => string | null = () => null,
+  login = LOGIN,
+) {
   const asked: string[] = [];
   const panel: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     asked.push(url.href);
     if (url.host === "relay.test") {
-      return fetch(`${provider.url}/live/${LOGIN.username}/${LOGIN.password}${url.pathname}`, init);
+      return fetch(`${provider.url}/live/${login.username}/${login.password}${url.pathname}`, init);
     }
     if (url.host !== "panel.test") return fetch(url, init);
     const location = redirect(url);
@@ -147,6 +151,34 @@ describe("credential protection", () => {
     const bytes = (await (await fetch(played.url)).arrayBuffer()).byteLength;
     expect(bytes).toBeGreaterThan(0);
     expect(provider.streamRequests()).toBe(1);
+  });
+
+  it("refuses a stream redirected to http with a short password joined to other text", async () => {
+    const login = { username: "viewer7", password: "q7x" };
+    const provider = await fakeProvider(login);
+    const id = channel(provider, "TEST | H.264 + AAC");
+    const panel = httpsPanel(
+      provider,
+      (url) =>
+        url.pathname.endsWith(`/${id}.ts`)
+          ? `http://relay.test/x${login.password}y/${id}.ts`
+          : null,
+      login,
+    );
+    const { subscriptions, playback } = await app(panel.fetch);
+    const { id: subscriptionId } = await subscriptions.add({
+      server: "https://panel.test",
+      ...login,
+    });
+
+    const refused = await playback.open({ subscriptionId, id }, ["h264", "aac"]);
+    expect((await fetch(refused.url)).status).toBe(502);
+    expect(await playback.failure(refused.sessionId)).toMatchObject({
+      kind: "network",
+      detail: expect.stringContaining("unencrypted"),
+    });
+    expect(panel.asked.filter((address) => address.startsWith("http:"))).toEqual([]);
+    expect(provider.streamRequests()).toBe(0);
   });
 
   it("connects an address without a scheme over https when the server has it", async () => {

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
@@ -1050,4 +1050,80 @@ describe("an HLS channel for a receiver", () => {
     await playback.close(opened.sessionId);
     await expect(fetch(opened.url)).rejects.toThrow();
   });
+
+  it("answers a request whose target is no address with 400, here and on the local network, and goes on", async () => {
+    const server = createServer((request, response) => {
+      const body = routes.get(new URL(request.url ?? "/", "http://host").pathname);
+      if (body === undefined) response.writeHead(404).end();
+      else response.writeHead(200).end(body);
+    });
+    servers.push(server);
+    await new Promise<void>((listening) => server.listen(0, "127.0.0.1", listening));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const routes = new Map<string, string | Buffer>([
+      ["/list.m3u", `#EXTM3U\n#EXTINF:-1 tvg-id="Alpha.test",Alpha\n${origin}/alpha/index.m3u8\n`],
+      ["/alpha/index.m3u8", "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXTINF:3,\nsegment-0.ts\n"],
+      ["/alpha/segment-0.ts", fixture("h264-aac.mpegts")],
+    ]);
+    const runtime = runtimeFor(
+      Playback.layer({ userAgent, ffmpeg: null }).pipe(
+        Layer.provide(PlaybackCoordination.layer),
+        Layer.provideMerge(
+          Subscriptions.layer({
+            dataDir: await tempDir(),
+            secrets: testSecrets,
+            providerOptions: { userAgent },
+          }),
+        ),
+      ),
+    );
+    const { id: subscriptionId } = await (
+      await promised(runtime, Subscriptions)
+    ).add({ server: `${origin}/list.m3u`, username: "", password: "" });
+    const playback = await promised(runtime, Playback);
+    const rejections: unknown[] = [];
+    const note = (reason: unknown) => void rejections.push(reason);
+    process.on("unhandledRejection", note);
+    try {
+      // Node's parser takes these targets; none of them is an address.
+      const malformed = ["http://[", "//[", "http://%"];
+      const local = await playback.open({ subscriptionId, id: "Alpha.test" }, RECEIVER);
+      const here = await Promise.all(malformed.map((target) => raw(new URL(local.url), target)));
+      const playing = (await playlist(local.url)).status;
+
+      const opened = await playback.openReceiver(
+        { subscriptionId, id: "Alpha.test" },
+        { address: "127.0.0.1", decoders: RECEIVER },
+      );
+      const lan = await Promise.all(malformed.map((target) => raw(new URL(opened.url), target)));
+      const stream = await playlist(opened.url);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect({ here, lan, rejections }).toEqual({
+        here: malformed.map(() => "HTTP/1.1 400 Bad Request"),
+        lan: malformed.map(() => "HTTP/1.1 400 Bad Request"),
+        rejections: [],
+      });
+      expect(playing).toBe(200);
+      expect(stream.status).toBe(200);
+      expect((await fetch(stream.segments[0]!.url)).status).toBe(200);
+
+      await playback.close(opened.sessionId);
+      await expect(fetch(opened.url)).rejects.toThrow();
+    } finally {
+      process.off("unhandledRejection", note);
+    }
+  });
 });
+
+/** The status line answering a GET of `target` exactly as written, sent to `url`'s server. */
+async function raw(url: URL, target: string): Promise<string> {
+  const socket = connect(Number(url.port), url.hostname);
+  socket.write(`GET ${target} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+  let text = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (part: string) => (text += part));
+  // A request nobody answers holds the connection: give up on it.
+  socket.setTimeout(2_000, () => socket.destroy());
+  await new Promise((closed) => socket.once("close", closed));
+  return text.split("\r\n")[0] ?? "";
+}

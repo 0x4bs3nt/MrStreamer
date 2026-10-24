@@ -137,7 +137,9 @@ export interface XtreamOptions extends ProviderOptions {
  * login, so its requests go through `providerFetch` and its errors name the server only.
  */
 export function xtreamProvider(account: XtreamAccount, options: XtreamOptions): Provider {
-  const fetchImpl = providerFetch(options.fetch ?? fetch, [account.username, account.password]);
+  const fetchImpl = providerFetch(options.fetch ?? fetch, {
+    secrets: [account.username, account.password],
+  });
   const credentials = new URLSearchParams({
     username: account.username,
     password: account.password,

@@ -308,6 +308,8 @@ export const es: Translation = {
   "It redirected too many times.": "La dirección redirigió demasiadas veces.",
   "It redirected to an unencrypted address with your login in it, so Mr. Streamer stopped.":
     "La dirección redirigió a una dirección sin cifrar con tus datos de acceso, así que Mr. Streamer se detuvo.",
+  "The stream's playlist named an unencrypted address with your login in it, so Mr. Streamer stopped.":
+    "La lista de la emisión indicaba una dirección sin cifrar con tus datos de acceso, así que Mr. Streamer se detuvo.",
   "Subtitle file is too large.": "El archivo de subtítulos es demasiado grande.",
   "Subtitle file has too many cues.": "El archivo de subtítulos tiene demasiadas líneas.",
   "Subtitle file has no supported, valid cues.":
