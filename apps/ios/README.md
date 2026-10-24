@@ -26,6 +26,15 @@ didn't load with none of them showing, finding nothing says whose are missing ra
 provider has the name. Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
+All, 4K and pushed collections have one Sort & filter sheet with title counts, the shared
+collection sorts, declared quality and file-language hints, and Reset. Combined filters must
+match one listed version; opening a filtered tile asks for that version over a remembered pick.
+A later manual version choice in details still wins. Choices stay per kind and collection for
+the app session, including Back, and Reset restores that collection's default sort. Refreshes
+update counts and options without clearing the choices. An empty filtered result keeps Reset;
+an initial collection load failure keeps the controls and Try again. Known audio/subtitle
+filters are unavailable until iOS has validated exact-file track facts. Filtering never probes
+media or treats provider labels as verified tracks.
 A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
 4K tile or Continue watching asks for its own version over it. While a provider needs its
 password, the version remembered from it and how far its versions got are left out of the

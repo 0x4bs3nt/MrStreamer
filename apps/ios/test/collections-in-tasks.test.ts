@@ -16,6 +16,7 @@ import { xtreamProvider } from "@mrstreamer/core/xtream";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inTasks } from "../src/library.ts";
+import { browseFixture } from "./title-browse-fixture.ts";
 
 // The collections Movies, Series, Home and details show, made in short tasks: worked out between
 // other tasks they hold what making them at once gives, with TMDB's metadata or without. The app's
@@ -30,6 +31,9 @@ import { inTasks } from "../src/library.ts";
 // run as the app runs them.
 
 const edges = vi.hoisted(() => ({
+  opened: [] as Array<{ title: Title; asked: boolean }>,
+  presses: new Map<string, () => void>(),
+  retries: 0,
   members: [] as Array<{
     entry: { id: string };
     needsSecret: boolean;
@@ -61,7 +65,9 @@ vi.mock("../src/account.ts", () => ({
   },
   shownOf: (titles: { kind: string; value?: unknown; last?: unknown }) =>
     titles.kind === "ready" ? titles.value : (titles.last ?? null),
-  retryTitles: () => undefined,
+  retryTitles: () => {
+    edges.retries++;
+  },
   reloadTitles: () => undefined,
   useRoster: () => ({ kind: "ready", members: [] }),
   // No launch is reading saved lists here.
@@ -92,10 +98,17 @@ vi.mock("../src/errors.ts", () => ({ describeError: () => "failed" }));
 vi.mock("../src/tab-bar.ts", () => ({ useFixedTabBar: () => undefined }));
 vi.mock("../src/resume.ts", () => ({
   detailsHref: () => "/",
-  openDetails: () => undefined,
+  openDetails: (title: Title, asked = false) => edges.opened.push({ title, asked }),
   resume: () => undefined,
   useContinueWatching: () => [],
 }));
+vi.mock("react-native-safe-area-context", async () => {
+  const { createElement } = await import("react");
+  return {
+    SafeAreaView: ({ children }: { children?: React.ReactNode }) =>
+      createElement("div", null, children),
+  };
+});
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   const box = ({ children }: { children?: React.ReactNode }) =>
@@ -104,7 +117,29 @@ vi.mock("react-native", async () => {
     View: box,
     Text: box,
     ScrollView: box,
-    Pressable: box,
+    Pressable: ({
+      children,
+      onPress,
+      accessibilityLabel,
+      accessibilityState,
+    }: {
+      children?: React.ReactNode;
+      onPress?: () => void;
+      accessibilityLabel?: string;
+      accessibilityState?: { selected?: boolean };
+    }) => {
+      if (onPress && accessibilityLabel) edges.presses.set(accessibilityLabel, onPress);
+      return createElement(
+        "button",
+        {
+          onClick: onPress,
+          "aria-label": accessibilityLabel,
+          "aria-pressed": accessibilityState?.selected,
+        },
+        children,
+      );
+    },
+    Modal: box,
     StyleSheet: { create: <T>(styles: T) => styles },
   };
 });
@@ -112,7 +147,19 @@ vi.mock("../src/ui.tsx", async () => {
   const { createElement } = await import("react");
   return {
     colors: {},
-    Message: ({ text }: { text: string }) => createElement("p", null, text),
+    Message: ({
+      text,
+      action,
+    }: {
+      text: string;
+      action?: { label: string; onPress: () => void };
+    }) =>
+      createElement(
+        "p",
+        null,
+        text,
+        action ? createElement("button", { onClick: action.onPress }, action.label) : null,
+      ),
   };
 });
 vi.mock("../src/titles-ui.tsx", async () => {
@@ -123,11 +170,47 @@ vi.mock("../src/titles-ui.tsx", async () => {
   return {
     Artwork: () => null,
     CollectionTileView: () => null,
-    TextTabs: () => null,
+    TextTabs: ({
+      tabs,
+      onChange,
+    }: {
+      tabs: readonly { value: string; label: string }[];
+      onChange: (value: string) => void;
+    }) =>
+      createElement(
+        "nav",
+        null,
+        tabs.map(({ value, label }) =>
+          createElement("button", { key: value, onClick: () => onChange(value) }, label),
+        ),
+      ),
     PlaceholderShelf: () => null,
-    PlaceholderGrid: () => null,
+    PlaceholderGrid: ({ header }: { header?: React.ReactNode }) =>
+      createElement("div", null, header, "Loading collection"),
     Shelf: ({ name, titles }: { name: string; titles: readonly Title[] }) => shown(name, titles),
-    PosterGrid: ({ titles }: { titles: readonly Title[] }) => shown("grid", titles),
+    PosterGrid: ({
+      titles,
+      header,
+      empty,
+      onPress,
+    }: {
+      titles: readonly Title[];
+      header?: React.ReactNode;
+      empty?: React.ReactNode;
+      onPress: (title: Title) => void;
+    }) => {
+      for (const title of titles) edges.presses.set(`tile:${title.id}`, () => onPress(title));
+      return createElement(
+        "div",
+        null,
+        header,
+        shown("grid", titles),
+        titles.length ? null : empty,
+        titles.map((title) =>
+          createElement("button", { key: title.key, onClick: () => onPress(title) }, title.title),
+        ),
+      );
+    },
   };
 });
 vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
@@ -341,6 +424,9 @@ describe("the collections Movies, Series, Home and details show", () => {
   beforeEach(async () => {
     vi.resetModules();
     edges.members = [];
+    edges.opened = [];
+    edges.presses.clear();
+    edges.retries = 0;
     edges.roster.clear();
     edges.sources.clear();
     edges.known = null;
@@ -741,6 +827,199 @@ describe("the collections Movies, Series, Home and details show", () => {
       }
     }
     const ids = (titles: readonly Title[]) => titles.map(ownedKey).join(",");
+
+    const click = async (label: string) => {
+      const button = [...container.querySelectorAll("button")].find(
+        (button) => button.getAttribute("aria-label") === label || button.textContent === label,
+      );
+      if (!button) throw new Error(`No button ${label}. ${container.textContent}`);
+      await React.act(async () => button.click());
+    };
+    const press = async (label: string) => {
+      const action = edges.presses.get(label);
+      if (!action) throw new Error(`No press ${label}`);
+      await React.act(async () => action());
+    };
+
+    it.each(["movie", "series"] as const)(
+      "shows %s collection controls, counts, matching activation and reset",
+      async (kind) => {
+        const { CollectionScreen } = await import("../src/titles-screen.tsx");
+        list([["a", browseFixture(kind).catalogue]]);
+        await until(() => titles.collectionsOf(kind) !== null, "fixture collections");
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        expect(container.textContent).toContain(`4 of 4 ${kind === "movie" ? "movies" : "series"}`);
+        await click("Sort & filter");
+        expect(container.textContent).toContain("Unavailable. Verified track information");
+        expect(container.textContent).toContain("provider name hints, not verified tracks");
+        await click("4K · 2");
+        await click("English · 1");
+        expect(showing("grid")).toBe("a:en-4k");
+        expect(container.textContent).toContain("Show 1");
+        await click(`Show 1 ${kind === "movie" ? "movies" : "series"}`);
+        await press("tile:en-4k");
+        expect(edges.opened.at(-1)).toMatchObject({ title: { id: "en-4k" }, asked: true });
+        await click("Sort & filter");
+        await click("Nederlands · 1");
+        expect(showing("grid")).toBe("a:nl-4k");
+        await press("tile:nl-4k");
+        expect(edges.opened.at(-1)).toMatchObject({ title: { id: "nl-4k" }, asked: true });
+        await click("HD · 0");
+        expect(container.textContent).toContain("No titles match these filters.");
+        await click("Reset");
+        expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:unknown,a:tie");
+        expect(container.textContent).toContain("Show 4");
+      },
+    );
+
+    it("retains session choices across tabs, collection routes and Back, with core sorting", async () => {
+      const { CollectionScreen, TitlesHome } = await import("../src/titles-screen.tsx");
+      list([
+        [
+          "a",
+          { ...browseFixture("movie").catalogue, series: browseFixture("series").catalogue.series },
+        ],
+      ]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      await click("All");
+      await click("Sort & filter");
+      await click("Title");
+      expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:tie,a:unknown");
+      await click("4K · 2");
+      await click("Show 2 movies");
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+      await draw(React.createElement(CollectionScreen, { kind: "series", id: "all" }));
+      expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:unknown,a:tie");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "4k" }));
+      await click("Sort & filter");
+      await click("English · 1");
+      expect(showing("grid")).toBe("a:en-4k");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+    });
+
+    it("cancels stale tile taps on refresh, source replacement, removal and leaving the route", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      const before = edges.presses.get("tile:en-hd")!;
+      await React.act(async () => list([["a", { ...fixture.catalogue }]]));
+      await React.act(async () => before());
+      expect(edges.opened).toEqual([]);
+      await settled(() => titles.titlesWorkedOut(), "refresh");
+      const refreshed = edges.presses.get("tile:en-hd")!;
+      edges.sources.set("a", { provider: { titleFile: () => null } });
+      await React.act(async () => refreshed());
+      expect(edges.opened).toEqual([]);
+      await click("Sort & filter");
+      expect(container.textContent).toContain("Reset");
+      await React.act(async () => list([]));
+      await React.act(async () => refreshed());
+      expect(edges.opened).toEqual([]);
+      expect(container.textContent).toContain("Sort & filter");
+      await click("Sort & filter");
+      await click("Reset");
+      expect(container.textContent).toContain("Catalogue unavailable");
+      await React.act(async () => list([["a", fixture.catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "readded");
+      const leaving = edges.presses.get("tile:en-hd")!;
+      await draw(React.createElement("div"));
+      await React.act(async () => leaving());
+      expect(edges.opened).toEqual([]);
+    });
+
+    it("updates metadata and removed options without dropping controls or confusing empty results with an empty catalogue", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      await click("Sort & filter");
+      await click("4K · 2");
+      const before = titles.collectionsOf("movie");
+      await React.act(async () => learn(2));
+      await settled(() => titles.collectionsOf("movie") !== before, "metadata refresh");
+      expect(container.textContent).toContain("2 of 4 movies");
+      await React.act(async () =>
+        list([
+          [
+            "a",
+            {
+              ...fixture.catalogue,
+              movies: fixture.catalogue.movies.filter((row) => !row.name.includes("4K")),
+            },
+          ],
+        ]),
+      );
+      await settled(() => titles.titlesWorkedOut(), "new declarations");
+      expect(container.textContent).toContain("0 of 3 movies");
+      expect(container.textContent).toContain("Selected quality: 4K. No matching files listed.");
+      expect(container.textContent).toContain("No titles match these filters.");
+      await click("Reset");
+      expect(container.textContent).toContain("3 of 3 movies");
+      await React.act(async () => list([["a", { ...fixture.catalogue, movies: [] }]]));
+      await settled(() => titles.titlesWorkedOut(), "empty catalogue");
+      expect(container.textContent).toContain("No movies in this collection.");
+      expect(container.textContent).not.toContain("No titles match");
+      expect(container.textContent).toContain("Reset");
+    });
+
+    it("keeps the selected 4K tab and its controls when its catalogue empties or disappears", async () => {
+      const { TitlesHome } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      await click("4K");
+      await click("Sort & filter");
+      await click("Nederlands · 1");
+      await click("Show 1 movies");
+      const stale = edges.presses.get("tile:nl-4k")!;
+      await React.act(async () => list([["a", { ...fixture.catalogue, movies: [] }]]));
+      await settled(() => titles.titlesWorkedOut(), "empty 4K catalogue");
+      expect(container.textContent).toContain("No movies in this collection.");
+      expect(container.textContent).toContain("Sort & filter");
+      await click("Sort & filter");
+      expect(container.textContent).toContain("Selected file language: Nederlands");
+      await click("Reset");
+      await React.act(async () => stale());
+      expect(edges.opened).toEqual([]);
+      await React.act(async () => list([]));
+      expect(container.textContent).toContain("Sort & filter");
+      expect(container.textContent).toContain("No movies in this collection.");
+      await click("Sort & filter");
+      await click("Reset");
+      await React.act(async () => list([["a", fixture.catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "returning 4K catalogue");
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+    });
+
+    it("recovers an initial persistent collection failure through Try again with controls present", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      edges.members = [
+        {
+          entry: { id: "a" },
+          needsSecret: false,
+          titles: { kind: "failed", error: { kind: "network" }, last: null, since: 1 },
+        },
+      ];
+      for (const listener of edges.roster) listener();
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      expect(container.textContent).toContain("failed");
+      expect(container.textContent).not.toContain("Loading collection");
+      await click("Sort & filter");
+      await click("Reset");
+      await click("Try again");
+      expect(edges.retries).toBe(1);
+      await React.act(async () => list([["a", browseFixture("movie").catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "retry");
+      expect(container.textContent).toContain("4 of 4 movies");
+    });
 
     it("shows For you as it stands now once what was watched changes, after the clock passed New's days", async () => {
       const { TitlesHome } = await import("../src/titles-screen.tsx");

@@ -394,6 +394,32 @@ export function useCollections(
   return kept?.collections ?? null;
 }
 
+/**
+ * A tile may open only while its rendered collections, source login and provider lists still
+ * stand. A refresh awaiting indexing cancels the old tap, even before React renders again.
+ */
+export function collectionSelection(kind: TitleKind, collections: Collections) {
+  const snapshot = shown.get();
+  const sources = new Map(
+    snapshot.made
+      ? snapshot.listed.map(({ subscriptionId }) => [subscriptionId, currentSource(subscriptionId)])
+      : [],
+  );
+  return (title: Title): boolean => {
+    const now = shown.get();
+    const listed = snapshot.made
+      ? kindOf(snapshot.lists.index, kind).byId.get(ownedKey(title))
+      : null;
+    return (
+      now.made?.[kind].collections === collections &&
+      snapshot.made !== null &&
+      sameLists(snapshot.listed, listedOf(members())) &&
+      currentSource(title.subscriptionId) === sources.get(title.subscriptionId) &&
+      listed?.key === title.key
+    );
+  };
+}
+
 /** Whether the published collections have usable titles, without requesting new collections. */
 export function useHasTitles(...kinds: readonly TitleKind[]): boolean {
   return useSyncExternalStore(shown.subscribe, () =>

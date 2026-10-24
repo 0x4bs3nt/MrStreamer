@@ -3,7 +3,7 @@ import { ownedId } from "@mrstreamer/contracts/subscription";
 import { seriesOf } from "@mrstreamer/contracts/ondemand";
 import { collectionRows, rowIds, type Collections } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { reloadTitles, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
@@ -20,7 +20,15 @@ import {
 import { detailsHref, openDetails, resume, useContinueWatching } from "./resume.ts";
 import { store, useStore } from "./store.ts";
 import { useFixedTabBar } from "./tab-bar.ts";
-import { tilesOf, useCollections, useHolding, useTitleLists } from "./titles.ts";
+import {
+  collectionSelection,
+  tilesOf,
+  useCollections,
+  useHolding,
+  useTitleLists,
+} from "./titles.ts";
+import { browseCollection, DEFAULT_BROWSE, type BrowseChoices } from "./title-browse.ts";
+import { BrowseControls } from "./title-browse-controls.tsx";
 import {
   Artwork,
   CollectionTileView,
@@ -46,6 +54,20 @@ type Tab = "for-you" | "new" | "genres" | "services" | "4k" | "all";
 
 /** Which tab each kind was on, kept while the viewer goes elsewhere and comes back. */
 const places = store<Record<TitleKind, Tab>>({ movie: "for-you", series: "for-you" });
+const browseChoices = store<ReadonlyMap<string, BrowseChoices>>(new Map());
+
+function useBrowseChoices(kind: TitleKind, id: CollectionId) {
+  const key = `${kind}:${id}`;
+  const choices = useStore(browseChoices).get(key) ?? DEFAULT_BROWSE;
+  const change = (next: BrowseChoices) =>
+    browseChoices.set((current) => {
+      const updated = new Map(current);
+      if (next === DEFAULT_BROWSE) updated.delete(key);
+      else updated.set(key, next);
+      return updated;
+    });
+  return { choices, change };
+}
 
 export const collectionHref = (kind: TitleKind, id: CollectionId) =>
   `/${kind === "movie" ? "films" : "series"}/collection/${encodeURIComponent(id)}` as const;
@@ -69,6 +91,31 @@ export function TitlesHome({ kind }: { kind: TitleKind }) {
   const lists = useTitleLists();
   const made = useCollections(kind);
   const status = useTitlesStatus(kind, (made?.size("all") ?? 0) > 0);
+  const chosen = useStore(places)[kind];
+  useFixedTabBar(chosen === "all" || chosen === "4k");
+  if (!made && (chosen === "all" || chosen === "4k")) {
+    return (
+      <Docked status={status}>
+        <CollectionGrid
+          made={null}
+          kind={kind}
+          id={chosen}
+          testID={`${kind}-grid`}
+          header={
+            <TextTabs
+              tabs={[
+                { value: "for-you" as const, label: "For you" },
+                ...(chosen === "4k" ? [{ value: "4k" as const, label: "4K" }] : []),
+                { value: "all" as const, label: "All" },
+              ]}
+              value={chosen}
+              onChange={(next) => places.set((current) => ({ ...current, [kind]: next }))}
+            />
+          }
+        />
+      </Docked>
+    );
+  }
   if (lists.kind === "failed") {
     return (
       // Like the loading and ready lists, recovery must clear the native header and tab bar.
@@ -116,8 +163,6 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
   const inset = useDockInset();
   const chosen = useStore(places)[kind];
   const open = useCallback((title: Title) => openDetails(title), []);
-  // A 4K tile asks for its 4K version.
-  const openAsked = useCallback((title: Title) => openDetails(title, true), []);
 
   /** For you starts with titles like the one of this kind watched last. */
   const like = useMemo(() => {
@@ -143,10 +188,10 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
     ...(has.new ? [{ value: "new" as const, label: "New" }] : []),
     ...(has.genres ? [{ value: "genres" as const, label: "Genres" }] : []),
     ...(has.services ? [{ value: "services" as const, label: "Services" }] : []),
-    ...(has.fourK ? [{ value: "4k" as const, label: "4K" }] : []),
+    ...(has.fourK || chosen === "4k" ? [{ value: "4k" as const, label: "4K" }] : []),
     { value: "all" as const, label: "All" },
   ];
-  // A tab that emptied, as before TMDB's metadata arrived, gives way to For you.
+  // Metadata-only tabs that emptied give way to For you; a chosen 4K grid keeps its controls.
   const tab = tabs.some((each) => each.value === chosen) ? chosen : "for-you";
   const grid = tab === "4k" || tab === "all";
   const rows = useMemo(
@@ -162,18 +207,17 @@ function Browse({ made, kind }: { made: Collections; kind: TitleKind }) {
   );
   // TitlesHome asks as Movies opens and as collections are made; the tab and lead are Browse's.
   useHolding(kind, [tab, like]);
-  useFixedTabBar(grid);
   const choose = (next: Tab) => places.set((current) => ({ ...current, [kind]: next }));
   const header = <TextTabs tabs={tabs} value={tab} onChange={choose} />;
 
   if (grid) {
     return (
-      <PosterGrid
+      <CollectionGrid
         key={tab}
-        titles={made.list(tab === "4k" ? "4k" : "all")}
-        onPress={tab === "4k" ? openAsked : open}
+        made={made}
+        kind={kind}
+        id={tab === "4k" ? "4k" : "all"}
         header={<View style={styles.gridHead}>{header}</View>}
-        empty={<Message text={kind === "movie" ? "No movies." : "No series."} />}
         testID={`${kind}-grid`}
       />
     );
@@ -293,37 +337,117 @@ function Featured({ title }: { title: Title }) {
 /** A collection pushed over its tab: a row's All, a genre or a service. */
 export function CollectionScreen({ kind, id }: { kind: TitleKind; id: CollectionId }) {
   const made = useCollections(kind, [id]);
+  const lists = useTitleLists();
   const status = useTitlesStatus(kind, (made?.size("all") ?? 0) > 0);
   useFixedTabBar(true);
-  const found = useMemo(
-    () => (made ? { name: made.name(id) ?? "", titles: made.list(id) } : null),
-    [made, id],
+  return (
+    <Docked
+      status={
+        status ??
+        (!made && lists.kind === "loading"
+          ? loadingStatus(kind === "movie" ? "movies" : "series")
+          : null)
+      }
+    >
+      <CollectionGrid made={made} kind={kind} id={id} testID="collection-grid" />
+    </Docked>
   );
-  // A 4K tile asks for its 4K version; other collections name the title.
-  const open = useCallback((title: Title) => openDetails(title, id === "4k"), [id]);
-  if (!found) {
-    return (
-      <Docked status={status ?? loadingStatus(kind === "movie" ? "movies" : "series")}>
-        <PlaceholderGrid
-          header={
-            <Placeholders style={styles.nameRow}>
-              <Shape style={styles.nameShape} />
-            </Placeholders>
-          }
-        />
-      </Docked>
-    );
+}
+
+/** Both collection routes and All/4K tabs use the same choices, counts and activation rules. */
+function CollectionGrid({
+  made,
+  kind,
+  id,
+  header,
+  testID,
+}: {
+  made: Collections | null;
+  kind: TitleKind;
+  id: CollectionId;
+  header?: ReactNode;
+  testID: string;
+}) {
+  const lists = useTitleLists();
+  const { choices, change } = useBrowseChoices(kind, id);
+  const result = useMemo(
+    () => (made ? browseCollection(made, id, choices) : null),
+    [made, id, choices],
+  );
+  const selection = useMemo(() => (made ? collectionSelection(kind, made) : null), [made, kind]);
+  // A retained press from a replaced grid or a popped route must never open its old version.
+  const current = useRef(result);
+  const mounted = useRef(true);
+  current.current = result;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const open = useCallback(
+    (title: Title) => {
+      if (!mounted.current || !result || current.current !== result || !selection?.(title)) return;
+      openDetails(
+        title,
+        id === "4k" || Boolean(choices.filters.quality || choices.filters.language),
+      );
+    },
+    [result, selection, id, choices],
+  );
+  const heading = (
+    <>
+      {header ?? <Text style={styles.collectionName}>{made?.name(id) ?? "Collection"}</Text>}
+      <BrowseControls kind={kind} choices={choices} result={result} onChange={change} />
+    </>
+  );
+  if (!result) {
+    if (lists.kind === "failed" || lists.kind === "idle") {
+      return (
+        <ScrollView
+          style={styles.screen}
+          contentInsetAdjustmentBehavior="automatic"
+          contentContainerStyle={styles.content}
+        >
+          {heading}
+          {lists.kind === "failed" ? (
+            <Message
+              text={describeError(lists.error)}
+              action={{ label: "Try again", onPress: retryTitles }}
+            />
+          ) : (
+            <Message
+              text={
+                kind === "movie" ? "No movies in this collection." : "No series in this collection."
+              }
+            />
+          )}
+        </ScrollView>
+      );
+    }
+    return <PlaceholderGrid header={heading} />;
   }
   return (
-    <Docked status={status}>
-      <PosterGrid
-        titles={found.titles}
-        onPress={open}
-        header={<Text style={styles.collectionName}>{found.name}</Text>}
-        empty={<Message text="Nothing here now." />}
-        testID="collection-grid"
-      />
-    </Docked>
+    <PosterGrid
+      titles={result.titles}
+      onPress={open}
+      header={heading}
+      empty={
+        result.total > 0 ? (
+          <Message
+            text="No titles match these filters."
+            action={{ label: "Reset", onPress: () => change(DEFAULT_BROWSE) }}
+          />
+        ) : (
+          <Message
+            text={
+              kind === "movie" ? "No movies in this collection." : "No series in this collection."
+            }
+          />
+        )
+      }
+      testID={testID}
+    />
   );
 }
 
@@ -344,6 +468,4 @@ const styles = StyleSheet.create({
   featuredName: { color: colors.text, fontSize: 22, fontWeight: "700", marginTop: 10 },
   featuredLine: { color: colors.dim, fontSize: 13, marginTop: 2 },
   collectionName: { color: colors.text, fontSize: 28, fontWeight: "700", marginBottom: 8 },
-  nameRow: { marginBottom: 8 },
-  nameShape: { width: "55%", height: 28 },
 });
