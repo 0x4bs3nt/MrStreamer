@@ -12,12 +12,11 @@ import { DownloadStatusButton } from "./download-status.tsx";
 import { colors } from "./ui.tsx";
 
 // The top bar every tab's screens share, layout A: the brand on the left, after the system's back
-// button on a pushed screen, and Search, Downloads and Settings on the right. Downloads shows the
-// queue's status; Search and Settings use the system's glass buttons. They and what Settings opens
-// (the provider form, Licences) open on
-// the tab they were asked from; leaving that tab closes them again, while Movies' and Series'
-// details stay. Search opens above the tabs (`app/search.tsx`) and closes back to the screen it
-// opened over.
+// button on a pushed screen, and Search, Settings and Downloads on the right. UIKit places the
+// custom Downloads status after the system's Search and Settings buttons. Downloads, Settings and
+// its provider form and Licences open on the tab they were asked from; leaving that tab closes
+// them again, while Movies' and Series' details stay. Search opens above the tabs
+// (`app/search.tsx`) and closes back to the screen it opened over.
 
 const TABS = ["(home)", "live", "films", "series"] as const;
 

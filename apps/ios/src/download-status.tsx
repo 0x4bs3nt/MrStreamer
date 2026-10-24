@@ -51,7 +51,12 @@ export function DownloadStatusButton({
       style={styles.button}
       testID={testID}
     >
-      <SymbolView name="arrow.down.circle" size={status ? 17 : 20} tintColor="#FFFFFF" />
+      <SymbolView
+        name="arrow.down.circle"
+        size={status ? 17 : 20}
+        tintColor="#FFFFFF"
+        weight="semibold"
+      />
       {status ? (
         <Text style={styles.progress} numberOfLines={1} maxFontSizeMultiplier={1.4}>
           {status.short}

@@ -320,8 +320,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
 
 Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home, Live, Movies
 and Series. Every screen of theirs has one top bar (`src/header.tsx`): the brand on the left, after
-the back button on a pushed screen, and Search, Downloads and Settings on the right, less the
-button of the screen it is on. Downloads, Settings and what Settings opens (`provider`, Add
+the back button on a pushed screen, and Search, Settings and Downloads on the right, less the
+button of the screen it is on. The reactive Downloads item trails the system's Search and Settings
+buttons. Downloads, Settings and what Settings opens (`provider`, Add
 provider or a provider's Edit; `licences` and a component's `licence`) are Home's screens, pushed
 on the tab they were asked from (the other tabs' route files re-export them), and close as the viewer leaves that tab; Movies' and Series'
 details under them stay. `search` opens over the tabs, fading in, and closes back onto the screen
