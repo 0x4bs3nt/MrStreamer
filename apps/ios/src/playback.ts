@@ -205,6 +205,11 @@ export function onScreen(path: string) {
 let resumeOnReturn = false;
 /** Watch was set aside while the stream loaded: it pauses as soon as it starts. */
 let pauseOnStart = false;
+/**
+ * Close silenced what it paused, which had sound: Play from paused brings that sound back. A new
+ * play, Stop, Watch shown again and the viewer's own mute or unmute each end it.
+ */
+let soundOnPlay = false;
 
 /** How often a playing title says how far it got. */
 const CHECKPOINT_MS = 60_000;
@@ -427,6 +432,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
   current = { item, open, options, seek: options.from ?? null, loaded: false, stoppedAt: null };
   resumeOnReturn = false;
   pauseOnStart = false;
+  soundOnPlay = false;
   state.set((s) => {
     const muted = options.watch || s.watch ? false : s.muted;
     player().muted = muted;
@@ -511,6 +517,7 @@ export async function stop(): Promise<Saved> {
   player().muted = true;
   resumeOnReturn = false;
   pauseOnStart = false;
+  soundOnPlay = false;
   state.set((s) => ({
     ...s,
     phase: { kind: "idle" },
@@ -526,12 +533,17 @@ export async function stop(): Promise<Saved> {
 /**
  * Play or Pause, the viewer's own: in Watch, or from the accessory while Watch is set aside, where
  * it replaces setting aside's own pause, so bringing Watch back keeps whatever they chose last.
+ * It goes by what the player last reported, as the accessory shows it. Play after Close plays with
+ * the sound Close silenced (`soundOnPlay`).
  */
 export function togglePause() {
   resumeOnReturn = false;
   const { phase } = state.get();
   if (phase.kind === "playing") player().pause();
-  else if (phase.kind === "paused") player().play();
+  else if (phase.kind === "paused") {
+    if (soundOnPlay) setMuted(false);
+    player().play();
+  }
 }
 
 export function seekBy(seconds: number) {
@@ -545,6 +557,7 @@ export function seekTo(seconds: number) {
 }
 
 export function setMuted(muted: boolean) {
+  soundOnPlay = false;
   player().muted = muted;
   state.set((s) => ({ ...s, muted }));
 }
@@ -644,6 +657,7 @@ export function showVersions() {
  * live again rather than from where it paused. What failed meanwhile shows its failure.
  */
 export function openWatch() {
+  soundOnPlay = false;
   player().muted = false;
   const { pip, aside, phase } = state.get();
   if (pip) endPictureInPicture?.();
@@ -659,21 +673,24 @@ export function openWatch() {
 
 /**
  * Back to the tabs at once, saving where a title got to. Picture in Picture or AirPlay already
- * showing it plays on there, with its sound. Otherwise nothing plays unseen: what plays pauses;
- * what still loads pauses as it starts; what was paused or failed stays so. Paused, it makes no
- * sound; played again from the accessory or Home, it plays with its sound, as after `setAside`.
- * Resolves with how the save went once it ended; a format session paused keeps its request open
- * for Play.
+ * showing it plays on there, muted or not as it was. Otherwise nothing plays unseen: what plays
+ * pauses; what still loads pauses as it starts; what was paused or failed stays so. It goes
+ * silent, as Home's preview is, so what plays next on Home starts without sound; Play from the
+ * accessory brings back the sound it had (`soundOnPlay`). Resolves with how the save went once
+ * it ended; a format session paused keeps its request open for Play.
  */
 export function closeWatch(): Promise<Saved> {
-  const { pip, external, phase } = state.get();
-  if (!pip && !external) {
+  const { pip, external, phase, muted } = state.get();
+  const away = !pip && !external;
+  if (away) {
     resumeOnReturn = false;
     pauseOnStart = phase.kind === "loading";
+    soundOnPlay = !muted;
     if (phase.kind === "playing") player().pause();
   }
-  player().muted = false;
-  state.set((s) => ({ ...s, watch: false, aside: false, muted: false }));
+  const silent = away || muted;
+  player().muted = silent;
+  state.set((s) => ({ ...s, watch: false, aside: false, muted: silent }));
   return report();
 }
 

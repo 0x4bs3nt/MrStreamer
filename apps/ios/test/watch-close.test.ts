@@ -31,6 +31,7 @@ const {
   pictureInPicture,
   play,
   playbackState,
+  setMuted,
   stop,
   togglePause,
 } = await import("../src/playback.ts");
@@ -143,6 +144,16 @@ describe("Close", () => {
     expect(saves).toEqual([]);
   });
 
+  it("lets AirPlay play on as muted as it was", async () => {
+    await watching(120);
+    emit("isExternalPlaybackActiveChange", { isExternalPlaybackActive: true });
+    setMuted(true);
+    void closeWatch();
+    expect(fakePlayer.pause).not.toHaveBeenCalled();
+    expect(fakePlayer.muted).toBe(true);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "playing" }, muted: true });
+  });
+
   it("lets Picture in Picture play on, with its sound", async () => {
     await watching(120);
     pictureInPicture(true);
@@ -178,12 +189,72 @@ describe("after Close", () => {
     await watching(120);
     void closeWatch();
     playing(false);
-    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, muted: false });
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, muted: true });
     togglePause();
     expect(fakePlayer.play).toHaveBeenCalledOnce();
-    playing();
     expect(fakePlayer.muted).toBe(false);
+    playing();
     expect(playbackState.get()).toMatchObject({ phase: { kind: "playing" }, muted: false });
+  });
+
+  it("starts a new Home preview without sound, after a title or a channel", async () => {
+    for (const live of [false, true]) {
+      await play(movie(live ? "c1" : "m1", live), open, { watch: true, login: [], progress });
+      playing();
+      void closeWatch();
+      playing(false);
+      await play(movie("c2", true), open, { watch: false, login: [] });
+      expect(fakePlayer.muted).toBe(true);
+      expect(playbackState.get()).toMatchObject({ phase: { kind: "loading" }, muted: true });
+    }
+  });
+
+  it("keeps a mute chosen in Watch through Close and Play", async () => {
+    await watching(120);
+    setMuted(true);
+    void closeWatch();
+    playing(false);
+    togglePause();
+    expect(fakePlayer.play).toHaveBeenCalledOnce();
+    expect(fakePlayer.muted).toBe(true);
+    expect(playbackState.get()).toMatchObject({ muted: true });
+  });
+
+  it("keeps a mute chosen on Home after Close when Play is pressed", async () => {
+    await watching(120);
+    void closeWatch();
+    playing(false);
+    setMuted(false);
+    setMuted(true);
+    togglePause();
+    expect(fakePlayer.muted).toBe(true);
+  });
+
+  // The accessory shows what the player last reported: pressed before the player reports Close's
+  // pause, it still shows Pause, and pressing it pauses, without sound. Once the pause is
+  // reported, Play plays with the sound Close silenced.
+  it("pauses for a press before the player reports Close's pause, and plays with sound after", async () => {
+    await watching(120);
+    void closeWatch();
+    togglePause();
+    expect(fakePlayer.play).not.toHaveBeenCalled();
+    expect(fakePlayer.muted).toBe(true);
+    playing(false);
+    togglePause();
+    expect(fakePlayer.play).toHaveBeenCalledOnce();
+    expect(fakePlayer.muted).toBe(false);
+  });
+
+  it("gives a title Stop ended no sound back, and the next Home preview none", async () => {
+    await watching(120);
+    void closeWatch();
+    playing(false);
+    void stop();
+    await play(movie("c2", true), open, { watch: false, login: [] });
+    playing();
+    playing(false);
+    togglePause();
+    expect(fakePlayer.muted).toBe(true);
   });
 
   it("shows Watch again paused, with its sound, until the viewer plays it", async () => {
