@@ -257,6 +257,7 @@ interface Resource {
   readonly opened: () => void;
   itemId: number | null;
   sequence: number;
+  timeControl: Extract<PlaybackObservation, { kind: "state" }>["timeControl"] | null;
   retired: boolean;
   detach: ReturnType<VideoPlayer["detachObservedAsync"]> | null;
   settlement: Promise<void> | null;
@@ -513,6 +514,17 @@ function applyViewerPause(resource: Resource) {
   resource.holdInitialPlay = true;
   pauseOnStart = "viewer-applied";
   player().pause();
+  // Known paused makes app Play available; it does not acknowledge this newer Pause request.
+  state.set((s) => {
+    if (
+      !stands(resource) ||
+      resource.timeControl !== "paused" ||
+      s.phase.kind !== "loading" ||
+      s.phase.item !== current?.item
+    )
+      return s;
+    return { ...s, phase: { kind: "paused", item: s.phase.item } };
+  });
 }
 
 /** Read current intent after asynchronous admission and complete its initial action. */
@@ -620,13 +632,15 @@ function observe(event: PlaybackObservation) {
       }
       return;
     case "state": {
-      clock.set(event.mediaTimeSeconds);
-      const { phase } = state.get();
-      if (phase.kind === "idle" || phase.kind === "failed") return;
+      resource.timeControl = event.timeControl;
       const playing = event.timeControl === "playing";
       const paused = event.timeControl === "paused";
       const viewerPaused = paused && pauseOnStart === "viewer-applied";
       if (viewerPaused) pauseOnStart = false;
+      clock.set(event.mediaTimeSeconds);
+      if (!stands(resource) || resource.sequence !== event.sequence) return;
+      const { phase } = state.get();
+      if (phase.kind === "idle" || phase.kind === "failed") return;
       if (playing && pauseOnStart) {
         if (pauseOnStart === "viewer") applyViewerPause(resource);
         else player().pause();
@@ -647,7 +661,7 @@ function observe(event: PlaybackObservation) {
         : phase.kind === "loading" && !viewerPaused && !(paused && pauseOnStart)
           ? "loading"
           : "paused";
-      if (kind !== phase.kind) {
+      if (kind !== phase.kind && stands(resource) && resource.sequence === event.sequence) {
         state.set((s) => ({ ...s, phase: { kind, item: phase.item } }));
       }
     }
@@ -716,6 +730,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     opened,
     itemId: null,
     sequence: 0,
+    timeControl: null,
     retired: false,
     detach: null,
     settlement: null,

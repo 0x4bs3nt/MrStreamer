@@ -86,6 +86,27 @@ function event(
   });
 }
 
+/** Deliver the real item's initial paused fact while holding only its admission reply. */
+async function knownPausedBeforeReply() {
+  const admission = deferred<ObservedOpenResult>();
+  stop = () => admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+  port.replaceObservedAsync.mockImplementationOnce(async () => {
+    port.emit("playbackObservation", {
+      version: 1,
+      sequence: 1,
+      kind: "attached",
+      attemptId: 1,
+      itemId: 1,
+    });
+    event({ attemptId: 1, itemId: 1 }, "paused", 2);
+    return admission.promise;
+  });
+  const outcome = vi.fn();
+  const playing = owner.play(item("a"), source, { ...options, outcome });
+  await tick();
+  return { admission, playing, outcome };
+}
+
 describe("managed playback ownership", () => {
   it("uses one listener and positive increasing attempts before lookup, never legacy admission", async () => {
     // The compatibility port admits legacy writes so old-product controls fail on assertions.
@@ -470,6 +491,144 @@ describe("managed playback ownership", () => {
     expect(owner.playbackState.get().phase.kind).toBe("paused");
     port.pause.mockClear();
     event({ attemptId: 1, itemId: 1 }, "playing", 4);
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it.each(["before-reply", "after-reply"] as const)(
+    "known paused item exposes app Play without a fresh acknowledgement %s",
+    async (playAt) => {
+      const held = await knownPausedBeforeReply();
+      expect(owner.playbackState.get().phase.kind).toBe("loading");
+      owner.togglePause();
+      expect(owner.playbackState.get().phase.kind).toBe("paused");
+      expect(port.play).not.toHaveBeenCalled();
+      expect(held.outcome).not.toHaveBeenCalled();
+
+      if (playAt === "after-reply") {
+        held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+        await held.playing;
+        expect(port.play).not.toHaveBeenCalled();
+      }
+      owner.togglePause();
+      expect(port.play).toHaveBeenCalledOnce();
+      port.pause.mockClear();
+      event({ attemptId: 1, itemId: 1 }, "playing", 3);
+      held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+      await held.playing;
+      expect(port.play).toHaveBeenCalledOnce();
+      expect(port.pause).not.toHaveBeenCalled();
+      expect(owner.playbackState.get().phase.kind).toBe("playing");
+      expect(held.outcome).toHaveBeenCalledExactlyOnceWith(true);
+    },
+  );
+
+  it("a known paused fact exposes Play without consuming the newer Pause fence", async () => {
+    const held = await knownPausedBeforeReply();
+    owner.togglePause();
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.observation(
+      {
+        kind: "state",
+        timeControl: "waiting",
+        mediaTimeSeconds: 12,
+        bufferEmpty: true,
+        likelyToKeepUp: false,
+      },
+      { attemptId: 1, itemId: 1, sequence: 3 },
+    );
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 4);
+    expect(port.pause).toHaveBeenCalledOnce();
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    expect(held.outcome).not.toHaveBeenCalled();
+    event({ attemptId: 1, itemId: 1 }, "paused", 5);
+    owner.pictureInPicture(true);
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 6);
+    held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await held.playing;
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(port.play).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+    expect(held.outcome).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("Pause rechecks a reentrant waiting fact before presenting known paused", async () => {
+    const held = await knownPausedBeforeReply();
+    port.pause.mockImplementationOnce(() => {
+      port.observation(
+        {
+          kind: "state",
+          timeControl: "waiting",
+          mediaTimeSeconds: 12,
+          bufferEmpty: true,
+          likelyToKeepUp: false,
+        },
+        { attemptId: 1, itemId: 1, sequence: 3 },
+      );
+    });
+    owner.togglePause();
+    expect(owner.playbackState.get().phase.kind).toBe("loading");
+    event({ attemptId: 1, itemId: 1 }, "paused", 4);
+    owner.togglePause();
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 5);
+    held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await held.playing;
+    expect(port.play).toHaveBeenCalledOnce();
+    expect(port.pause).not.toHaveBeenCalled();
+    expect(owner.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it("Pause cannot present an old resource's paused fact after a reentrant replacement", async () => {
+    const held = await knownPausedBeforeReply();
+    port.pause.mockImplementationOnce(() => {
+      void owner.play(item("b"), source, options);
+    });
+    owner.togglePause();
+    expect(owner.playbackState.get().phase).toMatchObject({ kind: "loading", item: { id: "b" } });
+    held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await held.playing;
+    await tick();
+    expect(owner.playbackState.get().phase).toMatchObject({ kind: "loading", item: { id: "b" } });
+    event({ attemptId: 2, itemId: 2 });
+    expect(owner.playbackState.get().phase).toMatchObject({ kind: "playing", item: { id: "b" } });
+  });
+
+  it("an accepted paused sample cannot acknowledge a newer Pause from a clock subscriber", async () => {
+    const held = await knownPausedBeforeReply();
+    const unsubscribe = owner.playbackClock.subscribe(() => {
+      unsubscribe();
+      owner.togglePause();
+    });
+    const cleanup = stop;
+    stop = () => {
+      unsubscribe();
+      cleanup?.();
+    };
+    port.observation(
+      {
+        kind: "state",
+        timeControl: "paused",
+        mediaTimeSeconds: 13,
+        bufferEmpty: false,
+        likelyToKeepUp: true,
+      },
+      { attemptId: 1, itemId: 1, sequence: 3 },
+    );
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 4);
+    expect(port.pause).toHaveBeenCalledOnce();
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    event({ attemptId: 1, itemId: 1 }, "paused", 5);
+    owner.togglePause();
+    port.pause.mockClear();
+    event({ attemptId: 1, itemId: 1 }, "playing", 6);
+    held.admission.resolve({ kind: "attached", attemptId: 1, itemId: 1 });
+    await held.playing;
+    expect(port.play).toHaveBeenCalledOnce();
     expect(port.pause).not.toHaveBeenCalled();
     expect(owner.playbackState.get().phase.kind).toBe("playing");
   });
