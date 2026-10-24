@@ -32,16 +32,16 @@ export function BrowseControls({
 }) {
   const [open, setOpen] = useState(false);
   const noun = kind === "movie" ? "movies" : "series";
-  const count = result
-    ? `${result.titles.length} of ${result.total} ${noun}`
-    : "Catalogue unavailable";
+  const count = result ? `${result.titles.length} of ${result.total} ${noun}` : null;
   const active = Boolean(choices.sort || choices.filters.quality || choices.filters.language);
   return (
     <View>
       <View style={styles.summary}>
-        <Text style={styles.text} accessibilityLiveRegion="polite">
-          {count}
-        </Text>
+        {count ? (
+          <Text style={styles.text} accessibilityLiveRegion="polite">
+            {count}
+          </Text>
+        ) : null}
         <Choice label="Sort & filter" selected={active} onPress={() => setOpen(true)} />
       </View>
       {open ? (
@@ -60,9 +60,11 @@ export function BrowseControls({
               <Text style={styles.heading} accessibilityRole="header">
                 Sort & filter
               </Text>
-              <Text style={styles.text} accessibilityLiveRegion="polite">
-                {count}
-              </Text>
+              {count ? (
+                <Text style={styles.text} accessibilityLiveRegion="polite">
+                  {count}
+                </Text>
+              ) : null}
               <Text style={styles.section} accessibilityRole="header">
                 Sort
               </Text>

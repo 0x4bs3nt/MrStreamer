@@ -95,7 +95,12 @@ export function TitlesHome({ kind }: { kind: TitleKind }) {
   useFixedTabBar(chosen === "all" || chosen === "4k");
   if (!made && (chosen === "all" || chosen === "4k")) {
     return (
-      <Docked status={status}>
+      <Docked
+        status={
+          status ??
+          (lists.kind === "loading" ? loadingStatus(kind === "movie" ? "movies" : "series") : null)
+        }
+      >
         <CollectionGrid
           made={null}
           kind={kind}
@@ -374,7 +379,8 @@ function CollectionGrid({
     () => (made ? browseCollection(made, id, choices) : null),
     [made, id, choices],
   );
-  const selection = useMemo(() => (made ? collectionSelection(kind, made) : null), [made, kind]);
+  // Fresh handlers capture the current login; retained callbacks keep their old source fence.
+  const selection = made ? collectionSelection(kind, made) : null;
   // A retained press from a replaced grid or a popped route must never open its old version.
   const current = useRef(result);
   const mounted = useRef(true);
