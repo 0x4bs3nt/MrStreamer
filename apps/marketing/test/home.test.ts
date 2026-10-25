@@ -22,6 +22,8 @@ const BREW_UPDATES = [
   "Homebrew updates and reinstalling",
   "/docs/updates#installed-through-homebrew",
 ];
+const AUR = ["AUR · Arch Linux, x86_64", "https://aur.archlinux.org/packages/mrstreamer-bin"];
+const AUR_UPDATES = ["Install and update on Arch Linux", "/docs/updates#installed-through-the-aur"];
 const FILES = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download";
 const RELEASED: Downloads = { version: "0.0.7", installers };
 const SYSTEMS = [undefined, "windows", "mac", "linux"] as const;
@@ -78,7 +80,7 @@ describe("the home page", () => {
         ["Download", "/download"],
       ]);
       expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
-      expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW]);
+      expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW, AUR]);
       expect(
         document.querySelector(
           '[data-installer], [data-release-version], a[href^="https://apps."]',
@@ -148,6 +150,7 @@ describe("the download page", () => {
         links: [
           ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
           [".deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+          AUR,
         ],
       },
     ]);
@@ -169,6 +172,7 @@ describe("the download page", () => {
     expect(mine()[0]?.links).toEqual([
       ["Download the AppImage", LATEST],
       [".deb", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-amd64.deb`],
+      AUR,
     ]);
   });
 
@@ -185,6 +189,8 @@ describe("the download page", () => {
         ["Download the setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
         ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
         ["Download the .deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+        AUR,
+        AUR_UPDATES,
       ]);
       expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
         "Version 0.0.7.",
@@ -203,6 +209,8 @@ describe("the download page", () => {
       ["Download the setup .exe on GitHub Releases", LATEST],
       ["Download the AppImage on GitHub Releases", LATEST],
       ["Download the .deb on GitHub Releases", LATEST],
+      AUR,
+      AUR_UPDATES,
     ]);
     expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
       "Stable release on GitHub.",
@@ -220,6 +228,8 @@ describe("the download page", () => {
       ["Download the setup .exe", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-win-x64-setup.exe`],
       ["Download the AppImage", `${FILES}/v0.0.8/Mr-Streamer-0.0.8-linux-x86_64.AppImage`],
       ["Download the .deb on GitHub Releases", LATEST],
+      AUR,
+      AUR_UPDATES,
     ]);
   });
 });
