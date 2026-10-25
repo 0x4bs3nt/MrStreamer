@@ -7,3 +7,6 @@ apps/desktop/assets/brand/
 apps/desktop/test/fixtures/
 apps/ios/licences/texts/
 apps/ios/src/licences.json
+apps/ios/ios/
+apps/ios/.expo/
+apps/ios/build/

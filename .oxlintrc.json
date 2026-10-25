@@ -1,11 +1,44 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["import"],
+  "plugins": ["import", "typescript"],
+  "ignorePatterns": [
+    "node_modules/",
+    "out/",
+    "dist/",
+    "vendor/",
+    ".local/",
+    "apps/ios/ios/",
+    "apps/ios/build/",
+    "apps/ios/.expo/",
+    "apps/marketing/public/generated/",
+    "apps/marketing/.vercel/"
+  ],
   "rules": {
     "unicorn/no-useless-spread": "off",
-    "import/no-cycle": "error"
+    "import/no-cycle": "error",
+    "typescript/no-explicit-any": "error"
   },
   "overrides": [
+    {
+      "files": ["**/*"],
+      "plugins": ["import", "typescript", "react", "promise"],
+      "rules": {
+        "react/jsx-no-duplicate-props": "error",
+        "react/jsx-props-no-spread-multi": "error",
+        "react/no-danger-with-children": "error",
+        "react/void-dom-elements-no-children": "error",
+        "promise/no-multiple-resolved": "error",
+        "promise/valid-params": "error",
+        "promise/no-new-statics": "error"
+      }
+    },
+    {
+      "files": ["apps/desktop/src/renderer/**"],
+      "plugins": ["import", "typescript", "react", "promise"],
+      "rules": {
+        "react/rules-of-hooks": "error"
+      }
+    },
     {
       "files": ["packages/**"],
       "rules": {

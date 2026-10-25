@@ -17,6 +17,8 @@
     "typecheck": "tsc --noEmit -p packages/contracts && tsc --noEmit -p packages/core && tsc --noEmit -p apps/desktop && tsc --noEmit -p apps/desktop/src/renderer && tsc --noEmit -p apps/marketing && tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "lint:fix": "pnpm lint --fix",
+    "check": "pnpm lint && pnpm fmt:check && pnpm typecheck && pnpm knip && pnpm actionlint",
     "knip": "knip",
     "actionlint": "node scripts/actionlint.ts",
     "fmt": "prettier --write .",
