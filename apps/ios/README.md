@@ -178,7 +178,8 @@ first unstable stretch and four after a stable reset, with no cross-provider fal
 
 Only Watch, Picture in Picture or AirPlay, without viewer Pause, arms Live's deadlines: twenty
 seconds from native attach to first playing, suspended while the channel shows Paused, then
-fifteen seconds without media-time progress while native playback is not paused. Disarming preserves spent time; progress resets the stall.
+fifteen seconds without media-time progress while native playback is not paused. Disarming preserves
+spent time; progress resets the stall.
 Lookup, download reclaim and reader drain have no startup deadline. Home preview, titles and
 copies gain no watchdog or automatic recovery. Native unknown failures stay unknown; a measured
 app deadline reports the network policy category without claiming an HTTP cause.
