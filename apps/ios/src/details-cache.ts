@@ -531,9 +531,9 @@ function keepable(file: SavedFile, now: number, login: readonly string[]): boole
 }
 
 /**
- * `id`'s saved file facts, each one still keepable for `login`; null when there are none, or
- * they don't read as this release writes them, which deletes them. Null too once `stands` fails
- * while they are read.
+ * `id`'s saved file facts, each one still keepable for `login`, the latest found first and at
+ * most FILES of them, as they are written; null when there are none, or they don't read as this
+ * release writes them, which deletes them. Null too once `stands` fails while they are read.
  */
 export function readFiles(
   id: string,
@@ -552,7 +552,10 @@ export function readFiles(
     );
     if (!record) return null;
     const now = Date.now();
-    return record.files.filter((file) => keepable(file, now, login));
+    return record.files
+      .filter((file) => keepable(file, now, login))
+      .toSorted((a, b) => b.at - a.at)
+      .slice(0, FILES);
   });
 }
 

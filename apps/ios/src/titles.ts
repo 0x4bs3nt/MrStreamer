@@ -43,6 +43,7 @@ import {
   members,
   onReadingSaved,
   onRoster,
+  onSavable,
   readingSaved,
   savable,
   shownOf,
@@ -98,7 +99,9 @@ import { alignWatchlist } from "./watchlist.ts";
 // `observed`), saved per subscription beside the details (details-cache.ts). Browse's filters
 // read them (`filterFilesOf`) only while the file is still the row the lists show: a movie's
 // listed name and file type, an episode's in this run's answer for its series, asked under the
-// lists that show now. Anything else is unknown, never absent.
+// lists that show now, and only while its login may keep them (`savable`): from the moment a new
+// password starts deleting them, until a deletion that fails gives them back. Anything else is
+// unknown, never absent.
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -1046,7 +1049,7 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Tit
 /** One subscription's file facts under one login: those saved, with what playback found since. */
 interface Facts {
   readonly source: Source;
-  /** By kind, series and file id. */
+  /** By kind, series and file id (`fileKey`). */
   readonly files: Map<string, SavedFile>;
   /** Settles once the saved facts were read and taken in, or found missing. */
   readonly ready: Promise<void>;
@@ -1054,19 +1057,23 @@ interface Facts {
 
 /** File facts by subscription, each under the login it was read for. */
 const facts = new Map<string, Facts>();
-/** Rises whenever file facts, or this run's answers they are checked against, change. */
+/**
+ * Rises whenever file facts, this run's answers they are checked against, or whether their login
+ * may keep them, change.
+ */
 const factsRevision = store(0);
 const factsChanged = () => factsRevision.set((revision) => revision + 1);
 /** The most files whose facts one subscription keeps in memory, as on disk. */
 const FACT_FILES = 2048;
 
+/** One key per file, whatever a provider's opaque ids hold: they may hold any separator. */
 const fileKey = (file: Pick<SavedFile, "kind" | "id" | "seriesId">) =>
-  `${file.kind}|${file.seriesId ?? ""}|${file.id}`;
+  JSON.stringify([file.kind, file.seriesId ?? null, file.id]);
 
 /**
  * `id`'s file facts under `source`, its saved facts read once, in the subscription's turn on the
  * disk. A read that finishes once `source` no longer stands, or after these were replaced, takes
- * nothing in.
+ * nothing in; should `source` stand again, as when a deletion fails, they are read again.
  */
 function factsOf(id: string, source: Source): Facts {
   const known = facts.get(id);
@@ -1077,7 +1084,12 @@ function factsOf(id: string, source: Source): Facts {
     source,
     files,
     ready: readFiles(id, source.login, stands).then((saved) => {
-      if (!saved || saved.length === 0 || !stands()) return;
+      if (!stands()) {
+        // Nothing is in them yet: `remember` waits for this.
+        if (facts.get(id) === held) facts.delete(id);
+        return;
+      }
+      if (!saved || saved.length === 0) return;
       // Oldest first, as `remember` keeps them, so the oldest go first past FACT_FILES.
       for (const file of saved.toSorted((a, b) => a.at - b.at)) files.set(fileKey(file), file);
       factsChanged();
@@ -1087,10 +1099,16 @@ function factsOf(id: string, source: Source): Facts {
   return held;
 }
 
+/** The login `id` is signed in with, while it may keep file facts (`savable`). */
+function standingSource(id: string): Source | undefined {
+  const source = currentSource(id);
+  return source && savable(id, source) ? source : undefined;
+}
+
 /** `id`'s file facts under the login that stands now, if it may keep any. */
 function standingFacts(id: string): Facts | undefined {
-  const source = currentSource(id);
-  return source && savable(id, source) ? factsOf(id, source) : undefined;
+  const source = standingSource(id);
+  return source && factsOf(id, source);
 }
 
 const sameTracks = (a: readonly (string | null)[], b: readonly (string | null)[]) =>
@@ -1199,10 +1217,18 @@ function seriesFiles(now: Showing): FilterFiles {
 }
 
 const NO_FILES: FilterFiles = new Map();
-/** What `filterFilesOf` last answered for each kind, and for which lists and facts. */
+/**
+ * What `filterFilesOf` last answered for each kind, and for which lists, facts and logins: the
+ * standing login of each listed subscription, in the lists' order.
+ */
 const filesMade = new Map<
   TitleKind,
-  { readonly shown: Shown; readonly revision: number; readonly files: FilterFiles }
+  {
+    readonly shown: Shown;
+    readonly revision: number;
+    readonly standing: readonly (Source | undefined)[];
+    readonly files: FilterFiles;
+  }
 >();
 
 /**
@@ -1213,10 +1239,18 @@ const filesMade = new Map<
 export function filterFilesOf(kind: TitleKind): FilterFiles {
   const now = shown.get();
   if (!now.made) return NO_FILES;
+  // Read now, told or not: never a login's facts once it stopped standing, nor none once it stands.
+  const standing = now.listed.map(({ subscriptionId }) => standingSource(subscriptionId));
   const kept = filesMade.get(kind);
-  if (kept?.shown === now && kept.revision === factsRevision.get()) return kept.files;
+  if (
+    kept?.shown === now &&
+    kept.revision === factsRevision.get() &&
+    kept.standing.every((source, at) => source === standing[at])
+  ) {
+    return kept.files;
+  }
   const files = kind === "movie" ? movieFiles(now) : seriesFiles(now);
-  filesMade.set(kind, { shown: now, revision: factsRevision.get(), files });
+  filesMade.set(kind, { shown: now, revision: factsRevision.get(), standing, files });
   return files;
 }
 
@@ -1253,6 +1287,9 @@ onMediaPreferences(() => {
 });
 
 onRoster(forgetLogins);
+// A login still signed in that may no longer keep its facts, or may again after a failed deletion:
+// they stay held, and screens read them again.
+onSavable(factsChanged);
 onRoster(relist);
 onReadingSaved(relist);
 relist();

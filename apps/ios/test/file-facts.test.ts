@@ -1,7 +1,14 @@
-import type { SeriesDetails, TitleDetails, TitleKind } from "@mrstreamer/contracts/ondemand";
+import * as React from "react";
+import type {
+  Episode,
+  SeriesDetails,
+  TitleDetails,
+  TitleKind,
+} from "@mrstreamer/contracts/ondemand";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import type { FilterFiles } from "@mrstreamer/core/ondemand/filters";
+import { Window } from "happy-dom";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +18,14 @@ import { browseCollection } from "../src/title-browse.ts";
 // Browse's filters count them: through `titleFile`'s `observed`, over real files on disk
 // (`native-files.ts`) and the desktop tests' fake Xtream panel. These cases call `observed` as
 // playback will once it is wired to it; they say nothing of which files playback tells, or of
-// what a native player reports.
+// what a native player reports. A screen that reads them as `useFileFacts` says runs with React
+// DOM on a happy-dom window.
+
+const REACT_DOM = "react-dom/client";
+const window = new Window();
+Object.assign(globalThis, { window, document: window.document });
+type Root = { render(node: unknown): void; unmount(): void };
+const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
 
 const memory = vi.hoisted(() => ({
   keychain: new Map<string, string>(),
@@ -19,6 +33,9 @@ const memory = vi.hoisted(() => ({
   requests: [] as string[],
   /** Passwords the panel takes for its own, as one whose password was changed. */
   aliases: [] as Array<readonly [alias: string, password: string]>,
+  /** Passwords the Keychain has stored but whose write it hasn't answered yet. */
+  heldSecrets: [] as Array<() => void>,
+  holdSecrets: false,
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -34,7 +51,12 @@ vi.mock("expo-video", () => ({
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
   getItemAsync: async (key: string) => memory.keychain.get(key) ?? null,
-  setItemAsync: async (key: string, value: string) => void memory.keychain.set(key, value),
+  setItemAsync: async (key: string, value: string) => {
+    memory.keychain.set(key, value);
+    if (memory.holdSecrets && key.startsWith("s.")) {
+      await new Promise<void>((go) => memory.heldSecrets.push(go));
+    }
+  },
   deleteItemAsync: async (key: string) => void memory.keychain.delete(key),
 }));
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
@@ -59,9 +81,16 @@ interface FakeMovie {
   readonly container: string;
   readonly tmdb?: string;
 }
+interface FakeEpisode {
+  readonly id: number | string;
+  readonly container: string;
+}
+/** The panel's ids are numbers; a provider's may be any text, which the panel sends as it is. */
 interface FakeSeries {
-  readonly id: number;
-  readonly seasons: readonly (readonly unknown[])[];
+  readonly id: number | string;
+  readonly name: string;
+  readonly tmdb?: string;
+  readonly seasons: readonly (readonly FakeEpisode[])[];
 }
 interface FakeTitles {
   readonly movies: readonly FakeMovie[];
@@ -142,11 +171,12 @@ async function launch() {
   const account = await import("../src/account.ts");
   const titles = await import("../src/titles.ts");
   const cache = await import("../src/details-cache.ts");
+  const { currentSource } = await import("../src/sources.ts");
   await account.restore();
   if (account.members().length > 0) {
     await until(() => titles.titleLists().kind === "ready", "the movie and series lists");
   }
-  return { ...account, ...titles, readFiles: cache.readFiles };
+  return { ...account, ...titles, readFiles: cache.readFiles, currentSource };
 }
 type App = Awaited<ReturnType<typeof launch>>;
 
@@ -172,6 +202,15 @@ const tracksOf = (files: FilterFiles, version: string) =>
   files.get(version)?.find((file) => file.tracks)?.tracks;
 const movieRef = (subscriptionId: string, id: string) =>
   ({ kind: "movie", subscriptionId, id }) as const;
+const episodeRef = (episode: Episode) =>
+  ({
+    kind: "episode",
+    subscriptionId: episode.subscriptionId,
+    id: episode.id,
+    seriesId: episode.seriesId,
+    season: episode.season,
+    episode: episode.number,
+  }) as const;
 const lookUp = (app: App, ref: Parameters<App["titleFile"]>[0]) =>
   app.titleFile(ref, AbortSignal.timeout(5_000));
 /** Looks `ref`'s file up and tells what playback found in it, as playback will. */
@@ -208,21 +247,53 @@ const titleAt = (app: App, kind: TitleKind, version: string) => {
   return title;
 };
 
-/** Holds the saved facts' read until `release`. */
-function holdSavedRead() {
-  const held = { reading: false, release: () => {} };
+/** The first episode of a listed series, as its details answer, asked under the lists now. */
+async function firstEpisode(app: App, version: string) {
+  const details = seriesOf(await app.detailsOf(titleAt(app, "series", version)));
+  const episode = details.seasons[0]?.episodes[0];
+  if (!episode) throw new Error("No episode");
+  return episode;
+}
+
+/** Holds the saved facts' next read (`text`) or write until `release`. */
+function holdSaved(operation: "text" | "write") {
+  const held = { started: false, release: () => {} };
   const gate = new Promise<void>((done) => {
     held.release = done;
   });
-  native.gate = (operation, file) => {
-    if (operation !== "text" || !file.endsWith("/files.json")) return undefined;
-    held.reading = true;
+  native.gate = (each, file) => {
+    if (each !== operation || !file.includes("/files.json")) return undefined;
+    held.started = true;
     return gate;
   };
+  releases.push(held.release);
   return held;
 }
 
+/**
+ * A screen showing what Browse's filters count, rendered again whenever `useFileFacts` says to:
+ * how many listed movie files, then episode files, have tracks found. Answers what it shows.
+ */
+function watched(app: App) {
+  const container = window.document.createElement("div");
+  const root = createRoot(container);
+  function Counts() {
+    app.useFileFacts();
+    const counts = (["movie", "series"] as const).map((kind) => {
+      const made = app.collectionsOf(kind);
+      return made
+        ? browseCollection(made, "all", { filters: {} }, app.filterFilesOf(kind)).files
+        : 0;
+    });
+    return React.createElement("span", null, counts.join(" "));
+  }
+  root.render(React.createElement(Counts));
+  unmounts.push(() => root.unmount());
+  return () => container.textContent;
+}
+
 let releases: Array<() => void> = [];
+let unmounts: Array<() => void> = [];
 beforeEach(async () => {
   rmSync(join(native.root, "documents"), { recursive: true, force: true });
   rmSync(join(native.root, "cache"), { recursive: true, force: true });
@@ -235,12 +306,14 @@ beforeEach(async () => {
   memory.keychain.clear();
   memory.requests.length = 0;
   memory.aliases = [];
+  memory.holdSecrets = false;
   panel.serveTitles((all) => all);
   releases = [];
 });
 afterEach(() => {
   native.gate = null;
-  for (const release of releases.splice(0)) release();
+  for (const release of [...releases.splice(0), ...memory.heldSecrets.splice(0)]) release();
+  for (const unmount of unmounts.splice(0)) unmount();
   vi.unstubAllEnvs();
 });
 
@@ -352,10 +425,9 @@ describe("tracks found in a movie's file", () => {
     await expect.poll(() => savedIds(app, id)).toEqual(["91000"]);
 
     app = await launch();
-    const held = holdSavedRead();
-    releases.push(held.release);
+    const held = holdSaved("text");
     app.filterFilesOf("movie");
-    await until(() => held.reading, "the saved facts' read");
+    await until(() => held.started, "the saved facts' read");
     await found(app, movieRef(id, "91001"), { audio: ["en"], subtitles: ["en"] });
     native.gate = null;
     held.release();
@@ -379,21 +451,24 @@ describe("tracks found in a movie's file", () => {
       await expect.poll(() => savedIds(app, id)).toEqual(["91000"]);
 
       app = await launch();
-      const late = await lookUp(app, movieRef(id, "91001"));
-      const held = holdSavedRead();
-      releases.push(held.release);
+      const { observed } = await lookUp(app, movieRef(id, "91001"));
+      if (!observed) throw new Error("No place to tell what was found");
+      const source = app.currentSource(id);
+      if (!source) throw new Error("Not signed in");
+      const held = holdSaved("text");
       app.filterFilesOf("movie");
-      await until(() => held.reading, "the saved facts' read");
+      await until(() => held.started, "the saved facts' read");
       const change =
         how === "replaced"
           ? app.update(id, { password: NEW })
           : app.remove(id, { keepHistory: true });
-      await settle();
-      late.observed?.({ audio: ["en"], subtitles: [] });
+      await until(() => !app.savable(id, source), "the old login to stop standing");
+      observed({ audio: ["en"], subtitles: [] });
       native.gate = null;
       held.release();
       await change;
-      await settle();
+      // In the subscription's turn on the disk: after anything the late file asked to write.
+      expect(await app.readFiles(id, LOGIN, () => true)).toBeNull();
       expect(savedPath()).toBeUndefined();
       if (how === "replaced") {
         await until(() => app.members()[0]?.titles.kind === "ready", "the new login's lists");
@@ -403,7 +478,7 @@ describe("tracks found in a movie's file", () => {
             tracksOf(app.filterFilesOf("movie"), ownedKey({ subscriptionId: id, id: each })),
           ).toBeUndefined();
         }
-        await settle();
+        expect(await app.readFiles(id, LOGIN, () => true)).toBeNull();
         expect(savedPath()).toBeUndefined();
       }
     },
@@ -450,6 +525,40 @@ describe("tracks found in a movie's file", () => {
     await expect.poll(() => savedIds(app, id)).toEqual(["91000", "91001"]);
     expect(readFileSync(file, "utf8")).not.toContain(ONE.password);
   });
+
+  it("reads at most the 2048 latest saved facts it may keep, as many as it writes", async () => {
+    panel.serveTitles(twoVersions);
+    const app = await launch();
+    const id = await added(app);
+    await found(app, movieRef(id, "91000"), { audio: ["nl"], subtitles: [] });
+    await expect.poll(() => savedIds(app, id)).toEqual(["91000"]);
+    const path = savedPath();
+    if (!path) throw new Error("Nothing saved");
+
+    // 2050 it may keep, the oldest first, and the latest of all holding the password.
+    const now = Date.now();
+    const entry = (place: number) => ({
+      kind: "movie",
+      id: String(place),
+      name: `Film ${place}`,
+      container: "mp4",
+      audio: ["nl"],
+      subtitles: [],
+      at: now - 3_000 + place,
+    });
+    const files = [
+      ...Array.from({ length: 2050 }, (_, place) => entry(place)),
+      { ...entry(2050), name: `Leak ${ONE.password}` },
+    ];
+    writeFileSync(
+      join(folder, path),
+      JSON.stringify({ version: 1, subscriptionId: id, at: now, files }),
+    );
+    const read = (await app.readFiles(id, LOGIN, () => true)) ?? [];
+    expect(read.map((file) => file.id).toSorted()).toEqual(
+      Array.from({ length: 2048 }, (_, place) => String(place + 2)).toSorted(),
+    );
+  });
 });
 
 describe("tracks found in an episode's file", () => {
@@ -457,22 +566,9 @@ describe("tracks found in an episode's file", () => {
     const app = await launch();
     const id = await added(app);
     const version = ownedKey({ subscriptionId: id, id: "80001" });
-    const series = titleAt(app, "series", version);
     const from = memory.requests.length;
-    const [episode] = seriesOf(await app.detailsOf(series)).seasons[0]?.episodes ?? [];
-    if (!episode) throw new Error("No episode");
-    await found(
-      app,
-      {
-        kind: "episode",
-        subscriptionId: episode.subscriptionId,
-        id: episode.id,
-        seriesId: episode.seriesId,
-        season: episode.season,
-        episode: episode.number,
-      },
-      { audio: ["nl"], subtitles: ["nl"] },
-    );
+    const episode = await firstEpisode(app, version);
+    await found(app, episodeRef(episode), { audio: ["nl"], subtitles: ["nl"] });
     expect(detailsAskedSince(from)).toBe(1);
     await until(() => tracksOf(app.filterFilesOf("series"), version) !== undefined, "the facts");
     const files = app.filterFilesOf("series").get(version) ?? [];
@@ -487,6 +583,58 @@ describe("tracks found in an episode's file", () => {
     await app.detailsOf(titleAt(app, "series", version));
     expect(app.filterFilesOf("series").get(version)).toBeUndefined();
     expect(detailsAskedSince(from)).toBe(1);
+  });
+
+  it("count for their own series' episode only, whatever text the provider's ids hold", async () => {
+    // Joined with a separator, these two series' episode ids would read the same: series "7|8"'s
+    // episode "9", and series "7"'s episode "8|9". Both are the panel's one episode, under one
+    // series name: one name and file type.
+    const OPAQUE = [
+      { id: "7|8", episode: "9", tmdb: "88801" },
+      { id: "7", episode: "8|9", tmdb: "88802" },
+    ] as const;
+    panel.serveTitles((all) => {
+      const [series] = all.series;
+      const [episode] = series?.seasons[0] ?? [];
+      if (!series || !episode) throw new Error("No series");
+      const opaque = OPAQUE.map((each) => ({
+        ...series,
+        id: each.id,
+        name: "Same Show",
+        tmdb: each.tmdb,
+        seasons: [[{ ...episode, id: each.episode }]],
+      }));
+      return { ...all, series: [...opaque, ...all.series] };
+    });
+    const app = await launch();
+    const id = await added(app);
+    const [first, second] = OPAQUE.map((each) => ownedKey({ subscriptionId: id, id: each.id }));
+    if (!first || !second) throw new Error("No versions");
+    const episodes = [await firstEpisode(app, first), await firstEpisode(app, second)] as const;
+    expect(episodes.map(({ seriesId, id, title }) => [seriesId, id, title])).toEqual([
+      ["7|8", "9", episodes[0].title],
+      ["7", "8|9", episodes[0].title],
+    ]);
+
+    await found(app, episodeRef(episodes[0]), { audio: ["nl"], subtitles: [] });
+    await until(() => tracksOf(app.filterFilesOf("series"), first) !== undefined, "the facts");
+    expect(tracksOf(app.filterFilesOf("series"), second)).toBeUndefined();
+    const made = app.collectionsOf("series");
+    if (!made) throw new Error("No collections");
+    const dutch = browseCollection(
+      made,
+      "all",
+      { filters: { verified: { kind: "audio", language: "nl" } } },
+      app.filterFilesOf("series"),
+    );
+    expect(dutch.titles.map((title) => title.id)).toEqual(["7|8"]);
+    expect(dutch.files).toBe(1);
+
+    await found(app, episodeRef(episodes[1]), { audio: ["en"], subtitles: [] });
+    await until(() => tracksOf(app.filterFilesOf("series"), second) !== undefined, "the facts");
+    expect(tracksOf(app.filterFilesOf("series"), first)).toEqual({ audio: ["nl"], subtitles: [] });
+    expect(tracksOf(app.filterFilesOf("series"), second)).toEqual({ audio: ["en"], subtitles: [] });
+    await expect.poll(() => savedIds(app, id)).toEqual(["8|9", "9"]);
   });
 
   it("keep a held series with no episodes in the declared filters", async () => {
@@ -512,4 +660,112 @@ describe("tracks found in an episode's file", () => {
     );
     expect(dutch.titles.some((title) => title.id === "80001")).toBe(true);
   });
+});
+
+describe("tracks found under a login whose saved lists are being deleted", () => {
+  const NEW = "canaryNew9";
+  const DUTCH = { audio: ["nl"], subtitles: [] };
+
+  it("count no more from the moment a new password starts deleting them, though it still signs in", async () => {
+    memory.aliases = [[NEW, ONE.password]];
+    panel.serveTitles(twoVersions);
+    const app = await launch();
+    const id = await added(app);
+    const movie = ownedKey({ subscriptionId: id, id: "91000" });
+    const series = ownedKey({ subscriptionId: id, id: "80001" });
+    await found(app, movieRef(id, "91000"), DUTCH);
+    await found(app, episodeRef(await firstEpisode(app, series)), DUTCH);
+    const shows = watched(app);
+    await expect.poll(shows).toBe("1 1");
+    expect(tracksOf(app.filterFilesOf("movie"), movie)).toEqual(DUTCH);
+    expect(tracksOf(app.filterFilesOf("series"), series)).toEqual(DUTCH);
+    const { observed } = await lookUp(app, movieRef(id, "91001"));
+    if (!observed) throw new Error("No place to tell what was found");
+    const source = app.currentSource(id);
+
+    // Its saved lists deleted, the new password not yet in the Keychain: the old login still
+    // signs in, and the lists it gave still show.
+    memory.holdSecrets = true;
+    const change = app.update(id, { password: NEW });
+    await until(() => memory.heldSecrets.length > 0, "the new password's write");
+    const asked = memory.requests.length;
+    expect(tracksOf(app.filterFilesOf("movie"), movie)).toBeUndefined();
+    expect(tracksOf(app.filterFilesOf("series"), series)).toBeUndefined();
+    const made = app.collectionsOf("movie");
+    if (!made) throw new Error("No collections");
+    const heard = browseCollection(
+      made,
+      "all",
+      { filters: { verified: { kind: "audio", language: "nl" } } },
+      app.filterFilesOf("movie"),
+    );
+    expect([heard.titles, heard.verified, heard.files]).toEqual([[], [], 0]);
+    await expect.poll(shows).toBe("0 0");
+    observed({ audio: ["en"], subtitles: [] });
+    expect(app.currentSource(id)).toBe(source);
+    expect(memory.requests.length).toBe(asked);
+
+    for (const go of memory.heldSecrets.splice(0)) go();
+    await change;
+    expect(app.currentSource(id)).not.toBe(source);
+    await until(() => app.members()[0]?.titles.kind === "ready", "the new login's lists");
+    expect(tracksOf(app.filterFilesOf("movie"), movie)).toBeUndefined();
+    expect(shows()).toBe("0 0");
+    expect(await app.readFiles(id, LOGIN, () => true)).toBeNull();
+  });
+
+  it.each(["held", "still being read"] as const)(
+    "count again as before once the change can't delete them, with them %s",
+    async (how) => {
+      memory.aliases = [[NEW, ONE.password]];
+      panel.serveTitles(twoVersions);
+      let app = await launch();
+      const id = await added(app);
+      const movie = ownedKey({ subscriptionId: id, id: "91000" });
+      const later = ownedKey({ subscriptionId: id, id: "91001" });
+      await found(app, movieRef(id, "91000"), DUTCH);
+      await expect.poll(() => savedIds(app, id)).toEqual(["91000"]);
+      native.undeletable = (path) => path.endsWith("/files.json");
+      let shows: () => string | null = () => null;
+      let held: ReturnType<typeof holdSaved>;
+      if (how === "held") {
+        // A later file's facts held, their write still on its way.
+        held = holdSaved("write");
+        await found(app, movieRef(id, "91001"), { audio: ["en"], subtitles: [] });
+        await until(() => held.started, "the facts' write");
+        shows = watched(app);
+        await expect.poll(shows).toBe("2 0");
+      } else {
+        app = await launch();
+        held = holdSaved("text");
+        app.filterFilesOf("movie");
+        await until(() => held.started, "the saved facts' read");
+      }
+      const source = app.currentSource(id);
+      if (!source) throw new Error("Not signed in");
+
+      const change = app.update(id, { password: NEW });
+      await until(() => !app.savable(id, source), "the deletion to start");
+      const asked = memory.requests.length;
+      expect(tracksOf(app.filterFilesOf("movie"), movie)).toBeUndefined();
+      if (how === "held") await expect.poll(shows).toBe("0 0");
+      native.gate = null;
+      held.release();
+      await expect(change).rejects.toMatchObject({ error: { kind: "unexpected" } });
+
+      expect(app.savable(id, source)).toBe(true);
+      expect(app.currentSource(id)).toBe(source);
+      await expect.poll(() => tracksOf(app.filterFilesOf("movie"), movie)).toEqual(DUTCH);
+      if (how === "held") {
+        expect(tracksOf(app.filterFilesOf("movie"), later)).toEqual({
+          audio: ["en"],
+          subtitles: [],
+        });
+        await expect.poll(shows).toBe("2 0");
+      }
+      expect(memory.requests.length).toBe(asked);
+      // The write that waited on the disk while they couldn't be kept stayed out.
+      expect(await savedIds(app, id)).toEqual(["91000"]);
+    },
+  );
 });

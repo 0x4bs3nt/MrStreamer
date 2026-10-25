@@ -86,9 +86,10 @@ vi.mock("../src/account.ts", async () => {
       kind: "ready",
       members: useSyncExternalStore(subscribe, () => edges.members),
     }),
-    // No launch is reading saved lists here.
+    // No launch is reading saved lists here, and no login stops keeping them.
     readingSaved: () => false,
     onReadingSaved: () => () => undefined,
+    onSavable: () => () => undefined,
   };
 });
 vi.mock("../src/sources.ts", () => ({

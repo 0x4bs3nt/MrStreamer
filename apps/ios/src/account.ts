@@ -186,6 +186,8 @@ const loads = new Map<string, AbortController>();
 let revisions = 0;
 /** By id: the revision when its saved lists were last deleted; no list of an older login is saved. */
 const dropped = new Map<string, number>();
+/** Told after each change to `dropped` (`onSavable`). */
+const fences = new Set<() => void>();
 /** A saved list younger than this shows as loaded at launch, and isn't asked for again. */
 const FRESH_FOR = 12 * 60 * 60 * 1000;
 
@@ -295,6 +297,21 @@ export const savable = (id: string, source: Source) =>
   source.revision > (dropped.get(id) ?? 0) &&
   registry.subscriptions.some((entry) => entry.id === id);
 
+/**
+ * Calls `listener` whenever `savable` may answer otherwise for a login that stays the current
+ * one: as its saved lists start to be deleted, and when a failed deletion lets them be saved
+ * again. A login signed in or dropped is told by sources.ts, and a removal by the roster. For
+ * titles.ts, whose file facts count only while `savable` holds. Answers how to stop.
+ */
+export function onSavable(listener: () => void): () => void {
+  fences.add(listener);
+  return () => void fences.delete(listener);
+}
+
+const savableChanged = () => {
+  for (const listener of fences) listener();
+};
+
 /** Saves a list `source` gave, in a later task: a write that fails leaves the list as it shows. */
 function save(id: string, source: Source, saved: Saved) {
   setTimeout(() => void writeList(id, saved, source.login, () => savable(id, source)), 0);
@@ -306,6 +323,7 @@ function save(id: string, source: Source, saved: Saved) {
  */
 async function dropSaved(id: string, guideGone = guide.forget(id)): Promise<boolean> {
   dropped.set(id, revisions);
+  savableChanged();
   const gone = await Promise.all([guideGone, dropLists(id), dropTitles(id)]);
   return gone.every(Boolean);
 }
@@ -320,6 +338,7 @@ async function clearSaved(id: string): Promise<void> {
   if (await dropSaved(id)) return;
   if (before === undefined) dropped.delete(id);
   else dropped.set(id, before);
+  savableChanged();
   throw new AppFailure({
     kind: "unexpected",
     detail: "The lists this iPhone saved couldn't be deleted. Try again.",
