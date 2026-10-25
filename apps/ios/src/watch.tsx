@@ -1,4 +1,5 @@
 import { router, usePathname } from "expo-router";
+import type { Quality } from "@mrstreamer/contracts/library";
 import { lockAsync, OrientationLock, unlockAsync } from "expo-screen-orientation";
 import { isPictureInPictureSupported, VideoAirPlayButton, VideoView } from "expo-video";
 import { useEffect, useRef, useState } from "react";
@@ -17,7 +18,7 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useCatalogue } from "./account.ts";
+import { channelQuality, chooseChannelQuality, currentCatalogue, useCatalogue } from "./account.ts";
 import { starChannel, useFavouriteKeys } from "./favourites.ts";
 import { Glass, IconButton } from "./glass.tsx";
 import { DownloadStatusButton } from "./download-status.tsx";
@@ -48,12 +49,13 @@ import {
   usePlaybackLength,
 } from "./playback.ts";
 import { colors } from "./ui.tsx";
+import { currentSource } from "./sources.ts";
 
 /**
  * Watch: the player full screen, over the tabs, with A3's controls: a close button, AirPlay,
  * Picture in Picture, Downloads and Settings at the top, and everything else in one large glass
- * panel, all showing and hiding together. A channel adds its star, which stars or unstars it and
- * leaves what plays alone. A movie or an episode adds a scrubber, its sound and subtitle tracks
+ * panel, all showing and hiding together. A channel adds Quality and its star, which stars or
+ * unstars it and leaves what plays alone. A movie or an episode adds a scrubber, its sound and subtitle tracks
  * and the next episode. It is the app's own layer rather than a route, because
  * the view that starts Picture in Picture has to stay while it plays: Watch then hides, and the
  * tabs and accessory take over. Closing it shows the screen under it, a title's details among
@@ -336,7 +338,12 @@ function Controls({
                 />
               </>
             )}
-            {phase.item.live ? <Star item={phase.item} /> : null}
+            {phase.item.live ? (
+              <>
+                <LiveQuality item={phase.item} />
+                <Star item={phase.item} />
+              </>
+            ) : null}
             <IconButton
               symbol="stop.fill"
               label="Stop"
@@ -372,6 +379,74 @@ function Star({ item }: { item: Playing }) {
       testID="watch-favourite"
     />
   );
+}
+
+const qualityNames: Readonly<Record<Quality, string>> = {
+  uhd: "4K",
+  fhd: "Full HD",
+  hd: "HD",
+  sd: "SD",
+};
+
+/** Quality stays available while connecting or failed, so Automatic can reset a broken pick. */
+function LiveQuality({ item }: { item: Playing }) {
+  const catalogue = useCatalogue();
+  const menu = useRef(0);
+  useEffect(
+    () => () => {
+      menu.current++;
+    },
+    [item],
+  );
+  const channel = catalogue.kind === "ready" ? catalogue.library.byKey.get(item.id) : undefined;
+  const choose = () => {
+    if (!channel) return;
+    const mine = ++menu.current;
+    const asked = request();
+    const source = currentSource(channel.subscriptionId);
+    const stands = () => {
+      const { phase, watch } = playbackState.get();
+      const latest = currentCatalogue();
+      return (
+        menu.current === mine &&
+        asked.stands() &&
+        watch &&
+        phase.kind !== "idle" &&
+        phase.item === item &&
+        currentSource(channel.subscriptionId) === source &&
+        latest.kind === "ready" &&
+        latest.library.byKey.get(item.id) === channel
+      );
+    };
+    if (!stands()) return;
+    const choices = channelQuality(channel);
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: "Quality",
+        options: [
+          ...choices.map((choice) => {
+            const name = choice.quality
+              ? `${qualityNames[choice.quality]} · ${choice.name}`
+              : choice.name;
+            return `${choice.saved ? "✓ " : ""}${name}${choice.playing ? " · Playing" : ""}`;
+          }),
+          "Cancel",
+        ],
+        cancelButtonIndex: choices.length,
+      },
+      (index) => {
+        const picked = choices[index];
+        if (!picked || !stands()) return;
+        if (!chooseChannelQuality(channel, item.place, picked.variantId)) {
+          Alert.alert(
+            "Couldn't save media preference",
+            "Your previous choice is still saved. Try again.",
+          );
+        }
+      },
+    );
+  };
+  return <TextControl label="Quality" onPress={choose} testID="watch-quality" />;
 }
 
 /** How long the stream has played, and that it is live. Only this redraws every second. */

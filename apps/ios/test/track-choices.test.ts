@@ -417,6 +417,123 @@ describe("automatic policy in the one playback owner", () => {
     expect(captionsRequested()).toEqual(["nl"]);
   });
 
+  it("finishes post-request readback when a newer stale row supersedes the group operation", async () => {
+    await choosing({ kind: "follow-title" }, { kind: "forced-only" });
+    const subtitles = {
+      state: "ready" as const,
+      options: [text("en", "en", true), text("de", "de", true)],
+    };
+    publish(snapshot(1, { subtitles, selectedSubtitleId: "en" }));
+    await tick();
+    const rows = await trackChoices("audio");
+    const german = rows.find((row) => row.label === "de");
+    const dutch = rows.find((row) => row.label === "nl");
+    if (!german || !dutch) throw new Error("Missing native rows");
+    const acknowledgement = deferred<{ kind: "requested" }>();
+    const earlierQuery = deferred<ObservedTrackSnapshot>();
+    onTestFinished(() => {
+      acknowledgement.resolve({ kind: "requested" });
+      earlierQuery.resolve(tracks);
+    });
+    port.selectObservedTrackAsync.mockImplementationOnce(() => acknowledgement.promise);
+    const first = german.choose();
+    await tick();
+    port.getObservedTracksAsync.mockImplementationOnce(() => earlierQuery.promise);
+    const menu = trackChoices("audio");
+    await tick();
+    acknowledgement.resolve({ kind: "requested" });
+    await tick();
+    publish(snapshot(2, { subtitles, selectedSubtitleId: "en" }));
+    const newer = dutch.choose(); // Its revision is old, but it supersedes the pending operation now.
+    const before = port.getObservedTracksAsync.mock.calls.length;
+    port.getObservedTracksAsync.mockImplementationOnce(async () => {
+      // The actual sound changed; only this post-request query observes it, with no new event.
+      tracks = snapshot(2, { subtitles, selectedAudioId: "de", selectedSubtitleId: "en" });
+      port.tracks = tracks;
+      return tracks;
+    });
+    earlierQuery.resolve(snapshot(1, { subtitles, selectedSubtitleId: "en" }));
+    await Promise.all([first, newer, menu]);
+    await tick();
+    expect(port.getObservedTracksAsync.mock.calls.length).toBeGreaterThan(before);
+    expect(captionsRequested()).toEqual(["de"]);
+    expect(preferences.getMediaPreferences().audio).toEqual({ kind: "follow-title" });
+  });
+
+  it("keeps frozen automatic policy and descriptor holds across Live fallback and reconnect", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    preferences.updateMediaPreferences("audio", { kind: "language", language: "en" });
+    preferences.updateMediaPreferences("subtitles", { kind: "off" });
+    const live = { ...item, live: true };
+    const open = async () => ({ url: "file:live.m3u8", container: "m3u8" });
+    await play(
+      live,
+      {
+        kind: "live",
+        explicit: false,
+        candidates: [
+          { variantId: "a", open },
+          { variantId: "b", open },
+        ],
+      },
+      { watch: true, login: [] },
+    );
+    publish(snapshot(1));
+    await tick();
+    port.selectObservedTrackAsync.mockClear();
+    await choose("audio", "de");
+    preferences.updateMediaPreferences("audio", { kind: "language", language: "nl" });
+    port.failure({ kind: "missing", evidence: null });
+    await tick();
+    publish(
+      snapshot(1, {
+        audio: {
+          state: "ready",
+          options: [sound("en", "en", { isDefault: true }), sound("nl", "nl")],
+        },
+        selectedAudioId: "nl",
+      }),
+    );
+    await tick();
+    expect(soundsRequested()).toEqual(["de", "en"]);
+    publish(
+      snapshot(2, {
+        audio: {
+          state: "ready",
+          options: [
+            sound("en", "en", { isDefault: true }),
+            sound("german", "de"),
+            sound("nl", "nl"),
+          ],
+        },
+      }),
+    );
+    await tick();
+    expect(soundsRequested()).toEqual(["de", "en", "german"]);
+    port.state(true);
+    port.failure();
+    await vi.advanceTimersByTimeAsync(1000);
+    await tick();
+    publish(
+      snapshot(1, {
+        audio: {
+          state: "ready",
+          options: [
+            sound("en", "en", { isDefault: true }),
+            sound("again", "de"),
+            sound("nl", "nl"),
+          ],
+        },
+      }),
+    );
+    await tick();
+    expect(soundsRequested()).toEqual(["de", "en", "german", "again"]);
+    expect(preferences.getMediaPreferences().audio).toEqual({ kind: "language", language: "nl" });
+  });
+
   it("stops one group's automatic requests after three consecutive stale answers", async () => {
     await choosing({ kind: "follow-title" });
     port.selectObservedTrackAsync.mockResolvedValue({ kind: "stale" });

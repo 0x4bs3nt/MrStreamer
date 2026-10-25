@@ -220,7 +220,7 @@ describe("playback", () => {
     waits(20); // paused
     playing(true);
     plays(10); // 40
-    waits(60); // stalled: only the playing lease, 5 seconds, counts
+    waits(10); // stalled: the 5 s telemetry lease expires before the 15 s Live watchdog
     playing(false);
     playing(true);
     plays(10); // 55
@@ -746,4 +746,54 @@ describe("the outbox", () => {
     expect(pending[0]?.event.event).toBe("installation_observed");
     analytics.setForeground(false);
   });
+});
+
+it("keeps one telemetry run across Live reconnect, excludes backoff and reports only the final failure", async () => {
+  const app = await launch();
+  let lookups = 0;
+  const outcome = vi.fn();
+  try {
+    await app.play(
+      channel(),
+      {
+        kind: "live",
+        explicit: false,
+        candidates: [
+          {
+            variantId: "stream",
+            open: async () => {
+              lookups++;
+              return opens();
+            },
+          },
+        ],
+      },
+      { watch: true, login, outcome },
+    );
+    playing(true);
+    plays(3);
+    const pending = app.request();
+    fakePlayer.failure({ kind: "network", evidence: null });
+    expect(app.playbackState.get().phase.kind).toBe("loading");
+    waits(10); // Advancing the app's clock while backoff is loading cannot count as playing.
+    await quiet();
+    expect(ofName("stream_error")).toEqual([]);
+    await until(() => lookups === 2); // The real one-second backoff, with the loopback transport active.
+    expect(pending.stands()).toBe(true);
+    playing(true);
+    plays(2);
+    fakePlayer.failure({ kind: "auth", evidence: null });
+    await app.stop();
+    await until(() => names().includes("stream_stopped"));
+    expect(ofName("stream_started")).toEqual([expect.objectContaining({ stream_type: "live" })]);
+    expect(ofName("stream_error")).toEqual([
+      expect.objectContaining({ error_type: "credentials" }),
+    ]);
+    expect(ofName("stream_stopped")).toEqual([
+      expect.objectContaining({ watch_duration_seconds: 5 }),
+    ]);
+    expect(outcome.mock.calls).toEqual([[true]]);
+  } finally {
+    await app.stop();
+  }
 });

@@ -169,8 +169,28 @@ Managed items do not run independent HLS playlist discovery or hidden foreground
 attempt, allocates increasing attempt IDs before lookup, and filters sequence, attempt, exact
 item and source revision. Legacy status/load/playing/time/end events no longer update playback.
 A fresh nil-source player's fixed not-drained refusal permits one bootstrap retry on the same
-player and attempt. Other failures require the viewer's Try again; there is no automatic recovery,
-quality or language policy.
+player and attempt. Track policy uses the accepted pure decisions and native readback described below.
+An attended Live channel uses core's quality order and bounded recovery. Before the first playing,
+Automatic can try three candidates; an explicit channel pick plays alone. After playing, transient
+failures reconnect the candidate that played after 1, 2, 4 and 8 seconds. Thirty seconds of actual
+playing on one attempt earns those four reconnects back. This permits at most seven opens in the
+first unstable stretch and four after a stable reset, with no cross-provider fallback.
+
+Only Watch, Picture in Picture or AirPlay, without viewer Pause, arms Live's deadlines: twenty
+seconds from native attach to first playing, then fifteen seconds without media-time progress
+while native playback is not paused. Disarming preserves spent time; progress resets the stall.
+Lookup, download reclaim and reader drain have no startup deadline. Home preview, titles and
+copies gain no watchdog or automatic recovery. Native unknown failures stay unknown; a measured
+app deadline reports the network policy category without claiming an HTTP cause.
+
+Each automatic attempt keeps the same viewer Choice, frozen track policies, holds, options,
+pending Request and signed-in Source binding. It changes no Watch, PiP, mute or navigation intent.
+Backoff shows Connecting and counts no telemetry playing time. Pause, Close, setting aside or lost
+attention cancels recovery; a login replacement cannot reopen under either login. Explicit Try
+again takes a fresh source binding and budget while keeping the Choice and confirmed holds.
+There is one outcome per Epoch, true at first playing or false only when none played, and one
+terminal failure. Every attach still waits for actual native and format closure and lease return;
+a three-second drain wait failure stops recovery. These source rules still need native proof.
 
 Stop, failure and replacement retain actual native detach and format close/closed promises before
 publishing idle or failed. Replacement waits for positive matching native acknowledgement and all
@@ -189,7 +209,8 @@ facts. Choices retain the exact native record, item, attempt and revision, refus
 options, and offer Off only when native allows it. Checkmarks use actual selected IDs after
 readback, never a request acknowledgement. Display names are labels, not language, default or
 forced facts. Missing language stays optional. A late menu or choice cannot act after Close,
-navigation, replacement or a new revision. Initial native selection stays unchanged.
+navigation, replacement or a new revision. Automatic track choices use the frozen policy and
+confirmed sound; native acknowledgements alone never establish a held or remembered selection.
 
 Producer R54 compiled the player and passed five actual-player XCTest cases. R59 established HLS
 playback, exact-record audio/subtitle selection and readback, stable consecutive revisions, Off,
@@ -261,8 +282,13 @@ Each responsibility has one owner, a plain module with a store the screens read:
   title/original language; Try again keeps these and confirmed descriptor holds. Automatic choices
   use playable native options, and forced subtitles follow confirmed sound. Manual requests become
   holds only after actual readback, then remember a changing pick through this same preference
-  writer. Settings changes affect the next choice. Live quality, channel-pick application and
-  automatic recovery still await their separate consumer unit.
+  writer. Settings changes affect the next choice. Live uses core's global quality and accepted
+  channel pick to build its candidate plan. Watch's Quality sheet remains available while loading,
+  playing, paused or failed. A pick writes before a new Choice starts; Automatic clears an override,
+  including one that failed. A refused write keeps the accepted choice and current playback.
+  Erase-history removal forgets the provider's picks or retains its erasing marker for launch retry;
+  keeping history keeps the picks. Quality persistence, recovery timing and PiP/AirPlay through
+  reconnect still require exact native and physical acceptance.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
   facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
   as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one
@@ -485,7 +511,9 @@ phone is held. On the simulator the screens follow its device orientation (agent
 `orientation`), not where Watch left them. `patches/` makes expo-video report Picture in Picture
 brought back to the app, which its own view never forwarded, and hold AVKit's answer until Watch
 has shown the player again, so the picture returns into Watch rather than Home.
-Watch's Audio and Subtitles query observed native tracks and select the exact record with its
+Watch's Live Quality sheet reads accepted channel picks at opening and fences its native callback
+by item, source, request and menu generation, including when the same item failed. Its playing row
+is marked only while playing or paused. Watch's Audio and Subtitles query observed native tracks and select the exact record with its
 item, attempt and revision. Duplicate display labels stay distinct by native ID and optional name;
 checkmarks follow actual readback. Requests share one queue with automatic policy; an acknowledgement
 does not confirm a hold or remember a preference. Later selection-only snapshots can confirm it.

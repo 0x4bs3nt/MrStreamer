@@ -1,7 +1,8 @@
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
 import type { LoginInput } from "@mrstreamer/contracts/ipc";
 import type { AccountStatus } from "@mrstreamer/contracts/subscription";
-import { streamsToPlay } from "@mrstreamer/core/catalogue/variants";
+import type { Quality } from "@mrstreamer/contracts/library";
+import { chosenVariant, streamsToPlay } from "@mrstreamer/core/catalogue/variants";
 import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/core/provider";
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
@@ -23,7 +24,21 @@ import {
   type LiveSource,
   type Part,
 } from "./library.ts";
-import { play, playbackState, progressSettled, request, stop } from "./playback.ts";
+import {
+  liveStream,
+  play,
+  playbackState,
+  progressSettled,
+  request,
+  stop,
+  type Plan,
+} from "./playback.ts";
+import {
+  channelPicks,
+  forgetChannelPicks,
+  getMediaPreferences,
+  updateChannelPick,
+} from "./media-preferences.ts";
 import { keychainSecrets } from "./secrets.ts";
 import {
   currentSource,
@@ -1199,8 +1214,8 @@ function forgotten(state: SavedState, id: string, erase: boolean): SavedState {
 }
 
 /**
- * Deletes the history of a subscription removed with it: its recent channels, watchlist and
- * viewing record, each whatever another fails, then drops it from the registry's `erasing`.
+ * Deletes the history of a subscription removed with it: its recent channels, watchlist,
+ * viewing record and quality picks, each whatever another fails, then clears `erasing`.
  * Rejects when one isn't deleted, leaving it there for the next launch to try again.
  */
 async function eraseHistory(id: string): Promise<void> {
@@ -1208,6 +1223,9 @@ async function eraseHistory(id: string): Promise<void> {
     Promise.resolve().then(() => writeState((state) => forgotten(state, id, true))),
     Promise.resolve().then(() => eraseWatchlist(id)),
     eraseViewing(id),
+    Promise.resolve().then(() => {
+      if (!forgetChannelPicks(id)) throw new Error("Channel picks kept.");
+    }),
   ]);
   const failed = erased.find((each) => each.status === "rejected");
   if (failed) throw failed.reason;
@@ -1217,23 +1235,43 @@ async function eraseHistory(id: string): Promise<void> {
 /** The last channel chosen to watch while a channel played: another one changes the channel. */
 let chosen: string | null = null;
 
-/**
- * Plays a channel's first stream in Auto's order (the desktop's `streamsToPlay`, at its default
- * quality), from its own subscription, in Watch or in Home's preview. Trying the next stream when
- * one fails comes later.
- */
-export function playChannel(channel: Channel, place: string, options: { watch: boolean }) {
-  const [variant] = streamsToPlay(channel, {});
-  if (!variant) return;
+/** Core chooses up to three streams for Automatic, or only the explicit or accepted pick. */
+function livePlan(channel: Channel, asked?: string): Plan | null {
+  const picks = channelPicks(channel.subscriptionId);
+  const { liveQuality } = getMediaPreferences();
+  const [first, ...rest] = streamsToPlay(
+    channel,
+    { liveQuality, channelVariants: picks },
+    asked,
+  ).map((variant) => ({
+    variantId: variant.id,
+    open: async (signal: AbortSignal) => {
+      const stream = await sourceOf(channel.subscriptionId).provider.liveStream(variant.id, signal);
+      return {
+        url: stream.url,
+        container: stream.format === "hls" ? "m3u8" : "ts",
+        ...(stream.headers ? { headers: stream.headers } : {}),
+      };
+    },
+  }));
+  return first
+    ? {
+        kind: "live",
+        candidates: [first, ...rest],
+        explicit: asked !== undefined || chosenVariant(channel, picks) !== null,
+      }
+    : null;
+}
+
+/** Plays one channel from its own provider, using the accepted global quality and channel pick. */
+export function playChannel(
+  channel: Channel,
+  place: string,
+  options: { watch: boolean; variantId?: string },
+) {
+  const plan = livePlan(channel, options.variantId);
+  if (!plan) return;
   const { subscriptionId } = channel;
-  const open = async (signal: AbortSignal) => {
-    const stream = await sourceOf(subscriptionId).provider.liveStream(variant.id, signal);
-    return {
-      url: stream.url,
-      container: stream.format === "hls" ? "m3u8" : "ts",
-      ...(stream.headers ? { headers: stream.headers } : {}),
-    };
-  };
   if (options.watch) {
     const { phase } = playbackState.get();
     const watching = phase.kind !== "idle" && phase.item.live;
@@ -1251,9 +1289,45 @@ export function playChannel(channel: Channel, place: string, options: { watch: b
       next: false,
       versions: false,
     },
-    { kind: "live", candidates: [{ variantId: variant.id, open }], explicit: false },
+    plan,
     { ...options, login: loginOf(subscriptionId) },
   );
+}
+
+export interface QualityChoice {
+  readonly variantId: string | null;
+  readonly quality: Quality | null;
+  readonly name: string;
+  readonly saved: boolean;
+  readonly playing: boolean;
+}
+
+/** A menu snapshot: accepted checkmark and actually playing row are separate facts. */
+export function channelQuality(channel: Channel): readonly QualityChoice[] {
+  const picked = chosenVariant(channel, channelPicks(channel.subscriptionId));
+  const live = liveStream();
+  const playing = live?.channel === channel.key ? live.playing : null;
+  return [
+    { variantId: null, quality: null, name: "Automatic", saved: picked === null, playing: false },
+    ...channel.variants.map((variant) => ({
+      variantId: variant.id,
+      quality: variant.quality,
+      name: variant.name,
+      saved: picked?.id === variant.id,
+      playing: playing === variant.id,
+    })),
+  ];
+}
+
+/** Save first. A refused proposal leaves both the accepted pick and the current Choice alone. */
+export function chooseChannelQuality(
+  channel: Channel,
+  place: string,
+  variantId: string | null,
+): boolean {
+  if (!updateChannelPick(channel, variantId)) return false;
+  playChannel(channel, place, { watch: true });
+  return true;
 }
 
 // Every subscription's channels together. Each subscription's part (library.ts) is kept, with the
