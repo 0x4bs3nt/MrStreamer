@@ -7,6 +7,7 @@ import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core
 import Constants from "expo-constants";
 import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
 import { dropTitles, pruneDetails } from "./details-cache.ts";
+import { transfers } from "./download-task.ts";
 import { appError, hostOf } from "./errors.ts";
 import { guide } from "./guide.ts";
 import {
@@ -22,7 +23,15 @@ import {
 } from "./library.ts";
 import { play, playbackState, request, stop } from "./playback.ts";
 import { keychainSecrets } from "./secrets.ts";
-import { currentSource, dropSource, loginOf, setSource, sourceOf, type Source } from "./sources.ts";
+import {
+  currentSource,
+  dropSource,
+  loginOf,
+  setSource,
+  signedIn,
+  sourceOf,
+  type Source,
+} from "./sources.ts";
 import {
   firstLaunch,
   migrateRecentChannels,
@@ -76,6 +85,14 @@ import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 // opened from it (details-cache.ts, which titles.ts saves while `savable` holds) go with its lists.
 // Which saved lists a launch is still reading is kept apart from the lists (`readingSaved`): a list
 // stays idle while its copy is read, and after it when there is none, until its provider is asked.
+//
+// Each login's download authority is a native generation (download-task.ts) bound to its exact
+// Source here, never on the Source itself: binding changes no Source, revision or sign-in
+// notification, so lists, Live and artwork never wait on it, and a failed binding holds back
+// downloads alone. downloads.ts asks for each binding once launch's password reads settled
+// (`launchSignIns`). Before a password changes or a subscription goes, its downloads are fenced
+// durably (`fenceDownloads`); when they can't be, the change is refused and nothing of the login
+// is touched. Every native command awaited in a change refuses within five seconds.
 
 /** A list one subscription loads; a failed or repeated load keeps the last one it had. */
 export type Loadable<A> =
@@ -192,6 +209,13 @@ const FRESH_FOR = 12 * 60 * 60 * 1000;
 /** The last change to the registry or the Keychain, settled or not; a failed one counts as done. */
 let changing: Promise<unknown> = Promise.resolve();
 
+/** Each exact signed-in Source's download generation, once bound. */
+const bindings = new WeakMap<Source, string>();
+/** Rises whenever bindings are invalidated: a binding begun before writes nothing. */
+let bindingEpoch = 0;
+let launchSettled = () => {};
+const launched = new Promise<void>((resolve) => (launchSettled = resolve));
+
 /** Runs `change` once every change begun before it has finished. */
 function serially<A>(change: () => Promise<A>): Promise<A> {
   const run = changing.then(change);
@@ -205,6 +229,69 @@ function serially<A>(change: () => Promise<A>): Promise<A> {
  * login stands after it.
  */
 export const accountChanges = (): Promise<void> => changing.then(() => undefined);
+
+/**
+ * Resolves once launch's password reads settled or were superseded (`restore`), failed or not:
+ * not provider sign-in, saved lists or the catalogue.
+ */
+export const launchSignIns = (): Promise<void> => launched;
+
+/** The download generation bound to exactly `source`, or null until it is. */
+export const downloadGeneration = (source: Source): string | null => bindings.get(source) ?? null;
+
+/**
+ * Binds `captured`, `id`'s login when asked, to its native download generation: the one it has
+ * when enabled, else a fresh one. Runs as one account change, each native command refused within
+ * five seconds, and writes only while `captured` is still the login and no invalidation came
+ * since. A failure leaves it unbound, which holds back its downloads and nothing else.
+ */
+export function bindDownloadSource(id: string, captured: Source): Promise<void> {
+  const epoch = bindingEpoch;
+  const current = () => currentSource(id) === captured && bindingEpoch === epoch;
+  return serially(async () => {
+    if (!current() || bindings.has(captured) || !transfers.available()) return;
+    try {
+      const observed = await transfers.sourceState(id);
+      if (!current()) return;
+      const generation =
+        observed.state === "enabled" && observed.generation !== null
+          ? observed.generation
+          : await transfers.enableSource(id, observed);
+      if (current()) bindings.set(captured, generation);
+    } catch {
+      if (current()) bindings.delete(captured);
+    }
+  });
+}
+
+/**
+ * Forgets the download bindings of `source`, or of every login after a queue reset: each is
+ * bound again when asked, and a binding begun before writes nothing.
+ */
+export function unbindDownloads(source?: Source): void {
+  bindingEpoch++;
+  for (const each of source ? [source] : signedIn()) bindings.delete(each);
+}
+
+/**
+ * Fences `id`'s downloads before its login changes or goes: its native generation is revoked
+ * durably, without waiting for a transfer to end. Throws, so the change is refused with nothing
+ * of the login touched, when no durable fence could be made.
+ */
+async function fenceDownloads(id: string): Promise<void> {
+  // A build without the native owner holds no download authority to fence.
+  if (!transfers.available()) return;
+  try {
+    const observed = await transfers.sourceState(id);
+    if (observed.state === "missing" || observed.state === "revoked") return;
+    await transfers.revokeSource(id, observed);
+  } catch {
+    throw new AppFailure({
+      kind: "unexpected",
+      detail: "Downloads couldn't let go of this subscription yet. Try again.",
+    });
+  }
+}
 
 function commit(next: Registry) {
   writeRegistry(next);
@@ -585,7 +672,7 @@ async function restorePassword(entry: SubscriptionEntry): Promise<void> {
  * serialized with edits.
  */
 export function restore(): Promise<void> {
-  return serially(async () => {
+  const restored = serially(async () => {
     const saved = readRegistry();
     registry = saved ?? migrated(readState());
     reading.set(
@@ -634,6 +721,8 @@ export function restore(): Promise<void> {
         settle();
       }),
   );
+  void restored.then(launchSettled, launchSettled);
+  return restored;
 }
 
 /** A name as typed: none when empty, unchanged when not given. */
@@ -671,6 +760,7 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     const known = registry.subscriptions.find((entry) => sameAccount(entry, account));
     if (known) {
       const before = currentSource(known.id);
+      await fenceDownloads(known.id);
       await clearSaved(known.id);
       try {
         await keychainSecrets.write(known.id, account.password);
@@ -704,7 +794,8 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     };
     const first = registry.subscriptions.length === 0;
     try {
-      // A retired id's lists went with its removal, unless the disk refused it then.
+      // A retired id's lists and downloads went with its removal, unless refused then.
+      await fenceDownloads(id);
       await clearSaved(id);
       await keychainSecrets.write(id, account.password);
       // Left while the password was written: it goes again, and nothing is saved.
@@ -771,7 +862,10 @@ export async function update(
     const now = registry.subscriptions.find((each) => each.id === id);
     if (!now) throw new AppFailure({ kind: "no-subscription" });
     const before = currentSource(id);
-    if (password) await clearSaved(id);
+    if (password) {
+      await fenceDownloads(id);
+      await clearSaved(id);
+    }
     try {
       if (password) await keychainSecrets.write(id, password);
       const name = nameOf(change.name);
@@ -797,9 +891,9 @@ export async function update(
  * for when the account is added again, unless `keepHistory` is false. Removing the last returns to
  * Connect.
  *
- * The registry is written first, with the history to delete when it goes too; a refused write
- * rejects with nothing changed, and the subscription stays in the roster. From then on the
- * removal stands, whatever fails after. A history not all deleted rejects the promise, and each
+ * Its downloads are fenced first, then the registry is written, with the history to delete when
+ * it goes too; a refused fence or write rejects with nothing changed, and the subscription stays
+ * in the roster. From then on the removal stands, whatever fails after. A history not all deleted rejects the promise, and each
  * launch deletes the rest until it is gone. A password the Keychain didn't remove is removed at
  * the next launch.
  */
@@ -807,6 +901,7 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
   return serially(async () => {
     const entry = registry.subscriptions.find((each) => each.id === id);
     if (!entry) return;
+    await fenceDownloads(id);
     commit(withoutSubscription(registry, entry, keepHistory));
     for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${id}`)?.abort();
     dropSource(id);

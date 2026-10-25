@@ -1,8 +1,9 @@
 import ExpoModulesCore
+import UIKit
 
 /**
- The JavaScript face of `TransferOwner`, for `src/download-task.ts`. Events are hints; the
- ledger, read by `reconcile`, is what counts.
+ The JavaScript face of `TransferOwner`, for `src/download-task.ts`. Events are hints; the queue,
+ read by `reconcile`, is what counts.
  */
 public class BackgroundDownloadsModule: Module {
   public func definition() -> ModuleDefinition {
@@ -18,23 +19,65 @@ public class BackgroundDownloadsModule: Module {
       TransferOwner.shared.listen(nil)
     }
 
-    AsyncFunction("reconcile") { (promise: Promise) in
-      TransferOwner.shared.reconcile { answer(promise, $0) }
+    AsyncFunction("sourceState") { (source: String, promise: Promise) in
+      TransferOwner.shared.sourceState(source) { answer(promise, $0) }
     }
 
-    AsyncFunction("start") { (request: StartRequest, promise: Promise) in
-      TransferOwner.shared.start(
-        id: request.id, attempt: request.attempt, ext: request.ext, url: request.url,
-        headers: request.headers
+    AsyncFunction("enableSource") { (command: SourceCommand, promise: Promise) in
+      TransferOwner.shared.enableSource(
+        command.sourceId, epoch: command.queueEpoch, expected: command.expected
       ) { answer(promise, $0) }
     }
 
-    AsyncFunction("pause") { (attempt: String, promise: Promise) in
-      TransferOwner.shared.pause(attempt: attempt) { promise.resolve(nil) }
+    AsyncFunction("revokeSource") { (command: SourceCommand, promise: Promise) in
+      TransferOwner.shared.revokeSource(
+        command.sourceId, epoch: command.queueEpoch, expected: command.expected
+      ) { answer(promise, $0) }
     }
 
-    AsyncFunction("cancel") { (attempt: String, promise: Promise) in
-      TransferOwner.shared.cancel(attempt: attempt) { promise.resolve(nil) }
+    AsyncFunction("reserve") { (request: Reservation, promise: Promise) in
+      TransferOwner.shared.reserve(
+        id: request.id, ext: request.ext, source: request.sourceId,
+        generation: request.sourceGeneration
+      ) { answer(promise, $0) }
+    }
+
+    AsyncFunction("authorize") { (request: ArmRequest, promise: Promise) in
+      TransferOwner.shared.authorize(
+        request.authorization, url: request.url, headers: request.headers
+      ) { answer(promise, $0) }
+    }
+
+    AsyncFunction("cancelAuthorization") { (authorization: String, reason: String, promise: Promise) in
+      TransferOwner.shared.cancelAuthorization(authorization, reason: reason) { answer(promise, $0) }
+    }
+
+    AsyncFunction("drainDownload") { (id: String, promise: Promise) in
+      TransferOwner.shared.drain(download: id) { answer(promise, $0) }
+    }
+
+    AsyncFunction("acquirePlayback") { (request: PlaybackHold, promise: Promise) in
+      TransferOwner.shared.acquirePlayback(source: request.sourceId, lease: request.lease) {
+        answer(promise, $0)
+      }
+    }
+
+    AsyncFunction("releasePlayback") { (lease: String, promise: Promise) in
+      TransferOwner.shared.releasePlayback(lease) { promise.resolve(nil) }
+    }
+
+    AsyncFunction("reconcile") { (context: String, promise: Promise) in
+      TransferOwner.shared.reconcile(context: context) { answer(promise, $0) }
+    }
+
+    AsyncFunction("finishForegroundReconcile") { (token: String, promise: Promise) in
+      TransferOwner.shared.finishForegroundReconcile(token) { answer(promise, $0) }
+    }
+
+    AsyncFunction("resetQueue") { (scope: ResetScope, promise: Promise) in
+      TransferOwner.shared.resetQueue(epoch: scope.queueEpoch, knownSources: scope.knownSourceIds) {
+        answer(promise, $0)
+      }
     }
 
     AsyncFunction("acknowledge") { (receipts: [String], promise: Promise) in
@@ -51,12 +94,33 @@ public class BackgroundDownloadsModule: Module {
   }
 }
 
-struct StartRequest: Record {
+struct SourceCommand: Record {
+  @Field var sourceId: String = ""
+  @Field var queueEpoch: String = ""
+  @Field var expected: String = ""
+}
+
+struct Reservation: Record {
   @Field var id: String = ""
-  @Field var attempt: String = ""
   @Field var ext: String = ""
+  @Field var sourceId: String = ""
+  @Field var sourceGeneration: String = ""
+}
+
+struct ArmRequest: Record {
+  @Field var authorization: String = ""
   @Field var url: String = ""
   @Field var headers: [String: String] = [:]
+}
+
+struct PlaybackHold: Record {
+  @Field var sourceId: String = ""
+  @Field var lease: String = ""
+}
+
+struct ResetScope: Record {
+  @Field var queueEpoch: String = ""
+  @Field var knownSourceIds: [String] = []
 }
 
 private func answer<Value>(_ promise: Promise, _ result: Result<Value, Refusal>) {
@@ -76,14 +140,26 @@ private func answer(_ promise: Promise, _ result: Result<Void, Refusal>) {
 /**
  Makes the session as the app launches, before JavaScript, and takes iOS's wakes for it. A wake
  for any other session is answered at once: Expo calls the system's handler only once every
- subscriber answered.
+ subscriber answered. The queue's foreground barrier, which JavaScript's first foreground
+ reconcile finishes, goes up before launch recovery could admit anything unless iOS launched the
+ app in the background, as for the session's own events, which go on without JavaScript; else at
+ the first activation. A scene-based app is expected to report `.inactive`, not `.background`,
+ while a launch the viewer sees finishes; that ordering is checked on a phone, not assumed proved.
  */
 public class BackgroundDownloadsLaunch: ExpoAppDelegateSubscriber {
   public func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
-    TransferOwner.shared.connect()
+    TransferOwner.shared.connect(foreground: application.applicationState != .background)
+    let center = NotificationCenter.default
+    center.addObserver(
+      forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
+    ) { _ in TransferOwner.shared.didBecomeActive() }
+    center.addObserver(
+      forName: UIApplication.willResignActiveNotification, object: nil, queue: nil
+    ) { _ in TransferOwner.shared.willResignActive() }
+    if application.applicationState == .active { TransferOwner.shared.didBecomeActive() }
     return true
   }
 
