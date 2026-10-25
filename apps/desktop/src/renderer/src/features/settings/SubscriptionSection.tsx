@@ -20,7 +20,7 @@ import type { CatalogueStatus } from "@mrstreamer/contracts/library";
 import type { TitleListsStatus } from "@mrstreamer/contracts/ondemand";
 import type { SubscriptionSummary } from "@mrstreamer/contracts/subscription";
 import { formatDate, formatList, formatNumber, type PlainKey, t } from "@mrstreamer/core/i18n";
-import { resetForAccount, useUi } from "../../app/ui-store.ts";
+import { leaveSubscription, resetForAccount, useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
@@ -724,10 +724,7 @@ function Remove({
         return client.resetQueries();
       }
       // The others stay as they are: only what named this one goes.
-      useUi.setState((state) => ({
-        details: state.details?.subscriptionId === id ? null : state.details,
-        savedEntry: state.savedEntry?.sources.includes(id) ? null : state.savedEntry,
-      }));
+      leaveSubscription(id);
       client.setQueryData(queries.subscriptions().queryKey, others);
       await client.resetQueries({ queryKey: ["library", "browse"] });
       onKeep();

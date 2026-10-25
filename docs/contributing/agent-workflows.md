@@ -6,6 +6,8 @@ Use the stack's installed skills for the task method and this repo's `verify-mrs
 
 ## Choose the task method
 
+Follow the current global `AGENTS.md` skill routing: load matching installed skills, use `html-communication` and PostPlan for substantive human plans and reports, and use `paper` for nontrivial UI comparisons before editing components. Share the Paper link and wait for a choice; use `ui-ideas` only for a requested in-app comparison after Paper is rejected.
+
 When available, the installed `poteto-mode` routes task requests to `feature-implementation`, `bug-fix`, `investigation`, `refactoring`, `performance`, planning and review workflows. Individual workflows can also be selected directly. Their descriptions support automatic selection; a prompt naming the workflow is useful when you want a particular method. If those skills are absent on another machine, follow repository policy and `docs/contributing/testing.md` directly rather than inventing a successful skill invocation.
 
 For implementation or bug fixes, use the relevant desktop or website feature-map entry to reproduce and verify the changed user paths. For refactors, verify preserved behavior at those entry points. For independent review, inspect runtime evidence against the actual diff and run the relevant check when necessary. Performance work uses the existing `measure-app.ts` and comparison guidance in testing; the baseline verification helper does not measure performance. PR and release work retains its existing audit, permission and native acceptance gates.
@@ -19,6 +21,8 @@ Use the MR Streamer checkout as the agent's workspace. A T3 thread attached to a
 Codex can invoke `$verify-mrstreamer`; Claude/Cursor can invoke `/verify-mrstreamer`. Example: "Use verify-mrstreamer to verify this playback change, including the Live TV list entry point." Normal discovery is enabled. The AGENTS pointer connects ordinary desktop coding/review tasks to the skill even when you do not name it.
 
 ## Prepare and prove
+
+Run `pnpm check` for lint, formatting, type checks, unused code and workflow checks. `pnpm lint:fix` applies safe lint fixes with the same failure flags; run `pnpm check` after fixing. Run affected tests separately, and build before the runtime checks below.
 
 ```sh
 pnpm install --frozen-lockfile

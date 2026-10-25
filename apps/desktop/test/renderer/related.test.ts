@@ -83,7 +83,11 @@ async function mount(opened = "opened", switching = false) {
         createElement(
           QueryClientProvider,
           { client },
-          createElement(RelatedTitles, { details: details(id), switching }),
+          createElement(RelatedTitles, {
+            details: details(id),
+            switching,
+            here: (related) => ({ season: null, scroll: 0, related }),
+          }),
         ),
       ),
     );

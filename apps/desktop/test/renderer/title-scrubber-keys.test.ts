@@ -10,49 +10,19 @@
 // sent in the order a browser sends them: each pointer event, then its touch event. Focus by Tab
 // is `focus()` here. Trusted input, and a real touchscreen, are the native check's.
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { runs } from "./title-engine-stand-in.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
-import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
-/** Runs as the title engine promises them, without a real stream. The test starts each. */
-const runs = vi.hoisted(() => [] as { start(): void }[]);
-
-vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
-  titleEngine(video: HTMLVideoElement, run: TitleRun) {
-    const { promise: started, resolve } = Promise.withResolvers<void>();
-    runs.push({
-      start() {
-        if (run.paused) video.pause();
-        else void video.play();
-        resolve();
-      },
-    });
-    return {
-      started,
-      onFailure() {},
-      onEnded() {},
-      position: () => run.start,
-      played: () => 0,
-      seekWithin: () => false,
-      onSubtitles() {},
-      hideSubtitles() {},
-      info: () => ({
-        width: null,
-        height: null,
-        fps: null,
-        videoCodec: null,
-        audioCodec: null,
-        audioChannels: null,
-      }),
-      destroy() {},
-    };
-  },
-}));
+vi.mock(
+  "../../src/renderer/src/player/title-engine.ts",
+  () => import("./title-engine-stand-in.ts"),
+);
 
 /** The scrubber's width here: one pixel a second of the ten-minute movie. */
 const WIDTH = 600;

@@ -37,6 +37,8 @@ import { customListRoundTripScenario } from "./custom-lists-round-trip.ts";
 import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
 import { nextEpisodeScenario } from "./next-episode.ts";
+import { posterGridScenario } from "./poster-grid.ts";
+import { B_SERIES, detailsBackScenario, withSecondSeason } from "./details-back.ts";
 import { removeDuringGuideScenario } from "./remove-during-guide.ts";
 import { remindersScenario } from "./reminders.ts";
 import {
@@ -79,8 +81,10 @@ const scenarios = [
   "guide-grid-scroll",
   "reminders",
   "titles",
+  "details-back",
   "next-episode",
   "watchlist",
+  "poster-grid",
   "downloads",
   "language",
   "preferences",
@@ -213,7 +217,8 @@ async function run(scenario: Scenario, prior?: string) {
     provider = await startFakeProvider({
       channels:
         scenario === "live-categories" ? 64000 : scenario === "guide-grid-scroll" ? 20000 : 60,
-      titles: 30,
+      // Poster grids read 120 titles a page; poster-grid crosses several.
+      titles: scenario === "poster-grid" ? 400 : 30,
       live: true,
       ...(scenario === "guide-grid" || scenario === "guide-grid-cells"
         ? {
@@ -318,6 +323,13 @@ async function run(scenario: Scenario, prior?: string) {
         channelOf: stageChannel,
         logoSvg: stageLogo,
         streams: stageStreams,
+      });
+    if (scenario === "details-back")
+      other = await startFakeProvider({
+        titles: 30,
+        live: true,
+        second: true,
+        titlesOf: withSecondSeason,
       });
     if (scenario === "background-refresh") releaseGuide = provider.hold("guide").release;
     tmdb = await startFakeTmdb();
@@ -1021,6 +1033,52 @@ async function run(scenario: Scenario, prior?: string) {
             requests: provider!.streamRequests(),
             active: provider!.activeStreams(),
           }),
+        },
+      );
+    } else if (scenario === "poster-grid") {
+      await posterGridScenario(
+        {
+          profile: ownedProfile,
+          observed,
+          evaluate: (expression) => livePage.evaluate(expression),
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        () => ({ details: provider!.detailRequests(), tmdbAbout: tmdb!.aboutRequests() }),
+      );
+    } else if (scenario === "details-back") {
+      const second = other!;
+      await detailsBackScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          otherUrl: second.url,
+          providerUrl: provider.url,
+          details: () => ({ first: provider!.detailRequests(), second: second.detailRequests() }),
+          listB: (listed) =>
+            second.serveTitles((all) =>
+              listed ? all : { ...all, series: all.series.filter((each) => each.id !== B_SERIES) },
+            ),
+          fileRequests: () => provider!.fileRequests() + second.fileRequests(),
         },
       );
     } else if (scenario === "next-episode") {

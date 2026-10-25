@@ -1,63 +1,13 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { runs } from "./title-engine-stand-in.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { TitleError } from "../../src/renderer/src/player/title-engine.ts";
-import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
-const runs = vi.hoisted(
-  () =>
-    [] as {
-      readonly run: TitleRun;
-      position: number;
-      played: number;
-      destroyed: boolean;
-      start(): void;
-      fail(error: TitleError): void;
-    }[],
+vi.mock(
+  "../../src/renderer/src/player/title-engine.ts",
+  () => import("./title-engine-stand-in.ts"),
 );
-
-// The controller sees only the engine's public start, progress and failure contract.
-vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
-  titleEngine(video: HTMLVideoElement, run: TitleRun) {
-    const { promise: started, resolve, reject } = Promise.withResolvers<void>();
-    let failure: ((error: TitleError) => void) | null = null;
-    let playing = false;
-    const entry = {
-      run,
-      position: run.start,
-      played: 0,
-      destroyed: false,
-      start() {
-        playing = true;
-        if (run.paused) video.pause();
-        else void video.play();
-        resolve();
-      },
-      fail(error: TitleError) {
-        if (playing) failure?.(error);
-        else reject(error);
-      },
-    };
-    runs.push(entry);
-    return {
-      started,
-      onFailure(listener: (error: TitleError) => void) {
-        failure = listener;
-      },
-      onEnded() {},
-      onSubtitles() {},
-      hideSubtitles() {},
-      position: () => entry.position,
-      played: () => entry.played,
-      seekWithin: () => false,
-      info: () => ({}),
-      destroy() {
-        entry.destroyed = true;
-      },
-    };
-  },
-}));
 
 const now = {
   kind: "provider" as const,

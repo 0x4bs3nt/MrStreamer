@@ -1,8 +1,10 @@
 # AUR maintainer runbook
 
-Owner: Wout Stiens (`hello@mrstreamer.app`). Proposed package: `mrstreamer-bin`, x86_64 only.
-This is an unpublished recipe template. There is no public AUR install command yet.
-Public user documentation and website activation wait for checked public availability.
+Project contact: Wout Stiens (`hello@mrstreamer.app`). The public
+[`mrstreamer-bin`](https://aur.archlinux.org/packages/mrstreamer-bin) package is
+maintained externally and supports x86_64. See the [user update guide](../../docs/user/updates.md#installed-through-the-aur).
+This directory holds the repository's recipe template and local preparation tools;
+updating the public AUR package is a separate maintainer action.
 
 ## Ownership and inputs
 
@@ -196,8 +198,10 @@ mechanics only, using dummy retained files with no real app state.
 
 ## Manual release, retry and recovery
 
-Wout owns release selection, review and any later AUR credentials. No credentials or automation
-are configured here. Before first publication, read the current [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines)
+The public package has an external maintainer. The following checklist applies when adopting
+or publishing this repository's recipe, not to the package's existing availability. Wout owns
+release selection and review; no AUR credentials or automation are configured here. Before
+publishing this recipe, read the current [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines)
 and [AUR submission guidelines](https://wiki.archlinux.org/title/AUR_submission_guidelines), then
 recheck the official package database and AUR exact names `mrstreamer-bin`, `mrstreamer`,
 `mr-streamer` and `mr-streamer-bin`. Read-only searches do not reserve a name; do not overwrite
@@ -210,9 +214,10 @@ Request separate authorization for external AUR creation/publication, credential
 activation. Only then use a dedicated maintainer-controlled AUR SSH key/repository, review its
 existing history, commit the verified recipe/source metadata/license on AUR's `master` branch
 and publish. Do not upload binary packages or a generated filelist. Verify the public entry,
-source checksum and clean user install before website route activation or public user docs.
+source checksum and clean user install. The website and user guide already link to the
+externally maintained public package.
 
-On a build/check/publication failure, keep this route inactive and the release gate open. Fix and
+On a build/check/publication failure, keep this candidate unpublished and its verification gate open. Fix and
 retry the same pinned inputs; do not rebuild or replace already published upstream release files.
 An AUR problem does not block direct downloads or the separate Homebrew route. Automation stays
 disabled until separately approved; the same manual path remains the recovery path.

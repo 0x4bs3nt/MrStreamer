@@ -13,7 +13,7 @@ Mr. Streamer keeps everything on your computer, in one folder:
 
 It holds your subscriptions, each with its encrypted password or playlist link, the channels you mapped to a guide, the encrypted addresses of your guides in Settings > Guides with the names you gave them, your preferences, favourites, watchlist, watch history and how far you got in movies and episodes, copies of each subscription's channel list, programme guide and movie and series lists, what TMDB said about your movies and series, your update channel, a diagnostics log, and the analytics preference, random installation identifier and statistics waiting to be sent, described in the privacy policy. Chromium's cache of posters and pictures there stays under 64 MB. Uninstalling leaves the folder in place, so a reinstall picks up where you left off; only the copy from the Microsoft Store takes its folder with it. Delete the folder to remove everything but the password's key in your keychain and a downloaded update; the [privacy policy](../privacy.md#deleting-your-data) says where those are.
 
-Your password, or a playlist's link, is encrypted with a key your system keeps: the macOS Keychain, Windows' user encryption, or the desktop keyring on Linux.
+Your password, or a playlist's link, uses your system's storage encryption. Linux can use a fixed-key fallback instead of a keyring. See [Security](../security.md#your-login).
 
 ## Mr. Streamer asks for my password or playlist link again
 
@@ -30,12 +30,12 @@ The Windows installer isn't code-signed yet, so SmartScreen shows "Windows prote
 ## Linux
 
 - **The AppImage doesn't open:** it needs FUSE 2. On Ubuntu, run `sudo apt install libfuse2t64`. Without it, starting it from a terminal with `--appimage-extract-and-run` also works.
-- **The login doesn't stay saved:** Mr. Streamer stores the password key in GNOME Keyring or KWallet. Without either, it uses Chromium's fixed-key encryption instead, so the login still saves, but other programs running as you can read it.
+- **The login doesn't stay saved:** Linux can use GNOME Keyring or KWallet, or the `basic_text` fixed-key fallback. The fallback lets the login save but does not protect it from other programs running as you.
 
 ## Channels or login stop working
 
 - **"… has no encrypted connection":** the address you typed doesn't work over https, so Mr. Streamer stopped before sending your login. **Connect without encryption** connects over http instead: your username and password then travel as plain text, so anyone on your network or between you and your provider can read them. If your provider offers an https address, use that. An address you type with `http://` connects over http straight away; the line under the field says so, and Settings > Subscriptions marks the login "not encrypted".
-- **"The server doesn't offer an encrypted connection at this address":** you typed `https://`, and the server answers only over http. Mr. Streamer never falls back to http on its own. Type the address without `https://` to be asked, or with `http://`.
+- **"The server doesn't offer an encrypted connection at this address":** you typed `https://`, and the server answered without encryption there. Mr. Streamer stops before trying HTTP. Check with your provider for a working HTTPS address. An address entered without a scheme asks for your consent before using HTTP; an explicit `http://` address sends the login unencrypted.
 - **"The provider rejected this username or password":** check the login with your provider, then choose **Edit** on that subscription in Settings > Subscriptions and enter the password again.
 - **"Refused by the provider" on a channel:** the provider turned that stream down, and the line under the message has its HTTP status. Mr. Streamer can't tell the reason from the status. If another device or app is watching on the same subscription, stop it there and choose **Retry**. If every channel is refused, check with your provider whether the subscription is still active. On a public playlist, a refused channel is often one that only plays in certain countries.
 - **A channel keeps reconnecting, then says "Lost the stream" or "Keeps dropping":** the stream stopped arriving. Mr. Streamer reconnects four times and then stops, so it never loops. **Retry** starts again with four more, and **Quality** offers the channel's other streams, which sometimes hold better. Several channels dropping at once points to your connection or the provider.

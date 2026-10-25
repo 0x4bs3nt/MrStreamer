@@ -50,11 +50,36 @@ import { ReminderButton } from "../reminders/ReminderButton.tsx";
  */
 export function SearchPalette() {
   const open = useUi((state) => state.searchOpen);
+  // What had the keyboard as search opened, as a control of the details that stay open under it,
+  // gets it back as search closes. The search field takes the keyboard as it mounts, before Base
+  // UI notes what had it, so it is noted here, as the store says search opens.
+  const opener = useRef<Element | null>(null);
+  const popup = useRef<HTMLDivElement>(null);
+  useEffect(
+    () =>
+      useUi.subscribe((state, previous) => {
+        if (state.searchOpen && !previous.searchOpen) opener.current = document.activeElement;
+      }),
+    [],
+  );
+  const finalFocus = () => {
+    // The keyboard went on elsewhere, as to details a result opened: it stays there.
+    const focused = document.activeElement;
+    if (focused && focused !== document.body && !popup.current?.contains(focused)) return false;
+    const element = opener.current;
+    return element instanceof HTMLElement && element !== document.body && element.isConnected
+      ? element
+      : true;
+  };
   return (
     <Dialog.Root open={open} onOpenChange={(next) => useUi.setState({ searchOpen: next })}>
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/70 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0" />
-        <Dialog.Popup className="fixed top-[12vh] left-1/2 z-50 w-[40rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden rounded-3xl bg-black text-white shadow-2xl ring-1 ring-white/10 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0">
+        <Dialog.Popup
+          ref={popup}
+          finalFocus={finalFocus}
+          className="fixed top-[12vh] left-1/2 z-50 w-[40rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-hidden rounded-3xl bg-black text-white shadow-2xl ring-1 ring-white/10 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-starting-style:scale-[0.98] data-starting-style:opacity-0"
+        >
           <Dialog.Title className="sr-only">{t("Search")}</Dialog.Title>
           <Palette />
         </Dialog.Popup>

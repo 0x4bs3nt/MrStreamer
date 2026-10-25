@@ -99,9 +99,12 @@ Open its row and choose **Remove**. Mr. Streamer asks first, and says what happe
 
 - What plays from it stops. What plays from another subscription carries on.
 - Its login, its lists and its own guide are deleted from this computer, with the channels you mapped. The other subscriptions keep theirs, and the guides of Settings > Guides stay.
-- Its favourites, watchlist, history and progress stay, and come back when you add the same account again. Tick **Also delete favourites, watchlist, history and progress** to delete them too. A title on the watchlist that another subscription saved as well stays there either way.
+- Its favourites, watchlist, history and progress stay, and come back when you add the same account again. From 0.0.20, including its Nightly previews, this also includes channels in your custom lists. Tick **Also delete…** to delete them too, along with saved subtitles. Your custom lists themselves stay. A title on the watchlist that another subscription saved as well stays there either way.
+- From 0.0.20, removing a subscription also removes its programme reminders. Finished downloads stay; unfinished downloads are cancelled.
 - Removing your only subscription returns to the Connect screen.
 
 ## Going back to an older version
 
 Versions before several subscriptions know one: the first you added. Going back to one of them shows that subscription alone and leaves the others on your computer untouched, so they are there again after updating. A version from before 0.0.13 shows each subscription's own guide and not those of Settings > Guides, which stay on your computer for when you update again. If you removed that first one since, the older version asks you to connect. An account you connect there that you had added here shows once after updating, with its favourites, watchlist, history and progress.
+
+Versions 0.0.19 and earlier do not show custom lists or programme reminders. **Also delete** there leaves custom-list membership rows on disk. When you return to 0.0.20 or later, the app purges those rows before displaying lists, even if you added the account again in the older version. That is cleanup on returning, not immediate erasure by the older app.

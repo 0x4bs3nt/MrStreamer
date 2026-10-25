@@ -8,7 +8,9 @@ import { t } from "@mrstreamer/core/i18n";
 import { openDetails, openSavedEntry } from "../../app/ui-store.ts";
 import { PosterContent } from "../../components/TitleArt.tsx";
 import { useSourceOf } from "../../lib/queries.ts";
+import { cn } from "../../lib/utils.ts";
 import { kindLabel } from "../../lib/watchlist.ts";
+import type { GridTile } from "../titles/CollectionGrid.tsx";
 
 /** Opens what a saved entry has to show: its title's details, or what was kept of it. */
 export function openSaved(entry: WatchlistEntry): void {
@@ -18,19 +20,19 @@ export function openSaved(entry: WatchlistEntry): void {
 
 /**
  * The line under a poster ends with the subscription the title is from where another's reads the
- * same and isn't it, as every poster's does.
+ * same and isn't it, as every poster's does. In the Watchlist's grid, `grid` places it in the
+ * grid's selection and Tab order, and the poster is named by what it shows.
  */
 export function SavedTile({
   entry,
   brief = false,
-  selected = false,
+  grid,
   onRemove,
 }: {
   entry: WatchlistEntry;
   /** One word for an unavailable title, where a row has no room for more. */
   brief?: boolean;
-  /** The keyboard is on it. */
-  selected?: boolean;
+  grid?: GridTile;
   /** Shows the cross that takes it off the watchlist. */
   onRemove?: () => void;
 }) {
@@ -40,24 +42,34 @@ export function SavedTile({
   // The lists were there to look in, so an entry without a title is one no provider lists.
   // Without them, nothing says so.
   const unavailable = entry.listed && !title;
-  const facts = [kindLabel(entry.kind), title?.year ?? entry.year, title && sourceOf(title)]
-    .filter(Boolean)
-    .join(" · ");
+  const facts = [kindLabel(entry.kind), title?.year ?? entry.year, title && sourceOf(title)].filter(
+    Boolean,
+  );
   return (
     <div className="group relative min-w-0">
       <button
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => openSaved(entry)}
-        className="block w-full text-left"
+        onClick={grid ? grid.open : () => openSaved(entry)}
+        className={cn("block w-full text-left", grid && "outline-none")}
         title={title?.name}
+        {...(grid && {
+          tabIndex: grid.tabIndex,
+          "aria-label": [name, unavailable && t("Unavailable"), ...facts]
+            .filter(Boolean)
+            .join(", "),
+        })}
       >
         <PosterContent
           artworkUrl={title?.posterUrl ?? entry.artworkUrl}
           name={name}
-          selected={selected}
+          selected={grid?.selected ?? false}
           unavailable={unavailable}
           caption={
-            !unavailable ? facts : brief ? t("Unavailable") : `${t("Unavailable")} · ${facts}`
+            !unavailable
+              ? facts.join(" · ")
+              : brief
+                ? t("Unavailable")
+                : [t("Unavailable"), ...facts].join(" · ")
           }
         />
       </button>
@@ -65,6 +77,7 @@ export function SavedTile({
         <button
           aria-label={t("Remove {name} from Watchlist", { name })}
           data-remove
+          {...(grid && { tabIndex: grid.tabIndex })}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onRemove}
           className="absolute top-2 right-2 grid size-7 place-items-center rounded-full bg-black/70 text-white opacity-0 ring-1 ring-white/20 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"

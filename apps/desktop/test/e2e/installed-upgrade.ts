@@ -546,8 +546,9 @@ function retainedCopies(before: Copies, now: Copies, what: string) {
   for (const prior of before) {
     const current = now.find((each) => each.id === prior.id);
     if (!current) throw new Error(`${what} lost the copy ${prior.id}.`);
-    const { progress: priorProgress, ...priorDetails } = prior;
-    const { progress, ...details } = current;
+    // Older stable replies omitted series for standalone copies.
+    const { progress: priorProgress, series: priorSeries = null, ...priorDetails } = prior;
+    const { progress, series = null, ...details } = current;
     const keptProgress =
       priorProgress === null
         ? progress === null
@@ -557,6 +558,7 @@ function retainedCopies(before: Copies, now: Copies, what: string) {
     if (
       prior.status.kind !== "complete" ||
       current.status.kind !== "complete" ||
+      series !== priorSeries ||
       !isDeepStrictEqual(details, priorDetails) ||
       !keptProgress
     )

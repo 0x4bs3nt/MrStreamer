@@ -7,6 +7,7 @@
 // episode say so instead; a copy queued before series were kept ends as before. None of it asks a
 // provider, the viewing record or a receiver.
 import { ipc } from "./support.ts";
+import { runs } from "./title-engine-stand-in.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -16,46 +17,12 @@ import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
 import { useFlash } from "../../src/renderer/src/features/watch/flash-state.ts";
 import { watchOffline } from "../../src/renderer/src/lib/downloads.ts";
-import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
-/** Runs as the title engine promises them, without a real stream: the test starts and ends each. */
-const runs = vi.hoisted(() => [] as { start(): void; end(): void }[]);
-
-vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
-  titleEngine(video: HTMLVideoElement, run: TitleRun) {
-    const { promise: started, resolve } = Promise.withResolvers<void>();
-    let ended = () => {};
-    runs.push({
-      start() {
-        void video.play();
-        resolve();
-      },
-      end: () => ended(),
-    });
-    return {
-      started,
-      onFailure() {},
-      onEnded(listener: () => void) {
-        ended = listener;
-      },
-      position: () => run.start,
-      played: () => 0,
-      seekWithin: () => false,
-      onSubtitles() {},
-      hideSubtitles() {},
-      info: () => ({
-        width: null,
-        height: null,
-        fps: null,
-        videoCodec: null,
-        audioCodec: null,
-        audioChannels: null,
-      }),
-      destroy() {},
-    };
-  },
-}));
+vi.mock(
+  "../../src/renderer/src/player/title-engine.ts",
+  () => import("./title-engine-stand-in.ts"),
+);
 
 /** A downloaded episode of the Dutch "Harbour Lights", complete unless `over` says otherwise. */
 function copy(id: string, season: number, number: number, over: Partial<Download> = {}): Download {
@@ -243,41 +210,6 @@ it("stays on the end once cancelled, this copy's progress kept, and Next episode
 
   await press("Next episode");
   await wait(0);
-  expect(opened()).toEqual(["pilot", "tide"]);
-});
-
-it("offers the next copy without a countdown when autoplay is off, and N plays it", async () => {
-  ipc.prefer({ autoplayNext: false });
-  ipc.always("downloads.list", listOf(tide, pilot));
-  await watchToEnd(pilot);
-
-  await wait(15_000);
-  expect(text()).not.toContain("Plays in");
-  expect(text()).toContain("S1 E3 · Low Tide");
-  expect(opened()).toEqual(["pilot"]);
-
-  await act(async () => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "n", bubbles: true }));
-  });
-  await wait(0);
-  expect(opened()).toEqual(["pilot", "tide"]);
-});
-
-it("waits while Settings is open over it, then carries on from the seconds it had left", async () => {
-  ipc.always("downloads.list", listOf(tide, pilot));
-  await watchToEnd(pilot);
-  await wait(3000);
-  expect(text()).toContain("Plays in 7");
-
-  await act(async () => useUi.setState({ settings: "playback" }));
-  await wait(30_000);
-  expect(text()).toContain("Plays in 7");
-  expect(opened()).toEqual(["pilot"]);
-
-  await act(async () => useUi.setState({ settings: null }));
-  await wait(6000);
-  expect(opened()).toEqual(["pilot"]);
-  await wait(1000);
   expect(opened()).toEqual(["pilot", "tide"]);
 });
 

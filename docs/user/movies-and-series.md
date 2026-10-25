@@ -1,5 +1,7 @@
 # Movies and series
 
+The poster-grid keyboard and related-title Back changes below are new in 0.0.20, including its Nightly previews.
+
 **Movies** and **Series** in the top bar list what your providers offer on demand, from [every subscription you added](subscriptions.md) together. Mr. Streamer loads both lists after connecting and keeps them on your computer, refreshing them twice a day; the first load can take a few seconds on a large subscription.
 
 Each film shows once, even when your provider lists it once per language or quality. Mr. Streamer picks the version in your language, then one with several languages, then one without a language mark. The arrow beside **Play** lets you pick another, as below.
@@ -15,7 +17,7 @@ Tabs under the top bar:
 - **Adults** lists the titles your provider marks for adults, once you turn on **For adults** in Settings > Movies and series.
 - **All movies** and **All series** list everything, sorted by date added, popularity, rating or name.
 
-A row's **All**, a genre or a service opens the whole list; **Back**, or Escape, returns to the tab. In a list, the arrow keys move through the posters, Enter opens one, and the pointer only hovers.
+A row's **All**, a genre or a service opens the whole list; **Back**, or Escape, returns to the tab. In a list, the arrow keys move through the posters and Enter opens one. Page Up and Page Down move by a screen; Home and End go to the ends. Tab stops once in the list, on the selected poster, and closing its details returns keyboard focus there while the poster is still listed. The pointer only hovers; clicking a poster selects and opens it.
 
 Every tab but **All movies** and **All series** shows titles in your language, or in several, and titles with their own sound, such as films with Dutch subtitles, unless they were made in another language. **All movies**, **All series** and search show everything else. Titles for adults show only in their own tab, never on Home, in another tab or in search.
 
@@ -64,6 +66,8 @@ A poster opens its details over the list, which stays where it was: the artwork,
 - **Save** puts the movie, or the whole series, on your [watchlist](#watchlist). The button then reads **Saved**, and pressing it again takes the title off.
 - **Remove from Continue watching** takes the title off Home's row, every version of it, and the button goes. How far you got stays, so **Resume** carries on. The title comes back to the row when you play it again.
 
+**Also in your subscriptions** lists related titles from your subscriptions' catalogues, excluding adult titles. Its posters open their details in place of these. **Back** in the top bar returns through up to eight previous details, restoring the season and scroll position, with keyboard focus on the related poster when it is still listed. From the first it returns to the page. **Close** or Escape returns to the page at once. Playing a title or opening Settings from the details keeps the way back. Opening a title from a page or search starts a new one. The top bar remains usable in details, including Back, Search and Settings.
+
 From 0.0.9, **Versions** lists quality first, then language and subscription. These are hints from the provider's name until you open a file. Equal hints within one subscription show a version count: expand it to choose each exact file by its original label, file type and added date where listed. Files in an expanded group get a version number in the provider’s list order. Matching names never make different files interchangeable.
 
 A tick names tracks actually read on this computer. A file with no subtitles says **No subtitles** only after it was read; another file with the same hints makes no such claim. A series observation says how many exact files it has read, including alternate files of one episode, rather than promising the tracks of every episode. Opening the menu reads no files. Changing or replacing a source clears obsolete observations, and series observations require its current episode details to have been opened here.
@@ -89,7 +93,7 @@ Marks are for one episode at a time. There is none for a whole season or series.
 
 **Save** in a title's details keeps a movie or a whole series for later. It works as soon as the details open, before the story and the cast arrive. Episodes can't be saved on their own.
 
-**Watchlist** in the top navigation bar shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The navigation entry stays available when that row is hidden or empty. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters, Enter opens one, and Tab reaches the × on each poster.
+**Watchlist** in the top navigation bar shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The navigation entry stays available when that row is hidden or empty. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters and Enter opens one; Tab reaches the poster they are on, then its ×.
 
 Only you take a title off: with the × on its poster, or with **Saved** in its details. Starting a title, finishing it or removing it from Continue watching leaves it saved, and saving changes nothing about how far you got. The same title can be in both rows.
 

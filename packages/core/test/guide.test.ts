@@ -281,35 +281,46 @@ const inProcess: GuideSearching = {
   each: async (search) => searchEach(search),
 };
 
-describe("indexing a guide", () => {
-  /** Indexes `document` as of NOON, as an own guide unless `strict`, and opens what it wrote. */
-  const index = async (document: string | Uint8Array, build: Partial<GuideBuild> = {}) => {
-    const dir = await mkdtemp(join(tmpdir(), "mr-streamer-guide-index-"));
-    const target = join(dir, `${Math.random()}.sqlite`);
-    await writeFile(join(dir, "document"), document);
-    const told: number[] = [];
-    const summary = await buildGuideIndex(
-      {
-        document: join(dir, "document"),
-        target,
-        previous: null,
-        since: NOON,
-        archive: DAY,
-        strict: false,
-        ...build,
-      },
-      (programmes) => told.push(programmes),
-    );
-    const guide = await openGuideIndex(target);
-    if (!guide) throw new Error("The index can't be opened.");
-    opened.push(guide);
-    return { guide, summary, told, target };
-  };
-  const opened: GuideIndex[] = [];
-  afterEach(async () => {
-    for (const guide of opened.splice(0)) guide.close();
-  });
+const opened: GuideIndex[] = [];
+const directories: string[] = [];
 
+/** One owned guide scratch folder, registered even if writing or indexing fails. */
+async function guideDir() {
+  const dir = await mkdtemp(join(tmpdir(), "mr-streamer-guide-index-"));
+  directories.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  for (const guide of opened.splice(0)) guide.close();
+  await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+/** Indexes `document` as of NOON, as an own guide unless `strict`, and opens what it wrote. */
+async function index(document: string | Uint8Array, build: Partial<GuideBuild> = {}) {
+  const dir = await guideDir();
+  const target = join(dir, `${Math.random()}.sqlite`);
+  await writeFile(join(dir, "document"), document);
+  const told: number[] = [];
+  const summary = await buildGuideIndex(
+    {
+      document: join(dir, "document"),
+      target,
+      previous: null,
+      since: NOON,
+      archive: DAY,
+      strict: false,
+      ...build,
+    },
+    (programmes) => told.push(programmes),
+  );
+  const guide = await openGuideIndex(target);
+  if (!guide) throw new Error("The index can't be opened.");
+  opened.push(guide);
+  return { guide, summary, told, target };
+}
+
+describe("indexing a guide", () => {
   /** Every programme of a guide channel the index keeps, as [title, start, stop]. */
   const of = (guide: GuideIndex, id: string) => {
     const channel = guide.channels.get(id);
@@ -953,7 +964,7 @@ describe("indexing a guide", () => {
   });
 
   it("leaves nothing where it was to write when it fails", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "mr-streamer-guide-index-"));
+    const dir = await guideDir();
     await writeFile(join(dir, "document"), tv());
     const target = join(dir, "index.sqlite");
     const build = { document: join(dir, "document"), target, previous: null, since: NOON };
@@ -966,45 +977,25 @@ describe("indexing a guide", () => {
 });
 
 describe("a subscription's guides in order", () => {
-  /** Indexes `document` as of NOON into a file of its own, and opens it. */
-  const indexed = async (document: string) => {
-    const dir = await mkdtemp(join(tmpdir(), "mr-streamer-guide-index-"));
-    const target = join(dir, "index.sqlite");
-    await writeFile(join(dir, "document"), document);
-    await buildGuideIndex(
-      {
-        document: join(dir, "document"),
-        target,
-        previous: null,
-        since: NOON,
-        archive: DAY,
-        strict: false,
-      },
-      () => {},
-    );
-    const guide = await openGuideIndex(target);
-    if (!guide) throw new Error("The index can't be opened.");
-    return { guide, target };
-  };
   /**
    * The subscription's own guide, then the sources "early" and "late": three guides that each
    * know "shared.test", with programmes for it in the last two only, and one that only "late"
    * has programmes for.
    */
   const guides = async () => {
-    const own = await indexed(
+    const own = await index(
       tv(
         '<channel id="shared.test"/>',
         programme("own.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Own news"),
       ),
     );
-    const early = await indexed(
+    const early = await index(
       tv(
         programme("shared.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Early news"),
         programme("shared.test", stamp(NOON + 3 * HOUR), stamp(NOON + 4 * HOUR), "Early late"),
       ),
     );
-    const late = await indexed(
+    const late = await index(
       tv(
         programme("shared.test", stamp(NOON - HOUR), stamp(NOON + HOUR), "Late news"),
         // Where the early source has a gap: still none of it fills the early one's channel.
@@ -1091,13 +1082,13 @@ describe("a subscription's guides in order", () => {
 
   it("reads every stretch of a channel from the guide that supplies it now, so pages of a grid agree however they are cut", async () => {
     // The own guide's last programme ended ten minutes ago; the source has one on now.
-    const own = await indexed(
+    const own = await index(
       tv(
         programme("shared.test", stamp(NOON - 3 * HOUR), stamp(NOON - 2 * HOUR), "Own earlier"),
         programme("shared.test", stamp(NOON - 2 * HOUR), stamp(NOON - 10 * MINUTE), "Own ended"),
       ),
     );
-    const source = await indexed(
+    const source = await index(
       tv(
         programme(
           "shared.test",

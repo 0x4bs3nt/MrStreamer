@@ -17,7 +17,7 @@ import {
 import { syncPreferences } from "./lib/preferences.ts";
 import { syncReminders } from "./lib/reminders.ts";
 import { player } from "./player/player.ts";
-import { useUi } from "./app/ui-store.ts";
+import { closeTitleSheets } from "./app/ui-store.ts";
 import "./styles.css";
 
 const client = new QueryClient({
@@ -26,7 +26,7 @@ const client = new QueryClient({
 const stopPreferences = syncPreferences(
   client,
   (preferences) => player.hydrate(preferences),
-  () => useUi.setState({ savedEntry: null, details: null }),
+  closeTitleSheets,
 );
 window.addEventListener("beforeunload", stopPreferences, { once: true });
 if (import.meta.hot) import.meta.hot.dispose(stopPreferences);

@@ -1,0 +1,4 @@
+undici, which the main process fetches with
+
+Its fetch, in lib/web/fetch, and llhttp 9.3.0, the HTTP parser it carries compiled to
+WebAssembly, have MIT notices of their own. They follow undici's.

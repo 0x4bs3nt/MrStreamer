@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
 import type { Codec } from "@mrstreamer/contracts/playback";
 import * as Layer from "effect/Layer";
-import { readProbe, titlePlan } from "../src/main/playback/title.ts";
+import { readProbe } from "../src/main/playback/title.ts";
 import { PlaybackCoordination } from "../src/main/services/playback-coordination.ts";
 import { Playback, type PlaybackDeps } from "../src/main/services/playback.ts";
 import { Subscriptions } from "../src/main/services/subscription.ts";
@@ -277,14 +277,16 @@ function linesAt(lines: readonly Line[], at: number): string[] {
   return lines.filter(([from, until]) => from <= at && at < until).map(([, , text]) => text);
 }
 
-function streamsOf(body: Buffer): { codec_type: string; codec_name: string; channels?: number }[] {
+function streamsOf(
+  body: Buffer,
+): { codec_type: string; codec_name: string; channels?: number; pix_fmt?: string }[] {
   const probe = spawnSync(
     FFPROBE,
     [
       "-v",
       "error",
       "-show_entries",
-      "stream=codec_type,codec_name,channels",
+      "stream=codec_type,codec_name,channels,pix_fmt",
       "-of",
       "json",
       "-i",
@@ -387,31 +389,6 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
         profile: expect.any(String),
       });
       const decoders: readonly Codec[] = ["h264", "hevc", "aac"];
-      const urls = {
-        source: "http://127.0.0.1/source",
-        subtitles: "http://127.0.0.1/subtitles",
-        start: "http://127.0.0.1/start",
-      };
-      expect(
-        titlePlan(probe!, { start: 5, audio: 2, subtitle: 3 }, new Set(decoders), urls).video,
-      ).toBe("copy");
-      expect(
-        titlePlan(
-          probe!,
-          { start: 5, audio: 2, subtitle: 3, convertSound: true },
-          new Set(decoders),
-          urls,
-        ).video,
-      ).toBe("copy");
-      const plan = titlePlan(
-        probe!,
-        { start: 5, audio: 2, subtitle: 3, rejectedCopy: true },
-        new Set(decoders),
-        urls,
-      );
-      expect(plan).toMatchObject({ video: "convert", audio: "copy" });
-      expect(plan.args).toContain("yuv420p");
-
       const { provider, playback, open, dispose } = await titles();
       try {
         const movie = provider.titles.movies.find((each) =>
@@ -419,14 +396,20 @@ describe.skipIf(!hasTools)("movies and episodes", { timeout: 20_000 }, () => {
         )!;
         provider.replaceMovieFile(movie.id, Buffer.from(bytes));
         const opened = await open("TEST | Two sound tracks", decoders);
-        const copy = await play(`${opened.url}?start=5&audio=2`);
+        const copy = await play(`${opened.url}?start=5&audio=2&sound=convert`);
         expect(copy.response.headers.get("x-title-video")).toBe("copy");
+        expect(copy.response.headers.get("x-title-audio")).toBe("convert");
         const converted = await play(`${opened.url}?start=5&audio=2&picture=convert`);
         expect(converted.response.headers.get("x-title-video")).toBe("convert");
+        expect(converted.response.headers.get("x-title-audio")).toBe("copy");
         expect(converted.response.headers.get("x-start")).toBe("5");
         expect(converted.streams).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ codec_type: "video", codec_name: "h264" }),
+            expect.objectContaining({
+              codec_type: "video",
+              codec_name: "h264",
+              pix_fmt: "yuv420p",
+            }),
             expect.objectContaining({ codec_type: "audio", codec_name: "aac" }),
           ]),
         );

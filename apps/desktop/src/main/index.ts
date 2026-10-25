@@ -1,4 +1,6 @@
 // Composition root: creates the window and wires the services to IPC.
+// First, so that everything main imports fetches with it.
+import "./fetch.ts";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";

@@ -1,6 +1,6 @@
 # Signing
 
-Mac releases are signed with a Developer ID, hardened, notarized and stapled, so a downloaded DMG opens without warnings and updates keep access to the Keychain. Signing the Windows installer comes later; see [releasing](releasing.md#windows-signing). Microsoft signs the [Store package](#microsoft-store-package) it delivers.
+Mac releases are signed with a Developer ID, hardened, notarized and stapled. [Checking a build](#checking-a-build) verifies those properties; first-open and Keychain retention across installed updates need their own checks. Signing the Windows installer comes later; see [releasing](releasing.md#windows-signing). Microsoft signs the [Store package](#microsoft-store-package) it delivers.
 
 ## Credentials
 

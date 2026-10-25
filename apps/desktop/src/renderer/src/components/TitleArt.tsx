@@ -1,7 +1,7 @@
 // Artwork for movies, series and episodes: the provider's image, or the title's name on a tint
 // worked out from it when the provider has none or it doesn't load.
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useState, type Ref } from "react";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { t } from "@mrstreamer/core/i18n";
 import { useSourceOf } from "../lib/queries.ts";
@@ -135,16 +135,19 @@ export function PosterTile({
   line,
   wrapLine = false,
   onOpen,
+  ref,
 }: {
   title: Title;
   line?: string;
   /** Home recommendation reasons include the seed and must remain readable. */
   wrapLine?: boolean;
   onOpen: () => void;
+  ref?: Ref<HTMLButtonElement> | undefined;
 }) {
   const source = useSourceOf()(title);
   return (
     <button
+      ref={ref}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onOpen}
       className="group block w-full min-w-0 text-left"

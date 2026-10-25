@@ -1,6 +1,8 @@
 # Privacy policy
 
-Last updated 23 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 25 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+
+Custom channel lists and programme reminders below are new in desktop 0.0.20, including its Nightly previews.
 
 Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
 
@@ -14,14 +16,17 @@ Most of what the app handles never reaches us. It stays in its data folder ([whe
 
 - your subscriptions: server address, username, and password or playlist link
 - preferences, including your own TMDB key if you entered one
-- favourites, watchlist, the channels you watched, your progress and the episodes you marked
+- favourites, watchlist, your channel lists, the channels you watched, your progress and the episodes you marked
+- programme reminders in `reminders.json`: the programme's title, channel, start and end times, and whether it was shown or missed
 - copies of each provider's channel, guide, movie and series lists, and what TMDB said about them
 - downloaded movies and episodes, with their details, pictures, subtitles and progress
 - subtitle-service settings and saved subtitles, if you turn subtitle search on
 - the statistics setting, its installation identifier and up to 64 statistics items. From desktop 0.0.16, that total includes queued events, the open five-minute counts and one unfinished play
 - a diagnostics log with no addresses, logins or channel names
 
-We can't see, copy or delete any of it. **Diagnostics…** in Settings > About shows you the text before you save it and uploads nothing.
+Reminders stay locally until the app checks after the end of the day their programme ends. A system notification can show the programme's title and channel, including on a locked screen according to your system's settings. Reminders for adult channels appear only in the app while **For adults** is on. A reminder due while those channels are hidden becomes missed and does not notify later. Reminder details are excluded from statistics and diagnostics exports.
+
+**Diagnostics…** in Settings > About reconstructs an export from fixed fields, shows you the text before you save it and uploads nothing. Ordinary local console output is separate and can contain file paths or invalid values from damaged local files. Review console output before sharing it.
 
 ### Usage statistics
 
@@ -96,13 +101,13 @@ Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You
 
 The app contacts these straight from your computer, not through us. Their own policies apply.
 
-- **Your provider** gets your login, IP address and app version, and sees what you open, watch and download. Each provider gets only its own login and requests, and learns nothing about your other subscriptions.
+- **Your provider** gets its login, your IP address and app version, and sees what you open, watch and download.
 - **Servers a playlist or guide address names** get your IP address, the app version and the stream or guide requested. A playlist can supply its own browser identification and referrer for a stream. A guide address can carry its own key. The app refreshes a guide from another address about every six hours.
 - **[TMDB](https://www.themoviedb.org/privacy-policy)** gets the titles your providers list, your language and country, an API key (ours or your own) and your IP address. Never your provider's address or login.
 - **Image servers** named by your provider or TMDB get your IP address, the image requested, your language, and the app and system version.
 - **[OpenSubtitles](https://www.opensubtitles.com/en/privacy)** and **[SubDL](https://subdl.com/privacy)**, only after you turn subtitle search on and search: the title's TMDB id, or its name and year, the episode, languages, the service's API key and your IP address. OpenSubtitles also gets your username and password when you download a subtitle.
 - **[GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement)** gets your IP address and app version with each update check, about 20 seconds after start and every four hours, sooner after a failed check. Microsoft Store copies update through the Store instead.
-- **A TV you pick** on your network gets a stream address on your computer that only works while it plays. Never your login or your provider's address. A Google Cast device also gets the title and its TMDB picture address.
+- **A TV you pick** on your network gets an HTTP stream address on your computer with a token for the active playback session. The app serves the stream without sending the TV your provider's login or stream address. A Google Cast device also gets the title and its TMDB picture address. Casting relies on a trusted local network; see [Security](security.md#playing-on-a-tv).
 
 Downloaded copies play without a request to your provider. Statistics and update checks still run as set.
 
@@ -125,11 +130,16 @@ Your network operator and DNS provider can see which servers the app contacts.
 
 ### Deleting your data
 
-- **Remove** on a subscription in Settings > Subscriptions deletes its login, lists, guide and mapped channels, and cancels its unfinished downloads. Tick **Also delete favourites, watchlist, history and progress** to delete those and its saved subtitles too. Finished downloads stay until you delete them.
+- **Remove** on a subscription in Settings > Subscriptions deletes its login, provider lists, guide, mapped channels and reminders, and cancels its unfinished downloads. Favourites, watchlist, history, progress and membership of your custom lists stay for when you add the same account again. Tick **Also delete…** to delete those and its saved subtitles too. Your custom lists themselves and finished downloads stay until you delete them.
+- **Delete list** in a list's menu in Live TV deletes the list with its name and the channels it held. Your other lists, and lists a subscription's removal emptied, stay until you delete them.
+- **Also delete** in 0.0.19 and earlier cannot erase custom-list membership rows it does not understand. They remain on disk while you use that older version. Returning to 0.0.20 or later purges those rows before displaying lists, even if you added the same account again in the older app.
 - **The cross** on a guide in Settings > Guides deletes its address, its name and what it downloaded. Every subscription reads those guides, so removing a subscription keeps them.
 - **Delete** on a download deletes the copy with its details, pictures, progress and subtitles.
+- **The cross** on a reminder in Live TV's reminders list deletes it.
 - **Deleting the data folder** deletes everything else, including the statistics setting, so a new folder starts with statistics on. To also remove the password key, delete "Mr. Streamer Safe Storage" in Keychain Access on macOS or the matching entry in your Linux keyring. A downloaded update stays in `~/Library/Caches/mrstreamer-updater` on macOS, `%LOCALAPPDATA%\mrstreamer-updater` on Windows or `~/.cache/mrstreamer-updater` on Linux until you delete that folder.
 - **Statistics already sent** stay with PostHog when you turn the setting off. Email privacy@mrstreamer.app with the `installationId` from `analytics.json` in your data folder, so we can find them.
+
+Removing a subscription or turning statistics off keeps an installation identifier already stored in `analytics.json`. A fresh profile can have no identifier until its first foreground observation. Deleting the data folder removes the local identifier; a new profile gets a new one when observed. This does not delete statistics already sent.
 
 ## Retention
 
@@ -140,9 +150,9 @@ Your network operator and DNS provider can see which servers the app contacts.
 
 ## Security
 
-Passwords, playlist links, guide addresses and subtitle-service logins are encrypted with a key your system keeps: the macOS Keychain, your Windows account, or GNOME Keyring or KWallet on Linux. On Linux without a keyring the key is fixed, so other programs running as you can read them. Server addresses, usernames and your own TMDB key aren't encrypted.
+Passwords, playlist links, guide addresses and subtitle-service logins use Electron's system storage encryption: macOS Keychain, your Windows account, or GNOME Keyring or KWallet when selected on Linux. Linux can instead use `basic_text`, a fixed-key fallback that does not protect secrets from other programs running as you. Server addresses, subscription usernames and your own TMDB key aren't encrypted.
 
-An `https://` address never falls back to http, including through redirects. If https fails for an address you typed without one, the app asks before sending your login over http, where anyone between you and your provider can read it. Settings marks those logins "not encrypted". Statistics and website analytics go to PostHog over https.
+The app refuses HTTP redirects that it recognizes as carrying the known login of an HTTPS source. Desktop 0.0.20, including its Nightly previews, also checks playlist addresses and removes recognized login-bearing headers when a request leaves that source's origin. HTTP addresses without a recognized login can still be used. This cannot identify every unknown token or encoding. An explicit `http://` address sends its login unencrypted. If HTTPS fails for an address entered without a scheme, the app asks before trying HTTP. Settings marks those logins "not encrypted". Statistics and website analytics go to PostHog over HTTPS.
 
 ## International transfers
 

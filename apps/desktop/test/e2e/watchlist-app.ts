@@ -12,7 +12,8 @@
 //   arrow keys and Enter open the title they are on; Home's Watchlist row leads there with All.
 // - A saved movie plays from the page through its details, on one connection to the provider,
 //   which it lets go of; opened again it offers Resume, and it is still saved.
-// - Tab reaches a tile's cross, Enter takes the title off, and the focus stays on a cross.
+// - The arrow keys reach a tile and Tab its cross, Enter takes the title off, and the focus stays
+//   on a cross.
 // - While another writer holds the database, Save says it couldn't and keeps Save; pressed again
 //   once the writer lets go, it saves.
 // - Save pressed twice in one task, before the window drew the first press, makes one change,
@@ -532,6 +533,8 @@ try {
     const before = await saved(page);
     const second = before.entries[1];
     const label = `Remove ${second?.title?.title ?? second?.name} from Watchlist`;
+    // The grid is one stop in the Tab order: the arrow keys reach the tile, Tab its cross.
+    await key(page, "ArrowRight", 39);
     if (!(await tabTo(page, (focus) => focus === label))) {
       problems.push(`Tab never reached "${label}", it stands on ${await focused(page)}`);
     }
@@ -550,7 +553,7 @@ try {
     // Saved again for the checks that follow.
     await invoke(page, "watchlist.save", { kind: "series", version: own(SERIES.id) });
     report(
-      "Tab reaches a tile's cross, Enter takes the title off, and a cross keeps the focus",
+      "The arrow keys reach a tile and Tab its cross, Enter takes the title off, and a cross keeps the focus",
       problems,
     );
   }

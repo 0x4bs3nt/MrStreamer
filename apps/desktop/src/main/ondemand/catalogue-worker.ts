@@ -11,6 +11,8 @@
 //
 // A refresh takes two calls. The lists it fetches wait aside until the main process, which knows
 // the saved login, says whether they still count: only then do they show and reach the disk.
+// This thread has its own globals. Install fetch before provider and TMDB clients capture it.
+import "../fetch.ts";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { workerData, parentPort } from "node:worker_threads";
