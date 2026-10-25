@@ -24,13 +24,13 @@ import { bodySize, describeNetworkError } from "@mrstreamer/core/xtream";
 // Live is off: the demo lists no channels and asks nothing for them. The adapter can read the
 // certification playlist instead, for when its broadcasters' rights are settled, but only a test
 // turns that on. That read is one bounded HTTPS file, of which only HTTPS HLS channels are kept,
-// with no guide and no catch-up. Only an adapter's newest read replaces the streams it plays.
+// with no guide and no catch-up. Only an adapter's newest successful read replaces its streams.
 // Nothing here retries, caches or touches the media itself; failures are the usual typed errors.
 
 /** The demo's subscription id: no colon (`ownedKey`), never made for an account. */
 export const DEMO_ID = "demo";
 
-/** The repository commit that added apps/ios/demo-media. It stays an ancestor of main. */
+/** The media commit must remain an ancestor of main when these pinned assets are delivered. */
 const MEDIA_COMMIT = "9791b09908e03742cee981c97e37d47829fc7a18";
 const MEDIA = `https://raw.githubusercontent.com/Mr-Streamer-OSS/MrStreamer/${MEDIA_COMMIT}/apps/ios/demo-media/`;
 
@@ -295,8 +295,8 @@ async function playlistEntries(
     if (!response.body) throw unbounded();
     const reader = m3uReader();
     const entries: PlaylistEntry[] = [];
-    const pieces = response.body.getReader();
     const decoder = new TextDecoder();
+    const pieces = response.body.getReader();
     let bytes = 0;
     try {
       for (;;) {

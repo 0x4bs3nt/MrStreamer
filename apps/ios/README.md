@@ -5,6 +5,21 @@ React Native on Hermes (Expo SDK 58), building toward the desktop app's features
 own native adapters: the Keychain, app storage and one native player so far. Nothing of it is in
 the desktop's install, build or packages.
 
+Try demo on Connect opens a labelled Demo provider beside any personal providers. It needs no
+login or Keychain item. Its original generated movie and two episodes use the ordinary catalogue,
+player and download owners, with measured durations and no invented metadata. Files and artwork
+come from the commit pinned in `src/demo.ts`; network failures are shown normally. The asset commit
+must remain an ancestor of main at delivery. Live stays off pending broadcaster permission, and
+the Guide demonstration remains unmet.
+
+Settings' Demo row offers Reset demo data and Exit demo. Both remove only demo downloads, saved
+lists, favourites, watchlist, history and progress. Reset starts a fresh Demo only after that erase
+is established. A durable erasing marker retries unfinished work at launch; unreadable download
+records or refused cache deletion keep removal incomplete. Files still read by a player or native
+task stay until positive closure, even after reset. Personal providers, copies and history, media
+preferences and analytics choices remain separate. Native playback, background/offline downloads,
+the exact reviewer journey and public-review approval retain their own acceptance gates.
+
 It connects Xtream subscriptions, one or several, and shows everything from all of them
 together, as the desktop does: there is no subscription to switch to. Live opens on All, every
 provider's channels of every country once, with their providers' logos; For you leads with the

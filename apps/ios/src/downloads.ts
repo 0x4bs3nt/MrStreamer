@@ -11,6 +11,7 @@ import { Directory, File, Paths } from "expo-file-system";
 import { AppState } from "react-native";
 import {
   bindDownloadSource,
+  connectDemoDownloads,
   currentRoster,
   downloadGeneration,
   launchSignIns,
@@ -254,6 +255,8 @@ let foreground = false;
  * queue's own reconciliation; "failed" is tried again in the foreground.
  */
 let phase: "starting" | "ready" | "failed" = "starting";
+let firstReady = () => {};
+const ready = new Promise<void>((resolve) => (firstReady = resolve));
 /** This process's first foreground reconciliation: until done, no authorization is reserved. */
 let barrier: "pending" | "running" | "done" = "pending";
 /** Whether this process already tried to start a damaged native queue over: once at most. */
@@ -999,7 +1002,11 @@ function load() {
   }
   doc = { items, forgetting: valid ? parsed.forgetting : [], unreadable };
   trusted = valid;
-  complete = read === null || valid;
+  complete =
+    valid ||
+    (read === null &&
+      !new File(Paths.document, FILE).exists &&
+      !new File(Paths.document, `${FILE}.next`).exists);
   for (const id of doc.forgetting) void forget(id);
 }
 
@@ -1091,6 +1098,7 @@ function prepareThenGo(): Promise<void> {
     .then(
       () => {
         phase = "ready";
+        firstReady();
       },
       () => {
         phase = "failed";
@@ -1375,6 +1383,7 @@ export function startDownloads(): void {
   } catch {
     // Shown empty; nothing is cleaned up.
   }
+  connectDemoDownloads({ erase: eraseDownloads, ready });
   look();
   onAdmission({
     acquire: async (subscriptionId, lease) => {
@@ -1516,7 +1525,12 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
 function newId(): string {
   let id: string;
   do id = `d-${Date.now().toString(36)}-${(++made).toString(36)}`;
-  while (find(id) || doc.unreadable.some((item) => "id" in item && item.id === id));
+  while (
+    find(id) ||
+    doc.forgetting.includes(id) ||
+    closingFolders.has(id) ||
+    doc.unreadable.some((item) => "id" in item && item.id === id)
+  );
   return id;
 }
 

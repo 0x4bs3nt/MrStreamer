@@ -1,7 +1,8 @@
 import * as React from "react";
 import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Member } from "../src/account.ts";
+import type { Member, DemoErase, DemoStart } from "../src/account.ts";
+import { demoEntry } from "../src/demo.ts";
 
 // Removing a provider from Settings when the removal doesn't all go through: a removal the
 // registry refused leaves the provider saved, and Settings says so; a removal that went through
@@ -34,6 +35,8 @@ const scenario = vi.hoisted(() => ({
   sheet: null as { options: readonly string[]; pick: (index: number) => void } | null,
   alerts: [] as Shown[],
   remove: (() => Promise.resolve()) as Removal,
+  demoResult: { kind: "erased", files: "deleted" } as DemoErase | DemoStart,
+  demoActions: [] as string[],
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -93,6 +96,14 @@ vi.mock("../src/telemetry/index.ts", () => ({
   setStatistics: async () => undefined,
 }));
 vi.mock("../src/account.ts", () => ({
+  endDemo: async () => {
+    scenario.demoActions.push("exit");
+    return scenario.demoResult;
+  },
+  resetDemo: async () => {
+    scenario.demoActions.push("reset");
+    return scenario.demoResult;
+  },
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   members: () => scenario.members,
   remove: (id: string, options: { keepHistory: boolean }) => scenario.remove(id, options),
@@ -131,6 +142,7 @@ afterEach(() => {
   unmount();
   scenario.sheet = null;
   scenario.alerts.length = 0;
+  scenario.demoActions.length = 0;
 });
 
 /** Settings with Cabin saved, removed through its row, Remove and the confirmation's `choice`. */
@@ -185,3 +197,40 @@ describe("removing a provider", () => {
     ]);
   });
 });
+
+it.each(["Exit demo", "Reset demo data"])(
+  "confirms %s and reports unfinished demo removal",
+  async (label) => {
+    scenario.members = [{ ...cabin, entry: demoEntry, label: "Demo" }];
+    scenario.demoResult = { kind: "incomplete", pending: ["downloads"] };
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    React.act(() => root.render(React.createElement(Settings)));
+    unmount = () => React.act(() => root.unmount());
+    React.act(() =>
+      container
+        .querySelector('[data-testid="settings-provider-demo"]')!
+        .dispatchEvent(new Event("click", { bubbles: true })),
+    );
+    expect(scenario.sheet?.options).toEqual([
+      "Reload channels",
+      "Reload movies and series",
+      "Reset demo data",
+      "Exit demo",
+      "Cancel",
+    ]);
+    React.act(() => scenario.sheet!.pick(scenario.sheet!.options.indexOf(label)));
+    const confirm = scenario.alerts.at(-1)!;
+    expect(confirm.title).toBe(`${label}?`);
+    expect(confirm.message).toContain("Demo downloads");
+    expect(confirm.message).toContain("history");
+    expect(scenario.demoActions).toEqual([]);
+    React.act(() => confirm.buttons!.find((button) => button.text === "Cancel")?.onPress?.());
+    expect(scenario.demoActions).toEqual([]);
+    await React.act(async () =>
+      confirm.buttons!.find((button) => button.text === label)!.onPress!(),
+    );
+    expect(scenario.demoActions).toEqual([label === "Exit demo" ? "exit" : "reset"]);
+    expect(scenario.alerts.at(-1)?.title).toBe("Demo removal incomplete");
+  },
+);

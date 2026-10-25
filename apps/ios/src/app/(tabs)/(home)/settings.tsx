@@ -22,12 +22,16 @@ import {
 } from "react-native";
 import {
   members,
+  endDemo,
+  resetDemo,
   reloadChannels,
   reloadTitles,
   remove,
   retry,
   useRoster,
   type Member,
+  type DemoErase,
+  type DemoStart,
 } from "../../../account.ts";
 import { DownloadsLink } from "../../../downloads-screen.tsx";
 import { failureOf } from "../../../errors.ts";
@@ -257,21 +261,29 @@ function Provider({ member, tab }: { member: Member; tab: Tab }) {
   const line = standing(member);
   const edit = () => router.push({ pathname: tabHref(tab, "provider"), params: { id: entry.id } });
   const open = () => {
-    const actions = [
-      ...(member.needsSecret
-        ? [{ label: "Enter password", run: edit }]
-        : failed(member)
-          ? [{ label: "Retry", run: () => retry(entry.id) }]
-          : []),
-      ...(member.needsSecret
-        ? []
-        : [
+    const actions =
+      entry.kind === "demo"
+        ? [
             { label: "Reload channels", run: () => reloadChannels(entry.id) },
             { label: "Reload movies and series", run: () => reloadTitles(entry.id) },
-          ]),
-      { label: "Edit", run: edit },
-      { label: "Remove", run: () => confirmRemove(member) },
-    ];
+            { label: "Reset demo data", run: () => confirmDemo("reset") },
+            { label: "Exit demo", run: () => confirmDemo("exit") },
+          ]
+        : [
+            ...(member.needsSecret
+              ? [{ label: "Enter password", run: edit }]
+              : failed(member)
+                ? [{ label: "Retry", run: () => retry(entry.id) }]
+                : []),
+            ...(member.needsSecret
+              ? []
+              : [
+                  { label: "Reload channels", run: () => reloadChannels(entry.id) },
+                  { label: "Reload movies and series", run: () => reloadTitles(entry.id) },
+                ]),
+            { label: "Edit", run: edit },
+            { label: "Remove", run: () => confirmRemove(member) },
+          ];
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: label,
@@ -317,9 +329,43 @@ function standing({ entry, account, needsSecret, live, titles }: Member): string
   if (titles.kind === "failed") {
     return `Movies and series: ${failureOf(titles.error, entry.server).headline}`;
   }
+  if (entry.kind === "demo") return "Sample content";
   const loading =
     live.kind === "loading" ? "Loading channels" : titles.kind === "loading" ? "Loading" : null;
   return [accountLine(account, entry.server), loading].filter(Boolean).join(" · ");
+}
+
+/** Both demo actions are ephemeral and name the data removed before the viewer confirms. */
+function confirmDemo(action: "reset" | "exit") {
+  const label = action === "reset" ? "Reset demo data" : "Exit demo";
+  const report = (result: DemoErase | DemoStart) => {
+    if (result.kind === "incomplete")
+      Alert.alert(
+        "Demo removal incomplete",
+        "Some demo data couldn't be removed. Try again, or reopen the app to retry.",
+      );
+    else if (result.kind === "refused")
+      Alert.alert("Demo isn't available", "The operation couldn't continue. Try again.");
+  };
+  Alert.alert(
+    `${label}?`,
+    "Demo downloads, favourites, watchlist, history and progress will be removed.",
+    [
+      {
+        text: label,
+        style: "destructive",
+        onPress: () => {
+          const operation = action === "reset" ? resetDemo() : endDemo();
+          void operation
+            .then(report)
+            .catch(() =>
+              Alert.alert("Demo isn't available", "The operation couldn't continue. Try again."),
+            );
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ],
+  );
 }
 
 /**

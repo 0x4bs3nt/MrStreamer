@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
+import { DEMO_ID } from "./demo.ts";
 import { readJson, writeJson } from "./files.ts";
 import type { SavedState } from "./storage.ts";
 
@@ -56,18 +57,65 @@ export const EMPTY_REGISTRY: Registry = {
   erasing: [],
 };
 
-/** The saved registry; null when there is none yet, or it doesn't read as one. */
-export function readRegistry(): Registry | null {
-  const read = readJson(FILE);
-  if (read === null) return null;
-  const parsed = Registry()(read);
-  return parsed instanceof type.errors ? null : parsed;
+export type DemoMarker =
+  | { readonly kind: "absent" | "active" | "erasing" }
+  | { readonly kind: "unreadable"; readonly raw: unknown };
+
+export interface RegistryFile {
+  readonly registry: Registry;
+  readonly demo: DemoMarker;
+  readonly opaque: Readonly<Record<string, unknown>>;
 }
 
-/** Replaces the file whole. Throws when Documents won't take it. */
-export function writeRegistry(registry: Registry): void {
-  writeJson(FILE, registry);
+const DemoValue = lazy(() => type({ version: "1", state: "'active' | 'erasing'" }));
+
+/** A bad demo field never invalidates the unchanged personal envelope. */
+export function readRegistry(): RegistryFile | null {
+  const read = readJson(FILE);
+  if (!read || typeof read !== "object" || Array.isArray(read)) return null;
+  const { version, subscriptions, retired, pendingSecrets, erasing, ...extra } = read as Record<
+    string,
+    unknown
+  >;
+  const parsed = Registry()({
+    version,
+    subscriptions,
+    retired,
+    pendingSecrets,
+    ...(erasing === undefined ? {} : { erasing }),
+  });
+  if (parsed instanceof type.errors) return null;
+  const { demo, ...opaque } = extra;
+  const marker = DemoValue()(demo);
+  return {
+    registry: parsed,
+    opaque,
+    demo: !Object.hasOwn(extra, "demo")
+      ? { kind: "absent" }
+      : marker instanceof type.errors
+        ? { kind: "unreadable", raw: demo }
+        : { kind: marker.state },
+  };
 }
+
+/** Replaces the file, carrying every unknown top-level field unchanged. */
+export function writeRegistry({ registry, demo, opaque }: RegistryFile): void {
+  writeJson(FILE, {
+    ...opaque,
+    ...registry,
+    ...(demo.kind === "absent"
+      ? {}
+      : {
+          demo: demo.kind === "unreadable" ? demo.raw : { version: 1, state: demo.kind },
+        }),
+  });
+}
+
+/** A personal account with the reserved id always keeps its ordinary restore and erase paths. */
+export const demoConflict = (registry: Registry): boolean =>
+  [...registry.subscriptions, ...registry.retired].some((entry) => entry.id === DEMO_ID) ||
+  registry.erasing.includes(DEMO_ID) ||
+  registry.pendingSecrets.includes(DEMO_ID);
 
 /** One account per server and username: adding it again updates the one saved. */
 export function sameAccount(

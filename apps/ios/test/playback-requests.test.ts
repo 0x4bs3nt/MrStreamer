@@ -30,6 +30,9 @@ const held: {
 } = { details: [], standing: [], unreadable: [], progress: [] };
 
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
+vi.mock("../src/account.ts", () => ({
+  members: () => [{ entry: { id: "demo", kind: "xtream" } }],
+}));
 vi.mock("expo-router", () => ({
   router: { push: (href: string) => pushed.push(href), navigate: () => undefined },
 }));
@@ -42,7 +45,11 @@ vi.mock("../src/titles.ts", () => ({
   useTitleLists: () => ({ kind: "idle" }),
 }));
 /** The viewing record's saves of how far an episode got, as asked. */
-const saves = vi.hoisted(() => ({ asked: [] as number[], answer: async () => undefined }));
+const saves = vi.hoisted(() => ({
+  asked: [] as number[],
+  answer: async () => undefined,
+  finished: [] as number[],
+}));
 vi.mock("../src/viewing.ts", () => ({
   seriesViewing: () =>
     new Promise<SeriesViewing>((resolve, reject) => {
@@ -57,7 +64,9 @@ vi.mock("../src/viewing.ts", () => ({
     saves.asked.push(position);
     return saves.answer();
   },
-  finishSeries: async () => undefined,
+  finishSeries: async (_versions: readonly unknown[], since: number) => {
+    saves.finished.push(since);
+  },
   useViewing: () => null,
 }));
 
@@ -474,4 +483,46 @@ describe("a version that fails", () => {
     expect(failureOf("movie", shared)).toBe("file");
     expect(failureOf("series", shared)).toBeUndefined();
   });
+});
+
+it("keeps a personal reserved-id episode's finish after its login Source changes", async () => {
+  const { setSource, dropSource } = await import("../src/sources.ts");
+  const { demoProvider } = await import("../src/demo.ts");
+  const original = seriesDetails("s1");
+  const details: SeriesDetails = {
+    ...original,
+    title: {
+      ...original.title,
+      subscriptionId: "demo",
+      versions: original.title.versions.map((version) => ({ ...version, subscriptionId: "demo" })),
+    },
+    seasons: original.seasons.map((season) => ({
+      ...season,
+      episodes: season.episodes.map((episode) => ({ ...episode, subscriptionId: "demo" })),
+    })),
+  };
+  const source = { revision: 1, provider: demoProvider(), login: ["viewer", "fixture"] };
+  setSource("demo", source);
+  try {
+    const before = saves.finished.length;
+    const last = details.seasons[0]!.episodes[1]!;
+    playEpisode(details, last, 0, () => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    startsAt();
+    fakePlayer.state(true);
+    fakePlayer.currentTime = 600;
+    fakePlayer.observation({ kind: "ended" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    setSource("demo", { ...source, revision: 2 });
+    const first = progressAt("episode", "s1e1", 600);
+    held.standing.shift()!({
+      progress: [{ ...first, finished: true, title: { ...first.title, subscriptionId: "demo" } }],
+      marks: [],
+      undoable: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saves.finished).toHaveLength(before + 1);
+  } finally {
+    dropSource("demo");
+  }
 });

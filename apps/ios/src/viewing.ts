@@ -118,6 +118,9 @@ let erasing = false;
 
 /** The record as the file holds it: what was read, then each snapshot written. */
 let base: ViewingSnapshot | null = snapshot();
+/** Whether the last written record has this account, before an erase drops carried memory. */
+export const viewingHolds = (subscriptionId: string): boolean =>
+  base !== null && Object.hasOwn(base.accounts, subscriptionId);
 /**
  * Which stream ids were seen together: what the file holds, and any grouping the catalogue
  * showed since that the file refused, until a write takes it. Never what a refused change of the
@@ -249,11 +252,29 @@ async function refresh() {
   if (asked === generation) viewing.set(read);
 }
 
-/** Every change goes through here: the screens read the record once it is stored. */
-async function change<A>(call: (record: ViewingRecord["Service"]) => Effect.Effect<A, Failed>) {
-  const result = await run(call);
-  await refresh();
-  return result;
+const changes = new Set<Promise<unknown>>();
+
+/** Waits for changes already begun, kept or refused. Later changes have their own owner checks. */
+export const viewingChangesSettled = (): Promise<void> =>
+  Promise.allSettled([...changes]).then(() => undefined);
+
+/** Every asynchronous change is tracked before returning, through the screens' refresh. */
+function change<A>(call: (record: ViewingRecord["Service"]) => Effect.Effect<A, Failed>) {
+  return trackChange(
+    run(call).then(async (result) => {
+      await refresh();
+      return result;
+    }),
+  );
+}
+
+function trackChange<A>(changing: Promise<A>): Promise<A> {
+  changes.add(changing);
+  void changing.then(
+    () => changes.delete(changing),
+    () => changes.delete(changing),
+  );
+  return changing;
 }
 
 const commandId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -374,11 +395,13 @@ export function undoMark(series: OwnedId, revision: number) {
 
 /** Keeps the record's view of a series in line with its details as just read. */
 export function relist(series: OwnedId, title: Title) {
-  return catalogue
-    .details({ ...title, ...series })
-    .then((found) =>
-      found.kind === "series"
-        ? run((record) => record.relist(commandId(), series, seriesEpisodeSeasons(found)))
-        : undefined,
-    );
+  return trackChange(
+    catalogue
+      .details({ ...title, ...series })
+      .then((found) =>
+        found.kind === "series"
+          ? change((record) => record.relist(commandId(), series, seriesEpisodeSeasons(found)))
+          : undefined,
+      ),
+  );
 }
