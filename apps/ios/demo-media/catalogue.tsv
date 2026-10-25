@@ -1,0 +1,8 @@
+id	kind	path	duration_seconds	series_id	season	episode	language	width	height
+movie	movie	movie.mp4	150.000000				und	960	540
+episode-1	episode	episode-1.mp4	90.000000	series	1	1	und	960	540
+episode-2	episode	episode-2.mp4	90.000000	series	1	2	und	960	540
+movie-cover	artwork	movie-cover.png						600	900
+movie-backdrop	artwork	movie-backdrop.png						960	540
+series-cover	artwork	series-cover.png						600	900
+series-backdrop	artwork	series-backdrop.png						960	540

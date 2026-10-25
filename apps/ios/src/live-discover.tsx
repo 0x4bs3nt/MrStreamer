@@ -34,6 +34,7 @@ export function DiscoverScreen() {
       ? null
       : libraryStatus(providers, {
           channels: true,
+          usableContent: catalogue.kind === "ready" && catalogue.library.channels.length > 0,
           retry,
           settings: () => router.push(tabHref("live", "settings")),
         });

@@ -9,8 +9,8 @@ import {
 import { continuation } from "@mrstreamer/core/viewing/episodes";
 import { router } from "expo-router";
 import { useMemo } from "react";
-import { playEpisode, playMovie } from "./play-title.ts";
-import { request } from "./playback.ts";
+import { playEpisode, resumeMovie } from "./play-title.ts";
+import { progressSettled, request } from "./playback.ts";
 import { detailsOf, titleOf, useMetadataVersion, useTitleLists } from "./titles.ts";
 import { seriesViewing, useViewing } from "./viewing.ts";
 
@@ -59,21 +59,23 @@ export function useContinueWatching(kind?: TitleKind): readonly ContinueEntry[] 
 }
 
 /**
- * Plays an entry: a movie at once, where it stopped; a series once its details and how its
- * episodes stand say where it goes on. A series with nothing to go on with, or whose details
- * can't be read, opens its details instead. Anything the viewer does meanwhile, playing,
- * stopping, removing a subscription or going to another screen, cancels the series' resume.
+ * Plays an entry: a movie where it stopped; a series once its details and how its episodes stand
+ * say where it goes on. Where either got to is read once every save of progress asked before
+ * ended, so a position Close or Stop just saved counts. A series with nothing to go on with, or
+ * whose details can't be read, opens its details instead. Anything the viewer does meanwhile,
+ * playing, stopping, removing a subscription or going to another screen, cancels the resume.
  */
 export function resume({ title, version, progress }: ContinueEntry) {
   const opened = { ...title, ...version };
   // The version that goes on is asked for: it shows over the one picked before.
   const versions = () => openDetails(opened, true);
   if (progress) {
-    playMovie(opened, version, resumePoint(progress), versions);
+    resumeMovie(opened, version, progress, versions);
     return;
   }
   const asked = request();
-  void Promise.all([detailsOf(opened), seriesViewing(version)]).then(
+  // The details load meanwhile; the record is read once its saves ended.
+  void Promise.all([detailsOf(opened), progressSettled().then(() => seriesViewing(version))]).then(
     ([found, standing]) => {
       if (!asked.stands()) return;
       const goesOn =

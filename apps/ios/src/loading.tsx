@@ -23,8 +23,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Loadable, Member } from "./account.ts";
-import { Glass, useMotionAllowed } from "./glass.tsx";
+import { Glass, IconButton, useMotionAllowed } from "./glass.tsx";
 import { usePlayback } from "./playback.ts";
+import {
+  dismissProviderNotice,
+  useProviderNotices,
+  type ProviderFailureKind,
+} from "./provider-notice.ts";
 import { store, useStore } from "./store.ts";
 import { colors, TextButton } from "./ui.tsx";
 
@@ -38,6 +43,8 @@ import { colors, TextButton } from "./ui.tsx";
 // at the bottom of the screen (`Docked`), over content that stays usable and scrolls clear of it;
 // the whole line takes at most 40% of the height its host measures and scrolls beyond that.
 // Search leads its results with the line instead where that share can't show a whole line.
+// Provider failures over usable lists are compact notices; closing one acknowledges that incident.
+// Missing/empty lists keep their explanation and recovery inline, independent of acknowledgement.
 
 /** A button on the status line. */
 export interface Action {
@@ -53,6 +60,18 @@ export interface Status {
   readonly progress?: number;
   /** VoiceOver reads it out when its words change; transient lines, as Searching, are not. */
   readonly announce?: boolean;
+  /** Provider failures over usable lists. Resolved against the shared incident owner. */
+  readonly providerFailures?: {
+    readonly failures: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly kind: ProviderFailureKind;
+    }[];
+    readonly settings: () => void;
+  };
+  readonly dismiss?: Action;
+  /** Missing/empty lists keep their explanation and recovery in the screen's layout. */
+  readonly inline?: boolean;
 }
 
 type Verb = "stale" | "failed" | "loading";
@@ -92,14 +111,16 @@ function verbOf(list: Loadable<unknown>): Verb | null {
 /**
  * The status line for the lists a screen shows, or null when every provider's are in or show
  * their last list while they load again: what loads for the first time or failed, by provider,
- * providers in the same state named together. Retry asks each provider that failed again through `retry`;
- * Settings opens where a password the iPhone lost is entered.
+ * providers in the same state named together. Over usable lists, failure metadata becomes a compact
+ * notice through `useProviderStatus`. Empty/first-load failures keep Retry and Settings inline.
  */
 export function libraryStatus(
   members: readonly Member[],
   shows: {
     readonly channels?: boolean;
     readonly titles?: boolean;
+    /** Existing catalogue owners report usable content for this screen's scope, before query/view filters. */
+    readonly usableContent: boolean;
     readonly retry: (subscriptionId: string) => void;
     readonly settings: () => void;
   },
@@ -107,9 +128,12 @@ export function libraryStatus(
   const groups = new Map<Verb, Map<string, string[]>>();
   const passwords: string[] = [];
   const failed: string[] = [];
+  const failures: { id: string; label: string; kind: ProviderFailureKind }[] = [];
+
   for (const member of members) {
     if (member.needsSecret) {
       passwords.push(`Enter the password for ${member.label} in Settings.`);
+      failures.push({ id: member.entry.id, label: member.label, kind: "password" });
       continue;
     }
     const lists = [
@@ -120,6 +144,9 @@ export function libraryStatus(
     for (const [noun, list] of lists) {
       const verb = verbOf(list);
       if (verb) byVerb.set(verb, [...(byVerb.get(verb) ?? []), noun]);
+    }
+    if (byVerb.has("stale") || byVerb.has("failed")) {
+      failures.push({ id: member.entry.id, label: member.label, kind: "unavailable" });
     }
     for (const [verb, nouns] of byVerb) {
       const what = nouns.length > 1 ? "channels, movies and series" : nouns[0]!;
@@ -138,13 +165,58 @@ export function libraryStatus(
     ...passwords,
   ];
   if (sentences.length === 0) return null;
+  if (failures.length > 0 && shows.usableContent) {
+    return {
+      text: [...(groups.get("loading") ?? [])]
+        .map(([what, from]) =>
+          sentence("loading", what, from, from.length > 1 || what.includes(",")),
+        )
+        .join(" "),
+      providerFailures: { failures, settings: shows.settings },
+    };
+  }
   const ids = [...new Set(failed)];
   return {
     text: sentences.join(" "),
+    inline: failures.length > 0,
     actions: [
       ...(ids.length > 0 ? [{ label: "Retry", onPress: () => ids.forEach(shows.retry) }] : []),
-      ...(passwords.length > 0 ? [{ label: "Settings", onPress: shows.settings }] : []),
+      ...(failures.length > 0 ? [{ label: "Settings", onPress: shows.settings }] : []),
     ],
+  };
+}
+
+/** Resolve provider notices before measuring or announcing a composed status, as Search does. */
+export function useProviderStatus(status: Status | null): Status | null {
+  const incidents = useProviderNotices();
+  if (!status?.providerFailures) return status;
+  const { providerFailures, ...normal } = status;
+  const visible = providerFailures.failures.flatMap((failure) => {
+    const incident = incidents.get(failure.id);
+    return incident?.kind === failure.kind && !incident.acknowledged
+      ? [{ ...failure, token: incident.token }]
+      : [];
+  });
+  if (visible.length === 0) {
+    return normal.text || normal.progress !== undefined || normal.actions?.length ? normal : null;
+  }
+  const words = (["unavailable", "password"] as const).flatMap((kind) => {
+    const names = visible
+      .filter((failure) => failure.kind === kind)
+      .map((failure) => failure.label);
+    if (names.length === 0) return [];
+    return [
+      `${new Intl.ListFormat("en", { type: "conjunction" }).format(names)} ${kind === "password" ? (names.length === 1 ? "needs a password" : "need passwords") : "unavailable"}`,
+    ];
+  });
+  return {
+    ...normal,
+    text: [...words, normal.text].filter(Boolean).join(". "),
+    actions: [{ label: "Details", onPress: providerFailures.settings }, ...(normal.actions ?? [])],
+    dismiss: {
+      label: "Dismiss provider notice",
+      onPress: () => visible.forEach(({ id, token }) => dismissProviderNotice(id, token)),
+    },
   };
 }
 
@@ -168,10 +240,33 @@ export const useDockInset = () => useContext(DockInset);
  * that: flattened, its background would become an empty view ahead of the content, and the title
  * would stay large over the rows.
  */
-export function Docked({ status, children }: { status: Status | null; children: ReactNode }) {
+export function Docked({
+  status: supplied,
+  children,
+}: {
+  status: Status | null;
+  children: ReactNode;
+}) {
+  const status = useProviderStatus(supplied);
   const [space, setSpace] = useState(0);
   const [height, setHeight] = useState(0);
   const shown = status !== null && space > GAP * 2;
+  if (status?.inline) {
+    return (
+      <DockInset.Provider value={0}>
+        <View
+          style={styles.fill}
+          collapsable={false}
+          onLayout={(event) => setSpace(event.nativeEvent.layout.height)}
+        >
+          {children}
+          <SafeAreaView edges={["bottom", "left", "right"]} style={styles.room}>
+            <StatusLine status={status} space={space} />
+          </SafeAreaView>
+        </View>
+      </DockInset.Provider>
+    );
+  }
   return (
     <DockInset.Provider value={shown ? height : 0}>
       <View style={styles.fill} collapsable={false}>
@@ -222,50 +317,64 @@ export function useStatusFits(space: number): boolean {
 }
 
 /**
- * The status line itself, on glass (solid under Reduce Transparency and before iOS 26). Given
+ * Provider notices use black with a top rule; normal progress keeps glass (solid before iOS 26). Given
  * `space`, the height its host has for content and line together, everything on it, its text,
  * provider bar and actions, is one scrolling column no taller than its share of that space, so
  * long provider states and wrapped actions at any text size leave the screen's content usable
  * and stay reachable by scrolling; with no room at all it isn't drawn. Without `space` it isn't
  * bounded and its host scrolls it, as Search's results do where the bottom has too little room.
  */
-export function StatusLine({ status, space }: { status: Status; space?: number }) {
-  const { text, actions = [], progress, announce = true } = status;
-  useStatusAnnouncement(text, announce);
+export function StatusLine({ status: supplied, space }: { status: Status; space?: number }) {
+  const status = useProviderStatus(supplied);
+  const { text = "", actions = [], progress, announce = true, dismiss } = status ?? {};
+  useStatusAnnouncement(status ? text || null : null, announce);
+  if (!status) return null;
   const body = (
     <>
-      <Text style={styles.text}>{text}</Text>
+      <Text style={[styles.text, dismiss && styles.compactText]}>{text}</Text>
       {progress !== undefined ? (
         // A fixed bar: it moves only as a provider's lists come in.
         <View style={styles.rail} accessibilityElementsHidden importantForAccessibility="no">
           <View style={[styles.filled, { width: `${Math.round(progress * 100)}%` }]} />
         </View>
       ) : null}
-      {actions.length > 0 ? (
-        <View style={styles.actions}>
+      {actions.length > 0 || dismiss ? (
+        <View style={[styles.actions, dismiss && styles.compactActions]}>
           {actions.map((action) => (
             <TextButton key={action.label} {...action} />
           ))}
+          {dismiss ? (
+            <IconButton
+              symbol="xmark"
+              label={dismiss.label}
+              onPress={dismiss.onPress}
+              testID="dismiss-provider-notice"
+            />
+          ) : null}
         </View>
       ) : null}
     </>
   );
+  const plain = dismiss !== undefined || status.inline;
+  const Surface = plain ? View : Glass;
+  const surfaceStyle = plain ? styles.notice : styles.glass;
+  const lineStyle = [styles.line, dismiss && styles.compactLine];
   if (space === undefined) {
     return (
-      <Glass style={styles.glass}>
-        <View style={styles.line} testID="status-line">
+      <Surface style={surfaceStyle}>
+        <View style={lineStyle} testID="status-line">
           {body}
         </View>
-      </Glass>
+      </Surface>
     );
   }
   const most = Math.max(0, space * SHARE);
   if (most === 0) return null;
   return (
-    <Glass style={styles.glass}>
+    <Surface style={surfaceStyle}>
       <ScrollView
         style={{ maxHeight: most }}
-        contentContainerStyle={styles.line}
+        contentContainerStyle={lineStyle}
         indicatorStyle="white"
         // Retry and Settings take the first tap with Search's keyboard up, rather than it only
         // dismissing the keyboard, as Search's results list does.
@@ -274,7 +383,7 @@ export function StatusLine({ status, space }: { status: Status; space?: number }
       >
         {body}
       </ScrollView>
-    </Glass>
+    </Surface>
   );
 }
 
@@ -438,6 +547,14 @@ const styles = StyleSheet.create({
   area: { flex: 1, justifyContent: "flex-end" },
   room: { marginHorizontal: 12, marginBottom: GAP },
   glass: { borderRadius: 22, overflow: "hidden" },
+  notice: {
+    backgroundColor: "#000000",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.line,
+  },
+  compactLine: { columnGap: 12 },
+  compactText: { flexBasis: 120 },
+  compactActions: { columnGap: 12, alignItems: "center" },
   line: {
     flexDirection: "row",
     flexWrap: "wrap",

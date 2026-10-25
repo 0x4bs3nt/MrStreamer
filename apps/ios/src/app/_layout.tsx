@@ -13,8 +13,8 @@ import { WatchLayer } from "../watch.tsx";
 // Without one, Connect also opens Downloads (`offline`), as copies play with no provider. Watch
 // lies over all of them, outside navigation, so the one player view it shows lives on under
 // Picture in Picture while the tabs are used. The launch screen covers them until the app opens
-// with what the phone saved (startup.ts); the tabs are there under it from when the subscriptions
-// are read, so navigation, links and downloads work as they would without it.
+// with what the phone saved (startup.ts); the tabs mount once the registry is known, even while
+// Keychain is pending. Startup alone releases the overlay, with real routes mounted beneath it.
 
 const theme = {
   ...DarkTheme,
@@ -43,7 +43,7 @@ export default function RootLayout() {
     onScreen(pathname);
     onTelemetryScreen(pathname);
   }, [pathname]);
-  const opening = roster.kind === "restoring" || startup.kind === "opening";
+  const opening = startup.kind === "opening";
   return (
     <View style={styles.black}>
       {roster.kind === "ready" ? <App signedIn={roster.members.length > 0} /> : null}

@@ -1,3 +1,5 @@
+import { nativePlayer } from "./native-player.ts";
+import { guideFixture } from "./native-guide.ts";
 import type { Episode, Season, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import { nextUnwatched } from "@mrstreamer/core/viewing/episodes";
@@ -38,15 +40,12 @@ const memory = vi.hoisted(() => ({
 
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async (source: { uri: string } | null) => {
-      if (source) memory.played.push(source.uri);
-    },
-    play: () => undefined,
-    pause: () => undefined,
-  }),
+  createVideoPlayer: () =>
+    nativePlayer((source) => {
+      memory.played.push(source.uri);
+    }),
 }));
+
 vi.mock("expo-file-system", () => {
   const pathOf = (parent: string | { readonly path: string }, name: string) =>
     `${typeof parent === "string" ? parent : parent.path}/${name}`;
@@ -1253,4 +1252,123 @@ describe("a launch with saved subscriptions", () => {
     await new Promise((done) => setTimeout(done, 200));
     expect(two.titleListRequests()).toBe(before);
   });
+});
+
+describe("guide identity erasure through account lifecycle", () => {
+  it("awaits guide deletion before writing a replacement password and blocks failed deletion", async () => {
+    const fixture = guideFixture();
+    vi.stubGlobal("expo", { modules: { Guide: fixture.native } });
+    try {
+      const app = await launch();
+      const id = await app.add({ server: one.url, ...ONE });
+      if (!id) throw new Error("cancelled");
+      const before = new Map(memory.keychain);
+      fixture.control.refused.add(id);
+      await expect(app.update(id, { password: ONE.password })).rejects.toMatchObject({
+        error: { kind: "unexpected" },
+      });
+      expect(memory.keychain).toEqual(before);
+      expect(fixture.control.calls).toContain(`revoke:${id}`);
+      fixture.control.refused.delete(id);
+      let release!: (value: boolean) => void;
+      fixture.control.forget = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const updating = app.update(id, { password: ONE.password });
+      await until(() => release !== undefined);
+      expect(memory.keychain).toEqual(before);
+      release(true);
+      await updating;
+    } finally {
+      vi.stubGlobal("expo", { modules: { Guide: guideFixture().native } });
+    }
+  });
+
+  it("keeps removal committed while awaiting guide forget, including keepHistory, then reuses only an erased identity", async () => {
+    const fixture = guideFixture();
+    vi.stubGlobal("expo", { modules: { Guide: fixture.native } });
+    try {
+      const app = await launch();
+      const id = await app.add({ server: one.url, ...ONE });
+      if (!id) throw new Error("cancelled");
+      let release!: (value: boolean) => void;
+      fixture.control.forget = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const removing = app.remove(id, { keepHistory: true });
+      await until(() => release !== undefined);
+      expect(ids(app)).not.toContain(id);
+      expect(fixture.control.calls).toContain(`revoke:${id}`);
+      release(false);
+      await removing;
+      fixture.control.refused.add(id);
+      await expect(app.add({ server: one.url, ...ONE })).rejects.toMatchObject({
+        error: { kind: "unexpected" },
+      });
+      fixture.control.refused.delete(id);
+      fixture.control.forget = async () => true;
+      expect(await app.add({ server: one.url, ...ONE })).toBe(id);
+    } finally {
+      vi.stubGlobal("expo", { modules: { Guide: guideFixture().native } });
+    }
+  });
+});
+
+describe("accepted channel picks on provider removal", () => {
+  it("keeps a pick with history, restores it under the retained id and erases only that provider's picks", async () => {
+    const { app, a, b } = await twoProviders();
+    const prefs = await import("../src/media-preferences.ts");
+    const own = channels(app).find((channel) => channel.subscriptionId === b);
+    const other = channels(app).find((channel) => channel.subscriptionId === a);
+    if (!own?.variants[0] || !other?.variants[0]) throw new Error("No provider channels");
+    prefs.updateChannelPick(own, own.variants[0].id);
+    prefs.updateChannelPick(other, other.variants[0].id);
+    await app.remove(b, { keepHistory: true });
+    expect(prefs.channelPicks(b)).toEqual({ [own.id]: own.variants[0].id });
+    expect(await app.add({ server: two.url, ...TWO })).toBe(b);
+    await app.remove(b, { keepHistory: false });
+    expect(prefs.channelPicks(b)).toEqual({});
+    expect(prefs.channelPicks(a)).toEqual({ [other.id]: other.variants[0].id });
+    await launch();
+    expect((await import("../src/media-preferences.ts")).channelPicks(b)).toEqual({});
+  });
+
+  it("retains erasing after a refused pick deletion and retries it on launch", async () => {
+    const { app, a, b } = await twoProviders();
+    const prefs = await import("../src/media-preferences.ts");
+    const own = channels(app).find((channel) => channel.subscriptionId === b);
+    if (!own?.variants[0]) throw new Error("No channel");
+    prefs.updateChannelPick(own, own.variants[0].id);
+    memory.full.add("media-preferences.json");
+    await expect(app.remove(b, { keepHistory: false })).rejects.toThrow();
+    expect(ids(app)).toEqual([a]);
+    expect(registry()).toMatchObject({ erasing: [b] });
+    expect(prefs.channelPicks(b)).toEqual({ [own.id]: own.variants[0].id });
+    memory.full.clear();
+    const again = await launch();
+    expect(ids(again)).toEqual([a]);
+    expect(registry()).toMatchObject({ erasing: [] });
+    expect((await import("../src/media-preferences.ts")).channelPicks(b)).toEqual({});
+  });
+
+  it.each(["version", "shape"] as const)(
+    "keeps erase pending while future preferences are read-only: %s",
+    async (future) => {
+      const { b } = await twoProviders();
+      const original = JSON.stringify(
+        future === "version"
+          ? { version: 88, channelVariants: { [b]: { "10": "11" } } }
+          : { version: 1, channelVariants: ["future-shape"] },
+      );
+      memory.files.set(doc("media-preferences.json"), original);
+      const app = await launch();
+      await expect(app.remove(b, { keepHistory: false })).rejects.toThrow();
+      expect(registry()).toMatchObject({ erasing: [b] });
+      await launch();
+      expect(registry()).toMatchObject({ erasing: [b] });
+      expect(memory.files.get(doc("media-preferences.json"))).toBe(original);
+    },
+  );
 });

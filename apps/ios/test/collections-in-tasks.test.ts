@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import * as React from "react";
 import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
@@ -16,6 +18,7 @@ import { xtreamProvider } from "@mrstreamer/core/xtream";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inTasks } from "../src/library.ts";
+import { browseFixture } from "./title-browse-fixture.ts";
 
 // The collections Movies, Series, Home and details show, made in short tasks: worked out between
 // other tasks they hold what making them at once gives, with TMDB's metadata or without. The app's
@@ -30,11 +33,16 @@ import { inTasks } from "../src/library.ts";
 // run as the app runs them.
 
 const edges = vi.hoisted(() => ({
+  opened: [] as Array<{ title: Title; asked: boolean }>,
+  presses: new Map<string, () => void>(),
+  retries: 0,
+  nativeGrid: false,
   members: [] as Array<{
     entry: { id: string };
     needsSecret: boolean;
     titles:
       | { kind: "ready"; value: OnDemandCatalogue; took: number }
+      | { kind: "loading"; last: OnDemandCatalogue | null }
       | { kind: "failed"; error: unknown; last: OnDemandCatalogue | null; since: number };
   }>,
   roster: new Set<() => void>(),
@@ -52,22 +60,39 @@ const edges = vi.hoisted(() => ({
   watching: new Set<() => void>(),
 }));
 
-vi.mock("expo-file-system", () => ({ File: class {}, Paths: { cache: "/cache" } }));
-vi.mock("../src/account.ts", () => ({
-  members: () => edges.members,
-  onRoster: (listener: () => void) => {
+vi.mock("expo-file-system", () => import("./native-files.ts"));
+const { native } = await import("./native-files.ts");
+vi.mock("../src/account.ts", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
     edges.roster.add(listener);
-    return () => edges.roster.delete(listener);
-  },
-  shownOf: (titles: { kind: string; value?: unknown; last?: unknown }) =>
-    titles.kind === "ready" ? titles.value : (titles.last ?? null),
-  retryTitles: () => undefined,
-  reloadTitles: () => undefined,
-  useRoster: () => ({ kind: "ready", members: [] }),
-  // No launch is reading saved lists here.
-  readingSaved: () => false,
-  onReadingSaved: () => () => undefined,
-}));
+    return () => {
+      edges.roster.delete(listener);
+    };
+  };
+  return {
+    members: () => edges.members,
+    onRoster: (listener: () => void) => {
+      edges.roster.add(listener);
+      return () => edges.roster.delete(listener);
+    },
+    shownOf: (titles: { kind: string; value?: unknown; last?: unknown }) =>
+      titles.kind === "ready" ? titles.value : (titles.last ?? null),
+    retryTitles: () => {
+      edges.retries++;
+    },
+    reloadTitles: () => undefined,
+    useRoster: () => ({
+      kind: "ready",
+      members: useSyncExternalStore(subscribe, () => edges.members),
+    }),
+    // No launch is reading saved lists here, and no login stops keeping them.
+    readingSaved: () => false,
+    onReadingSaved: () => () => undefined,
+    onSavable: () => () => undefined,
+    savable: (id: string, source: unknown) => edges.sources.get(id) === source,
+  };
+});
 vi.mock("../src/sources.ts", () => ({
   currentSource: (id: string) => edges.sources.get(id),
   sourceOf: (id: string) => {
@@ -92,19 +117,74 @@ vi.mock("../src/errors.ts", () => ({ describeError: () => "failed" }));
 vi.mock("../src/tab-bar.ts", () => ({ useFixedTabBar: () => undefined }));
 vi.mock("../src/resume.ts", () => ({
   detailsHref: () => "/",
-  openDetails: () => undefined,
+  openDetails: (title: Title, asked = false) => edges.opened.push({ title, asked }),
   resume: () => undefined,
   useContinueWatching: () => [],
 }));
-vi.mock("react-native", async () => {
+vi.mock("react-native-safe-area-context", async () => {
   const { createElement } = await import("react");
+  return {
+    SafeAreaView: ({ children }: { children?: React.ReactNode }) =>
+      createElement("div", null, children),
+  };
+});
+vi.mock("react-native", async () => {
+  const { createElement, Fragment, memo } = await import("react");
   const box = ({ children }: { children?: React.ReactNode }) =>
     createElement("div", null, children);
   return {
     View: box,
     Text: box,
     ScrollView: box,
-    Pressable: box,
+    Image: () => null,
+    useWindowDimensions: () => ({ width: 390, height: 844 }),
+    FlatList: memo(
+      ({
+        data,
+        renderItem,
+        ListHeaderComponent,
+        ListEmptyComponent,
+      }: {
+        data: readonly Title[];
+        renderItem: (info: { item: Title }) => React.ReactNode;
+        ListHeaderComponent?: React.ReactNode;
+        ListEmptyComponent?: React.ReactNode;
+      }) =>
+        createElement(
+          "div",
+          null,
+          ListHeaderComponent,
+          data.length
+            ? data.map((item) => createElement(Fragment, { key: item.key }, renderItem({ item })))
+            : ListEmptyComponent,
+        ),
+    ),
+    Pressable: ({
+      children,
+      onPress,
+      accessibilityLabel,
+      accessibilityState,
+      testID,
+    }: {
+      children?: React.ReactNode;
+      onPress?: () => void;
+      accessibilityLabel?: string;
+      accessibilityState?: { selected?: boolean };
+      testID?: string;
+    }) => {
+      if (onPress && accessibilityLabel) edges.presses.set(accessibilityLabel, onPress);
+      if (onPress && testID) edges.presses.set(`native:${testID}`, onPress);
+      return createElement(
+        "button",
+        {
+          onClick: onPress,
+          "aria-label": accessibilityLabel,
+          "aria-pressed": accessibilityState?.selected,
+        },
+        children,
+      );
+    },
+    Modal: box,
     StyleSheet: { create: <T>(styles: T) => styles },
   };
 });
@@ -112,22 +192,74 @@ vi.mock("../src/ui.tsx", async () => {
   const { createElement } = await import("react");
   return {
     colors: {},
-    Message: ({ text }: { text: string }) => createElement("p", null, text),
+    Message: ({
+      text,
+      action,
+    }: {
+      text: string;
+      action?: { label: string; onPress: () => void };
+    }) =>
+      createElement(
+        "p",
+        null,
+        text,
+        action ? createElement("button", { onClick: action.onPress }, action.label) : null,
+      ),
   };
 });
-vi.mock("../src/titles-ui.tsx", async () => {
+vi.mock("../src/artwork-cache.ts", () => ({ useArtwork: () => ({ kind: "none" }) }));
+vi.mock("../src/titles-ui.tsx", async (importOriginal) => {
   const { createElement } = await import("react");
+  const actual = await importOriginal<typeof import("../src/titles-ui.tsx")>();
   /** A row or a grid as the ids of its titles. */
   const shown = (name: string, titles: readonly Title[]) =>
     createElement("section", { "data-shown": name }, titles.map(ownedKey).join(","));
   return {
     Artwork: () => null,
     CollectionTileView: () => null,
-    TextTabs: () => null,
+    TextTabs: ({
+      tabs,
+      onChange,
+    }: {
+      tabs: readonly { value: string; label: string }[];
+      onChange: (value: string) => void;
+    }) =>
+      createElement(
+        "nav",
+        null,
+        tabs.map(({ value, label }) =>
+          createElement("button", { key: value, onClick: () => onChange(value) }, label),
+        ),
+      ),
     PlaceholderShelf: () => null,
-    PlaceholderGrid: () => null,
+    PlaceholderGrid: ({ header }: { header?: React.ReactNode }) =>
+      createElement("div", null, header, "Loading collection"),
     Shelf: ({ name, titles }: { name: string; titles: readonly Title[] }) => shown(name, titles),
-    PosterGrid: ({ titles }: { titles: readonly Title[] }) => shown("grid", titles),
+    PosterGrid: ({
+      titles,
+      header,
+      empty,
+      onPress,
+    }: {
+      titles: readonly Title[];
+      header?: React.ReactNode;
+      empty?: React.ReactNode;
+      onPress: (title: Title) => void;
+    }) => {
+      if (edges.nativeGrid)
+        return createElement(actual.PosterGrid, { titles, header, empty, onPress });
+      for (const title of titles) edges.presses.set(`tile:${title.id}`, () => onPress(title));
+      return createElement(
+        "div",
+        null,
+        header,
+        shown("grid", titles),
+        titles.length ? null : empty,
+        titles.map((title) =>
+          createElement("button", { key: title.key, onClick: () => onPress(title) }, title.title),
+        ),
+      );
+    },
   };
 });
 vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
@@ -137,7 +269,19 @@ vi.mock("../src/loading.tsx", async () => {
   const pass = ({ children }: { children?: React.ReactNode }) =>
     createElement(Fragment, null, children);
   return {
-    Docked: pass,
+    Docked: ({
+      children,
+      status,
+    }: {
+      children?: React.ReactNode;
+      status?: { text: string } | null;
+    }) =>
+      createElement(
+        Fragment,
+        null,
+        children,
+        status ? createElement("span", { role: "status" }, status.text) : null,
+      ),
     Placeholders: pass,
     Shape: () => null,
     libraryStatus: () => null,
@@ -340,7 +484,14 @@ describe("the collections Movies, Series, Home and details show", () => {
   let shift = 0;
   beforeEach(async () => {
     vi.resetModules();
+    rmSync(join(native.root, "documents"), { force: true, recursive: true });
+    mkdirSync(join(native.root, "documents"));
+    native.sync = null;
     edges.members = [];
+    edges.opened = [];
+    edges.presses.clear();
+    edges.retries = 0;
+    edges.nativeGrid = false;
     edges.roster.clear();
     edges.sources.clear();
     edges.known = null;
@@ -354,6 +505,45 @@ describe("the collections Movies, Series, Home and details show", () => {
     titles = await import("../src/titles.ts");
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("keeps the prior complete view through sliced A-B-A language rebuilds of unchanged lists", async () => {
+    const prefs = await import("../src/media-preferences.ts");
+    prefs.updateMediaPreferences("titleLanguage", "en");
+    subscribe("a", "b");
+    await until(() => titles.titlesWorkedOut(), "initial English index");
+    const before = indexed();
+    const oldMovie = titles.collectionsOf("movie");
+    const oldSeries = titles.collectionsOf("series");
+    expect(before).not.toBeNull();
+    prefs.updateMediaPreferences("titleLanguage", "nl");
+    expect(indexed()).toBe(before);
+    expect(titles.collectionsOf("movie")).toBe(oldMovie);
+    expect(titles.collectionsOf("series")).toBe(oldSeries);
+    // Let obsolete work actually start in its first bounded task before replacing it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    prefs.updateMediaPreferences("titleLanguage", "en");
+    const { views, bare } = await watch(
+      () => indexed() !== before && titles.titlesWorkedOut(),
+      "replacement English index",
+    );
+    expect(bare).toBe(0);
+    expect(views.length).toBeGreaterThan(0);
+    const expected = indexCatalogue(
+      [
+        { subscriptionId: "a", catalogue },
+        { subscriptionId: "b", catalogue },
+      ],
+      "en",
+    );
+    for (const view of views) {
+      expect(view.index).not.toBeNull();
+      if (!view.index) throw new Error("Incomplete view");
+      for (const kind of ["movie", "series"] as const) {
+        expect(kindOf(view.index, kind).titles).toEqual(kindOf(expected, kind).titles);
+        expect(madeOf(view[kind], kind, view.index)).toBe(true);
+      }
+    }
+  });
 
   const subscribe = (...ids: string[]) => list(ids.map((id) => [id, catalogue]));
   /** Subscriptions with these lists, as their provider gave them, in this order. */
@@ -741,6 +931,402 @@ describe("the collections Movies, Series, Home and details show", () => {
       }
     }
     const ids = (titles: readonly Title[]) => titles.map(ownedKey).join(",");
+
+    const click = async (label: string) => {
+      const button = [...container.querySelectorAll("button")].find(
+        (button) => button.getAttribute("aria-label") === label || button.textContent === label,
+      );
+      if (!button) throw new Error(`No button ${label}. ${container.textContent}`);
+      await React.act(async () => button.click());
+    };
+    const press = async (label: string) => {
+      const action = edges.presses.get(label);
+      if (!action) throw new Error(`No press ${label}`);
+      await React.act(async () => action());
+    };
+
+    it.each(["movie", "series"] as const)(
+      "fences absent-source %s native callbacks and recovers fresh taps without remounting",
+      async (kind) => {
+        const { CollectionScreen } = await import("../src/titles-screen.tsx");
+        const fixture = browseFixture(kind);
+        edges.nativeGrid = true;
+        edges.sources.set("a", { provider: { titleFile: () => null } });
+        list([["a", fixture.catalogue]]);
+        await until(() => titles.collectionsOf(kind) !== null, "collections");
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        const oldTap = edges.presses.get("native:title-en-hd");
+        expect(oldTap).toBeTypeOf("function");
+        const retained = titles.collectionsOf(kind);
+        const count = `4 of 4 ${kind === "movie" ? "movies" : "series"}`;
+        const loseSource = async () =>
+          React.act(async () => {
+            edges.sources.delete("a");
+            edges.members = edges.members.map((member) => ({
+              ...member,
+              needsSecret: true,
+              titles: {
+                kind: "failed",
+                error: { kind: "needs-secret" },
+                last: fixture.catalogue,
+                since: 1,
+              },
+            }));
+            for (const listener of edges.roster) listener();
+          });
+        const recoverSource = async () =>
+          React.act(async () => {
+            edges.sources.set("a", { provider: { titleFile: () => null } });
+            edges.members = edges.members.map((member) => ({
+              ...member,
+              needsSecret: false,
+              titles: {
+                kind: "failed",
+                error: { kind: "network" },
+                last: fixture.catalogue,
+                since: 2,
+              },
+            }));
+            for (const listener of edges.roster) listener();
+          });
+        await loseSource();
+        expect(titles.collectionsOf(kind)).toBe(retained);
+        expect(container.textContent).toContain(count);
+        expect(container.textContent).not.toContain("Catalogue unavailable");
+        await React.act(async () => oldTap?.());
+        expect(edges.opened).toEqual([]);
+        // This comes from the real memoized PosterTile's new native Pressable callback.
+        const missingTap = edges.presses.get("native:title-en-hd");
+        expect(missingTap).toBeTypeOf("function");
+        expect(missingTap).not.toBe(oldTap);
+        await press("native:title-en-hd");
+        expect(edges.opened).toEqual([]);
+        await click("Sort & filter");
+        expect(container.textContent).toContain(count);
+        await click("Reset");
+        await click(`Show 4 ${kind === "movie" ? "movies" : "series"}`);
+        await recoverSource();
+        expect(titles.collectionsOf(kind)).toBe(retained);
+        await press("native:title-en-hd");
+        expect(edges.opened).toHaveLength(1);
+        expect(edges.opened[0]).toMatchObject({
+          title: { kind, subscriptionId: "a", id: "en-hd" },
+          asked: false,
+        });
+        await React.act(async () => {
+          oldTap?.();
+          missingTap?.();
+        });
+        expect(edges.opened).toHaveLength(1);
+
+        // An initially absent source is fenced too; later recovery needs no route remount.
+        await draw(React.createElement("div"));
+        await loseSource();
+        edges.opened = [];
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        const initiallyMissingTap = edges.presses.get("native:title-en-hd");
+        expect(container.textContent).toContain(count);
+        await press("native:title-en-hd");
+        expect(edges.opened).toEqual([]);
+        await recoverSource();
+        await press("native:title-en-hd");
+        expect(edges.opened).toHaveLength(1);
+        await React.act(async () => initiallyMissingTap?.());
+        expect(edges.opened).toHaveLength(1);
+      },
+    );
+
+    it.each(["movie", "series"] as const)(
+      "shows %s collection controls, counts, matching activation and reset",
+      async (kind) => {
+        const { CollectionScreen } = await import("../src/titles-screen.tsx");
+        edges.sources.set("a", { provider: { titleFile: () => null } });
+        list([["a", browseFixture(kind).catalogue]]);
+        await until(() => titles.collectionsOf(kind) !== null, "fixture collections");
+        await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        expect(container.textContent).toContain(`4 of 4 ${kind === "movie" ? "movies" : "series"}`);
+        await click("Sort & filter");
+        expect(container.textContent).not.toContain("Known audio/subtitles");
+        expect(container.textContent).toContain("provider name hints, not verified tracks");
+        await click("4K · 2");
+        await click("English · 1");
+        expect(showing("grid")).toBe("a:en-4k");
+        expect(container.textContent).toContain("Show 1");
+        await click(`Show 1 ${kind === "movie" ? "movies" : "series"}`);
+        await press("tile:en-4k");
+        expect(edges.opened.at(-1)).toMatchObject({ title: { id: "en-4k" }, asked: true });
+        await click("Sort & filter");
+        await click("Nederlands · 1");
+        expect(showing("grid")).toBe("a:nl-4k");
+        await press("tile:nl-4k");
+        expect(edges.opened.at(-1)).toMatchObject({ title: { id: "nl-4k" }, asked: true });
+        await click("HD · 0");
+        expect(container.textContent).toContain("No titles match these filters.");
+        await click("Reset");
+        expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:unknown,a:tie");
+        expect(container.textContent).toContain("Show 4");
+      },
+    );
+
+    it.each(
+      (["movie", "series"] as const).flatMap((kind) =>
+        (["All tab", "4K tab", "pushed collection"] as const).map((place) => ({ kind, place })),
+      ),
+    )(
+      "opens fresh $kind $place taps after password replacement with retained failed-refresh lists",
+      async ({ kind, place }) => {
+        const { CollectionScreen, TitlesHome } = await import("../src/titles-screen.tsx");
+        const fixture = browseFixture(kind);
+        edges.sources.set("a", { provider: { titleFile: () => null } });
+        list([["a", fixture.catalogue]]);
+        await until(() => titles.collectionsOf(kind) !== null, "collections");
+        if (place === "pushed collection") {
+          await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
+        } else {
+          await draw(React.createElement(TitlesHome, { kind }));
+          await click(place === "All tab" ? "All" : "4K");
+        }
+        const id = place === "4K tab" ? "nl-4k" : "en-hd";
+        const oldTap = edges.presses.get(`tile:${id}`)!;
+        const oldMade = titles.collectionsOf(kind);
+        const replacement = { provider: { titleFile: () => null } };
+        await React.act(async () => {
+          edges.sources.set("a", replacement);
+          edges.members = edges.members.map((member) => ({
+            ...member,
+            titles: {
+              kind: "failed",
+              error: { kind: "network" },
+              last: fixture.catalogue,
+              since: 1,
+            },
+          }));
+          for (const listener of edges.roster) listener();
+        });
+        // The roster rerenders this same mounted route. Collections deliberately stay retained.
+        expect(titles.collectionsOf(kind)).toBe(oldMade);
+        await React.act(async () => oldTap());
+        expect(edges.opened).toEqual([]);
+        await press(`tile:${id}`);
+        expect(edges.opened).toHaveLength(1);
+        expect(edges.opened[0]).toMatchObject({
+          title: { subscriptionId: "a", id },
+          asked: place === "4K tab",
+        });
+        await React.act(async () => oldTap());
+        expect(edges.opened).toHaveLength(1);
+        edges.opened = [];
+        const freshTap = edges.presses.get(`tile:${id}`)!;
+        edges.sources.delete("a");
+        await React.act(async () => freshTap());
+        expect(edges.opened).toEqual([]);
+        edges.sources.set("a", replacement);
+        await click("Sort & filter");
+        await click(place === "4K tab" ? "English · 1" : "4K · 2");
+        await React.act(async () => freshTap());
+        expect(edges.opened).toEqual([]);
+        const filteredTap = edges.presses.get("tile:en-4k")!;
+        await React.act(async () => list([]));
+        await React.act(async () => filteredTap());
+        expect(edges.opened).toEqual([]);
+        await draw(React.createElement("div"));
+        await React.act(async () => filteredTap());
+        expect(edges.opened).toEqual([]);
+      },
+    );
+
+    it("keeps pending pushed collection controls without failure copy or an invented count", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      edges.members = [
+        { entry: { id: "a" }, needsSecret: false, titles: { kind: "loading", last: null } },
+      ];
+      for (const listener of edges.roster) listener();
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      expect(titles.titleLists().kind).toBe("loading");
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading movies.");
+      expect(container.textContent).not.toContain("Catalogue unavailable");
+      expect(container.textContent).not.toContain(" of ");
+      await click("Sort & filter");
+      expect(container.textContent).not.toContain("Catalogue unavailable");
+      expect(container.textContent).not.toContain(" of ");
+      await click("Reset");
+      await click("Done");
+    });
+
+    it.each(["All", "4K"] as const)(
+      "keeps truthful loading feedback on a pending %s tab",
+      async (tab) => {
+        const { TitlesHome } = await import("../src/titles-screen.tsx");
+        list([["a", browseFixture("movie").catalogue]]);
+        await until(() => titles.collectionsOf("movie") !== null, "collections");
+        await draw(React.createElement(TitlesHome, { kind: "movie" }));
+        await click(tab);
+        await React.act(async () => {
+          edges.members = [
+            { entry: { id: "a" }, needsSecret: false, titles: { kind: "loading", last: null } },
+          ];
+          for (const listener of edges.roster) listener();
+        });
+        expect(titles.titleLists().kind).toBe("loading");
+        expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading movies.");
+        expect(container.textContent).not.toContain("Catalogue unavailable");
+        expect(container.textContent).not.toContain(" of ");
+        await click("Sort & filter");
+        expect(container.textContent).not.toContain("Catalogue unavailable");
+        await click("Reset");
+        await click("Done");
+      },
+    );
+
+    it("retains session choices across tabs, collection routes and Back, with core sorting", async () => {
+      const { CollectionScreen, TitlesHome } = await import("../src/titles-screen.tsx");
+      list([
+        [
+          "a",
+          { ...browseFixture("movie").catalogue, series: browseFixture("series").catalogue.series },
+        ],
+      ]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      await click("All");
+      await click("Sort & filter");
+      await click("Title");
+      expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:tie,a:unknown");
+      await click("4K · 2");
+      await click("Show 2 movies");
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+      await draw(React.createElement(CollectionScreen, { kind: "series", id: "all" }));
+      expect(showing("grid")).toBe("a:en-hd,a:en-4k,a:unknown,a:tie");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "4k" }));
+      await click("Sort & filter");
+      await click("English · 1");
+      expect(showing("grid")).toBe("a:en-4k");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+    });
+
+    it("cancels stale tile taps on refresh, source replacement, removal and leaving the route", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      const before = edges.presses.get("tile:en-hd")!;
+      await React.act(async () => list([["a", { ...fixture.catalogue }]]));
+      await React.act(async () => before());
+      expect(edges.opened).toEqual([]);
+      await settled(() => titles.titlesWorkedOut(), "refresh");
+      const refreshed = edges.presses.get("tile:en-hd")!;
+      edges.sources.set("a", { provider: { titleFile: () => null } });
+      await React.act(async () => refreshed());
+      expect(edges.opened).toEqual([]);
+      await click("Sort & filter");
+      expect(container.textContent).toContain("Reset");
+      await React.act(async () => list([]));
+      await React.act(async () => refreshed());
+      expect(edges.opened).toEqual([]);
+      expect(container.textContent).toContain("Sort & filter");
+      await click("Sort & filter");
+      await click("Reset");
+      expect(container.textContent).not.toContain("Catalogue unavailable");
+      expect(container.textContent).toContain("No movies in this collection.");
+      await React.act(async () => list([["a", fixture.catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "readded");
+      const leaving = edges.presses.get("tile:en-hd")!;
+      await draw(React.createElement("div"));
+      await React.act(async () => leaving());
+      expect(edges.opened).toEqual([]);
+    });
+
+    it("updates metadata and removed options without dropping controls or confusing empty results with an empty catalogue", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      await click("Sort & filter");
+      await click("4K · 2");
+      const before = titles.collectionsOf("movie");
+      await React.act(async () => learn(2));
+      await settled(() => titles.collectionsOf("movie") !== before, "metadata refresh");
+      expect(container.textContent).toContain("2 of 4 movies");
+      await React.act(async () =>
+        list([
+          [
+            "a",
+            {
+              ...fixture.catalogue,
+              movies: fixture.catalogue.movies.filter((row) => !row.name.includes("4K")),
+            },
+          ],
+        ]),
+      );
+      await settled(() => titles.titlesWorkedOut(), "new declarations");
+      expect(container.textContent).toContain("0 of 3 movies");
+      expect(container.textContent).toContain("Selected quality: 4K. No matching files listed.");
+      expect(container.textContent).toContain("No titles match these filters.");
+      await click("Reset");
+      expect(container.textContent).toContain("3 of 3 movies");
+      await React.act(async () => list([["a", { ...fixture.catalogue, movies: [] }]]));
+      await settled(() => titles.titlesWorkedOut(), "empty catalogue");
+      expect(container.textContent).toContain("No movies in this collection.");
+      expect(container.textContent).not.toContain("No titles match");
+      expect(container.textContent).toContain("Reset");
+    });
+
+    it("keeps the selected 4K tab and its controls when its catalogue empties or disappears", async () => {
+      const { TitlesHome } = await import("../src/titles-screen.tsx");
+      const fixture = browseFixture("movie");
+      list([["a", fixture.catalogue]]);
+      await until(() => titles.collectionsOf("movie") !== null, "collections");
+      await draw(React.createElement(TitlesHome, { kind: "movie" }));
+      await click("4K");
+      await click("Sort & filter");
+      await click("Nederlands · 1");
+      await click("Show 1 movies");
+      const stale = edges.presses.get("tile:nl-4k")!;
+      await React.act(async () => list([["a", { ...fixture.catalogue, movies: [] }]]));
+      await settled(() => titles.titlesWorkedOut(), "empty 4K catalogue");
+      expect(container.textContent).toContain("No movies in this collection.");
+      expect(container.textContent).toContain("Sort & filter");
+      await click("Sort & filter");
+      expect(container.textContent).toContain("Selected file language: Nederlands");
+      await click("Reset");
+      await React.act(async () => stale());
+      expect(edges.opened).toEqual([]);
+      await React.act(async () => list([]));
+      expect(container.textContent).toContain("Sort & filter");
+      expect(container.textContent).toContain("No movies in this collection.");
+      await click("Sort & filter");
+      await click("Reset");
+      await React.act(async () => list([["a", fixture.catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "returning 4K catalogue");
+      expect(showing("grid")).toBe("a:nl-4k,a:en-4k");
+    });
+
+    it("recovers an initial persistent collection failure through Try again with controls present", async () => {
+      const { CollectionScreen } = await import("../src/titles-screen.tsx");
+      edges.members = [
+        {
+          entry: { id: "a" },
+          needsSecret: false,
+          titles: { kind: "failed", error: { kind: "network" }, last: null, since: 1 },
+        },
+      ];
+      for (const listener of edges.roster) listener();
+      await draw(React.createElement(CollectionScreen, { kind: "movie", id: "all" }));
+      expect(container.textContent).toContain("failed");
+      expect(container.textContent).not.toContain("Loading collection");
+      await click("Sort & filter");
+      await click("Reset");
+      await click("Try again");
+      expect(edges.retries).toBe(1);
+      await React.act(async () => list([["a", browseFixture("movie").catalogue]]));
+      await settled(() => titles.titlesWorkedOut(), "retry");
+      expect(container.textContent).toContain("4 of 4 movies");
+    });
 
     it("shows For you as it stands now once what was watched changes, after the clock passed New's days", async () => {
       const { TitlesHome } = await import("../src/titles-screen.tsx");

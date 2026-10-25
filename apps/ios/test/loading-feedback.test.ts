@@ -1,4 +1,7 @@
 import * as React from "react";
+import { indexCatalogue, kindOf } from "@mrstreamer/core/ondemand/catalogue";
+import type { LiveCatalogue, ProviderTitle, OnDemandCatalogue } from "@mrstreamer/core/provider";
+import { buildLibrary } from "../src/library.ts";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
@@ -22,6 +25,8 @@ const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: obje
 
 const scenario = vi.hoisted(() => ({
   members: [] as Member[],
+  rosterChanged: () => undefined as void,
+  fontScale: 1,
   catalogue: { kind: "loading" } as Catalogue,
   lists: { kind: "loading" } as TitleLists,
   /** Movies' collections once made; null until then. */
@@ -51,23 +56,38 @@ vi.mock("react-native", async () => {
   type Props = {
     children?: React.ReactNode;
     testID?: string;
+    style?: Style;
     onLayout?: (event: { nativeEvent: { layout: { width: number; height: number } } }) => void;
   };
   /** A view, which lays out once, 100 points wide and as tall as the scenario has it. */
-  const View = ({ children, testID, onLayout }: Props) => {
+  const View = ({ children, testID, onLayout, style }: Props) => {
     useEffect(() => {
       onLayout?.({ nativeEvent: { layout: { width: 100, height: scenario.height } } });
     }, []);
-    return createElement("div", { "data-testid": testID }, children);
+    return createElement(
+      "div",
+      { "data-testid": testID, "data-width": flat(style).width },
+      children,
+    );
   };
-  type Style = { maxHeight?: number } | readonly Style[] | undefined;
-  const flat = (style: Style): { maxHeight?: number } =>
-    style === undefined ? {} : "length" in style ? Object.assign({}, ...style.map(flat)) : style;
+  type Bounds = { maxHeight?: number; width?: string | number };
+  type Style = Bounds | readonly Style[] | undefined | false | null;
+  const flat = (style: Style): Bounds =>
+    !style ? {} : "length" in style ? Object.assign({}, ...style.map(flat)) : style;
   /** A scroll view, which shows the most height it may take. */
-  const ScrollView = ({ children, testID, style }: Props & { style?: Style }) =>
+  const ScrollView = ({
+    children,
+    testID,
+    style,
+    keyboardShouldPersistTaps,
+  }: Props & { style?: Style; keyboardShouldPersistTaps?: string }) =>
     createElement(
       "div",
-      { "data-testid": testID, "data-max-height": flat(style).maxHeight },
+      {
+        "data-testid": testID,
+        "data-max-height": flat(style).maxHeight,
+        "data-keyboard-taps": keyboardShouldPersistTaps,
+      },
       children,
     );
   class Value {
@@ -81,8 +101,18 @@ vi.mock("react-native", async () => {
     ScrollView,
     Text: ({ children }: Props) => createElement("span", null, children),
     Image: () => null,
-    Pressable: ({ children, testID, onPress }: Props & { onPress?: () => void }) =>
-      createElement("button", { "data-testid": testID, onClick: onPress }, children),
+    TextInput: () => null,
+    Pressable: ({
+      children,
+      testID,
+      onPress,
+      accessibilityLabel,
+    }: Props & { onPress?: () => void; accessibilityLabel?: string }) =>
+      createElement(
+        "button",
+        { "data-testid": testID, "aria-label": accessibilityLabel, onClick: onPress },
+        children,
+      ),
     FlatList: <T>({
       data,
       renderItem,
@@ -101,7 +131,7 @@ vi.mock("react-native", async () => {
       ),
     ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
     StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1 },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
+    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: scenario.fontScale }),
     DynamicColorIOS: () => "#000000",
     Easing: { linear: (at: number) => at },
     Animated: {
@@ -153,6 +183,11 @@ vi.mock("../src/header.tsx", () => ({
   tabHref: (tab: string, screen: string) => `${tab === "films" ? "/films" : "/live"}/${screen}`,
 }));
 vi.mock("../src/account.ts", () => ({
+  currentRoster: () => ({ kind: "ready", members: scenario.members }),
+  onRoster: (listener: () => void) => {
+    scenario.rosterChanged = listener;
+    return () => {};
+  },
   useRoster: () => ({ kind: "ready", members: scenario.members }),
   useCatalogue: () => scenario.catalogue,
   playChannel: (channel: Channel) => scenario.did.push(`play ${channel.key}`),
@@ -170,6 +205,8 @@ vi.mock("../src/storage.ts", () => ({ useSavedState: () => ({}), writeState: () 
 vi.mock("../src/titles.ts", () => ({
   useTitleLists: () => scenario.lists,
   useCollections: () => scenario.made,
+  useFileFacts: () => 0,
+  filterFilesOf: () => new Map(),
   useHolding: () => undefined,
   tilesOf: () => [],
 }));
@@ -188,11 +225,28 @@ vi.mock("../src/viewing.ts", () => ({ useViewing: () => null }));
 vi.mock("../src/tab-bar.ts", () => ({ useFixedTabBar: () => undefined }));
 
 const { default: Live } = await import("../src/app/(tabs)/live/index.tsx");
+const { DiscoverScreen } = await import("../src/live-discover.tsx");
 const { TitlesHome } = await import("../src/titles-screen.tsx");
-const { Placeholders, Shape } = await import("../src/loading.tsx");
+const { Placeholders, Shape, StatusLine, libraryStatus, useProviderStatus } =
+  await import("../src/loading.tsx");
 
 const failure = { kind: "unexpected", detail: "" } as const;
-const catalogueOf = {} as never;
+const catalogueOf = {
+  categories: [],
+  channels: [{}],
+  movieCategories: [],
+  movies: [{}],
+  seriesCategories: [],
+  series: [],
+} as never;
+const emptyCatalogue = {
+  categories: [],
+  channels: [],
+  movieCategories: [],
+  movies: [],
+  seriesCategories: [],
+  series: [],
+} as never;
 
 const member = (id: string, label: string, standing: Partial<Member> = {}): Member =>
   ({
@@ -232,11 +286,16 @@ const nothingMade = {
   list: () => [],
 };
 
+const usableMade = { ...nothingMade, size: () => 1 };
+
 let container: ReturnType<typeof document.createElement>;
 let root: Root;
 let unmount = () => {};
 function draw(node: React.ReactNode) {
-  React.act(() => root.render(node));
+  React.act(() => {
+    scenario.rosterChanged();
+    root.render(node);
+  });
 }
 function open(node: React.ReactNode) {
   container = document.createElement("div");
@@ -250,13 +309,15 @@ const line = () => container.querySelector('[data-testid="status-line"]')?.textC
 const text = () => container.textContent ?? "";
 function press(label: string) {
   const button = [...container.querySelectorAll("button")].find(
-    (each) => each.textContent === label,
+    (each) => each.textContent === label || each.getAttribute("aria-label") === label,
   );
   if (!button) throw new Error(`No ${label} on screen`);
   React.act(() => button.click());
 }
 
 beforeEach(() => {
+  scenario.members = [];
+  scenario.rosterChanged();
   Object.assign(scenario, {
     members: [member("a", "Northwind")],
     catalogue: { kind: "loading" },
@@ -265,6 +326,7 @@ beforeEach(() => {
     focused: true,
     watch: false,
     height: 600,
+    fontScale: 1,
     did: [],
     said: [],
     loops: [],
@@ -306,14 +368,14 @@ describe("Live while its channels load", () => {
     draw(React.createElement(Live));
     expect(line()).toBe("Loading channels from Harbor.");
 
-    // The load fails: the last list stays, said so, with Retry; Retry's load says nothing again.
+    // Failure keeps the last list usable; Details opens recovery. Loading that list again is quiet.
     const failed = { kind: "failed", error: failure, last, since: 0 } as const;
     scenario.members = [member("a", "Northwind", { live: failed })];
     scenario.catalogue = { kind: "ready", library, failing: scenario.members };
     draw(React.createElement(Live));
-    expect(line()).toBe("Couldn't update channels from Northwind. Showing the last list.Retry");
-    press("Retry");
-    expect(scenario.did).toEqual(["retry a"]);
+    expect(line()).toBe("Northwind unavailableDetails");
+    press("Details");
+    expect(scenario.did).toEqual(["push /live/settings"]);
     scenario.members = [member("a", "Northwind", { live: { kind: "loading", last } })];
     scenario.catalogue = { kind: "ready", library, failing: [] };
     draw(React.createElement(Live));
@@ -321,17 +383,17 @@ describe("Live while its channels load", () => {
     expect(text()).toContain("NPO 1");
   });
 
-  it("says an update failed, keeps the last list, and retries that provider", () => {
+  it("names the unavailable provider, keeps the last list, and opens recovery", () => {
     const harbor = member("b", "Harbor", {
       live: { kind: "failed", error: failure, last: catalogueOf, since: 0 },
     });
     scenario.members = [member("a", "Northwind"), harbor];
     scenario.catalogue = { kind: "ready", library, failing: [harbor] };
     open(React.createElement(Live));
-    expect(line()).toBe("Couldn't update channels from Harbor. Showing the last list.Retry");
+    expect(line()).toBe("Harbor unavailableDetails");
     expect(text()).toContain("BBC One");
-    press("Retry");
-    expect(scenario.did).toEqual(["retry b"]);
+    press("Details");
+    expect(scenario.did).toEqual(["push /live/settings"]);
   });
 
   it("sends a provider whose password is gone to Settings", () => {
@@ -339,8 +401,8 @@ describe("Live while its channels load", () => {
     scenario.members = [member("a", "Northwind"), harbor];
     scenario.catalogue = { kind: "ready", library, failing: [harbor] };
     open(React.createElement(Live));
-    expect(line()).toBe("Enter the password for Harbor in Settings.Settings");
-    press("Settings");
+    expect(line()).toBe("Harbor needs a passwordDetails");
+    press("Details");
     expect(scenario.did).toEqual(["push /live/settings"]);
   });
 });
@@ -378,7 +440,7 @@ describe("the status line", () => {
     expect(scenario.said).toHaveLength(3);
   });
 
-  it("keeps two providers' long line and both actions in one scroll within a small screen's share", () => {
+  it("keeps two providers and accessible actions within a small screen's share", () => {
     const northwind = member("a", "Northwind", {
       live: { kind: "failed", error: failure, last: catalogueOf, since: 0 },
     });
@@ -394,14 +456,13 @@ describe("the status line", () => {
     // the rest.
     expect(most).toBeGreaterThan(0);
     expect(most).toBeLessThan(80 / 2);
-    expect(panel.textContent).toBe(
-      "Couldn't update channels from Northwind. Showing the last list. Enter the password for Harbor in Settings.RetrySettings",
-    );
+    expect(panel.textContent).toBe("Northwind unavailable. Harbor needs a passwordDetails");
     expect(text()).toContain("NPO 1");
     // Both actions are in that scroll and still work.
-    press("Retry");
-    press("Settings");
-    expect(scenario.did).toEqual(["retry a", "push /live/settings"]);
+    press("Details");
+    press("Dismiss provider notice");
+    expect(scenario.did).toEqual(["push /live/settings"]);
+    expect(line()).toBeNull();
   });
 });
 
@@ -424,7 +485,7 @@ describe("Movies while its lists load", () => {
     expect(line()).toBeNull();
   });
 
-  it("keeps what one provider listed when another's update fails, and reads that one again", () => {
+  it("keeps what one provider listed when another's update fails, and opens recovery", () => {
     scenario.members = [
       member("a", "Northwind", { titles: { kind: "loading", last: null } }),
       member("b", "Harbor", {
@@ -432,15 +493,308 @@ describe("Movies while its lists load", () => {
       }),
     ];
     scenario.lists = { kind: "ready", index: {} } as TitleLists;
-    scenario.made = nothingMade;
+    scenario.made = usableMade;
     open(React.createElement(TitlesHome, { kind: "movie" }));
-    expect(line()).toBe(
-      "Couldn't update movies and series from Harbor. Showing the last list. Loading movies and series from Northwind.Retry",
-    );
+    expect(line()).toBe("Harbor unavailable. Loading movies and series from Northwind.Details");
     expect(has("movie-for-you")).toBe(true);
-    press("Retry");
-    expect(scenario.did).toEqual(["reload titles b"]);
+    press("Details");
+    expect(scenario.did).toEqual(["push /films/settings"]);
   });
+});
+
+describe("provider notice incidents", () => {
+  const failed = (since = 0, last = catalogueOf) =>
+    ({ kind: "failed", error: failure, last, since }) as const;
+  const show = (members: Member[]) => {
+    scenario.members = members;
+    scenario.catalogue = { kind: "ready", library, failing: members };
+    scenario.lists = { kind: "ready", index: {} } as TitleLists;
+    scenario.made = usableMade;
+  };
+
+  it("dismisses across tabs, resume, renamed labels and an unchanged retry without clearing the error or lists", () => {
+    const state = failed();
+    show([member("a", "Northwind", { live: state, titles: state })]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    expect(line()).toBeNull();
+    expect(text()).toContain("NPO 1");
+    expect(scenario.members[0]!.live).toBe(state);
+    expect(scenario.members[0]!.titles).toBe(state);
+    expect(scenario.did).toEqual([]);
+    draw(React.createElement(TitlesHome, { kind: "movie" }));
+    expect(line()).toBeNull();
+    React.act(() => scenario.appChanged?.("background"));
+    React.act(() => scenario.appChanged?.("active"));
+    show([member("a", "Renamed", { live: { kind: "loading", last: catalogueOf }, titles: state })]);
+    draw(React.createElement(Live));
+    show([member("a", "Renamed", { live: failed(42), titles: failed(42) })]);
+    draw(React.createElement(Live));
+    expect(line()).toBeNull();
+    expect(scenario.said).toEqual(["Northwind unavailable"]);
+  });
+
+  it("waits for all failed sources to recover, including while screens are absent, then shows a new failure", () => {
+    show([member("a", "Northwind", { live: failed(), titles: failed() })]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    show([member("a", "Northwind", { titles: failed() })]);
+    draw(React.createElement(Live));
+    show([member("a", "Northwind", { live: failed(1), titles: failed() })]);
+    draw(React.createElement(Live));
+    expect(line()).toBeNull();
+    draw(React.createElement("p", null, "Settings"));
+    React.act(() => {
+      scenario.members = [member("a", "Northwind")];
+      scenario.rosterChanged();
+      scenario.members = [member("a", "Northwind", { live: failed(2), titles: failed(2) })];
+      scenario.rosterChanged();
+    });
+    draw(React.createElement(TitlesHome, { kind: "movie" }));
+    expect(line()).toBe("Northwind unavailableDetails");
+  });
+
+  it("does not treat a saved copy or a loading transition as successful recovery", () => {
+    show([member("a", "Northwind", { live: failed() })]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    const cached = {
+      kind: "ready",
+      value: catalogueOf,
+      from: "cache",
+      fetchedAt: 0,
+      took: null,
+    } as const;
+    show([member("a", "Northwind", { live: cached })]);
+    draw(React.createElement(Live));
+    show([member("a", "Northwind", { live: { kind: "loading", last: catalogueOf } })]);
+    draw(React.createElement(Live));
+    show([member("a", "Northwind", { live: failed(3) })]);
+    draw(React.createElement(Live));
+    expect(line()).toBeNull();
+  });
+
+  it("does not confuse providers with the same label, password loss, or a removed provider added again", () => {
+    show([member("a", "Same", { live: failed() })]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    show([member("a", "Same", { live: failed() }), member("b", "Same", { live: failed() })]);
+    draw(React.createElement(Live));
+    expect(line()).toBe("Same unavailableDetails");
+    press("Dismiss provider notice");
+    show([member("a", "Same", { live: failed(), needsSecret: true })]);
+    draw(React.createElement(Live));
+    expect(line()).toBe("Same needs a passwordDetails");
+    press("Dismiss provider notice");
+    expect(scenario.members[0]!.needsSecret).toBe(true);
+    show([]);
+    draw(React.createElement(Live));
+    show([member("a", "Same", { live: failed() })]);
+    draw(React.createElement(Live));
+    expect(line()).toBe("Same unavailableDetails");
+  });
+
+  it("keeps recovery visible for empty retained lists after acknowledgement on a populated screen", () => {
+    show([member("a", "Northwind", { live: failed() })]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    show([member("a", "Northwind", { live: failed(1, emptyCatalogue) })]);
+    scenario.catalogue = { kind: "ready", library: emptyLibrary, failing: scenario.members };
+    draw(React.createElement(Live));
+    expect(text()).toContain("No live channels");
+    expect(line()).toBe(
+      "Couldn't update channels from Northwind. Showing the last list.RetrySettings",
+    );
+    expect(has("dismiss-provider-notice")).toBe(false);
+    press("Retry");
+    press("Settings");
+    expect(scenario.did).toEqual(["retry a", "push /live/settings"]);
+  });
+
+  it("keeps first-load failure explanation and recovery even when a different tab acknowledged it", () => {
+    show([
+      member("a", "Northwind", {
+        live: failed(),
+        titles: { kind: "failed", error: failure, last: null, since: 0 },
+      }),
+    ]);
+    open(React.createElement(Live));
+    press("Dismiss provider notice");
+    scenario.made = null;
+    draw(React.createElement(TitlesHome, { kind: "movie" }));
+    expect(line()).toBe("Couldn't load movies and series from Northwind.RetrySettings");
+    expect(has("dismiss-provider-notice")).toBe(false);
+    press("Retry");
+    press("Settings");
+    expect(scenario.did).toEqual(["reload titles a", "push /films/settings"]);
+  });
+
+  it("preserves composed Search progress, actions and announcements when only the failure is dismissed", () => {
+    // Search's public adapter contract, without writing the concurrently owned Search screen.
+    function SearchStatus({ text = "Searching. " }: { text?: string }) {
+      const provider = libraryStatus(scenario.members, {
+        channels: true,
+        titles: true,
+        usableContent:
+          scenario.catalogue.kind === "ready" && scenario.catalogue.library.channels.length > 0,
+        retry: () => {},
+        settings: () => scenario.did.push("settings"),
+      });
+      const status = useProviderStatus(
+        provider && {
+          ...provider,
+          text: text + provider.text,
+          progress: 0.5,
+          actions: [{ label: "Stop search", onPress: () => scenario.did.push("stop") }],
+        },
+      );
+      return status ? React.createElement(StatusLine, { status, space: 200 }) : null;
+    }
+    show([member("a", "Northwind", { live: failed() })]);
+    scenario.fontScale = 3;
+    open(React.createElement(SearchStatus));
+    const panel = container.querySelector('[data-testid="status-line"]')!;
+    expect(panel.getAttribute("data-max-height")).toBe("80");
+    expect(panel.getAttribute("data-keyboard-taps")).toBe("handled");
+    expect(line()).toBe("Northwind unavailable. Searching. DetailsStop search");
+    expect(container.querySelector('[data-width="50%"]')).not.toBeNull();
+    press("Details");
+    press("Dismiss provider notice");
+    expect(line()).toBe("Searching. Stop search");
+    expect(container.querySelector('[data-width="50%"]')).not.toBeNull();
+    draw(React.createElement(SearchStatus, { text: "" }));
+    expect(line()).toBe("Stop search");
+    expect(container.querySelector('[data-width="50%"]')).not.toBeNull();
+    press("Stop search");
+    expect(scenario.did).toEqual(["settings", "stop"]);
+    expect(scenario.said).toEqual(["Northwind unavailable. Searching. ", "Searching. "]);
+  });
+});
+
+describe("usable content reported by the existing catalogue owners", () => {
+  const failureState = (last: LiveCatalogue): Member["live"] => ({
+    kind: "failed",
+    error: failure,
+    last,
+    since: 0,
+  });
+  const restricted = (mode: "flag" | "category"): LiveCatalogue => ({
+    categories: [{ id: "restricted", name: "Adult" }],
+    channels: [
+      {
+        id: "only",
+        name: "Restricted",
+        number: null,
+        logoUrl: null,
+        categoryIds: mode === "category" ? ["restricted"] : [],
+        guideId: null,
+        adult: mode === "flag",
+        catchupDays: null,
+      },
+    ],
+  });
+  const publish = (raw: LiveCatalogue) => {
+    scenario.members = [member("a", "Northwind", { live: failureState(raw) })];
+    const library = buildLibrary([{ subscriptionId: "a", label: "Northwind", catalogue: raw }]);
+    scenario.catalogue = { kind: "ready", library, failing: scenario.members };
+    return library;
+  };
+
+  it.each(["flag", "category"] as const)(
+    "keeps recovery for %s-filtered retained channels, including after acknowledgement",
+    (mode) => {
+      const raw = restricted(mode);
+      const mixed = {
+        ...raw,
+        channels: [
+          ...raw.channels,
+          { ...raw.channels[0]!, id: "visible", name: "News", categoryIds: [], adult: false },
+        ],
+      };
+      expect(publish(mixed).channels).toHaveLength(1);
+      open(React.createElement(Live));
+      expect(line()).toBe("Northwind unavailableDetails");
+      press("Dismiss provider notice");
+      expect(line()).toBeNull();
+      expect(publish(raw).channels).toHaveLength(0);
+      draw(React.createElement(Live));
+      expect(text()).toContain("No live channels");
+      expect(line()).toBe(
+        "Couldn't update channels from Northwind. Showing the last list.RetrySettings",
+      );
+      expect(has("dismiss-provider-notice")).toBe(false);
+      press("Retry");
+      press("Settings");
+      expect(scenario.did).toEqual(["retry a", "push /live/settings"]);
+      // Discover uses the same whole derived library, rather than its query's matches.
+      draw(React.createElement(DiscoverScreen));
+      expect(line()).toContain("RetrySettings");
+      expect(has("dismiss-provider-notice")).toBe(false);
+    },
+  );
+
+  it("keeps failure recovery while the derived channel owner is still pending", () => {
+    publish({ categories: [], channels: [{ ...restricted("flag").channels[0]!, adult: false }] });
+    scenario.catalogue = { kind: "loading" };
+    open(React.createElement(Live));
+    expect(line()).toContain("RetrySettings");
+    expect(has("dismiss-provider-notice")).toBe(false);
+    expect(has("placeholder-rows")).toBe(true);
+  });
+
+  it.each(["movie", "series"] as const)(
+    "keeps recovery when the published %s collection filters every retained title",
+    async (kind) => {
+      const { collections } = await vi.importActual<
+        typeof import("@mrstreamer/core/ondemand/collections")
+      >("@mrstreamer/core/ondemand/collections");
+      const providerTitle: ProviderTitle = {
+        id: "hidden",
+        name: "Restricted",
+        adult: true,
+        posterUrl: null,
+        backdropUrl: null,
+        rating: null,
+        addedAt: null,
+        releaseDate: null,
+        categoryIds: [],
+        container: null,
+      };
+      const raw: OnDemandCatalogue = {
+        movieCategories: [],
+        movies: [providerTitle],
+        seriesCategories: [],
+        series: [providerTitle],
+      };
+      const index = indexCatalogue([{ subscriptionId: "a", catalogue: raw }], "en");
+      scenario.made = collections({
+        kind,
+        titles: kindOf(index, kind).titles,
+        language: "en",
+        metadata: () => null,
+        names: () => null,
+        services: [],
+        now: Date.now(),
+      });
+      scenario.members = [
+        member("a", "Northwind", {
+          titles: { kind: "failed", error: failure, last: raw, since: 0 },
+        }),
+      ];
+      scenario.lists = { kind: "ready", index };
+      open(React.createElement(TitlesHome, { kind }));
+      expect(line()).toBe(
+        "Couldn't update movies and series from Northwind. Showing the last list.RetrySettings",
+      );
+      expect(has("dismiss-provider-notice")).toBe(false);
+      press("Retry");
+      press("Settings");
+      expect(scenario.did).toEqual([
+        "reload titles a",
+        kind === "movie" ? "push /films/settings" : "push /live/settings",
+      ]);
+    },
+  );
 });
 
 describe("the shapes' highlight", () => {

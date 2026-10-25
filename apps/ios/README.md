@@ -5,6 +5,22 @@ React Native on Hermes (Expo SDK 58), building toward the desktop app's features
 own native adapters: the Keychain, app storage and one native player so far. Nothing of it is in
 the desktop's install, build or packages.
 
+Try demo on the empty-roster Connect screen opens a labelled Demo provider. Personal providers can
+be added alongside it afterwards. Demo needs no login or Keychain item. Its original generated movie
+and two episodes use the ordinary catalogue,
+player and download owners, with measured durations and no invented metadata. Files and artwork
+come from the commit pinned in `src/demo.ts`; network failures are shown normally. The asset commit
+must remain an ancestor of main at delivery. Live stays off pending broadcaster permission, and
+the Guide demonstration remains unmet.
+
+Settings' Demo row offers Reset demo data and Exit demo. Both remove only demo downloads, saved
+lists, favourites, watchlist, history and progress. Reset starts a fresh Demo only after that erase
+is established. A durable erasing marker retries unfinished work at launch; unreadable download
+records or refused cache deletion keep removal incomplete. Files still read by a player or native
+task stay until positive closure, even after reset. Personal providers, copies and history, media
+preferences and analytics choices remain separate. Native playback, background/offline downloads,
+the exact reviewer journey and public-review approval retain their own acceptance gates.
+
 It connects Xtream subscriptions, one or several, and shows everything from all of them
 together, as the desktop does: there is no subscription to switch to. Live opens on All, every
 provider's channels of every country once, with their providers' logos; For you leads with the
@@ -26,6 +42,19 @@ didn't load with none of them showing, finding nothing says whose are missing ra
 provider has the name. Movies and Series browse the
 desktop's collections (For you, New, Genres, Services, 4K and All) and open details pushed on
 their tab, with seasons and episodes, the version menu, the watchlist and episodes marked by hand.
+All, 4K and pushed collections have one Sort & filter sheet with title counts, the shared
+collection sorts, declared quality and file-language hints, and Reset. Combined filters must
+match one listed version; opening a filtered tile asks for that version over a remembered pick.
+A later manual version choice in details still wins. Choices stay per kind and collection for
+the app session, including Back, and Reset restores that collection's default sort. Refreshes
+update counts and options without clearing the choices. An empty filtered result keeps Reset;
+an initial collection load failure keeps the controls and Try again. Known audio/subtitle choices
+appear when current exact-file facts are available. Counts require one eligible file to match the
+other filters too. Any known track clears only its own choice; Reset clears the collection choices.
+Unknown track language stays Unknown, and an unnamed canonical language code stays distinct from it.
+Unread files establish no absence. Filtering reads local facts without asking the provider or probing
+media. Direct original AVPlayer reads of provider titles forward changed settled track facts;
+format-session renditions, copies and channels establish none. Native acceptance remains pending.
 A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
 4K tile or Continue watching asks for its own version over it. While a provider needs its
 password, the version remembered from it and how far its versions got are left out of the
@@ -35,16 +64,33 @@ A movie or an episode plays in Watch from where it stopped. Home leads with the 
 channels to preview (On now: recent ones, else the country last chosen in Live), Favourites (its
 heading always there, opening the list on Home's stack: `favourites`), Continue watching, the watchlist
 (its heading always there, opening all of it on Home's stack: `watchlist`)
-and Movies for you, which falls back to the provider's own list without TMDB. Rows show a
-channel's category where the desktop shows its programme: iOS reads no guide yet. Search finds
+and Movies for you, which falls back to the provider's own list without TMDB. Home's On now and
+Stage and Live's channel rows use the same guide owner for actual now/next, local times and static
+programme progress, retaining category fallback in gaps. Live adds Guide alongside For you,
+Categories and All, with the country filter preserved. Channel taps still play in Watch; the
+separate Schedule action opens a pushed day without playing. Home tiles still preview. Schedule
+and programme routes stay on their originating Home or Live stack, retaining Back and browse
+context. Day controls use each local date's first valid instant, including a skipped midnight,
+page at most 128 programme rows with Show more, and inspect one opaque programme detail. Only
+Watch live starts playback; there is no catch-up. Search finds
 movies, series and channels: 20 movies and 20 series at first, each kind with its own Show more
 for the next 20 until every match shows. A movie's details and each episode row have a download button whose
 symbol is the download's state; Downloads lists the queue, then the copies on the phone, with
 Cancel, Retry, Remove, Play offline and Delete as each state allows (`src/downloads-screen.tsx`,
-`src/download-controls.tsx`). Play and Resume always stream; a copy plays offline from Downloads,
-its menu and an episode's check. A download under way goes on in the background, but the next in
-the queue starts only once the app is open again: not yet the desktop's queue. What the desktop
-does and iOS doesn't yet is tracked in the parity report on the iOS card.
+`src/download-controls.tsx`). A series' details also offer Download remaining for the season shown
+and Review series download for every season: after a system sheet with the exact counts, they queue
+that version's episodes one at a time in the series' own order, specials included, retry failed ones
+and replace a missing copy only when asked, never one Watch is playing. It goes on while Downloads
+is opened over the details. Cancel remaining stops it before the next episode, as do closing the
+details, another version, any version accepted in the menu, the same one included, and a new login
+or the provider's removal; what was queued stays. An addition already asked settles, but a retry or
+a missing copy's new addition is only written while the run still stands
+(`src/series-download.ts`, `src/series-download-row.tsx`). Play and Resume always stream; a
+copy plays offline from Downloads,
+its menu and an episode's check. The native owner schedules the queue and hands the next background
+task to iOS before answering a background wake. iOS can defer starts, and force quit ends transfers.
+Actual background and physical-device acceptance remain separate from source and compilation checks.
+What the desktop does and iOS doesn't yet is tracked in the parity report on the iOS card.
 
 ## Its own install
 
@@ -99,6 +145,84 @@ once the SDK's react-native-screens is 4.30.0 or later.
 SDK 58 links prebuilt modules, which a patch can't reach, so `package.json` has autolinking build
 ExpoFileSystem, ExpoVideo and RNScreens from their patched source.
 
+## Managed native playback contract
+
+The pinned expo-video patch adds iOS contract version 1 on its existing player. After checking
+`mrStreamerPlaybackContract`, an imperative owner can use `replaceObservedAsync`,
+`detachObservedAsync`, `getObservedTracksAsync` and `selectObservedTrackAsync`, and subscribe to
+`playbackObservation`. Attempt IDs are increasing positive safe integers. Native item IDs name
+actual item objects. The first admission latches managed mode; legacy replacement and track
+setters then refuse writes with `ERR_OBSERVED_LEGACY_WRITE`. Expo's native property setters
+cannot throw, so the package's existing binding installs instance setters that call a synchronous
+native assertion. Native setters also refuse the write. The existing player remains the owner.
+Managed v1 accepts clear sources only. Any nonnil `source.drm` is rejected with
+`ERR_OBSERVED_DRM_UNSUPPORTED` before admission, without consuming its attempt ID or starting
+asset/key work. The legacy DRM path is unchanged.
+
+Detach retires immediately and awaits owned asset/track loads before returning its local receipt.
+`providerDisconnect: "unobservable"` cannot confirm a server connection has closed. A failed or
+pending detach keeps admission blocked. Failure events expose only allowlisted domains and numeric
+codes. Direct HLS HTTP causes may remain unknown; error-log numbers never become HTTP statuses.
+Managed items do not run independent HLS playlist discovery or hidden foreground/reset reloads.
+
+`src/playback.ts` is the sole app consumer. It installs one observation listener before any
+attempt, allocates increasing attempt IDs before lookup, and filters sequence, attempt, exact
+item and source revision. Legacy status/load/playing/time/end events no longer update playback.
+A fresh nil-source player's fixed not-drained refusal permits one bootstrap retry on the same
+player and attempt. Track policy uses the accepted pure decisions and native readback described below.
+An attended Live channel uses core's quality order and bounded recovery. Before the first playing,
+Automatic can try three candidates; an explicit channel pick plays alone. After playing, transient
+failures reconnect the candidate that played after 1, 2, 4 and 8 seconds. Thirty seconds of actual
+playing on one attempt earns those four reconnects back. This permits at most seven opens in the
+first unstable stretch and four after a stable reset, with no cross-provider fallback.
+
+Only Watch, Picture in Picture or AirPlay, without viewer Pause, arms Live's deadlines: twenty
+seconds from native attach to first playing, suspended while the channel shows Paused, then
+fifteen seconds without media-time progress while native playback is not paused. Disarming preserves spent time; progress resets the stall.
+Lookup, download reclaim and reader drain have no startup deadline. Home preview, titles and
+copies gain no watchdog or automatic recovery. Native unknown failures stay unknown; a measured
+app deadline reports the network policy category without claiming an HTTP cause.
+
+Each automatic attempt keeps the same viewer Choice, frozen track policies, holds, options,
+pending Request and signed-in Source binding. It changes no Watch, PiP, mute or navigation intent.
+Backoff shows Connecting and counts no telemetry playing time. Pause, Close, setting aside or lost
+attention cancels recovery; a login replacement cannot reopen under either login. Explicit Try
+again takes a fresh source binding and budget while keeping the Choice and confirmed holds.
+There is one outcome per Epoch, true at first playing or false only when none played, and one
+terminal failure. Every attach still waits for actual native and format closure and lease return;
+a three-second drain wait failure stops recovery. These source rules still need native proof.
+
+Stop, failure and replacement retain actual native detach and format close/closed promises before
+publishing idle or failed. Replacement waits for positive matching native acknowledgement and all
+format readers, including a late opening. A three-second wait can fail the new selection, while
+real closing continues. Rejection, obsolete receipts and unknown closure keep admission blocked.
+Direct streams appear in `Playback.closing`, which the Downloads screen shows as waiting. Stop
+still returns `Saved`; progress-save completion does not prove reader closure or provider
+disconnect. Close, Pause, Picture in Picture and AirPlay retain readers. A provider stream's
+download lease is acquired before lookup and given back at once when nothing was submitted,
+otherwise only after that positive closure; uncertain closure keeps it for the process.
+`playbackReaders(key)` captures every reader of an item not yet known closed, the playing one and
+retired, failed or uncertain ones, for copy deletion. Capture it before Stop.
+
+Watch queries fresh track snapshots on menu opening. Ready and track observations also refresh
+facts. Choices retain the exact native record, item, attempt and revision, refuse unplayable
+options, and offer Off only when native allows it. Checkmarks use actual selected IDs after
+readback, never a request acknowledgement. Display names are labels, not language, default or
+forced facts. Missing language stays optional. A late menu or choice cannot act after Close,
+navigation, replacement or a new revision. Automatic track choices use the frozen policy and
+confirmed sound; native acknowledgements alone never establish a held or remembered selection.
+
+Producer R54 compiled the player and passed five actual-player XCTest cases. R59 established HLS
+playback, exact-record audio/subtitle selection and readback, stable consecutive revisions, Off,
+item/revision fences, local MP4 and allowlisted failure payloads. R145's corrected six-row HLS probe
+passed against a direct native oracle. Its instrumented loader boundary, held real group result and
+both actual stale callback orders passed, with one sensitive stale-error control. These disposable
+seams do not prove unmodified production timing equivalence. Same-item late/reordered groups and an
+actual unplayable option remain capability-blocked. These are producer results, not consumer
+Release/UI acceptance. Scoped producer fixtures remain in
+`test/native-player-r24`; `managed-playback.test.ts` and the existing caller suites exercise the
+app through native-port stand-ins. Actual consumer Release/UI verification remains required.
+
 ## How it is built
 
 Each responsibility has one owner, a plain module with a store the screens read:
@@ -130,13 +254,41 @@ Each responsibility has one owner, a plain module with a store the screens read:
   Keychain lost leaves that subscription with nothing to read; the other subscriptions' reads and
   views still hold the opening. With no subscription saved it opens at once. No login check or
   provider answer is waited for; a list a provider already gave is worked out with the rest.
-  Until the app opens, `titles.ts` indexes no saved titles while others are still read, so two
-  providers' saved lists are indexed once. If a disk read has not finished after 8 seconds, the
-  app opens without it: the lists read by then are indexed and show, and the late one joins them
-  when it answers. `src/startup-screen.tsx` covers the screens until then: iOS's launch screen
+  Until the app opens, `titles.ts` batches saved titles while another launch password or list
+  read is pending, so providers' saved lists are indexed together once. After 8 seconds, once
+  the saved registry is known, pending disk or Keychain reads stop holding the splash: known
+  lists are indexed and show, and late answers join them after opening. The timer cannot
+  interrupt synchronous JavaScript work. `src/startup-screen.tsx` covers the screens until then: iOS's launch screen
   (`expo-splash-screen`) and then the app's own copy of it at the same place, both drawing
   `assets/splash.png`, the approved artwork, kept as it is (nothing generates it), with "Opening
   your library" beneath after a second. Nothing on it moves.
+- `src/media-preferences.ts`: separate saved title language, audio and subtitle policies, global
+  Live quality and each channel's chosen stream in Documents/media-preferences.json. The same
+  owner keeps the previous accepted raw contents in media-preferences.accepted.json before
+  replacing the primary, so a refused native delete-then-move recovers that choice ahead of a
+  pending proposal. Existing unreadable preference files make the owner read-only. Settings > Media uses system sheets;
+  accepted choices are written before rows update, and failed writes keep the previous choice.
+  Titles keep the device language until changed, then rebuild the index and collections in tasks
+  and read TMDB names/details/episodes in that language. Saved manual version picks still win.
+  Audio defaults to Follow title language, with original/preferred-language options. Playback
+  targets the effective title language and falls back to the native playable default
+  when unavailable. Subtitles default to forced-only, with Off/preferred-language options. A
+  channel's pick, written through the same accepted path, names one of the streams the channel
+  lists, by opaque subscription, channel and stream ids only; it replaces a pick kept under the
+  channel's other stream ids, Automatic removes it, and picks in a shape this build doesn't know
+  stay read-only. `src/media-policy.ts` holds the pure decisions the player applies: tracks from
+  observed native snapshots, holds and readback confirmation, remembered manual picks, file track
+  facts and the Live recovery table. Each viewer choice freezes audio/subtitle policy and actual
+  title/original language; Try again keeps these and confirmed descriptor holds. Automatic choices
+  use playable native options, and forced subtitles follow confirmed sound. Manual requests become
+  holds only after actual readback, then remember a changing pick through this same preference
+  writer. Settings changes affect the next choice. Live uses core's global quality and accepted
+  channel pick to build its candidate plan. Watch's Quality sheet remains available while loading,
+  playing, paused or failed. A pick writes before a new Choice starts; Automatic clears an override,
+  including one that failed. A refused write keeps the accepted choice and current playback.
+  Erase-history removal forgets the provider's picks or retains its erasing marker for launch retry;
+  keeping history keeps the picks. Quality persistence, recovery timing and PiP/AirPlay through
+  reconnect still require exact native and physical acceptance.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
   facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
   as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one
@@ -240,47 +392,78 @@ Each responsibility has one owner, a plain module with a store the screens read:
   with its history kept keeps its saves for its return; removed with its history deleted, its
   saves go too. A refused write leaves the entry and says so.
 - `src/downloads.ts`: movies and episodes downloaded to the phone, as the desktop's downloads:
-  `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. One
-  transfers at a time through `src/download-task.ts`, the app's own native owner of a background
-  URLSession (`modules/background-downloads`), so the bytes never pass through JavaScript and a
-  transfer goes on while the app is suspended and after iOS ends its process. The next download
-  starts only while the app is open (AppState `active`). Each request is an attempt, written on
-  its record before it starts; the native side moves only an authorized attempt's file into place
-  and writes how each ended as a receipt, which `downloads.ts` takes in, then acknowledges. At
-  launch nothing asks a provider for a file or a stream, and nothing is removed, until the
-  subscriptions are read and every native request is accounted for: a queued download's request
-  goes on as its transfer, any other is cancelled and has ended, and every receipt is taken in.
-  Records hold no address, header, login or resume data; a file's address is made from its
-  subscription's login as its transfer starts. A stream of the same subscription takes the
-  connection back first (`onReclaim` in `playback.ts`): the transfer pauses before the stream's
-  request goes out, and goes on once nothing of that subscription streams. A transfer that doesn't
-  end within ten seconds fails the stream instead of opening a second connection. A provider takes
-  a moment to free a closed connection, so a subscription's next request, a stream's, the next
-  download's or a transfer's fresh start after its resumed request was refused, waits a second
-  after the app's last one ended, and every subscription waits a second after launch when requests
-  ended unheard. Resume data, which names the address, stays with the native side in the Keychain,
-  from a pause or a broken request, and is used only for that same address; otherwise the transfer
-  starts again and says so. A request that breaks while the app is open fails, and Retry goes on;
-  one that breaks in the background goes on once the app is open. A user's force quit ends a
-  transfer, as iOS does. Resume data beta 3 kept under `download:<id>` moves to the native side at
-  launch. A copy is complete only once the native side moved it into place at the whole size the
-  server announced; a file beside an unfinished download is deleted before it starts again. A
-  removed subscription's unfinished downloads end, with their files and resume data; its copies
-  stay, play from the phone with no login or network, and keep their own progress, also given to
-  the subscription's viewing record while it is saved. A copy playing goes on when the last
-  subscription is removed.
+  `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. Transfers go
+  through `src/download-task.ts` to the app's own native scheduler of one background URLSession
+  (`modules/background-downloads`), so the bytes never pass through JavaScript. It runs one task at
+  a time and goes on to the next authorized download by itself while the app is in the background
+  or suspended, and after iOS ends its process: the next task is persisted and handed to iOS with an
+  earliest begin date a second after its provider's last request ended, before the system's wake
+  handler is answered, or the wake is refused after five seconds. iOS may defer it further; a
+  user's force quit ends the transfers. In the foreground, `downloads.ts` keeps a window of up to
+  32 exact file authorizations: each is reserved, written on its record, then armed with the
+  file's request, made from the login only then; the native side keeps the request, headers and
+  resume data in the Keychain, per subscription, never in a record. Each subscription's download
+  authority is a generation bound to its exact login by `account.ts`, outside the login itself, so
+  lists, Live and artwork never wait on it and a failed binding holds back downloads alone. A new
+  password or a removal first fences the subscription's downloads durably, in the native ledger or
+  by deleting its Keychain items, without waiting for a transfer to end; when neither can be made
+  the change is refused. After a ledger fence the subscription's whole Keychain service goes too,
+  requests and resume data of reservations never armed included, or at the next reconcile. Only an
+  authorization's own receipt changes its record, once, by its
+  sequence, and is acknowledged once written down. A pause for playback keeps the same
+  authorization; a request that breaks in front of the viewer fails, and Retry goes on from its
+  resume data; one that breaks while nobody watched waits for the app to be open. When the server
+  refuses resume data, the native side deletes it and starts once more from nothing, and says so;
+  when the phone can't delete it, the download fails, and only Retry asks again. A Keychain that
+  doesn't answer, as before the first unlock, never counts as a missing login: a finished file
+  waits with every byte, and nothing starts in place of resume data it couldn't read, until a later
+  reconcile. The first time the app is open in a process, every receipt is taken in, unfinished
+  removals finish and logins are bound before anything new starts, a launch the viewer sees
+  holding the native queue from its first moment; a receipt that can't be written down keeps its
+  file and holds its download back from the queue until it is, a completion from its
+  subscription's removal too; a native queue whose authority is damaged
+  is started over once then, keeping copies, records and logins, and a locked or full one never is.
+  A stream of the same subscription takes the connection first with a lease of this process
+  (`onAdmission` in `playback.ts`): the transfer pauses, then is cancelled, and the stream waits for
+  its request's actual end and a second of grace, or fails rather than ask for a second
+  connection; damaged download storage alone never holds it back. A paused stream keeps its lease
+  until Stop. Removing a download writes its intent on its record, fences its authorization, then
+  drops the record; its folder goes once its task and every player reader of the copy actually
+  closed (`playbackReaders`), and otherwise stays until they do or the next launch. A copy is
+  complete only once the native side moved it into place at the whole size the server announced,
+  under authority read again just before; a file beside an unfinished download is deleted before
+  it is authorized again. A removed subscription's unfinished downloads end, with their files and
+  resume data; a copy completed first stays, plays from the phone with no login or network, and
+  keeps its own progress, also given to the subscription's viewing record while it is saved. A copy
+  playing goes on when the last subscription is removed. Build 14's queue is copied into
+  `queue-v2.json` before its `ledger.json` is emptied, and its resume data, and beta 3's under
+  `download:<id>`, is taken over by a later request of the very same address; going back to build
+  14 is not supported.
+  Each newly downloaded episode also keeps the exact immediate successor from its provider's
+  series order. Watch offers manual Next only when that successor is a complete local copy of
+  the same provider and series version. Next saves first, then rechecks the copies and uses the
+  target copy's own resume point. A missing copy stops continuation without skipping or
+  streaming; no episode autoplays. Older copies with no saved order still play normally.
   `modules/downloads-folder` makes `Documents/downloads` at launch and keeps it out of backups;
-  `modules/background-downloads` keeps its ledger in Application Support and its resume data in
-  the Keychain, both readable after the first unlock (native: both take a new build).
+  `modules/background-downloads` keeps its queue and the one file it is finishing in Application
+  Support, out of backups, and its request authority in the Keychain, both readable after the first
+  unlock (native: both take a new build). Swift compilation, iOS scheduling, wakes, termination,
+  first unlock and the Keychain are verified only on a Mac and a phone.
 - `src/playback.ts`: the one `expo-video` player and what it plays, a channel or a title. Home's
   preview, Watch, Picture in Picture and the accessory all show or control this player; none
   opens a stream of its own. Another channel or title, Stop, removing its subscription and a failure each let go
-  of the stream. `src/play-title.ts` plays movies and episodes in it, saving how far they got.
+  of the stream. `src/play-title.ts` plays movies and episodes in it, saving how far they got;
+  saves go one at a time, in order, so a late one never overwrites a newer position, and Resume,
+  Continue watching, Next and a copy's Play read where a title got to only once they ended. Closing
+  Watch pauses what plays and saves where it got to, unless Picture in Picture or AirPlay already
+  shows it; Stop ends it. A refused save shows a system alert, once until a save is kept again;
+  one refused because its provider was removed meanwhile doesn't.
   A title or copy in a file AVPlayer can't open, such as Matroska, plays through a format
   session (`src/title-formats.ts`, `modules/title-formats`): native code reads the file, from the
   provider over one request at a time or from the phone, and serves it to this player as HLS on
   127.0.0.1, its picture and each sound track copied as they are. Nothing of a new play reaches
-  the provider until the last session's request has ended.
+  the provider until earlier native and format readers positively close. A local closure receipt
+  cannot acknowledge server connection accounting.
 - `src/storage.ts`: what the app keeps between launches, apart from secrets and the registry, in
   `state.json` in Documents: recent channels by subscription, the country last chosen in Live for Home, the
   version picked in each title's details by subscription and TMDB id, as the desktop keeps them,
@@ -296,8 +479,9 @@ Each responsibility has one owner, a plain module with a store the screens read:
 
 Routes are in `src/app` (Expo Router): `(tabs)` are the system's native tabs, Home, Live, Movies
 and Series. Every screen of theirs has one top bar (`src/header.tsx`): the brand on the left, after
-the back button on a pushed screen, and Search, Downloads and Settings on the right, less the
-button of the screen it is on. Downloads, Settings and what Settings opens (`provider`, Add
+the back button on a pushed screen, and Search, Settings and Downloads on the right, less the
+button of the screen it is on. The reactive Downloads item trails the system's Search and Settings
+buttons. Downloads, Settings and what Settings opens (`provider`, Add
 provider or a provider's Edit; `licences` and a component's `licence`) are Home's screens, pushed
 on the tab they were asked from (the other tabs' route files re-export them), and close as the viewer leaves that tab; Movies' and Series'
 details under them stay. `search` opens over the tabs, fading in, and closes back onto the screen
@@ -308,6 +492,12 @@ the phone, Connect also opens `offline`, the same Downloads outside the tabs, so
 no provider saved, after a relaunch too. Connect and `provider` share `src/provider-form.tsx`. Settings lists each provider as a row with how it
 stands; pressing one offers Retry, its reloads, Edit and Remove as a system sheet, and Remove asks
 whether to delete its history too.
+
+Downloads' header entry and Watch's existing button show the queue's actual percentage, received
+bytes when its size is unknown, provider wait, queue count or failure. Search offers the same
+entry while that status exists, closing Search onto Downloads on its original tab and keeping
+the query. All three read the existing downloads store (`src/download-status.tsx`); completed
+copies alone leave no extra status. There is no new timer, transfer or animated indicator.
 Watch (`src/watch.tsx`) is a layer over the navigation rather than a route, because the view that
 starts Picture in Picture has to stay while it plays. Its Downloads and Settings open on the tab
 under it, closing Search first if Watch came back over it (`openOnTabs` in `src/header.tsx`):
@@ -321,16 +511,31 @@ phone is held. On the simulator the screens follow its device orientation (agent
 `orientation`), not where Watch left them. `patches/` makes expo-video report Picture in Picture
 brought back to the app, which its own view never forwarded, and hold AVKit's answer until Watch
 has shown the player again, so the picture returns into Watch rather than Home.
-Watch's Audio and Subtitles list the tracks the player reports. Expo-video named a track by its
-label and language alone, so English stereo and English surround were one track to it; `patches/`
-gives each its place among what plays now as its `id`, and selects by it.
+Watch's Live Quality sheet reads accepted channel picks at opening and fences its native callback
+by item, source, request and menu generation, including when the same item failed. Its playing row
+is marked only while playing or paused. Watch's Audio and Subtitles query observed native tracks and select the exact record with its
+item, attempt and revision. Duplicate display labels stay distinct by native ID and optional name;
+checkmarks follow actual readback. Requests share one queue with automatic policy; an acknowledgement
+does not confirm a hold or remember a preference. Later selection-only snapshots can confirm it.
+See the managed contract above for the remaining native gates.
 `src/glass.tsx` draws the app's own controls as Liquid Glass, and solid before iOS 26 or with
 Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
 `titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them
 while the screen is in front, the app active and Reduce Motion off, and a status line in glass at
-the bottom of the screen naming what loads for the first time or failed by provider, with Retry
-and Settings, over content that stays usable. A list that loads again while its last one shows
-says nothing.
+the bottom of the screen naming what loads for the first time. Over usable lists, provider failures
+get a compact notice with Details opening Settings and a labelled close button. `provider-notice.ts`
+observes the public roster and keeps session acknowledgements by provider id, through tabs, resume
+and unchanged retries. A failed source must answer successfully before its incident resets; removal
+clears it too. Password-needed incidents are distinct. Empty/first-load failures keep their explanation
+and recovery inline. Dismissal never changes account errors or lists. A list that loads again while
+its last one shows says nothing. `libraryStatus` requires `usableContent` from the existing owners: derived Live channels and
+published title collections of the screen's kind, before query or collection filters. Saved raw
+provider rows do not establish that content can show. Home counts channels and movies; Search
+counts channels, movies and series through the pure `useHasTitles` snapshot. This reads the
+collections already made without starting collection work. Hosts such as Search must compose
+progress with `libraryStatus` and resolve
+`useProviderStatus` before announcements and placement, so dismissing a provider failure keeps other
+status text, actions and progress.
 
 Live channels are asked for as HLS, which AVPlayer plays and panels serve beside MPEG-TS. On the
 simulator the fixture channels showed what that covers: H.264 with AAC or AC-3 plays; MPEG-2 fails
@@ -478,3 +683,55 @@ onmac run -- apps/ios/scripts/testflight.sh upload
 so it runs without Metro, the fixtures or a launch argument, then prints the commit, identifier,
 version and build it archived. `upload` sends that archive to App Store Connect for internal
 testers only. The app's record has to exist there first; the API can't create one.
+
+The provider guide foundation is `src/guide.ts`, fed by account restore, sign-in, catalogue and
+erasure lifecycle calls. It resolves only the current catalogue's trusted IDs, including stream
+aliases. The private Expo Guide module downloads on a utility callback queue, refuses automatic
+redirects, validates gzip and XML before indexing, and publishes complete immutable SQLite
+generations through one atomic manifest. Cached queries and account controls run independently of unrelated ingestion; cancellation waits for the relevant job to close its resources. Failed refreshes retain last-good data, quiet background cancellation permits a foreground retry, and committed publication receipts reconcile the cache across lifecycle changes. Missing native
+bindings report unavailable. Removal and password replacement revoke work before awaited erasure,
+including when viewing history is kept.
+
+`src/guide-ui.tsx` reads the owner's immutable snapshot only while the screen is focused. Live
+queries at most 40 visible channels, Home at most 12 including Stage, with the existing two native
+read workers. Channel/day/catalogue changes, source revision changes from the existing sign-in
+owner, removal and authoritative cache loss retire presentation and late answers. Routine owner
+notifications reload the current request while settled rows stay mounted, including across blur,
+refocus and Programme/Back. Pending work aborts and subscriptions stop when the screen blurs.
+Schedule refreshes replace the represented page span atomically; Show more never appends with a
+prior generation's cursor. Failed/refused replacements retain known rows, mark stale generation
+presentation, and keep outdated cursors disabled until a valid replacement. Ambiguous channels
+retain their provider's visible/spoken label beside populated programmes and on Schedule actions.
+There is no UI polling clock, guide cache, provider request or XML parser. The owner's
+foreground minute notifications update progress and Today after midnight. Stale last-good data
+stays marked; cold, missing, discarded and failed reads finish with honest empty/unavailable
+copy. Provider settings is the recovery entry. There is no pull-to-refresh or promised queued
+retry: a pending attach suppresses refresh, and failed attach needs the existing account sign-in
+path. The Expo bridge and native UI geometry, VoiceOver, Dynamic Type, rotation and physical
+phone performance still need the exact-app verification below; source tests do not establish them.
+
+Focused source verification is `pnpm exec vitest run apps/ios/test/guide-screen.test.ts`.
+For native acceptance, open Home, preview a tile, open its Schedule and a programme, then Back;
+open Live > Guide, choose/clear a country, star a channel, open Schedule, change local days and
+Show more, inspect details and press Watch live. Return through native Back to the same day and
+country. Repeat with cold/missing/stale/failed guide, account recovery, a held read during
+provider replacement/removal, foreground and local calendar boundaries on short, long and
+skipped-midnight DST days. Check large
+text, VoiceOver's separate Play/Schedule actions, rotation and scrolling during ingestion on the
+exact Expo/Hermes native candidate. These native checks remain UNRUN by this source unit.
+
+Initial native refusals are 32 MiB delivered callback bytes, 64 MiB inflated XML, 64 KiB raw
+tokens/channel/programme elements, depth 32, 250,000 input programme rows, 10,000 kept programme
+channel IDs, 32 MiB per database, 256 MiB total guide disk and a 256 MiB free-space floor.
+These are conservative budgets to measure on devices, not phone-safety or exact compressed-wire
+limits. Every guide connection uses a private non-default SQLite VFS. Sorting, journals and VACUUM
+scratch files stay under the guide root and share before-growth disk/free-space checks with
+spools and manifest staging. Per-connection mmap, preallocation hints and WAL shared-memory
+writes are disabled. The free-space check reserves allocation rounding and 64 KiB metadata
+headroom for growth; zero-byte revocation metadata, overwrites, renames and deletion do not require that reserve. It cannot reserve space against unrelated filesystem writers. UTF-8 XML only; one bounded external XMLTV DOCTYPE is blanked before parsing, with no DTD resolution. Internal subsets and entity declarations are refused. Programme prose follows the
+existing catalogue password-substring policy: it refuses a raw password anywhere in saved text,
+including ordinary-word collisions, while usernames within prose are allowed. No guide artwork,
+provider URLs or request metadata is saved. `modules/guide/test/run.py` compiles the production
+core against Mac, simulator and device SDKs and runs fake-only host fixtures. It excludes the Expo
+wrapper, does not install an app, and cannot establish Release/Hermes registration or iOS runtime
+acceptance. Full native application and hardware verification remain required before release.

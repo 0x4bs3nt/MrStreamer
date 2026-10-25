@@ -1,0 +1,1150 @@
+{
+  "version": 1,
+  "sourceCommit": "9791b09908e03742cee981c97e37d47829fc7a18",
+  "release": "r107-9a71431a4ec59259c53c",
+  "originals": {
+    "movie": {
+      "key": "original/7787c1d37377680870c0e6b5f3989d602f0ffae87ecca5aec7e50d9b25be6f97/movie.mp4",
+      "bytes": 5537850,
+      "sha256": "7787c1d37377680870c0e6b5f3989d602f0ffae87ecca5aec7e50d9b25be6f97",
+      "mime": "video/mp4"
+    },
+    "episode-1": {
+      "key": "original/7b009fb8f116424f24a02ab2a7eea3e6f3363d9a02dcf5249e481ea3c48049c9/episode-1.mp4",
+      "bytes": 3352656,
+      "sha256": "7b009fb8f116424f24a02ab2a7eea3e6f3363d9a02dcf5249e481ea3c48049c9",
+      "mime": "video/mp4"
+    },
+    "episode-2": {
+      "key": "original/4b71b161bae0b4dc37bdbed8b2b1dd4d1d42cafa36a2ebbff0d775fa706cf2f5/episode-2.mp4",
+      "bytes": 3318495,
+      "sha256": "4b71b161bae0b4dc37bdbed8b2b1dd4d1d42cafa36a2ebbff0d775fa706cf2f5",
+      "mime": "video/mp4"
+    }
+  },
+  "artwork": {
+    "movie-cover": {
+      "key": "original/b7bc8185167fb1c91663331a32f956125076427565a209377887b7fb84a985f3/movie-cover.png",
+      "bytes": 103945,
+      "sha256": "b7bc8185167fb1c91663331a32f956125076427565a209377887b7fb84a985f3",
+      "mime": "image/png"
+    },
+    "movie-backdrop": {
+      "key": "original/01ecb999bc1f263dc8c80a3920a8d94fec9f5339bb214cde7b990104e0ae8088/movie-backdrop.png",
+      "bytes": 96029,
+      "sha256": "01ecb999bc1f263dc8c80a3920a8d94fec9f5339bb214cde7b990104e0ae8088",
+      "mime": "image/png"
+    },
+    "series-cover": {
+      "key": "original/b2edc6bd9c80498c4966e6ca6721df97b2259c88dbaa461e3048c9ceb7f53a01/series-cover.png",
+      "bytes": 107512,
+      "sha256": "b2edc6bd9c80498c4966e6ca6721df97b2259c88dbaa461e3048c9ceb7f53a01",
+      "mime": "image/png"
+    },
+    "series-backdrop": {
+      "key": "original/5c3a56338d0ee35983112b8cfb334c8f78a8f512b4a4e88078f5b571597e9c24/series-backdrop.png",
+      "bytes": 99780,
+      "sha256": "5c3a56338d0ee35983112b8cfb334c8f78a8f512b4a4e88078f5b571597e9c24",
+      "mime": "image/png"
+    }
+  },
+  "programmes": [
+    {
+      "id": "movie",
+      "videoFrames": 3600,
+      "audio": {
+        "accessUnitsSha256": "ec8fec10c3de8bdd4a1c202f08119217257bcb7a1f499e0fccc7381960a13249",
+        "firstEdgeTicks": 0,
+        "lastEdgeTicks": 3360,
+        "continuous": true
+      }
+    },
+    {
+      "id": "episode-1",
+      "videoFrames": 2160,
+      "audio": {
+        "accessUnitsSha256": "6b703354d7a956f8eafc9a9105d9ec16cfa46dfb692c4c445b94ea9313c8deb9",
+        "firstEdgeTicks": 0,
+        "lastEdgeTicks": 2400,
+        "continuous": true
+      }
+    },
+    {
+      "id": "episode-2",
+      "videoFrames": 2160,
+      "audio": {
+        "accessUnitsSha256": "e70e24b3000298d55a52bd9a80161ab42034fb70c2eece597143dea5c47fe4ef",
+        "firstEdgeTicks": 0,
+        "lastEdgeTicks": 2400,
+        "continuous": true
+      }
+    }
+  ],
+  "renditions": [
+    {
+      "id": "540p",
+      "width": 960,
+      "height": 540,
+      "frameRate": 24,
+      "codecs": "avc1.42c01f,mp4a.40.2",
+      "bandwidth": 401067,
+      "averageBandwidth": 345137
+    },
+    {
+      "id": "180p",
+      "width": 320,
+      "height": 180,
+      "frameRate": 24,
+      "codecs": "avc1.42c01f,mp4a.40.2",
+      "bandwidth": 159174,
+      "averageBandwidth": 148878
+    }
+  ],
+  "segments": [
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/000.ts",
+          "bytes": 199656,
+          "sha256": "429009899dc06473023f14b3da7f88427c1e17dffa8fcd2e931f1d69dc0068a6",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/000.ts",
+          "bytes": 106408,
+          "sha256": "9ff38e222d473ae2a6151294398298838c8ab7c7fed928347ca64bf4331444d8",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/001.ts",
+          "bytes": 246468,
+          "sha256": "6a40fee0e92d20409b4e547ed1e2924357fcb080e3b0022944615fae3b7e59bb",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/001.ts",
+          "bytes": 109792,
+          "sha256": "18f1ee8e3c5883772ad1a071ad34d5cf519fb1c403766994bdb7082a0f446d02",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/002.ts",
+          "bytes": 233872,
+          "sha256": "b1b903fbcb9a33cfc8cf231614e9bec0f38105d2a8808f964d93b99a6bc4697f",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/002.ts",
+          "bytes": 110356,
+          "sha256": "d7aaa1d128a7b74c3c5c8a5531d68de7df6b8990a26864a6d98513eef8d24cb2",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/003.ts",
+          "bytes": 289520,
+          "sha256": "4cf2bb5ed353f3c4bf1dad5dd2e0dfd9e6b3a35817adb0ce33837e09aa3d8437",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/003.ts",
+          "bytes": 119004,
+          "sha256": "10c98414d24373dbda958cffd2dcb65762e1af175ad906d819c8bb78b082bea4",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/004.ts",
+          "bytes": 293280,
+          "sha256": "94cec8e5394d77cbb16414bb7ff03abe2dc930b7c68c8bd36c2bdacf5464a35a",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/004.ts",
+          "bytes": 116184,
+          "sha256": "87604df6932becce4b1dfc538d5b170c56758b468ad29119f1bd4a86c5e5fd56",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/005.ts",
+          "bytes": 276924,
+          "sha256": "d0b7e6ee8bd5d5a54f68d6d10d6753733ae28e2228f1851515f7cdbc1f4f4843",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/005.ts",
+          "bytes": 110544,
+          "sha256": "e43c77008448214f079fd9d9a462c7f6d853745510e8b17aacb7286bf7a4eeb3",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/006.ts",
+          "bytes": 250416,
+          "sha256": "e524c472856eb1c331dc0106126920e6d65c957df3f5c786d7b59420b61ef5cf",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/006.ts",
+          "bytes": 108852,
+          "sha256": "370ba9ab73f02576f4af6640dc19624eaddfcc7af17d4b527bbb2407f70a6402",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/007.ts",
+          "bytes": 235188,
+          "sha256": "d5b4725602dc5b48d11f41008e30beeaec72f7e4809b15e1cfa5ae381ffaa072",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/007.ts",
+          "bytes": 109792,
+          "sha256": "4b92fb938b6c3ad368ea55b3b7ccad1df78b8bd9b0fd7fede9bf4897e3f3f124",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/008.ts",
+          "bytes": 248912,
+          "sha256": "ef2310959258714eaf49fd6844650b64b8c1ca1188ced328dd21055ccf3101a2",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/008.ts",
+          "bytes": 109228,
+          "sha256": "12d876e3cafd55f663d60be8b85c2a75800529c114ac4354bc998a61b7a40505",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/009.ts",
+          "bytes": 300800,
+          "sha256": "607a7b5762e6246e1d074a0e2bda3f40e0be0924fa4c0a5fd24032e586abab4a",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/009.ts",
+          "bytes": 117688,
+          "sha256": "4e34654cc3251f67fd8c2544235056bb7a3a12c6c81088a222219cf8aab94b6b",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/010.ts",
+          "bytes": 283692,
+          "sha256": "1b2fa82871e2cf4c22fdbede7e2099238d6521d0136b90e6a7ad8e5cb2b5ee2d",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/010.ts",
+          "bytes": 116184,
+          "sha256": "b14e7211846ab3ae38cf2762aa3a925d3de9ba010440560ae2cc4375e0ab4146",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/011.ts",
+          "bytes": 266208,
+          "sha256": "4a0328d52da783d6b221e8214e821b22187debb3cc1c9556f7ca0aaa0e0ca33b",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/011.ts",
+          "bytes": 108476,
+          "sha256": "a47a5b7edd028c6f31e342a4e1bc468b7fe84f69cc8989a6af24556448ec01eb",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/012.ts",
+          "bytes": 227480,
+          "sha256": "7f89c2bfb87a5da56f9fd6645ee651cf1084233f1cbced3a5830cee64efcb03b",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/012.ts",
+          "bytes": 107160,
+          "sha256": "108abc376d4fe22870780e97eee22a000977ab0f47fdb0a86293ce90cbfe2801",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/013.ts",
+          "bytes": 227292,
+          "sha256": "b808ceeca094b4cbf30b3a3c2fc755ae3d6f81a8226bf38537b2dec79c954f4f",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/013.ts",
+          "bytes": 108664,
+          "sha256": "0fb969ea03bd0472286178254bfaa71d415c8586d605627e48180d252a3ee477",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/014.ts",
+          "bytes": 295536,
+          "sha256": "3deeab09c66e1025fff293f7f187d6c8dfb5e230a77e53bd4105a354027a7c1a",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/014.ts",
+          "bytes": 116748,
+          "sha256": "15a8ce4d9a247b3450a152e5be8918662d83db3bd39df7effa0a503b9e0b2ddf",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/015.ts",
+          "bytes": 287452,
+          "sha256": "6a056ef41141d9e1311b0558885ea2de81c92a9567c01deecbf09536eb7e7faf",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/015.ts",
+          "bytes": 113928,
+          "sha256": "37bc0a7b9cf4a304cbeff527213ef280e7138a5625cbba44c3f341a2641ed768",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/016.ts",
+          "bytes": 270156,
+          "sha256": "0fc8a96a8243c990d83fa75ea02a67ad3c6c18fe2eb045c78dc2a8b8462d9dc9",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/016.ts",
+          "bytes": 109980,
+          "sha256": "114f43929352d605344c9e6318efffc29bcb90dc89ae52cc50a5b6214cab2040",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/017.ts",
+          "bytes": 231992,
+          "sha256": "69b4537b1ad46e6e5c18236743000bdcb5db66e8f600f0ce7463d4860ebedd01",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/017.ts",
+          "bytes": 106972,
+          "sha256": "ecee2087c4abfce7b98bd71d92684d6929c7b218ac4db30e76966d6c4146efca",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/018.ts",
+          "bytes": 224660,
+          "sha256": "5fde7ffe77fbfc786f40fb725faff91d0d0d81ad31570eec708455beb2a64ea1",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/018.ts",
+          "bytes": 107912,
+          "sha256": "f7fa345f439471f08c92e2e77ca98f9ee426437df81e250d6246b40346ab9e61",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/019.ts",
+          "bytes": 282940,
+          "sha256": "329c43836421ea979c8f7dbf906d98813457d828b4e33a93c8201d582ae5e37e",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/019.ts",
+          "bytes": 116184,
+          "sha256": "242c48d00c22e6f5c6814b86c2c71c540a201df905c5ee4893e438a8537a5750",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/020.ts",
+          "bytes": 293844,
+          "sha256": "aad17ff6f9fb8b17d6369e3b206e3df477a768238cf510c285234858ef5bb236",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/020.ts",
+          "bytes": 116372,
+          "sha256": "56579de733c766ccc441ec528d0bac34feca4c41f0975421bb87af0b710f6a7f",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/021.ts",
+          "bytes": 275420,
+          "sha256": "3f7ddc7ac9c658fe669668893fbc1670fd6351f6149c95b17dced19f500835c2",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/021.ts",
+          "bytes": 112048,
+          "sha256": "916482287f065626a1ed98ca9fda2fcca808e939fe86bd0674deac58a8f91f03",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/022.ts",
+          "bytes": 234060,
+          "sha256": "1e74f709315b46350d24a9085fec5b4deeb44dc9a5400ba90dff013f0d65dcb9",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/022.ts",
+          "bytes": 106596,
+          "sha256": "ab0b1e7b557fd9ea74b13ff8d008cefcb6d75ca1a7236ea80cf4011306839556",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/023.ts",
+          "bytes": 215260,
+          "sha256": "c5970daf1653533eba27953fe01b5693b440722be992427fed82172abefb1e6f",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/023.ts",
+          "bytes": 107536,
+          "sha256": "ae722ddfcd6b70d306c08692e33b4d9cb318cbada9a2b7f9b983aa8d4013fd8d",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "movie",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/540p/024.ts",
+          "bytes": 264516,
+          "sha256": "ee83c8eaf2634312ff5d58ae149f5fdb3b9952b9135177f685f3e279ee34b521",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/movie/180p/024.ts",
+          "bytes": 114492,
+          "sha256": "2953bdf02024e073bd1416e3a2897c84000d3551c11cd6afbd7c78b4a4d676d1",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/000.ts",
+          "bytes": 183864,
+          "sha256": "422ebae7bf2c636f9cea77c7e78faa8d2186142a0594d8fe2ac29b9c8e3df813",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/000.ts",
+          "bytes": 101708,
+          "sha256": "2f3143476eb91b48b099e17457c3c2e6fa7b293a0c62218e024781664fd50477",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/001.ts",
+          "bytes": 249852,
+          "sha256": "037a4644a844bda19e8c1d40d8e908e96d2dad570c41f12cc4f5cffccacbf207",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/001.ts",
+          "bytes": 113928,
+          "sha256": "b4fc4b99be316a6554bd9ec4c9b7ff2256f5b7679df1908f16804e22ab149489",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/002.ts",
+          "bytes": 300048,
+          "sha256": "4549eac345b99e7c7cf785ba6e3c1ae369670615f6bd21811d57170f8fc0e528",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/002.ts",
+          "bytes": 118252,
+          "sha256": "e54ecbe5b48eed44448f70b4eed6d2eb6bbd0b23565195fa1f73147133180c77",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/003.ts",
+          "bytes": 281060,
+          "sha256": "1c8e959c6d615ff346130e08a03d8258d4772427bea20a8327e041f2ebdba1a8",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/003.ts",
+          "bytes": 112424,
+          "sha256": "bf0eaf90650d7c79a40fabd6ed43730e10f60e1e714aa2fde439a15e0ad0856e",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/004.ts",
+          "bytes": 263764,
+          "sha256": "a47876e0120dacaec75564287675e7a8e21b1cb832929a7a3a326ac2be754a4a",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/004.ts",
+          "bytes": 111108,
+          "sha256": "9e66cf4c5d4043ee07a5f3fcfacbf2b44fc1d679b9e24f2b0dc6c4d925a99194",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/005.ts",
+          "bytes": 230300,
+          "sha256": "b3da6db9aa1b33108b01e7b0aaf069deb976c7c2926ee44f9cf75760bb1f5991",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/005.ts",
+          "bytes": 107912,
+          "sha256": "9299e493c52e32352d62c36f9fd1b8f00afb654839198197ddcaa4dc6b9ed716",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/006.ts",
+          "bytes": 237820,
+          "sha256": "89fe9ca2eab3c705e7ab411603ab4bcc6540f1391244721a739adf059ae7b8a8",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/006.ts",
+          "bytes": 110356,
+          "sha256": "2cf55ce798498a201867cb7621fafb57e7230bc967b8ff53b04eeebce2a093e7",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/007.ts",
+          "bytes": 293844,
+          "sha256": "3a43bde0c625f7dc72f2291b28d67d405ae2aa9580f178d2c957e1ffd5f7b2a8",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/007.ts",
+          "bytes": 119380,
+          "sha256": "c7f6a0c96e5a09111ed6b7a4a968d6bef44b02478123b48a560165bc5fc948f5",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/008.ts",
+          "bytes": 292528,
+          "sha256": "d3e04a20d1a7a54ad46899921a65f9608679d0152eee9aa3bfe87d77f46735d4",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/008.ts",
+          "bytes": 115808,
+          "sha256": "eeaeea4226e26a5fab0267d9898731d092211d80dae11c98de16d88327320b41",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/009.ts",
+          "bytes": 275044,
+          "sha256": "3b83b1a8c0180f045af2ab59ca77dcf83f35eecd18d87c1207ce77657c7bbc19",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/009.ts",
+          "bytes": 109416,
+          "sha256": "81c8bdbbe16a3c8ea5af7e2c5954b7987b4dc9946c7a0ffccb842e955cc7437f",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/010.ts",
+          "bytes": 234248,
+          "sha256": "1785fbaebfca0a0791671aee3309cb9e1e740c69bba9f54bc3c0ffaf06876517",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/010.ts",
+          "bytes": 108100,
+          "sha256": "be14f8cb1adc783ff776bc2b3e0a14e2a564661d7c71a7c3c575d0213a6499b3",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/011.ts",
+          "bytes": 218644,
+          "sha256": "d4eaae6be37110a566d28e9be78b48ec824b99b7dd900fe9901ba00cd57d6b0a",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/011.ts",
+          "bytes": 106220,
+          "sha256": "dc1f59bbcbab23d1c5456e27eb7253c893a77f176d877acedf0924271e7a2644",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/012.ts",
+          "bytes": 269592,
+          "sha256": "b1b2a826c787b368c40dabea536dfd4cdb4ee380d919b3eec4ef6d754a7a41bc",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/012.ts",
+          "bytes": 115620,
+          "sha256": "bca9f6e426a1bf796c27985e4e3533aae848a0a36c37d9cf1c8efb1c07c316a2",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/013.ts",
+          "bytes": 294596,
+          "sha256": "8118655d7e208fab96fc000668863d5098a985ee347860fe3a03d4804cdafd49",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/013.ts",
+          "bytes": 115620,
+          "sha256": "358257beb7f42caeed32e51e465869186c0c05c5e245aed2ea7aabf8f36bc9c8",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-1",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/540p/014.ts",
+          "bytes": 277488,
+          "sha256": "90f8bb4c5ac3d8bdd8987007999f388ca05a915637aba09113427f3b24420c15",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-1/180p/014.ts",
+          "bytes": 112048,
+          "sha256": "15897dc4895db460286b37e14725e5b9fd281a97f134479d22c26e93a51f5db4",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/000.ts",
+          "bytes": 198716,
+          "sha256": "071d042369bc3c4a7097d40dcc6ebebe8fa73c6a6473cb506563d9282eeb5146",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/000.ts",
+          "bytes": 103776,
+          "sha256": "da55437581cc770e849106cd5d4fa8aeffe45789e89db22178d0dddd39417220",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/001.ts",
+          "bytes": 269028,
+          "sha256": "21a0868f5e6e061290e9b4e338660711240462a722422922fe51dc52be2cb212",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/001.ts",
+          "bytes": 113176,
+          "sha256": "af0bfa9c0464097cfc32f40384729672e3a9c3d4495ae0bd0f685290fb9cf4c5",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/002.ts",
+          "bytes": 264892,
+          "sha256": "5182c44016d6d6f2bc6c0e5ff8778373471ab89727c4e5b0afd3895291fba9a5",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/002.ts",
+          "bytes": 114304,
+          "sha256": "f6419d54a13db72406000238d485f6745a6c2c1d6f2b35a9a4e5d4f695f8bb80",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/003.ts",
+          "bytes": 249476,
+          "sha256": "74a1cdf575734de1a96ac30cd0d26a4a86f05cf09f7962406d3330d92c34ad91",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/003.ts",
+          "bytes": 111484,
+          "sha256": "19043bbcae9960a81f02bf255f36e9646327cc17750c1590fa6fdf30c8d1e478",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/004.ts",
+          "bytes": 231992,
+          "sha256": "3a04af907eccef89eaf78dfaaf80e82cf5c89b89b3f318bf73b6bfa9691da70c",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/004.ts",
+          "bytes": 110356,
+          "sha256": "73c06e8b76fff5b0c9344e57a2b662b764eac51c32b812464a3ceffa07a6bcdc",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/005.ts",
+          "bytes": 284632,
+          "sha256": "38b70e8bdc79aa210f7a8023380aebd7310700277076d13303824c696379df08",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/005.ts",
+          "bytes": 118628,
+          "sha256": "b089282bcf2e06b02d502bc1fe3c46036315f3b72f16a113c078801e189fab0b",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/006.ts",
+          "bytes": 295724,
+          "sha256": "1c27b2a600037ebdb8aad85f81d04cb21060bc37f9a7d9c91dc19c3885e46fa1",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/006.ts",
+          "bytes": 115432,
+          "sha256": "67daad3e356344ac2d8886a54e7d9104068e59e6ec947f0c35e987b224a5f342",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/007.ts",
+          "bytes": 278240,
+          "sha256": "3dc7f0d85acf71552fc5b5855bacb1edb7f9522663b811a14633a66ec30c1142",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/007.ts",
+          "bytes": 112988,
+          "sha256": "50083030f74de3d3376e5c0f50a81e5d1bdfa4bc14d19871bbf4a3887f42670c",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/008.ts",
+          "bytes": 258312,
+          "sha256": "064be605f6095f5c4939baaef28d6c020ba88320fd3f8d20993df5c151667b6b",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/008.ts",
+          "bytes": 108476,
+          "sha256": "3db707a1c4a0eaf2513adebca91f2bc02d2dec9e3afa442aaaf2f936aa3f749b",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/009.ts",
+          "bytes": 219208,
+          "sha256": "365e61728f969bf724e192fad5b613faaea82eb9fd3a270ed5836e02c7820221",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/009.ts",
+          "bytes": 105656,
+          "sha256": "305c30a861f338409394ce9ea3b2730a980cf39f670c0f74d4c98f32b526cdec",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/010.ts",
+          "bytes": 255116,
+          "sha256": "6a328ad54aa7eed7c50d58c3b794a42312c82f3ec7c4fd32672cdfdda4335cff",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/010.ts",
+          "bytes": 113740,
+          "sha256": "36a2b7e8561e6099460717a8a96db92a90ce2ca72a49b69300ef034dfe0d9f93",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/011.ts",
+          "bytes": 298920,
+          "sha256": "54cec1fed4262098c8f3185b382c696ad4719b51fdf2a87756ecf51b431ee382",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/011.ts",
+          "bytes": 117124,
+          "sha256": "fa42c3c544c062addd26f0cd727afc8d7e7fc5de71024ecf56a9778cd09526ec",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/012.ts",
+          "bytes": 283128,
+          "sha256": "d4da9a6dcfbbd6dbedc87798ef625bf7dd75883637cb7b3e8ee60c2cdafa264c",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/012.ts",
+          "bytes": 113740,
+          "sha256": "55b81c00332d56af1010348858adcc1b4bfecddc9dd6d71e8ca6dddcfef26c8e",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/013.ts",
+          "bytes": 266396,
+          "sha256": "258b0ca287e33401e64415d200b69492d6d448cfa6a1587168a2d54d19988e42",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/013.ts",
+          "bytes": 110732,
+          "sha256": "467964948f275c4eef5842d20a37abf0aa7db4f7e8f9cce7c3f26fb6e7e367f1",
+          "mime": "video/mp2t"
+        }
+      }
+    },
+    {
+      "programme": "episode-2",
+      "frames": 144,
+      "videoDurationTicks": 540000,
+      "files": {
+        "540p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/540p/014.ts",
+          "bytes": 224848,
+          "sha256": "802fb1cead568f313e6fb821d64b1a3ba30b5b620b7136d9e55b0dac1d1ca032",
+          "mime": "video/mp2t"
+        },
+        "180p": {
+          "key": "hls/r107-9a71431a4ec59259c53c/episode-2/180p/014.ts",
+          "bytes": 106596,
+          "sha256": "d0065299b4d7efcd9ad503a86ae66f45d562d86c7a2b10473b5616b2867ef488",
+          "mime": "video/mp2t"
+        }
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Where Picture in Picture leaves the viewer, as Watch reports its native events to playback:
@@ -5,14 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Home's preview is silent. The native player is a stand-in, and screens read playback's state
 // as React would, at the moment they ask.
 
-const fakePlayer = {
-  muted: true,
-  timeUpdateEventInterval: 0,
-  addListener: () => undefined,
-  replaceAsync: async () => undefined,
-  play: () => undefined,
-  pause: () => undefined,
-};
+const fakePlayer = nativePlayer();
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 vi.mock("../src/store.ts", async (original) => ({
   ...(await original<typeof import("../src/store.ts")>()),
@@ -42,7 +37,11 @@ const open = async () => ({ url: "file:a:1", container: "mp4" });
 
 /** Plays a movie in Watch, then moves it to Picture in Picture as the native view reports. */
 async function intoPictureInPicture() {
-  await play(item, open, { watch: true, login: [] });
+  await play(
+    item,
+    { kind: "file", originalLanguage: null, open: open },
+    { watch: true, login: [] },
+  );
   pictureInPicture(true);
   expect(usePlayback()).toMatchObject({ watch: false, pip: true });
 }
@@ -72,7 +71,11 @@ describe("leaving Picture in Picture", () => {
     await intoPictureInPicture();
     const returned = restoreFromPictureInPicture();
     expect(playingItem(usePlayback().phase)).toBe(returned);
-    await play({ ...item, live: true }, open, { watch: true, login: [] });
+    await play(
+      { ...item, live: true },
+      { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false },
+      { watch: true, login: [] },
+    );
     expect(playingItem(usePlayback().phase)).not.toBe(returned);
   });
 
