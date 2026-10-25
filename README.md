@@ -17,7 +17,7 @@
 - Movies and series with resume, a [watchlist](docs/user/movies-and-series.md#watchlist) and [offline downloads](docs/user/downloads.md).
 - Every sound and subtitle track your provider sends, and [online subtitle search](docs/user/playback.md#online-subtitles-from-009) with your own API key.
 
-Stable 0.0.19 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](docs/user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](docs/user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](docs/user/movies-and-series.md).
+Stable 0.0.20 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](docs/user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](docs/user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](docs/user/movies-and-series.md).
 
 The pictures come from a test provider with made-up titles and public-domain footage.
 

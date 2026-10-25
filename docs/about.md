@@ -10,7 +10,7 @@ Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. Brin
 
 You can [download movies and episodes](user/downloads.md) to watch offline. Mr. Streamer does not record live TV, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
 
-Stable 0.0.19 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](user/movies-and-series.md).
+Stable 0.0.20 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](user/movies-and-series.md).
 
 It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI movies and episodes. Playback depends on the file's tracks and your system's decoders; [What plays](user/playback.md) describes conversion and the known limits. DASH streams are not supported.
 
