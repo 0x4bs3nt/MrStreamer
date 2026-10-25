@@ -1,6 +1,7 @@
 import { COLLECTION_SORTS, type TitleKind } from "@mrstreamer/contracts/ondemand";
 import type { QualityHint } from "@mrstreamer/contracts/title-filters";
 import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
+import { languageName as trackLanguageName } from "@mrstreamer/core/ondemand/tracks";
 import { useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -17,6 +18,10 @@ const qualities: Record<QualityHint, string> = {
 const languageName = (code: string) =>
   TITLE_LANGUAGES.find((language) => language.code === code)?.name ??
   (code === "multi" ? "Multiple languages" : "Unknown");
+// Observed languages are canonical codes, including those outside the offered hint languages.
+const knownLanguageName = (code: string) =>
+  code === "unknown" ? "Unknown" : (trackLanguageName(code) ?? code);
+const trackName = (kind: "audio" | "subtitles") => (kind === "audio" ? "Audio" : "Subtitles");
 
 /** One native sheet, with scrollable choices that grow with the viewer's text size. */
 export function BrowseControls({
@@ -33,7 +38,10 @@ export function BrowseControls({
   const [open, setOpen] = useState(false);
   const noun = kind === "movie" ? "movies" : "series";
   const count = result ? `${result.titles.length} of ${result.total} ${noun}` : null;
-  const active = Boolean(choices.sort || choices.filters.quality || choices.filters.language);
+  const active = Boolean(
+    choices.sort || choices.filters.quality || choices.filters.language || choices.filters.verified,
+  );
+  const verified = choices.filters.verified;
   return (
     <View>
       <View style={styles.summary}>
@@ -134,12 +142,42 @@ export function BrowseControls({
                   files listed.
                 </Text>
               ) : null}
-              <Text style={styles.section} accessibilityRole="header">
-                Known audio/subtitles
-              </Text>
-              <Text style={styles.text}>
-                Unavailable. Verified track information is not available for this catalogue.
-              </Text>
+              {result && result.files > 0 ? (
+                <>
+                  <Text style={styles.section} accessibilityRole="header">
+                    Known audio/subtitles
+                  </Text>
+                  <Choice
+                    label="Any known track"
+                    selected={!verified}
+                    onPress={() => {
+                      const { verified: _verified, ...filters } = choices.filters;
+                      onChange({ ...choices, filters });
+                    }}
+                  />
+                  {result.verified.map(({ value, count }) => (
+                    <Choice
+                      key={`${value.kind}:${value.language}`}
+                      label={`${trackName(value.kind)}: ${knownLanguageName(value.language)} · ${count}`}
+                      selected={
+                        verified?.kind === value.kind && verified.language === value.language
+                      }
+                      onPress={() =>
+                        onChange({ ...choices, filters: { ...choices.filters, verified: value } })
+                      }
+                    />
+                  ))}
+                </>
+              ) : null}
+              {verified &&
+              !result?.verified.some(
+                ({ value }) => value.kind === verified.kind && value.language === verified.language,
+              ) ? (
+                <Text style={styles.text}>
+                  Selected {trackName(verified.kind).toLowerCase()}:{" "}
+                  {knownLanguageName(verified.language)}. No matching files listed.
+                </Text>
+              ) : null}
               <Choice label="Reset" onPress={() => onChange(DEFAULT_BROWSE)} />
               <Choice
                 label={result ? `Show ${result.titles.length} ${noun}` : "Done"}
