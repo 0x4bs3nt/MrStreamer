@@ -362,7 +362,8 @@ Each responsibility has one owner, a plain module with a store the screens read:
   reconcile. The first time the app is open in a process, every receipt is taken in, unfinished
   removals finish and logins are bound before anything new starts, a launch the viewer sees
   holding the native queue from its first moment; a receipt that can't be written down keeps its
-  file and holds its download back until it is; a native queue whose authority is damaged
+  file and holds its download back, from the queue and from its subscription's removal, until it
+  is; a native queue whose authority is damaged
   is started over once then, keeping copies, records and logins, and a locked or full one never is.
   A stream of the same subscription takes the connection first with a lease of this process
   (`onAdmission` in `playback.ts`): the transfer pauses, then is cancelled, and the stream waits for

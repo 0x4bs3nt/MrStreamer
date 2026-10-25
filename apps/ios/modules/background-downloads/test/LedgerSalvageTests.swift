@@ -64,14 +64,40 @@ final class LedgerSalvageTests: XCTestCase {
     XCTAssertTrue(found.unreadable)
   }
 
-  func testMalformedLegacyAttemptsKeepBuild14Receipts() throws {
+  func testOneMalformedLegacyAttemptAloneIsUnreadable() throws {
     let found = try salvage(
       queue(
-        sources: "{}", authorizations: #"{"z-1":{"id":5}}"#, receipts: "[\(complete)]",
+        sources: "{}", authorizations: "{}", receipts: "[\(complete)]",
         legacy: #"{"attempts":{"a-14":"not an attempt"},"receipts":[\#(legacyComplete)]}"#))
     XCTAssertEqual(found.receipts.map(\.receipt), ["r-kept"])
     XCTAssertEqual(found.legacy.map(\.receipt), ["r-build14"])
     XCTAssertTrue(found.unreadable)
+  }
+
+  func testWrongTypedLegacyReceiptsAloneIsUnreadable() throws {
+    let found = try salvage(
+      queue(
+        sources: "{}", authorizations: "{}", receipts: "[\(complete)]",
+        legacy: #"{"attempts":{},"receipts":7}"#))
+    XCTAssertEqual(found.receipts.map(\.receipt), ["r-kept"])
+    XCTAssertEqual(found.legacy.count, 0)
+    XCTAssertTrue(found.unreadable)
+  }
+
+  func testAnAbsentLegacyFieldIsUnreadable() throws {
+    let found = try salvage(
+      #"{"version":2,"install":"q-1","sequence":3,"nextOrder":1,"sources":{},"#
+        + #""authorizations":{},"receipts":[\#(complete)]}"#)
+    XCTAssertEqual(found.receipts.map(\.receipt), ["r-kept"])
+    XCTAssertTrue(found.unreadable)
+  }
+
+  func testEnvelopeOnlyDamageLosesNoFact() throws {
+    let found = try salvage(
+      #"{"version":2,"install":"q-1","sequence":"three","nextOrder":1,"sources":{},"#
+        + #""authorizations":{},"receipts":[\#(complete)],"legacy":{"attempts":{},"receipts":[]}}"#)
+    XCTAssertEqual(found.receipts.map(\.receipt), ["r-kept"])
+    XCTAssertFalse(found.unreadable)
   }
 
   func testOneBadReceiptHidesNoOther() throws {

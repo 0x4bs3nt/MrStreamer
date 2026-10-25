@@ -132,7 +132,8 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
 
   private var recovered = false
   private var recovering = false
-  private var recoveryWork: Work?
+  /// The units of every trigger waiting on the recovery in flight; the first one started it.
+  private var recoveryUnits: [Work] = []
   private var legacyEmptied = false
 
   private enum Barrier {
@@ -156,8 +157,10 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
   private var resetFailed = false
   /// Sources whose revoked service couldn't be deleted yet: tried again at the next reconcile.
   private var cleanupPending: Set<String> = []
-  /// Authorizations removed in this process: never admitted or published again.
+  /// Authorizations being or been removed in this process: never admitted again.
   private var removed: Set<String> = []
+  /// Of those, the ones fenced by deleting their exact items for want of a ledger write.
+  private var fencedRemovals: Set<String> = []
   /// Sources whose whole service was deleted for want of a ledger write, in this process.
   private var fallbackFenced: Set<String> = []
   /// Sources whose anchor didn't match their enabled ledger generation when last read.
@@ -181,13 +184,33 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
   private var listener: ((String, [String: Any]) -> Void)?
 
   // Delivered-event work and the system's wake handler.
-  private struct Work { let generation: Int }
-  private var generation = 0
+
+  /**
+   One delivered-event batch. Its expiry is set on the control queue and read under its lock from
+   the I/O lane too, where a publishing write or move is admitted only while it hasn't expired.
+   */
+  private final class Batch {
+    private let lock = NSLock()
+    private var gone = false
+    var expired: Bool {
+      lock.lock()
+      defer { lock.unlock() }
+      return gone
+    }
+    func expire() {
+      lock.lock()
+      gone = true
+      lock.unlock()
+    }
+  }
+
+  /** A counted unit of a batch's work: the handler waits for it until it ends. */
+  private struct Work { let batch: Batch }
+  private var batch = Batch()
   private var work = 0
-  private var expired: Set<Int> = []
   private var handlers: [() -> Void] = []
   private var eventsFinished = false
-  private var deadlineArmed: Int?
+  private var deadlineArmed: Batch?
 
   /** A request's local close, in wall-clock time for the OS and uptime for in-process waits. */
   private struct Close {
@@ -269,6 +292,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     var checkedRoom = false
     /// Its authority was read fresh since this process took it over: admission's always is.
     var validated = false
+    var revalidating = false
 
     init(
       _ authorization: String, _ grant: Grant, token: String, task: URLSessionDownloadTask?,
@@ -287,10 +311,13 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     }
   }
 
-  private enum Committed { case saved, refused, failed }
+  /** How a ledger transition ended; `expired`: its batch's deadline passed before it was admitted. */
+  private enum Committed { case saved, refused, failed, expired }
 
   private struct Change {
     let apply: (inout LedgerV2) -> Bool
+    /// The work it publishes for: admitted only while that batch is live.
+    let unit: Work?
     let done: (Committed) -> Void
   }
 
@@ -323,13 +350,13 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    */
   func connect(foreground: Bool) {
     queue.async {
-      self.recoveryWork = self.beginWork()
+      let unit = self.beginWork()
       // A launch the viewer can see puts the barrier up before recovery can admit anything; a
       // background session's relaunch goes on without JavaScript.
       if foreground { self.ensureInstalled() }
       self.load()
       _ = self.session
-      self.recover()
+      self.recover(unit)
     }
   }
 
@@ -345,9 +372,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       self.handlers.append(completion)
       self.armDeadline()
       // A new wake is a legitimate trigger: recovery an earlier one refused, or deferred
-      // publication, is tried again under this batch.
-      self.recover()
-      self.pump()
+      // publication, is tried again under this batch, its work counted from the start.
+      self.recover(self.beginWork())
+      self.trigger()
       self.finishIfSettled()
     }
   }
@@ -373,26 +400,30 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     queue.async { self.listener = listener }
   }
 
+  /**
+   A root unit, for a legitimate trigger only: a launch, a wake, a JavaScript command or a new
+   delegate event. Continuations carry the unit they were given, or `fork` it.
+   */
   private func beginWork() -> Work {
     work += 1
-    return Work(generation: generation)
+    return Work(batch: batch)
   }
 
   private func endWork(_ unit: Work) {
-    guard unit.generation == generation, work > 0 else { return }
+    guard unit.batch === batch, work > 0 else { return }
     work -= 1
     finishIfSettled()
   }
 
   /** Whether work begun in this batch may still resume or publish: its deadline hasn't passed. */
-  private func live(_ unit: Work) -> Bool { !expired.contains(unit.generation) }
+  private func live(_ unit: Work) -> Bool { !unit.batch.expired }
 
   /**
    A further unit of `unit`'s own batch, begun before `unit` ends so the handler waits for it; nil
    once that batch expired, so expired work never comes back under a fresh one.
    */
   private func fork(_ unit: Work) -> Work? {
-    guard live(unit), unit.generation == generation else { return nil }
+    guard live(unit), unit.batch === batch else { return nil }
     return beginWork()
   }
 
@@ -405,20 +436,20 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     let calls = handlers
     handlers = []
     eventsFinished = false
-    generation += 1
+    batch = Batch()
     work = 0
     DispatchQueue.main.async { calls.forEach { $0() } }
   }
 
   private func armDeadline() {
-    let held = generation
-    guard deadlineArmed != held else { return }
+    let held = batch
+    guard deadlineArmed !== held else { return }
     deadlineArmed = held
     queue.asyncAfter(deadline: .now() + Self.commandSeconds) {
-      guard self.generation == held, !self.handlers.isEmpty else { return }
+      guard self.batch === held, !self.handlers.isEmpty else { return }
       // Refused, not closed: late work of this batch can't resume or publish, and every gate stays.
-      self.expired.insert(held)
-      if case .admitting(let admission) = self.slot, admission.unit.generation == held {
+      held.expire()
+      if case .admitting(let admission) = self.slot, admission.unit.batch === held {
         admission.retry = false
         self.abort(admission)
       }
@@ -517,9 +548,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
                   self.cleanupPending.remove(source)
                   made.forEach { self.emit("receipt", $0.dictionary) }
                   reply(.success(["generation": generation]))
-                  self.pump()
+                  self.trigger()
                 case .refused: reply(.failure(.obsolete))
-                case .failed: reply(.failure(.unavailable))
+                case .failed, .expired: reply(.failure(.unavailable))
                 }
               }
             }
@@ -557,7 +588,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
           let seen = self.observe(source, anchor)
           guard epoch == seen.epoch, expected == seen.expected else {
             self.untick(source, ticket)
-            self.pump()
+            self.trigger()
             return reply(.failure(.obsolete))
           }
           if seen.state == "revoked" {
@@ -592,20 +623,20 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
                     self.cleanupPending.insert(source)
                   }
                   self.untick(source, ticket)
-                  self.pump()
+                  self.trigger()
                 }
               }
             case .refused:
               self.untick(source, ticket)
               reply(.failure(.obsolete))
-              self.pump()
-            case .failed:
+              self.trigger()
+            case .failed, .expired:
               self.io.async {
                 let deleted = self.vault.removeSource(source)
                 self.queue.async {
                   self.untick(source, ticket)
                   guard deleted else {
-                    self.pump()
+                    self.trigger()
                     return reply(.failure(.keychain))
                   }
                   self.fallbackFenced.insert(source)
@@ -813,7 +844,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         switch result {
         case .saved: done(.success(["authorization": authorization]))
         case .refused: done(.failure(full ? .capacity : .obsolete))
-        case .failed: done(.failure(.unavailable))
+        case .failed, .expired: done(.failure(.unavailable))
         }
       }
     }
@@ -875,8 +906,8 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
             switch result {
             case .saved:
               done(.success(()))
-              self.pump()
-            case .refused, .failed:
+              self.trigger()
+            case .refused, .failed, .expired:
               // Never armed: the request item just written goes with it, on the same lane. One
               // armed meanwhile by the same authorization's other call keeps it.
               let armed = self.ledger?.authorizations[authorization].map {
@@ -936,7 +967,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
           return true
         }) { result in
           switch result {
-          case .failed: reply(.failure(.unavailable))
+          case .failed, .expired: reply(.failure(.unavailable))
           // Armed meanwhile: not a reservation any more.
           case .refused: reply(.failure(.invalid))
           case .saved:
@@ -975,13 +1006,14 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
           }
         case .refused:
           reply(.success(self.fenceReply("already-terminal", authorization: authorization)))
-        case .failed:
+        case .failed, .expired:
           self.io.async {
             let deleted =
               self.vault.removeRequest(grant.sourceId, authorization)
               && self.vault.removeResume(grant.sourceId, grant.id, ownedBy: authorization)
             self.queue.async {
               guard deleted else { return reply(.failure(.keychain)) }
+              self.fencedRemovals.insert(authorization)
               self.cancelTask(of: authorization)
               reply(.success(["durable": "secrets", "receipts": [Any](), "legacy": [Any]()]))
             }
@@ -1074,7 +1106,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         held.waiting.forEach { $0(.failure(.obsolete)) }
         if held.state == .granted { self.closes[held.source] = Close() }
       }
-      self.pump()
+      self.trigger()
       done()
     }
   }
@@ -1182,7 +1214,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     queue.async {
       if context == "first-foreground" { self.ensureInstalled() }
       self.load()
-      if !self.recovered { self.recover() }
+      if !self.recovered { self.recover(self.beginWork()) }
       self.retryBlocked()
       self.retryCleanup()
       let reply: Once<[String: Any]> = Once(done)
@@ -1212,7 +1244,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       case .installed(let installed) where installed == token:
         self.barrier = .finished(token)
         done(.success(()))
-        self.pump()
+        self.trigger()
       case .finished(let finished) where finished == token: done(.success(()))
       default: done(.failure(.obsolete))
       }
@@ -1238,7 +1270,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
           != (ledger.receipts.count, ledger.legacy.receipts.count, ledger.authorizations.count)
       }) { result in
         if result == .failed { done(.failure(.unavailable)) } else { done(.success(())) }
-        self.pump()
+        self.trigger()
       }
     }
   }
@@ -1356,6 +1388,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         self.ledger = fresh
         self.resetFailed = false
         self.removed = []
+        self.fencedRemovals = []
         self.fallbackFenced = []
         self.stale = []
         self.cleanupPending = []
@@ -1371,7 +1404,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
               "legacyCleanup": "complete", "cleanupScope": "known-sources-only",
             ]))
         }
-        self.pump()
+        self.trigger()
       }
     }
   }
@@ -1528,15 +1561,26 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    writes the result whole. `apply` answers false when the transition no longer stands.
    */
   private func commit(
-    _ apply: @escaping (inout LedgerV2) -> Bool, _ done: @escaping (Committed) -> Void = { _ in }
+    _ apply: @escaping (inout LedgerV2) -> Bool, within unit: Work? = nil,
+    _ done: @escaping (Committed) -> Void = { _ in }
   ) {
-    lane.append(Change(apply: apply, done: done))
+    lane.append(Change(apply: apply, unit: unit, done: done))
     drainLane()
   }
 
+  /**
+   Writes transitions one at a time. One that publishes for a batch is admitted only while that
+   batch is live: checked when the lane selects it, and again on the I/O lane just before its
+   write, so a transition queued behind a slow write can't commit after its deadline. One not
+   admitted answers `expired`, the ledger unchanged.
+   */
   private func drainLane() {
     while !writing, !lane.isEmpty {
       let change = lane.removeFirst()
+      if let unit = change.unit, !live(unit) {
+        change.done(.expired)
+        continue
+      }
       guard case .ready = storage, var candidate = ledger else {
         change.done(.failed)
         continue
@@ -1551,12 +1595,14 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       }
       writing = true
       let file = self.file
+      let batch = change.unit?.batch
       io.async {
-        let saved = file.write(candidate)
+        let admitted = batch.map { !$0.expired } ?? true
+        let saved = admitted && file.write(candidate)
         self.queue.async {
           self.writing = false
           if saved { self.ledger = candidate }
-          change.done(saved ? .saved : .failed)
+          change.done(saved ? .saved : admitted ? .failed : .expired)
           self.drainLane()
         }
       }
@@ -1582,21 +1628,33 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
 
   // MARK: Recovery
 
-  private func recover() {
-    guard !recovered, !recovering else { return }
+  /**
+   Accounts for the session's tasks once per process, for the trigger whose counted `unit` asks:
+   a launch, a wake or a reconcile. That unit is held through enumeration, reconstruction and the
+   handoff or refusal that ends it; a trigger arriving while a recovery is in flight joins it with
+   its own unit, never starting a second one. Unreadable storage refuses at once: every waiting
+   unit ends, and a later trigger tries again.
+   */
+  private func recover(_ unit: Work) {
+    guard !recovered else { return endWork(unit) }
+    recoveryUnits.append(unit)
+    guard !recovering else { return }
     guard case .ready = storage else {
       if case .corrupt = storage { return reconstructUntrusted() }
       // Unreadable now, as before the first unlock: tasks are left to end; tried again later.
-      if let unit = recoveryWork {
-        recoveryWork = nil
-        endWork(unit)
-      }
-      return
+      return endRecovery()
     }
     recovering = true
     session.getAllTasks { tasks in
       self.queue.async { self.reconstruct(tasks) }
     }
+  }
+
+  /** Ends every unit waiting on the recovery; `units` are those already taken from it. */
+  private func endRecovery(_ units: [Work]? = nil) {
+    let units = units ?? recoveryUnits
+    recoveryUnits = []
+    for unit in units { endWork(unit) }
   }
 
   /** With damaged authority, every task is a stray: cancelled, and admission waits for its end. */
@@ -1611,10 +1669,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         }
         self.recovered = true
         self.settleWaiters()
-        if let unit = self.recoveryWork {
-          self.recoveryWork = nil
-          self.endWork(unit)
-        }
+        self.endRecovery()
       }
     }
   }
@@ -1627,8 +1682,11 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    authorization. Build 14's attempts are dropped. Then the pump runs.
    */
   private func reconstruct(_ tasks: [URLSessionTask]) {
-    recovering = false
-    guard case .ready = storage, let ledger else { return recover() }
+    // Still recovering until its commit settles: a trigger meanwhile joins, never re-enumerates.
+    guard case .ready = storage, let ledger else {
+      recovering = false
+      return endRecovery()
+    }
     let live = tasks.filter { $0.state != .completed && !ended.contains($0.taskIdentifier) }
     var clear: [String] = []
     let attempt = ledger.authorizations.first { $0.value.attempt != nil && $0.value.state == .active }
@@ -1689,34 +1747,32 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       }
       return changed
     }) { result in
-      let unit = self.recoveryWork
-      self.recoveryWork = nil
+      self.recovering = false
+      let units = self.recoveryUnits
+      self.recoveryUnits = []
       guard result != .failed else {
         // Tried again at the next reconcile or wake; nothing is admitted meanwhile.
-        if let unit { self.endWork(unit) }
-        return
+        return self.endRecovery(units)
       }
       self.recovered = true
-      // Units of the same delivered batch, begun before the recovery's own ends, so the handler
-      // waits for them; once that batch expired, ownership is repaired, nothing more.
-      let child = { () -> Work? in
-        guard let unit else { return self.beginWork() }
-        return self.fork(unit)
-      }
+      // Continuations of a waiting trigger's own batch, forked before its unit ends so the
+      // handler waits for them. With every waiting batch expired, ownership is repaired and
+      // nothing more: no unit is minted here, nothing publishes and nothing is admitted.
+      let lead = units.first { self.live($0) && $0.batch === self.batch }
       if case .bound(let taken) = self.slot, !taken.validated, taken.task != nil {
-        self.revalidate(taken, child())
+        self.revalidate(taken, lead.flatMap { self.fork($0) })
       }
       if let finishing {
-        if let work = child() {
+        if let work = lead.flatMap({ self.fork($0) }) {
           self.settle(finishing, work)
         } else {
           finishing.publication = .later
         }
       }
-      self.pump(after: unit)
+      if let lead { self.pump(after: lead) }
       self.settleWaiters()
       self.emptyLegacy()
-      if let unit { self.endWork(unit) }
+      self.endRecovery(units)
     }
   }
 
@@ -1733,14 +1789,18 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       return
     }
     let id = binding.authorization
+    binding.revalidating = true
     io.async {
       let found = self.authority(grant, id, resume: false)
       self.queue.async {
         defer { if let unit { self.endWork(unit) } }
+        binding.revalidating = false
         guard self.owns(binding), !binding.networkClosed else { return }
         switch self.judge(id, found) {
         case .valid: binding.validated = true
-        case .unavailable: break
+        // Not decided: it stays gated, and is read again on a later legitimate trigger. A revoke
+        // or removal that does become durable cancels it itself.
+        case .unavailable, .pending: break
         case .sourceFenced, .requestMissing, .gone: binding.task?.cancel()
         }
       }
@@ -1770,23 +1830,24 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    Tries again what a failed write, an expired batch or an unreadable Keychain left deferred, on a
    legitimate trigger of its own: a reconcile, a wake, a JavaScript command or a new event.
    */
-  private func retryBlocked() {
+  private func retryBlocked(from parent: Work? = nil) {
     switch slot {
     case .admitting(let admission) where admission.cleanup: clearAdmission(admission)
     case .bound(let binding)
     where (binding.blocked || binding.publication == .later) && !binding.publishing
       && !binding.settling:
+      guard let unit = spawn(parent) else { return }
       binding.blocked = false
-      guard binding.publication == .later else { return settle(binding, beginWork()) }
+      guard binding.publication == .later else { return settle(binding, unit) }
       binding.publication = .open
       if case .some(.complete) = binding.file {
         // Moved into place, never committed: authority is read again before the commit.
-        settle(binding, beginWork())
+        settle(binding, unit)
       } else if let staged = binding.staged {
         binding.publishing = true
-        publish(binding, stage: staged.url, finishing: staged.finishing, unit: beginWork())
+        publish(binding, stage: staged.url, finishing: staged.finishing, unit: unit)
       } else {
-        settle(binding, beginWork())
+        settle(binding, unit)
       }
     default: break
     }
@@ -1822,15 +1883,37 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    is claimed before any read: every trigger enters here and finds it taken.
    */
   /**
-   `after`: the unit of the work that settled and asks for the next, whose batch must still be
-   live; expired work never admits under a fresh batch. Nil for a legitimate trigger of its own:
-   a JavaScript command, a new delegate event or wake.
+   A legitimate trigger of its own: a JavaScript command, a new delegate event or a wake. It may
+   begin root work. A task taken over at launch whose authority wasn't decided is read again.
    */
-  private func pump(after unit: Work? = nil) {
-    if let unit, !live(unit) { return }
+  private func trigger() {
+    if case .bound(let binding) = slot, !binding.validated, !binding.revalidating,
+      binding.task != nil, !binding.networkClosed
+    {
+      revalidate(binding, beginWork())
+    }
+    next(from: nil)
+  }
+
+  /**
+   The next handoff after the work `unit` settled: only while its batch is live, under that batch,
+   so expired work never admits or publishes under a fresh one.
+   */
+  private func pump(after unit: Work) {
+    guard live(unit) else { return }
+    next(from: unit)
+  }
+
+  /** A unit for a new chain: root for a trigger, else of `parent`'s own live batch, or none. */
+  private func spawn(_ parent: Work?) -> Work? {
+    guard let parent else { return beginWork() }
+    return fork(parent)
+  }
+
+  private func next(from parent: Work?) {
     if case .admitting(let admission) = slot, admission.cleanup { return clearAdmission(admission) }
     if case .bound(let binding) = slot, binding.blocked || binding.publication == .later {
-      return retryBlocked()
+      return retryBlocked(from: parent)
     }
     guard case .idle = slot, recovered, unknown.isEmpty, !resetting, !resetFailed,
       case .ready = storage, let ledger
@@ -1851,8 +1934,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     else { return }
     let id = next.key
     let grant = next.value
+    guard let unit = spawn(parent) else { return }
     tickets += 1
-    let admission = Admission(ticket: tickets, authorization: id, grant: grant, unit: beginWork())
+    let admission = Admission(ticket: tickets, authorization: id, grant: grant, unit: unit)
     slot = .admitting(admission)
     io.async {
       let found = self.authority(grant, id, resume: true)
@@ -1893,9 +1977,16 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     return found
   }
 
+  /**
+   What a fresh read of authority says. Positive loss: `sourceFenced`, `requestMissing`, `gone`
+   (a terminal or missing grant). Not decided: `unavailable` (the Keychain or ledger didn't answer)
+   and `pending` (a removal, source mutation or reset still in flight, whose fence isn't durable
+   yet); neither is ever taken for loss.
+   */
   private enum Verdict {
     case valid(Vault.Request)
     case unavailable
+    case pending
     case sourceFenced
     case requestMissing
     case gone
@@ -1907,13 +1998,20 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
    and no memory gate. Cached request payloads are never authority.
    */
   private func judge(_ authorization: String, _ found: Authority) -> Verdict {
-    guard case .ready = storage, let ledger, let grant = ledger.authorizations[authorization],
-      grant.state != .terminal, !removed.contains(authorization), !resetting
-    else { return .gone }
-    guard sourceTickets[grant.sourceId] == nil, !fallbackFenced.contains(grant.sourceId),
+    guard case .ready = storage, let ledger else { return .unavailable }
+    guard let grant = ledger.authorizations[authorization], grant.state != .terminal else {
+      return .gone
+    }
+    // Fences confirmed in this process: a removal by its exact items, a source by its service.
+    if fencedRemovals.contains(authorization) { return .requestMissing }
+    if fallbackFenced.contains(grant.sourceId) { return .sourceFenced }
+    if removed.contains(authorization) || resetting || sourceTickets[grant.sourceId] != nil {
+      return .pending
+    }
+    guard
       ledger.sources[grant.sourceId]
         == SourceAuthority(generation: grant.sourceGeneration, state: .enabled)
-    else { return .gone }
+    else { return .sourceFenced }
     switch found.anchor {
     case .unavailable: return .unavailable
     case .missing: return .sourceFenced
@@ -1939,7 +2037,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       // Effectively revoked: its source waits for a fresh enable, which ends these authorizations.
       stale.insert(admission.source)
     case .requestMissing: admission.fence = .refresh(.secretMissing)
-    case .gone, .valid: break
+    case .pending, .gone, .valid: break
     }
     abort(admission)
   }
@@ -1953,7 +2051,6 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     else { return refuse(admission, verdict) }
     // Resume data the Keychain wouldn't read may exist: no fresh request is made in its place.
     var resumeData: Data?
-    var fromLegacy = false
     switch found.resume {
     case .some(.unavailable): return refuse(admission, .unavailable)
     case .some(.found(let kept))
@@ -1967,7 +2064,6 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       case .some(.unavailable): return refuse(admission, .unavailable)
       case .some(.found(let kept)) where kept.url == request.url:
         resumeData = kept.data
-        fromLegacy = true
       case .some(.found), .some(.missing), .none: break
       }
     }
@@ -2008,7 +2104,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         return self.abort(admission)
       }
       // Fresh again after the write: the resume data taken is made this authorization's own,
-      // and build 14's copy of it goes, or the task never starts on bytes it doesn't own.
+      // and the download's build-14 item goes, whichever item the bytes came from: a v2 copy
+      // can't prove an earlier migration's deletion succeeded. Either refused, the task never
+      // starts on bytes it doesn't own.
       self.io.async {
         let again = self.authority(grant, id, resume: false)
         var owned = true
@@ -2019,7 +2117,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
               .init(
                 authorization: id, sourceGeneration: grant.sourceGeneration, url: request.url,
                 headers: request.headers, data: resumeData))
-            && (!fromLegacy || self.vault.removeLegacy(grant.id))
+            && self.vault.removeLegacy(grant.id)
         }
         self.queue.async {
           guard owned else {
@@ -2243,8 +2341,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
           marked.attempt?.finishing = finishing
           ledger.authorizations[id] = marked
           return true
-        }) { result in
+        }, within: unit) { result in
           guard result == .saved, self.owns(binding), self.live(unit) else {
+            // Expired or failed: the stage stays, unmarked or marked, for a later trigger.
             if result != .refused { binding.publication = .later }
             return self.published(binding, unit, nil)
           }
@@ -2255,16 +2354,18 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
   }
 
   /**
-   What a verdict leaves publication to: nil when authority stands. Positively gone authority ends
-   it refused; a Keychain that didn't answer, or a gate still changing, defers it with every byte.
+   What a verdict leaves publication to: nil when authority stands. Positively lost authority ends
+   it refused, freeing the slot; a Keychain that didn't answer, or a source mutation or reset
+   still in flight, defers it with every byte. A terminal or missing grant is refused too, and
+   settling finds that a removal, revoke or reset won and clears it without a receipt.
    */
   private func deferral(_ verdict: Verdict) -> Publication? {
     switch verdict {
     case .valid: return nil
     case .sourceFenced: return .refused(.source)
     case .requestMissing: return .refused(.secretMissing)
-    // Settling sees a removal or revoke that won; anything else is decided later.
-    case .unavailable, .gone: return .later
+    case .gone: return .refused(.secretMissing)
+    case .unavailable, .pending: return .later
     }
   }
 
@@ -2285,6 +2386,14 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         }
         let media = Names.media(binding.download, binding.ext)
         self.io.async {
+          // The move is admitted here, on the lane that makes it, only while its batch is live; a
+          // move already admitted is never cancelled. Not admitted, the stage and marker stay.
+          guard !unit.batch.expired else {
+            return self.queue.async {
+              binding.publication = .later
+              self.published(binding, unit, nil)
+            }
+          }
           var outcome = OutcomeV2.folder
           if let media, !FileManager.default.fileExists(atPath: media.path) {
             do {
@@ -2328,7 +2437,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       unknown.remove(identifier)
       if unknown.isEmpty {
         emptyLegacy()
-        pump()
+        trigger()
       }
       return
     }
@@ -2443,7 +2552,7 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         expected: binding.expected)
       ledger.authorizations[id] = grant
       return true
-    }) { result in
+    }, within: complete ? unit : nil) { result in
       switch result {
       case .saved:
         if let made { self.emit("receipt", made.dictionary) }
@@ -2466,6 +2575,12 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
         }
         self.finish(binding, unit)
       case .refused: self.finish(binding, unit)
+      case .expired:
+        // Its batch expired before the commit was admitted: the marked attempt, its stage or
+        // media stay exactly as they are, for a later legitimate trigger.
+        binding.publication = .later
+        binding.settling = false
+        self.endWork(unit)
       case .failed:
         // The slot stays closing; the next legitimate trigger tries the write again.
         binding.blocked = true
@@ -2510,7 +2625,9 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
     let source = binding.source
     let download = binding.download
     io.async {
-      let deleted = self.vault.removeOwnedResume(source, download, owner: id)
+      // The refused bytes, and any build-14 copy of them, go before the fresh start can begin.
+      let deleted =
+        self.vault.removeOwnedResume(source, download, owner: id) && self.vault.removeLegacy(download)
       self.queue.async {
         guard self.owns(binding) else { return self.endWork(unit) }
         guard deleted else {

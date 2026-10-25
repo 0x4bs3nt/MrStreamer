@@ -341,6 +341,16 @@ function withoutFailure(record: Stored): Stored {
   return rest;
 }
 
+function withoutRemoval(record: Stored): Stored {
+  const { removal: _removal, ...rest } = record;
+  return rest;
+}
+
+/** Whether download `id` is owed a receipt other than `fact` that couldn't be written down yet. */
+function owesBesides(id: string, fact?: ReceiptV2): boolean {
+  return [...(owed.get(id) ?? [])].some((receipt) => receipt !== fact?.receipt);
+}
+
 /**
  * Removes a download's resume data, the native side's and an earlier build's, keeping its id
  * listed for the next launch until both are gone.
@@ -739,26 +749,38 @@ async function takeLegacy(receipt: LegacyReceipt) {
   taking.add(receipt.receipt);
   try {
     const record = find(receipt.id);
-    if (record?.state === "queued" && record.attempt === receipt.attempt && standing(record)) {
-      const { outcome } = receipt;
-      // A refused write keeps the copy's file and its receipt for the next try.
-      await written(
-        record.id,
-        receipt.receipt,
-        apply(
-          record,
-          outcome.kind === "complete"
-            ? { kind: "complete", size: outcome.size, expected: outcome.expected }
-            : outcome.kind === "refused"
-              ? { kind: "refused", status: outcome.status }
-              : outcome.kind === "folder"
-                ? { kind: "folder" }
-                : { kind: "cancelled" },
-          false,
-          null,
-        ),
-      );
-    }
+    const { outcome } = receipt;
+    const removal = record ? removalOf(record) : undefined;
+    // A completion wins an automatic removal still waiting for it; an explicit one wins it.
+    const automatic =
+      typeof removal === "object" &&
+      removal.reason === "source-removed" &&
+      outcome.kind === "complete";
+    const applies =
+      record?.state === "queued" &&
+      record.attempt === receipt.attempt &&
+      transferOf(record) !== "bad" &&
+      (removal === undefined || automatic);
+    // A refused write keeps the copy's file and its receipt for the next try; a receipt that
+    // doesn't apply is owed nothing more.
+    await written(
+      receipt.id,
+      receipt.receipt,
+      applies && record
+        ? apply(
+            automatic ? withoutRemoval(record) : record,
+            outcome.kind === "complete"
+              ? { kind: "complete", size: outcome.size, expected: outcome.expected }
+              : outcome.kind === "refused"
+                ? { kind: "refused", status: outcome.status }
+                : outcome.kind === "folder"
+                  ? { kind: "folder" }
+                  : { kind: "cancelled" },
+            false,
+            null,
+          )
+        : Promise.resolve(),
+    );
     await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
   } finally {
     taking.delete(receipt.receipt);
@@ -852,14 +874,21 @@ async function removeNow(id: string, asked: Reason, fact?: ReceiptV2): Promise<R
       complete = completeCopy(kept, done.outcome);
     }
   }
+  // Decided on the record as it stands now, after the fence's answer.
   const latest = find(id);
   if (!latest) return { kind: "gone" };
-  if (reason === "source-removed" && complete) {
-    if (latest.removal !== undefined) {
-      update(id, ({ removal: _removal, ...rest }) => rest);
-    }
+  if (reason === "source-removed" && (complete || latest.state === "complete")) {
+    if (latest.removal !== undefined) update(id, withoutRemoval);
     tell();
     return { kind: "kept" };
+  }
+  if (reason === "source-removed" && owesBesides(id, fact)) {
+    // A receipt kept for it that couldn't be written down yet may be its completion, which wins
+    // an automatic removal: the removal waits, its intent kept, until that receipt is written.
+    throw new AppFailure({
+      kind: "unexpected",
+      detail: "This download's last result isn't written down yet.",
+    });
   }
   drop(id);
   if (reason === "source-removed" && latest.state !== "complete") ended++;

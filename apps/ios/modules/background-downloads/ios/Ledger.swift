@@ -324,6 +324,7 @@ private struct Pieces: Decodable {
 }
 
 private struct LegacyPieces: Decodable {
+  let attempts: Failable<[String: Failable<Attempt>]>?
   let receipts: Failable<[Failable<Receipt>]>?
 }
 
@@ -377,7 +378,10 @@ struct LedgerFile {
   /**
    Every fact of a damaged queue that reads on its own: receipts, v2 and build 14's, each entry by
    itself, and the source ids it names, for the scope of a reset. Nothing of it is authority.
-   `unreadable` says whether any field or entry, receipts or not, couldn't be read.
+   `unreadable` says whether any fact field is missing or couldn't be read, nested ones included
+   (`sources`, `authorizations`, `receipts`, `legacy` and its `attempts` and `receipts`), or any
+   entry of one; this build always writes every one of them. Damage to the envelope alone, such
+   as its sequence, loses no fact.
    */
   private func salvage(_ data: Data) -> Salvage {
     var found = Salvage(raw: data)
@@ -393,14 +397,18 @@ struct LedgerFile {
     where Names.isSource(grant.sourceId) && !found.sources.contains(grant.sourceId) {
       found.sources.append(grant.sourceId)
     }
-    let fields: [Bool?] = [
-      pieces.sources.map { $0.value != nil }, pieces.authorizations.map { $0.value != nil },
-      pieces.receipts.map { $0.value != nil }, pieces.legacy.map { $0.value != nil },
+    let legacyPieces = pieces.legacy?.value
+    let legacyAttempts = legacyPieces?.attempts?.value
+    let fieldsRead = [
+      pieces.sources?.value != nil, pieces.authorizations?.value != nil,
+      pieces.receipts?.value != nil, legacyPieces != nil, legacyAttempts != nil,
+      legacyPieces?.receipts?.value != nil,
     ]
     found.unreadable =
-      fields.contains(false) || pieces.receipts == nil
+      fieldsRead.contains(false)
       || found.receipts.count != receipts.count || found.legacy.count != legacy.count
       || sources.values.contains { $0.value == nil } || grants.values.contains { $0.value == nil }
+      || (legacyAttempts ?? [:]).values.contains { $0.value == nil }
     return found
   }
 

@@ -2164,3 +2164,120 @@ describe("the native queue's corrections", { timeout: 40_000 }, () => {
     expect(attempts()).toBe(1);
   });
 });
+
+/**
+ * Leaves `film` as build 14 did: queued under its own attempt, its whole file in place and its
+ * complete receipt not yet taken in, optionally already being removed with its subscription.
+ */
+function asBuild14Completion(film: Download, intent?: "source-removed") {
+  background.die();
+  background.down = true;
+  const size = mediaFile(film.id)!.size;
+  const stored = doc();
+  const row = stored.items.find((each: { id: string }) => each.id === film.id);
+  delete row.transfer;
+  Object.assign(row, { state: "queued", attempt: "a-build14", completedAt: null });
+  if (intent) row.removal = { version: 1, reason: intent };
+  new DiskFile(native.root, "documents", "downloads.json").writeSync(JSON.stringify(stored));
+  background.legacyReceipts.push({
+    receipt: "r-build14",
+    attempt: "a-build14",
+    id: film.id,
+    outcome: { kind: "complete", size, expected: size },
+  });
+  return size;
+}
+
+describe("the native queue's boundaries", { timeout: 40_000 }, () => {
+  for (const intent of ["fresh", "resumed"] as const) {
+    it(`keeps a build-14 completion its record couldn't write yet when its subscription goes: ${intent} automatic removal`, async () => {
+      await install();
+      let app = await launch();
+      const { a, b } = await withProviders(app, true);
+      const film = await app.addDownload(movieRef(a));
+      await until(() => isComplete(app, film.id), "the copy");
+      // Resumed: the subscription went and its removal was written down in an earlier run.
+      if (intent === "resumed") await app.remove(a, { keepHistory: true });
+      const size = asBuild14Completion(film, intent === "resumed" ? "source-removed" : undefined);
+      const asked = native.requests.length;
+      const blocked = new Folder(native.root, "documents", "downloads.json.next");
+      blocked.create();
+      app = await launch();
+      // Its receipt is read and refused by downloads.json, which then takes writes again.
+      await sleep(1_000);
+      blocked.delete();
+      if (intent === "fresh") await app.remove(a, { keepHistory: true });
+      else await app.update(b!, { name: "Renamed" });
+      await sleep(300);
+      expect(mediaFile(film.id)?.size).toBe(size);
+      expect(doc().items.map((item: { id: string }) => item.id)).toEqual([film.id]);
+      // The next reconcile writes the completion down: it wins the automatic removal.
+      appGoes("background");
+      appGoes("active");
+      await until(() => isComplete(app, film.id), "the copy kept");
+      expect(app.downloadList().items.find((item) => item.id === film.id)).toMatchObject({
+        subscription: null,
+        status: { kind: "complete" },
+      });
+      expect(doc().items[0].removal).toBeUndefined();
+      expect(mediaFile(film.id)?.size).toBe(size);
+      expect(native.requests).toHaveLength(asked);
+      await until(() => background.legacyReceipts.length === 0, "its receipt acknowledged");
+    });
+  }
+
+  for (const how of ["user", "demo-reset"] as const) {
+    it(`lets an explicit ${how} deletion remove a build-14 copy whose completion is still owed`, async () => {
+      await install();
+      let app = await launch();
+      const { a } = await withProviders(app);
+      const film = await app.addDownload(movieRef(a));
+      await until(() => isComplete(app, film.id), "the copy");
+      asBuild14Completion(film);
+      const blocked = new Folder(native.root, "documents", "downloads.json.next");
+      blocked.create();
+      app = await launch();
+      await sleep(1_000);
+      blocked.delete();
+      if (how === "user") await app.removeDownload(film.id);
+      else {
+        const erased = await app.eraseDownloads(a, "demo-reset");
+        expect(erased).toMatchObject({ removed: 1, kept: 0 });
+        await expect(erased.cleanup).resolves.toBe("closed");
+      }
+      expect(doc().items).toEqual([]);
+      expect(folder(film.id).exists).toBe(false);
+      // Its receipt later finds no record: acknowledged, nothing comes back.
+      appGoes("background");
+      appGoes("active");
+      await until(() => background.legacyReceipts.length === 0, "its receipt acknowledged");
+      expect(app.downloadList().items).toEqual([]);
+      expect(folder(film.id).exists).toBe(false);
+    });
+  }
+
+  it("frees the slot for the next download when a file being published is removed under a Keychain fence", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 1_000);
+    const film = await app.addDownload(movieRef(a));
+    const next = await app.addDownload(movieRef(a, otherMovie().id));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    // Its publication waits on the Keychain while the viewer deletes it and the ledger refuses
+    // the removal's write: the removal is fenced by deleting its items.
+    background.faults.keychainUnavailable = true;
+    await until(() => background.deferred !== null, "the finished file to wait");
+    background.faults.ledger = true;
+    await app.removeDownload(film.id);
+    expect(doc().items.map((item: { id: string }) => item.id)).toEqual([next.id]);
+    background.faults = { ...background.faults, ledger: false, keychainUnavailable: false };
+    appGoes("background");
+    appGoes("active");
+    // Complete means every byte the server announced is in place; an earlier case may have
+    // replaced this film's file on the shared panel, so its size isn't the fixture's.
+    await until(() => isComplete(app, next.id), "the next download");
+    expect(folder(film.id).exists).toBe(false);
+    expect(one.mostFilesAtOnce()).toBe(1);
+  });
+});
