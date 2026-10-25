@@ -155,11 +155,13 @@ Stop, failure and replacement retain actual native detach and format close/close
 publishing idle or failed. Replacement waits for positive matching native acknowledgement and all
 format readers, including a late opening. A three-second wait can fail the new selection, while
 real closing continues. Rejection, obsolete receipts and unknown closure keep admission blocked.
-Direct streams appear in `Playback.closing`, which downloads already consult. Stop still returns
-`Saved`; progress-save completion does not prove reader closure or provider disconnect. Close,
-Pause, Picture in Picture and AirPlay retain readers. `playbackReader(exactPlaying)` captures the
-actual reader's `closed` promise for future copy deletion. Capture it before Stop; deleting files
-and the download memory lease remain separate work.
+Direct streams appear in `Playback.closing`, which the Downloads screen shows as waiting. Stop
+still returns `Saved`; progress-save completion does not prove reader closure or provider
+disconnect. Close, Pause, Picture in Picture and AirPlay retain readers. A provider stream's
+download lease is acquired before lookup and given back at once when nothing was submitted,
+otherwise only after that positive closure; uncertain closure keeps it for the process.
+`playbackReaders(key)` captures every reader of an item not yet known closed, the playing one and
+retired, failed or uncertain ones, for copy deletion. Capture it before Stop.
 
 Watch queries fresh track snapshots on menu opening. Ready and track observations also refresh
 facts. Choices retain the exact native record, item, attempt and revision, refuse unplayable
@@ -332,43 +334,55 @@ Each responsibility has one owner, a plain module with a store the screens read:
   with its history kept keeps its saves for its return; removed with its history deleted, its
   saves go too. A refused write leaves the entry and says so.
 - `src/downloads.ts`: movies and episodes downloaded to the phone, as the desktop's downloads:
-  `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. One
-  transfers at a time through `src/download-task.ts`, the app's own native owner of a background
-  URLSession (`modules/background-downloads`), so the bytes never pass through JavaScript and a
-  transfer goes on while the app is suspended and after iOS ends its process. The next download
-  starts only while the app is open (AppState `active`). Each request is an attempt, written on
-  its record before it starts; the native side moves only an authorized attempt's file into place
-  and writes how each ended as a receipt, which `downloads.ts` takes in, then acknowledges. At
-  launch nothing asks a provider for a file or a stream, and nothing is removed, until the
-  subscriptions are read and every native request is accounted for: a queued download's request
-  goes on as its transfer, any other is cancelled and has ended, and every receipt is taken in.
-  Records hold no address, header, login or resume data; a file's address is made from its
-  subscription's login as its transfer starts. A stream of the same subscription takes the
-  connection back first (`onReclaim` in `playback.ts`): the transfer pauses before the stream's
-  request goes out, and goes on once nothing of that subscription streams. A transfer that doesn't
-  end within ten seconds fails the stream instead of opening a second connection. A provider takes
-  a moment to free a closed connection, so a subscription's next request, a stream's, the next
-  download's or a transfer's fresh start after its resumed request was refused, waits a second
-  after the app's last one ended, and every subscription waits a second after launch when requests
-  ended unheard. Resume data, which names the address, stays with the native side in the Keychain,
-  from a pause or a broken request, and is used only for that same address; otherwise the transfer
-  starts again and says so. A request that breaks while the app is open fails, and Retry goes on;
-  one that breaks in the background goes on once the app is open. A user's force quit ends a
-  transfer, as iOS does. Resume data beta 3 kept under `download:<id>` moves to the native side at
-  launch. A copy is complete only once the native side moved it into place at the whole size the
-  server announced; a file beside an unfinished download is deleted before it starts again. A
-  removed subscription's unfinished downloads end, with their files and resume data; its copies
-  stay, play from the phone with no login or network, and keep their own progress, also given to
-  the subscription's viewing record while it is saved. A copy playing goes on when the last
-  subscription is removed.
+  `downloads.json`, a folder per download in `Documents/downloads`, and nothing else. Transfers go
+  through `src/download-task.ts` to the app's own native scheduler of one background URLSession
+  (`modules/background-downloads`), so the bytes never pass through JavaScript. It runs one task at
+  a time and goes on to the next authorized download by itself while the app is in the background
+  or suspended, and after iOS ends its process: the next task is persisted and handed to iOS with an
+  earliest begin date a second after its provider's last request ended, before the system's wake
+  handler is answered, or the wake is refused after five seconds. iOS may defer it further; a
+  user's force quit ends the transfers. In the foreground, `downloads.ts` keeps a window of up to
+  32 exact file authorizations: each is reserved, written on its record, then armed with the
+  file's request, made from the login only then; the native side keeps the request, headers and
+  resume data in the Keychain, per subscription, never in a record. Each subscription's download
+  authority is a generation bound to its exact login by `account.ts`, outside the login itself, so
+  lists, Live and artwork never wait on it and a failed binding holds back downloads alone. A new
+  password or a removal first fences the subscription's downloads durably, in the native ledger or
+  by deleting its Keychain items, without waiting for a transfer to end; when neither can be made
+  the change is refused. Only an authorization's own receipt changes its record, once, by its
+  sequence, and is acknowledged once written down. A pause for playback keeps the same
+  authorization; a request that breaks in front of the viewer fails, and Retry goes on from its
+  resume data; one that breaks while nobody watched waits for the app to be open. When the server
+  refuses resume data, the native side deletes it and starts once more from nothing, and says so.
+  The first time the app is open in a process, every receipt is taken in, unfinished removals
+  finish and logins are bound before anything new starts; a native queue whose authority is damaged
+  is started over once then, keeping copies, records and logins, and a locked or full one never is.
+  A stream of the same subscription takes the connection first with a lease of this process
+  (`onAdmission` in `playback.ts`): the transfer pauses, then is cancelled, and the stream waits for
+  its request's actual end and a second of grace, or fails rather than ask for a second
+  connection; damaged download storage alone never holds it back. A paused stream keeps its lease
+  until Stop. Removing a download writes its intent on its record, fences its authorization, then
+  drops the record; its folder goes once its task and every player reader of the copy actually
+  closed (`playbackReaders`), and otherwise stays until they do or the next launch. A copy is
+  complete only once the native side moved it into place at the whole size the server announced,
+  under authority read again just before; a file beside an unfinished download is deleted before
+  it is authorized again. A removed subscription's unfinished downloads end, with their files and
+  resume data; a copy completed first stays, plays from the phone with no login or network, and
+  keeps its own progress, also given to the subscription's viewing record while it is saved. A copy
+  playing goes on when the last subscription is removed. Build 14's queue is copied into
+  `queue-v2.json` before its `ledger.json` is emptied, and its resume data, and beta 3's under
+  `download:<id>`, is taken over by a later request of the very same address; going back to build
+  14 is not supported.
   Each newly downloaded episode also keeps the exact immediate successor from its provider's
   series order. Watch offers manual Next only when that successor is a complete local copy of
   the same provider and series version. Next saves first, then rechecks the copies and uses the
   target copy's own resume point. A missing copy stops continuation without skipping or
   streaming; no episode autoplays. Older copies with no saved order still play normally.
   `modules/downloads-folder` makes `Documents/downloads` at launch and keeps it out of backups;
-  `modules/background-downloads` keeps its ledger in Application Support and its resume data in
-  the Keychain, both readable after the first unlock (native: both take a new build).
+  `modules/background-downloads` keeps its queue and the one file it is finishing in Application
+  Support, out of backups, and its request authority in the Keychain, both readable after the first
+  unlock (native: both take a new build). Swift compilation, iOS scheduling, wakes, termination,
+  first unlock and the Keychain are verified only on a Mac and a phone.
 - `src/playback.ts`: the one `expo-video` player and what it plays, a channel or a title. Home's
   preview, Watch, Picture in Picture and the accessory all show or control this player; none
   opens a stream of its own. Another channel or title, Stop, removing its subscription and a failure each let go

@@ -19,9 +19,11 @@ import { openFormat, type FormatSession } from "./title-formats.ts";
 // shows this player and no other: Home's preview, Watch, Picture in Picture and AirPlay, and the
 // accessory above the tabs controls it. Nothing opens a second stream for a preview. Playing
 // something else, stopping, removing its subscription and a failure each let go of the stream,
-// so its local readers drain. Provider disconnect is unobservable. A download gives its
-// subscription's connection back before a stream opens (`onReclaim`); a downloaded copy plays
-// from the phone and takes none.
+// so its local readers drain. Provider disconnect is unobservable. A stream takes its
+// subscription's connection from downloads before it opens, with a lease of this process
+// (`onAdmission`), and gives it back only once its native and format readers actually closed; a
+// downloaded copy plays from the phone and takes none. Downloads deleting a copy waits for every
+// reader of it (`playbackReaders`).
 //
 // A movie or episode in a file AVPlayer can't open, such as Matroska, plays through a format
 // session (`title-formats.ts`): the file is read natively, over one request to the provider at a
@@ -244,6 +246,8 @@ type PlaybackFailure =
 type FormatReader = ReturnType<typeof openFormat>;
 interface Resource {
   readonly id: number;
+  /** The item key it plays, `copy:<id>` for a downloaded copy. */
+  readonly key: string;
   readonly controller: AbortController;
   readonly sourceStands: () => boolean;
   readonly subscriptionId: string | null;
@@ -266,6 +270,10 @@ interface Resource {
   querying: Promise<ObservedTrackSnapshot | null> | null;
   /** A viewer Pause applied before admission resolves must still suppress its initial play. */
   holdInitialPlay: boolean;
+  /** Its subscription's connection lease from downloads, while held. */
+  lease: string | null;
+  /** A source went to the native player or a format session: they may hold the connection. */
+  submitted: boolean;
 }
 let attempts = 0;
 const closing = new Set<Resource>();
@@ -273,6 +281,19 @@ const closing = new Set<Resource>();
 /** Capture before Stop. The handle remains bound to these readers, even after another play. */
 export function playbackReader(item: Playing): Readonly<{ closed: Promise<void> }> | null {
   return current?.item === item ? { closed: current.resource.closed } : null;
+}
+
+/**
+ * The readers of item `key` not yet known closed: the one playing, and every retired one still
+ * closing, failed or uncertain included. Capture before Stop. Each settles once its native detach
+ * was acknowledged and its format sessions closed, and rejects while that stays unknown; saving
+ * progress, Pause, Close or a timeout never settles it.
+ */
+export function playbackReaders(key: string): readonly Promise<void>[] {
+  return [
+    ...(current?.resource.key === key ? [current.resource] : []),
+    ...[...closing].filter((resource) => resource.key === key && resource !== current?.resource),
+  ].map((resource) => resource.closed);
 }
 
 function stands(resource: Resource): boolean {
@@ -298,11 +319,16 @@ function noteClosing() {
   }
 }
 
-/** Retain the real native promise and every format reader until positive closure. */
+/**
+ * Retain the real native promise and every format reader until positive closure. The
+ * connection lease goes back at once when nothing was submitted, else only after that closure;
+ * uncertain closure keeps it for the life of the process.
+ */
 function retire(resource: Resource) {
   if (resource.settlement) return resource.settlement;
   resource.retired = true;
   closing.add(resource);
+  if (!resource.submitted) giveBack(resource);
   resource.detach = Promise.resolve().then(() => player().detachObservedAsync(resource.id));
   resource.settlement = (async () => {
     const receipt = await resource.detach;
@@ -320,6 +346,7 @@ function retire(resource: Resource) {
     closing.delete(resource);
     resource.drained();
     noteClosing();
+    giveBack(resource);
   })();
   resource.controller.abort();
   for (const format of resource.formats) format.close();
@@ -366,15 +393,32 @@ let failed: ((failure: AnalyticsFailure) => void) | null = null;
 /** Ends Picture in Picture; Watch registers it while its view can. */
 let endPictureInPicture: (() => void) | null = null;
 /**
- * Takes a subscription's connection back from a download before a stream opens; downloads.ts
- * registers it. Resolves once the request ended and the provider had a moment to free it;
- * rejects when it didn't end, and the stream fails.
+ * How a stream takes its subscription's connection from downloads and gives it back; downloads.ts
+ * registers it. `acquire` resolves once the download requests of that subscription ended and the
+ * provider had its moment to free the connection, and rejects, so the stream fails, when one
+ * didn't end. The same lease asked again joins; `release` of it, early or twice, is harmless.
  */
-let reclaim: ((subscriptionId: string) => Promise<void>) | null = null;
+export interface Admission {
+  acquire(subscriptionId: string, lease: string): Promise<void>;
+  release(lease: string): void;
+}
+let admission: Admission | null = null;
+/** Names this process's leases, apart from an earlier process's. */
+const LEASES = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** Abort this pre-reader wait only. Downloads still owns and settles the real reclaim. */
-async function reclaimBeforeLookup(resource: Resource, subscriptionId: string) {
-  if (!reclaim) return;
+/** Gives `resource`'s lease back, once. */
+function giveBack(resource: Resource) {
+  const { lease } = resource;
+  if (lease === null) return;
+  resource.lease = null;
+  admission?.release(lease);
+}
+
+/** Abort this pre-reader wait only. Downloads still settles the real acquisition. */
+async function acquireBeforeLookup(resource: Resource, subscriptionId: string) {
+  if (!admission) return;
+  const lease = `${LEASES}-${resource.id}`;
+  resource.lease = lease;
   const { signal } = resource.controller;
   let abort = () => {};
   const cancelled = new Promise<never>((_, reject) => {
@@ -383,7 +427,7 @@ async function reclaimBeforeLookup(resource: Resource, subscriptionId: string) {
     else signal.addEventListener("abort", abort, { once: true });
   });
   try {
-    await Promise.race([reclaim(subscriptionId), cancelled]);
+    await Promise.race([admission.acquire(subscriptionId, lease), cancelled]);
   } finally {
     signal.removeEventListener("abort", abort);
   }
@@ -713,6 +757,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
   void closed.catch(() => undefined); // Admission and reader handles still observe rejection.
   const resource: Resource = {
     id: ++attempts,
+    key: item.id,
     controller,
     subscriptionId: item.subscriptionId,
     redaction: signedIn?.login ?? [],
@@ -738,6 +783,8 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     tracks: null,
     querying: null,
     holdInitialPlay: false,
+    lease: null,
+    submitted: false,
   };
   current = {
     item,
@@ -771,7 +818,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     await waitForReaders(resource);
     if (!stands(resource)) return;
     stage = "lookup";
-    if (item.subscriptionId !== null) await reclaimBeforeLookup(resource, item.subscriptionId);
+    if (item.subscriptionId !== null) await acquireBeforeLookup(resource, item.subscriptionId);
     if (!stands(resource)) return;
     if (!sourceBound) {
       signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
@@ -786,6 +833,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       contentType: source.container === "m3u8" ? ("hls" as const) : ("auto" as const),
     };
     if (!item.live && THROUGH_SESSION.has(source.container.toLowerCase())) {
+      resource.submitted = true;
       const opening = openFormat(source.url, source.headers, options.from ?? 0, controller.signal);
       resource.formats.push(opening);
       // Observe failure now, even if opening itself is still pending.
@@ -806,6 +854,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       }
     }
     stage = "native";
+    resource.submitted = true;
     const result = await attach(resource, playable);
     if (!stands(resource)) return;
     if (result.attemptId !== resource.id) return fail({ kind: "bridge" });
@@ -1126,8 +1175,8 @@ export function onEndPictureInPicture(end: (() => void) | null) {
   endPictureInPicture = end;
 }
 
-export function onReclaim(take: ((subscriptionId: string) => Promise<void>) | null) {
-  reclaim = take;
+export function onAdmission(given: Admission | null) {
+  admission = given;
 }
 
 export function onProgressRefused(tell: (() => void) | null) {

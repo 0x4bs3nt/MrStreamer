@@ -860,7 +860,7 @@ it("an initially absent source can restore during reclaim before lookup binds it
   );
   const reclaim = deferred<void>();
   stop = () => reclaim.resolve();
-  owner.onReclaim(() => reclaim.promise);
+  owner.onAdmission({ acquire: () => reclaim.promise, release: () => undefined });
   const lookup = vi.fn(async () => {
     expect(sources.sourceOf("sub").provider).toBe(provider);
     return source();
@@ -890,7 +890,7 @@ it.each(["lookup", "format"] as const)(
     );
     const reclaim = deferred<void>();
     stop = () => reclaim.resolve();
-    owner.onReclaim(() => reclaim.promise);
+    owner.onAdmission({ acquire: () => reclaim.promise, release: () => undefined });
     const lookup = vi.fn(async () => {
       if (failureAt === "format") {
         throw new AppFailure({ kind: "stream", failure: { kind: "unsupported", detail } });
@@ -920,7 +920,7 @@ it("an obsolete pre-reader reclaim does not hold another provider's selection", 
   const first = deferred<void>();
   stop = () => first.resolve();
   const reclaim = vi.fn((id: string) => (id === "s1" ? first.promise : Promise.resolve()));
-  owner.onReclaim(reclaim);
+  owner.onAdmission({ acquire: (id) => reclaim(id), release: () => undefined });
   const oldLookup = vi.fn(source);
   const old = owner.play(item("a", "s1"), oldLookup, options);
   await tick();
@@ -947,7 +947,7 @@ it.each(["resolve", "reject"] as const)(
       second.resolve();
     };
     const reclaim = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    owner.onReclaim(reclaim);
+    owner.onAdmission({ acquire: (id) => reclaim(id), release: () => undefined });
     const oldLookup = vi.fn(source);
     const old = owner.play(item("a"), oldLookup, options);
     await tick();

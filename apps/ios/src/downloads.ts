@@ -9,20 +9,31 @@ import { nextEpisode } from "@mrstreamer/core/ondemand/details";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
 import { Directory, File, Paths } from "expo-file-system";
 import { AppState } from "react-native";
-import { currentRoster, members, onRoster } from "./account.ts";
 import {
+  bindDownloadSource,
+  currentRoster,
+  downloadGeneration,
+  launchSignIns,
+  members,
+  onRoster,
+  unbindDownloads,
+} from "./account.ts";
+import {
+  refusalOf,
   transfers,
-  type Outcome,
+  type AuthorizationView,
+  type LegacyReceipt,
+  type OutcomeV2,
   type Progress,
-  type Receipt,
-  type Running,
-  type StartRequest,
+  type ReceiptV2,
+  type Snapshot,
 } from "./download-task.ts";
 import { appError, describeError, statusFailure } from "./errors.ts";
 import { readJson, writeJson } from "./files.ts";
 import {
-  onReclaim,
+  onAdmission,
   play,
+  playbackReaders,
   playbackState,
   playingItem,
   progressSettled,
@@ -32,56 +43,49 @@ import {
 } from "./playback.ts";
 import { fetchPicture } from "./picture-transfer.ts";
 import { keychainSecrets } from "./secrets.ts";
-import { currentSource, sourceOf } from "./sources.ts";
+import { currentSource, onSignedIn, sourceOf, type Source } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { detailsOf, episodesOf, listedIndex, titleFile, titleOf } from "./titles.ts";
 import { recordProgress } from "./viewing.ts";
 
-// Movies and episodes downloaded to this iPhone: the queue, its one transfer at a time, and the
-// copies that play with no provider, as the desktop's downloads do. This module alone writes
-// downloads.json and the folders in Documents/downloads, and alone decides what a transfer's end
-// means for its download.
+// Movies and episodes downloaded to this iPhone: the queue and the copies that play with no
+// provider, as the desktop's downloads do. This module alone writes downloads.json and the
+// folders in Documents/downloads, and alone decides what a transfer's end means for its download.
 //
 // A download names the exact provider file by its subscription and the provider's own ids, so
 // two providers' titles of one id never meet. Its record holds what the copy shows and plays
 // with: details, artwork kept in its folder, the file type, how far it got, how far it was
 // watched and the provider-ordered immediate successor of a newly saved episode. No record
-// holds an address, a header, a login or resume data. The file's address is
-// made from the subscription's login only as a transfer starts (`sources.ts`).
+// holds an address, a header, a login or resume data.
 //
-// One download transfers at a time, by `download-task.ts`: the app's native owner of a background
-// URLSession. A transfer under way goes on while the app is in the background or suspended, and
-// after iOS ends the app's process. The queue starts the next only while the app is in the
-// foreground (AppState "active"); a transfer that ends in the background waits there for the app
-// to open again. This is not the desktop's queue, which goes on through the whole list.
+// The native owner (`download-task.ts`) schedules the transfers, one at a time, and goes on to
+// the next by itself while the app is in the background or suspended, and after iOS ends the
+// app's process. This module hands it a bounded window of exact file authorizations: in the
+// foreground, for queued downloads of a subscription whose login has its download binding
+// (account.ts), each authorization is reserved, written on its record, then armed with the
+// file's request, made from the login only then (`sources.ts`). Only an authorization's own
+// receipt changes its record, and only once, by its sequence; the receipt is acknowledged once
+// the record says what it means, so an ending is never lost nor taken twice. A paused one stays
+// the same authorization, runnable again; a network break in front of the viewer fails, and
+// Retry asks again, elsewhere it waits for the app to be open; a revoked login's are asked again
+// under the new one.
 //
-// Each request is an attempt, written down on its record before it starts; only that attempt's
-// ending (a receipt) changes the record, and the receipt is acknowledged once the record says
-// what it means, so an ending is never lost nor taken twice. At launch, nothing asks a provider
-// for a file or a stream, and nothing is cleaned up, until the subscriptions are read and every
-// request the native side has is accounted for: the one under way of a queued download goes on as
-// its transfer, any other is cancelled and has ended, and every receipt is taken in.
+// The first time the app is open in a process, everything the native side kept is taken in
+// before it may start anything new: receipts, build 14's receipts and unfinished removals, and
+// the subscriptions' bindings once launch's passwords were read. A queue whose native authority
+// is damaged is started over once, keeping copies, records and logins. Nothing that asks a
+// provider waits on downloads' records or storage: a stream takes its subscription's connection
+// from the native owner directly (`onAdmission`), and fails rather than ask for a second one
+// while a transfer's request hasn't ended.
 //
-// A stream of the same subscription takes the connection back first: the transfer pauses, and its
-// request has ended before the stream's goes out (`onReclaim`). When it doesn't end in time, the
-// stream fails rather than ask the provider for a second connection. It waits until nothing of
-// that subscription streams; another subscription's stream, or a copy, lets it go on. A provider
-// can take a moment to free the connection of a request that ended, so the next request of that
-// subscription, a stream's, the queue's next download or a transfer's fresh start after its
-// resumed request was refused, waits until `RELEASE_MS` after this app's last one ended; after
-// requests that ended while nobody watched, every subscription waits that long from launch.
-//
-// Resume data stays with the native side, in the Keychain: a pause keeps it, as does a request
-// that broke when URLSession gives any, so the transfer goes on from there; when it can't, it
-// starts again and says so (`restarted`). A request that breaks while the app is open fails, and
-// its Retry goes on from there. Resume data an earlier build kept in `download:<id>` is handed to
-// the native side at launch, then removed.
-//
-// A copy is complete only once the native side moved every byte into place and the size matches
-// what the server announced, of the whole file. A file left beside an unfinished record is
-// deleted before its download starts again. Removing a subscription ends its unfinished
-// downloads, with their files and resume data; its copies stay and play, keeping their own
-// progress.
+// Removing a download writes its intent on its record first, then fences its authorization
+// durably on the native side, then drops the record; its folder goes only once its task and any
+// player reading the copy actually closed, else later. A subscription's removal ends its
+// unfinished downloads; a copy that completed first stays, plays offline and keeps its progress.
+// A copy is complete only once the native side moved every byte into place at the whole size the
+// server announced. A file left beside an unfinished record is deleted before it is authorized
+// again. Resume data an earlier build kept in `download:<id>` is handed to the native side at
+// launch, then removed.
 
 const FILE = "downloads.json";
 /** Documents/downloads, which modules/downloads-folder keeps out of backups. */
@@ -90,16 +94,10 @@ const ROOT = "downloads";
 const PROGRESS_MS = 250;
 /** How often a transfer's progress is written down. */
 const SAVE_MS = 5000;
-/**
- * How long a stream waits for a download to pause before it is cancelled instead, and then for
- * the cancel, before the stream fails.
- */
-const RECLAIM_MS = 5000;
-/**
- * How long after this app's request of a subscription ended its next one waits, while the
- * provider frees the connection. The desktop's fake panel takes 300 ms; real ones aren't measured.
- */
-const RELEASE_MS = 1000;
+/** Unfinished authorizations the native queue may hold at once. */
+const WINDOW = 32;
+/** How long removing a copy waits for its task and readers to close before its folder waits. */
+const CLOSE_MS = 10_000;
 const ARTWORK_MS = 20_000;
 /** A download's id: also its folder's name. */
 const ID = /^d-[a-z0-9-]+$/;
@@ -142,7 +140,7 @@ const Stored = lazy(() =>
     about: About(),
     /** Pictures kept in its folder. */
     artwork: { poster: "boolean", wide: "boolean" },
-    /** A transfer under way is `queued` on disk: a launch finds it again, or starts it again. */
+    /** A transfer under way is `queued` on disk: the native side has it, or it waits for one. */
     state: "'queued' | 'failed' | 'complete'",
     "failure?": Failure(),
     /** The whole file's bytes once the server said; once complete, the bytes on disk. */
@@ -150,7 +148,7 @@ const Stored = lazy(() =>
     /** Bytes received when it last paused or was written down. */
     received: "number",
     restarted: "boolean",
-    /** The last transfer attempt it authorized: only that attempt's ending changes it. */
+    /** Build 14's last attempt: only its build-14 receipt changes the record. */
     "attempt?": "string",
     addedAt: "number",
     completedAt: "number | null",
@@ -158,10 +156,32 @@ const Stored = lazy(() =>
     progress: type({ position: "number", duration: "number", at: "number" }).or("null"),
     /** Optional ordering added by this build; an unreadable edge never hides a playable copy. */
     "continuation?": "unknown",
+    /** Its native authorization (`Transfer`), read on its own: a bad one holds back only it. */
+    "transfer?": "unknown",
+    /** Why it is being removed (`Removal`), read on its own: a bad one holds back only it. */
+    "removal?": "unknown",
   }),
 );
 type Stored = Infer<typeof Stored>;
 const Continuation = lazy(() => type({ version: "1", title: RawTitleRef() }));
+/** The record's current authorization, and the last of its receipts' sequences taken in. */
+const Transfer = lazy(() =>
+  type({
+    version: "2",
+    authorization: "string",
+    sourceGeneration: "string",
+    appliedSequence: "number.integer >= 0",
+  }),
+);
+type Transfer = Infer<typeof Transfer>;
+/**
+ * The record's removal, written before its authorization is fenced: excluded from the queue,
+ * finished by the next reconciliation when it is interrupted, never asked for again.
+ */
+const Removal = lazy(() =>
+  type({ version: "1", reason: "'user' | 'source-removed' | 'replace-missing' | 'demo-reset'" }),
+);
+type Reason = Infer<typeof Removal>["reason"];
 /** Why a download stopped, of the kinds this module writes down. */
 type StoredFailure = NonNullable<Stored["failure"]>;
 
@@ -184,40 +204,32 @@ interface Doc {
 /** What an earlier build kept in `download:<id>`: the address its resume data was made for. */
 const Legacy = lazy(() => type({ url: "string", resumeData: "string" }));
 
-/** The transfer under way. */
-interface Active {
-  readonly id: string;
-  readonly subscriptionId: string;
-  /** Its native attempt once authorized: that attempt's receipt alone ends it. */
-  attempt: string | null;
-  /** Why this side asked it to stop, which decides what its end means. */
-  stopping: "pause" | "cancel" | null;
-  /** The bytes the disk lacks for the rest, when that stopped it. */
-  short: number | null;
+/** A field read on its own: absent, as this build writes it, or present and unreadable. */
+type Field<A> = A | undefined | "bad";
+
+function fieldOf<A>(parse: (value: unknown) => A | type.errors, value: unknown): Field<A> {
+  if (value === undefined) return undefined;
+  const parsed = parse(value);
+  return parsed instanceof type.errors ? "bad" : parsed;
+}
+const transferOf = (record: Stored): Field<Transfer> => fieldOf(Transfer(), record.transfer);
+const removalOf = (record: Stored): Field<Infer<typeof Removal>> =>
+  fieldOf(Removal(), record.removal);
+/** Its authorization, when it reads. */
+const boundOf = (record: Stored): Transfer | null => {
+  const transfer = transferOf(record);
+  return typeof transfer === "object" ? transfer : null;
+};
+
+/** A transfer the native side reports under way, as the screens show it. */
+interface Live {
   received: number;
   size: number | null;
-  /** Bytes the record had as the attempt started, and whether it goes on from them. */
-  from: number;
-  resumed: boolean;
-  /** No progress of the attempt heard yet. */
-  fresh: boolean;
+  restarted: boolean;
   rate: number | null;
   measured: { at: number; received: number };
   savedAt: number;
-  restarted: boolean;
-  /** Settles once it asks the provider nothing more: its last request ended, or it stopped. */
-  closed: Promise<void>;
-  /** Settles once how it ended is written down. */
-  over: Promise<void>;
 }
-
-/** How a transfer ended, as this module takes it in. */
-type Ending =
-  /** Its attempt's request ended, as the receipt says. */
-  | { readonly kind: "ended"; readonly receipt: Receipt }
-  /** It never asked the provider: stopped first, or its subscription isn't signed in. */
-  | { readonly kind: "stopped" }
-  | { readonly kind: "failed"; readonly failure: StoredFailure };
 
 const EMPTY: DownloadList = { items: [], bytes: 0, free: null, ended: 0 };
 const list = store<DownloadList>(EMPTY);
@@ -232,39 +244,44 @@ export const onDownloads = (listener: () => void) => list.subscribe(listener);
 let doc: Doc = { items: [], forgetting: [], unreadable: [] };
 /** downloads.json read as this build writes it: only then are folders it doesn't name removed. */
 let trusted = false;
+/** downloads.json read as this build writes it, or absent: what it names is all there is. */
+let complete = false;
 let started = false;
-let active: Active | null = null;
-/** The app is in the foreground: only then does the queue start a transfer. */
+/** The app is in the foreground: only then are authorizations reserved. */
 let foreground = false;
 /**
- * Whether the native side's requests and endings are taken in. Until "ready", nothing asks a
- * provider for a file or a stream, and nothing is removed; "failed" is tried again in the
- * foreground.
+ * Whether the native side's receipts are taken in. Until "ready", nothing is removed by the
+ * queue's own reconciliation; "failed" is tried again in the foreground.
  */
 let phase: "starting" | "ready" | "failed" = "starting";
-let readiness: Promise<void> = Promise.resolve();
+/** This process's first foreground reconciliation: until done, no authorization is reserved. */
+let barrier: "pending" | "running" | "done" = "pending";
+/** Whether this process already tried to start a damaged native queue over: once at most. */
+let repairTried = false;
 /** Copies whose file was gone when last looked. */
 const missing = new Set<string>();
 /** Unfinished downloads that ended with their subscription since launch. */
 let ended = 0;
 let made = 0;
-let attempts = 0;
-/** When this app's last request of each subscription ended, a download's or a stream's. */
-const released = new Map<string, number>();
-/** When requests that ended while nobody watched were found: every subscription waits after it. */
-let releasedAll = -Infinity;
-/** The subscriptions whose connections playback held when it last changed. */
-let streaming: ReadonlySet<string> = new Set();
-/** Wakes the queue once a subscription's connection had time to be freed. */
-let later: ReturnType<typeof setTimeout> | null = null;
-/** Who waits for each attempt's receipt. */
-const awaited = new Map<string, (receipt: Receipt) => void>();
+/** Transfers under way, by authorization, as their progress and the native queue tell them. */
+const live = new Map<string, Live>();
+/** The native queue's authorizations, as last told. */
+let known = new Map<string, AuthorizationView>();
 /** Receipts heard before the downloads were ready, by receipt. */
-const early = new Map<string, Receipt>();
+const early = new Map<string, ReceiptV2>();
 /** Receipts being taken in, by receipt: an event and a reconcile may bring the same one. */
 const taking = new Set<string>();
 /** Downloads whose earlier build's resume data couldn't be read: they wait for the next launch. */
 const held = new Set<string>();
+/** Removals under way, by download: one at a time for a record. */
+const removing = new Map<string, Promise<Removed>>();
+/** Folders of dropped records still waiting for their task or readers to close. */
+const closingFolders = new Set<string>();
+/** Bindings asked of the account owner and not yet settled, by exact login. */
+let binding = new WeakMap<Source, Promise<void>>();
+/** The queue's refill under way, and whether another was asked meanwhile. */
+let filling: Promise<void> | null = null;
+let refillAgain = false;
 
 const folderOf = (id: string) => new Directory(Paths.document, ROOT, id);
 /** A file type safe to name a file with; anything else is kept as "bin", as on the desktop. */
@@ -283,6 +300,9 @@ const sameTitle = (record: Stored, ref: TitleRef) =>
   record.subscriptionId === ref.subscriptionId &&
   record.title.kind === ref.kind &&
   record.title.id === ref.id;
+/** A record nothing is removing, whose optional fields read: the queue may act on it. */
+const standing = (record: Stored) =>
+  removalOf(record) === undefined && transferOf(record) !== "bad";
 
 /** Writes `next` whole, then keeps it. Throws, keeping the last, when Documents won't take it. */
 function commit(next: Doc) {
@@ -303,6 +323,17 @@ function update(id: string, change: (record: Stored) => Stored, forget = false) 
     items: doc.items.map((each) => (each === record ? change(record) : each)),
     forgetting: forget ? [...doc.forgetting.filter((each) => each !== id), id] : doc.forgetting,
   });
+}
+
+/** The record without its authorization, build 14's attempt or failure. */
+function unbound(record: Stored): Stored {
+  const { transfer: _transfer, attempt: _attempt, failure: _failure, ...rest } = record;
+  return rest;
+}
+
+function withoutFailure(record: Stored): Stored {
+  const { failure: _failure, ...rest } = record;
+  return rest;
 }
 
 /**
@@ -347,7 +378,8 @@ function freeBytes(): number | null {
 /**
  * The subscriptions whose provider connection playback holds: the one whose stream plays or is
  * opening, and any whose format session let go of its stream but hasn't closed its request yet,
- * which another subscription's play doesn't hide.
+ * which another subscription's play doesn't hide. Only what the screens say: the native owner
+ * holds the connection itself.
  */
 function borrowed(): ReadonlySet<string> {
   const { phase, closing } = playbackState.get();
@@ -358,13 +390,31 @@ function borrowed(): ReadonlySet<string> {
   return busy;
 }
 
+/** The transfer under way of `record`, if the native side says it is. */
+function transferring(record: Stored): Live | null {
+  const bound = boundOf(record);
+  if (!bound) return null;
+  const heard = live.get(bound.authorization);
+  if (heard) return heard;
+  const view = known.get(bound.authorization);
+  if (view?.state !== "active") return null;
+  return {
+    received: view.received ?? record.received,
+    size: view.expected ?? record.size,
+    restarted: record.restarted || view.restarted,
+    rate: null,
+    measured: { at: Date.now(), received: view.received ?? record.received },
+    savedAt: Date.now(),
+  };
+}
+
 function viewOf(
   record: Stored,
   names: ReadonlyMap<string, string>,
   busy: ReadonlySet<string>,
 ): Download {
   const name = names.get(record.subscriptionId);
-  const transferring = active?.id === record.id ? active : null;
+  const moving = record.state === "queued" ? transferring(record) : null;
   return {
     id: record.id,
     title: record.title,
@@ -376,7 +426,7 @@ function viewOf(
     originalLanguage: record.about.originalLanguage,
     posterUrl: record.artwork.poster ? artworkOf(record.id, "poster").uri : null,
     wideUrl: record.artwork.wide ? artworkOf(record.id, "wide").uri : null,
-    size: transferring ? transferring.size : record.size,
+    size: moving ? moving.size : record.size,
     status:
       record.state === "complete"
         ? { kind: missing.has(record.id) ? "missing" : "complete" }
@@ -388,13 +438,13 @@ function viewOf(
                 error: { kind: "unexpected", detail: "This download stopped." },
               },
             }
-          : transferring
+          : moving
             ? {
                 kind: "transferring",
-                received: transferring.received,
-                size: transferring.size,
-                rate: transferring.rate,
-                restarted: transferring.restarted,
+                received: moving.received,
+                size: moving.size,
+                rate: moving.rate,
+                restarted: moving.restarted,
               }
             : busy.has(record.subscriptionId)
               ? { kind: "waiting" }
@@ -415,16 +465,12 @@ function view(): DownloadList {
     .toSorted((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   return {
     items: [...queue, ...copies].map((record) => viewOf(record, names, busy)),
-    bytes: doc.items.reduce(
-      (sum, record) =>
-        sum +
-        (active?.id === record.id
-          ? active.received
-          : record.state === "complete"
-            ? (record.size ?? 0)
-            : 0),
-      0,
-    ),
+    bytes: doc.items.reduce((sum, record) => {
+      const moving = record.state === "queued" ? transferring(record) : null;
+      return (
+        sum + (moving ? moving.received : record.state === "complete" ? (record.size ?? 0) : 0)
+      );
+    }, 0),
     free: freeBytes(),
     ended,
   };
@@ -450,249 +496,44 @@ function look() {
   }
 }
 
-/** Asks the transfer to stop; a cancel overrides a pause asked before it. */
-function halt(transferring: Active, why: "pause" | "cancel") {
-  if (transferring.stopping === "cancel" || transferring.stopping === why) return;
-  transferring.stopping = why;
-  const { attempt } = transferring;
-  if (!attempt) return;
-  const asked = why === "cancel" ? transfers.cancel(attempt) : transfers.pause(attempt);
-  // Its receipt says how it ended.
-  void asked.catch(() => undefined);
-}
-
-/** Milliseconds until a request of `subscriptionId` may go out, after the last of ours ended. */
-function freeing(subscriptionId: string): number {
-  const at = Math.max(released.get(subscriptionId) ?? -Infinity, releasedAll);
-  return Number.isFinite(at) ? Math.max(0, at + RELEASE_MS - Date.now()) : 0;
-}
-
-const after = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/** Starts the first download the queue can have now, unless one transfers. */
-function wake() {
-  if (phase !== "ready" || active || !foreground) return;
-  const busy = borrowed();
-  const ready = doc.items.filter(
-    (record) =>
-      record.state === "queued" &&
-      !busy.has(record.subscriptionId) &&
-      !held.has(record.id) &&
-      currentSource(record.subscriptionId) !== undefined,
-  );
-  const next = ready.find((record) => freeing(record.subscriptionId) === 0);
-  if (next) return begin(next);
-  // Only subscriptions whose connection is still being freed: the queue looks again then.
-  const wait = Math.min(...ready.map((record) => freeing(record.subscriptionId)));
-  if (!Number.isFinite(wait)) return;
-  if (later) clearTimeout(later);
-  later = setTimeout(() => {
-    later = null;
-    wake();
-  }, wait);
-}
-
-function activeOf(record: Stored, attempt: string | null): Active {
-  return {
-    id: record.id,
-    subscriptionId: record.subscriptionId,
-    attempt,
-    stopping: null,
-    short: null,
-    received: record.received,
-    size: record.size,
-    from: record.received,
-    resumed: record.received > 0,
-    fresh: true,
-    rate: null,
-    measured: { at: Date.now(), received: record.received },
-    savedAt: Date.now(),
-    restarted: record.restarted,
-    closed: Promise.resolve(),
-    over: Promise.resolve(),
-  };
-}
-
-function begin(record: Stored) {
-  const transferring = activeOf(record, null);
-  active = transferring;
-  tell();
-  follow(transferring, run(record, transferring));
-}
-
-/** Takes a request found under way at launch as the transfer of its queued download. */
-function adopt(record: Stored, running: Running) {
-  const transferring = activeOf(record, running.attempt);
-  if (running.received !== null) transferring.received = running.received;
-  if (running.expected !== null) transferring.size = running.expected;
-  active = transferring;
-  follow(
-    transferring,
-    receiptOf(running.attempt, record.subscriptionId).then((receipt) => ({
-      kind: "ended",
-      receipt,
-    })),
-  );
-}
-
-/** Writes down how `work` ends, then lets the queue go on. */
-function follow(transferring: Active, work: Promise<Ending>) {
-  const ran = work.catch((cause: unknown): Ending => {
-    const error = appError(cause);
-    return {
-      kind: "failed",
-      failure: { kind: "app", error: { kind: "unexpected", detail: describeError(error) } },
-    };
-  });
-  transferring.closed = ran.then(() => undefined);
-  transferring.over = ran
-    .then((ending) => settle(transferring, ending))
-    .catch((cause: unknown) => {
-      // Its end couldn't be written down. Failed as far as this run knows, so the queue doesn't
-      // take it again and again; the file, and an unacknowledged receipt, say what it was for the
-      // next launch.
-      doc = {
-        ...doc,
-        items: doc.items.map((each) =>
-          each.id === transferring.id && each.state === "queued"
-            ? { ...each, state: "failed", failure: { kind: "folder", detail: messageOf(cause) } }
-            : each,
-        ),
-      };
-    })
-    .finally(() => {
-      if (active === transferring) active = null;
-      tell();
-      wake();
-    });
-}
-
-/** The receipt of `attempt`, once its request ended. */
-function receiptOf(attempt: string, subscriptionId: string): Promise<Receipt> {
-  return new Promise<Receipt>((resolve) => awaited.set(attempt, resolve)).then((receipt) => {
-    // The provider may still be freeing the connection of the request that just ended.
-    released.set(subscriptionId, Date.now());
-    return receipt;
-  });
-}
-
-/** Resume data the provider or URLSession wouldn't go on from. */
-const unusable = (outcome: Outcome) =>
-  outcome.kind === "refused" || (outcome.kind === "network" && !outcome.resumable);
-
-/** Asks the provider for `record`'s file and has the native side write it into its folder. */
-async function run(record: Stored, transferring: Active): Promise<Ending> {
-  const source = currentSource(record.subscriptionId);
-  if (!source || transferring.stopping) return { kind: "stopped" };
-  const { title } = record;
-  const file = await source.provider.titleFile(
-    title.kind,
-    title.id,
-    record.container,
-    AbortSignal.timeout(20_000),
-  );
-  if (transferring.stopping) return { kind: "stopped" };
-  const media = mediaOf(record);
-  try {
-    folderOf(record.id).create({ intermediates: true, idempotent: true });
-    // Left by an attempt never written down as complete: there is no proof it is whole.
-    if (media.exists) media.delete();
-  } catch (cause) {
-    return { kind: "failed", failure: { kind: "folder", detail: messageOf(cause) } };
-  }
-  const free = freeBytes();
-  if (record.size !== null && free !== null) {
-    const needed = record.size - record.received;
-    if (free < needed) return { kind: "failed", failure: { kind: "disk-full", needed } };
-  }
-  if (transferring.stopping) return { kind: "stopped" };
-  const request = {
-    id: record.id,
-    ext: extensionOf(record.container),
-    url: file.url,
-    headers: { ...file.headers },
-  };
-  const first = await attempt(record, transferring, request);
-  if (first.kind !== "ended" || !transferring.resumed || transferring.stopping) return first;
-  if (!unusable(first.receipt.outcome)) return first;
-  // Once more from the start, before anything counts as failed. Its record is as it was, so the
-  // receipt is acknowledged as it stands.
-  await transfers.forgetResume(record.id);
-  await transfers.acknowledge([first.receipt.receipt]);
-  await after(freeing(record.subscriptionId));
-  if (transferring.stopping || currentSource(record.subscriptionId) !== source) {
-    return { kind: "stopped" };
-  }
-  return attempt(record, transferring, request);
-}
-
-/** Authorizes one attempt, written down on the record first, and waits for its receipt. */
-async function attempt(
-  record: Stored,
-  transferring: Active,
-  request: Omit<StartRequest, "attempt">,
-): Promise<Ending> {
-  const token = `a-${Date.now().toString(36)}-${(++attempts).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  update(record.id, (latest) => ({ ...latest, attempt: token }));
-  transferring.attempt = token;
-  transferring.fresh = true;
-  const receipt = receiptOf(token, record.subscriptionId);
-  let resumed: boolean;
-  try {
-    resumed = await transfers.start({ ...request, attempt: token });
-  } catch (cause) {
-    awaited.delete(token);
-    transferring.attempt = null;
-    const error = appError(cause);
-    return {
-      kind: "failed",
-      failure: { kind: "app", error: { kind: "unexpected", detail: describeError(error) } },
-    };
-  }
-  transferring.resumed = resumed;
-  transferring.from = resumed ? record.received : 0;
-  if (!resumed && record.received > 0) transferring.restarted = true;
-  transferring.received = transferring.from;
-  transferring.measured = { at: Date.now(), received: transferring.from };
-  transferring.savedAt = Date.now();
-  tell();
-  return { kind: "ended", receipt: await receipt };
-}
-
 /** Hears a transfer's progress: on screen a few times a second, on disk every few seconds. */
-function moved({ attempt, received: written, expected: total }: Progress) {
-  const transferring = active;
-  if (!transferring || transferring.attempt !== attempt) return;
-  if (transferring.fresh) {
-    transferring.fresh = false;
-    // A server that sent the whole file again, as a changed file does, starts from zero.
-    if (transferring.resumed && written < transferring.from) transferring.restarted = true;
-    if (total !== null) {
-      const room = freeBytes();
-      if (room !== null && room < total - written) {
-        transferring.short = total - written;
-        halt(transferring, "cancel");
-      }
-    }
+function moved(progress: Progress) {
+  const record = find(progress.id);
+  const bound = record && boundOf(record);
+  if (!record || bound?.authorization !== progress.authorization || record.state !== "queued") {
+    return;
   }
   const now = Date.now();
-  const { measured } = transferring;
-  if (now - measured.at >= 1000) {
-    const rate = ((written - measured.received) * 1000) / (now - measured.at);
-    transferring.rate = rate >= 0 ? rate : null;
-    transferring.measured = { at: now, received: written };
+  const first = !live.has(progress.authorization);
+  const seen = live.get(progress.authorization) ?? {
+    received: progress.received,
+    size: progress.expected,
+    restarted: record.restarted,
+    rate: null,
+    measured: { at: now, received: progress.received },
+    savedAt: now,
+  };
+  // A request that didn't go on from what this one had starts from zero, and says so.
+  seen.restarted ||= progress.restarted || (!progress.resumed && record.received > 0);
+  if (now - seen.measured.at >= 1000) {
+    const rate = ((progress.received - seen.measured.received) * 1000) / (now - seen.measured.at);
+    seen.rate = rate >= 0 ? rate : null;
+    seen.measured = { at: now, received: progress.received };
   }
-  transferring.received = written;
-  transferring.size = total;
-  tellSoon();
-  if (now - transferring.savedAt >= SAVE_MS) {
-    transferring.savedAt = now;
+  seen.received = progress.received;
+  seen.size = progress.expected;
+  live.set(progress.authorization, seen);
+  // Its start is told at once: a short transfer may end before the next tick.
+  if (first) tell();
+  else tellSoon();
+  if (now - seen.savedAt >= SAVE_MS) {
+    seen.savedAt = now;
     try {
-      update(transferring.id, (latest) => ({
+      update(record.id, (latest) => ({
         ...latest,
-        received: written,
-        size: total,
-        restarted: transferring.restarted,
+        received: progress.received,
+        size: progress.expected,
+        restarted: seen.restarted,
       }));
     } catch {
       // Written down when it ends.
@@ -700,118 +541,86 @@ function moved({ attempt, received: written, expected: total }: Progress) {
   }
 }
 
-/** Hears a receipt: the transfer waiting for it takes it, or it is taken in on its own. */
-function heard(receipt: Receipt) {
-  const waiting = awaited.get(receipt.attempt);
-  if (waiting) {
-    awaited.delete(receipt.attempt);
-    waiting(receipt);
-  } else if (phase === "ready") {
-    void take(receipt, null)
-      .catch(() => undefined)
-      .finally(() => {
-        tell();
-        wake();
-      });
-  } else {
+/** Hears a receipt: taken in at once once the downloads are ready, else when they are. */
+function heard(receipt: ReceiptV2) {
+  if (phase !== "ready") {
     early.set(receipt.receipt, receipt);
+    return;
   }
-}
-
-/** Writes down how a transfer ended. */
-async function settle(transferring: Active, ending: Ending) {
-  switch (ending.kind) {
-    case "stopped":
-      return;
-    case "failed":
-      update(transferring.id, (latest) =>
-        latest.state === "queued"
-          ? {
-              ...latest,
-              received: transferring.received,
-              size: transferring.size,
-              restarted: transferring.restarted,
-              state: "failed",
-              failure: ending.failure,
-            }
-          : latest,
-      );
-      return;
-    case "ended":
-      return take(ending.receipt, transferring);
-  }
+  void take(receipt, true)
+    .catch(() => undefined)
+    .finally(() => {
+      tell();
+      refill();
+    });
 }
 
 /**
  * Takes a receipt in, then acknowledges it: written down first, so a receipt lost meanwhile is
- * found again and taken in once. Only the attempt a queued download authorized last changes it;
- * an older attempt's, or one of a download removed, finished or failed since, changes nothing.
+ * found again and taken in once. Only the authorization a record has now changes it, and only by
+ * a receipt newer than the last taken in; an older one, or one of a download removed since,
+ * changes nothing. `live`: heard as it happened, not found later.
  */
-async function take(receipt: Receipt, transferring: Active | null): Promise<void> {
+async function take(receipt: ReceiptV2, heardLive: boolean): Promise<void> {
   if (taking.has(receipt.receipt)) return;
   taking.add(receipt.receipt);
   try {
-    const record = find(receipt.id);
-    if (record?.state === "queued" && record.attempt === receipt.attempt) {
-      await apply(record, receipt.outcome, transferring);
-    }
-    await transfers.acknowledge([receipt.receipt]);
+    await reduce(receipt, heardLive);
+    await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
   } finally {
     taking.delete(receipt.receipt);
   }
 }
 
-/** Writes down what an attempt's end means for its download: a copy, a failure, or queued. */
-async function apply(record: Stored, outcome: Outcome, transferring: Active | null) {
+async function reduce(receipt: ReceiptV2, heardLive: boolean) {
+  if (receipt.outcome.kind === "paused") {
+    const view = known.get(receipt.authorization);
+    if (view) known.set(receipt.authorization, { ...view, state: "paused" });
+  } else known.delete(receipt.authorization);
+  const transfer = live.get(receipt.authorization);
+  live.delete(receipt.authorization);
+  const record = find(receipt.id);
+  const bound = record && boundOf(record);
+  if (!record || bound?.authorization !== receipt.authorization) return;
+  if (receipt.sequence <= bound.appliedSequence) return;
+  // A removal under way, or one this receipt says was asked, is finished by its own path before
+  // the receipt is acknowledged: a refused write leaves both for the next reconciliation.
+  const removal = removalOf(record);
+  if (receipt.outcome.kind === "cancelled" || typeof removal === "object") {
+    await removeRecord(record.id, typeof removal === "object" ? removal.reason : "user", receipt);
+    return;
+  }
+  const where = {
+    ...record,
+    received: receipt.received ?? transfer?.received ?? record.received,
+    size: receipt.expected ?? transfer?.size ?? record.size,
+    restarted: record.restarted || receipt.restarted || transfer?.restarted === true,
+  };
+  await apply(where, receipt.outcome, heardLive && foreground, {
+    ...bound,
+    appliedSequence: receipt.sequence,
+  });
+}
+
+/**
+ * Writes down what an authorization's end means for its download: a copy, a failure, queued
+ * under it still (paused), or queued for a new one. `inFront`: it ended in front of the viewer.
+ */
+async function apply(record: Stored, outcome: OutcomeV2, inFront: boolean, bound: Transfer | null) {
   const { id } = record;
-  const where = transferring
-    ? {
-        ...record,
-        received: transferring.received,
-        size: transferring.size,
-        restarted: transferring.restarted,
-      }
-    : record;
   const fail = (failure: StoredFailure) =>
-    update(id, () => ({ ...where, state: "failed", failure }));
-  const requeue = () => update(id, () => ({ ...withoutFailure(where), state: "queued" }));
+    update(id, () => ({ ...unbound(record), state: "failed", failure }));
+  const requeue = () => update(id, () => ({ ...unbound(record), state: "queued" }));
   switch (outcome.kind) {
-    case "complete": {
-      const media = mediaOf(record);
-      const bytes = media.exists ? (media.size ?? 0) : 0;
-      // Only what the native side moved into place, at the whole size announced, is a copy.
-      if (
-        bytes <= 0 ||
-        bytes !== outcome.size ||
-        (outcome.expected !== null && bytes !== outcome.expected)
-      ) {
-        if (media.exists) media.delete();
-        fail({
-          kind: "stream",
-          failure: { kind: "network", detail: "The file arrived incomplete." },
-        });
-        break;
-      }
-      missing.delete(id);
-      update(
-        id,
-        () => ({
-          ...withoutFailure(where),
-          state: "complete",
-          size: bytes,
-          received: bytes,
-          completedAt: Date.now(),
-        }),
-        true,
-      );
+    case "complete":
+      if (!completeCopy(record, outcome)) return tell();
       break;
-    }
     case "paused":
-      requeue();
+      // The same authorization goes on once its subscription's stream let go.
+      update(id, () => ({ ...withoutFailure(record), ...(bound ? { transfer: bound } : {}) }));
       break;
     case "cancelled":
-      if (transferring?.short != null) fail({ kind: "disk-full", needed: transferring.short });
-      else requeue();
+      requeue();
       break;
     case "refused":
       fail({ kind: "stream", failure: statusFailure(outcome.status) });
@@ -819,17 +628,24 @@ async function apply(record: Stored, outcome: Outcome, transferring: Active | nu
     case "folder":
       fail({ kind: "folder", detail: "The file couldn't be moved into its folder." });
       break;
+    case "disk-full":
+      fail({ kind: "disk-full", needed: outcome.needed });
+      break;
     case "network":
-      // Broken off while nobody watched (in the background, or with the app's process ended) or
-      // while this side stopped it: it goes on once the app is open, from where it broke when
-      // URLSession kept that. In front of the viewer, it fails, and its Retry goes on.
-      if (!transferring || transferring.stopping || !foreground) requeue();
+      // Broken off while nobody watched (in the background, or with the app's process ended):
+      // it goes on once the app is open, from where it broke when URLSession kept that. In front
+      // of the viewer, it fails, and its Retry goes on.
+      if (!inFront) requeue();
       else {
         const detail = OFFLINE.has(outcome.code)
           ? t("You seem to be offline.")
           : t("The connection to the provider failed.");
         fail({ kind: "stream", failure: { kind: "network", detail } });
       }
+      break;
+    case "refresh":
+      // The login it was authorized under is gone: asked again under the one signed in now.
+      requeue();
       break;
   }
   // Shown before the Keychain answers: until then a screen would still offer the transfer's
@@ -838,12 +654,185 @@ async function apply(record: Stored, outcome: Outcome, transferring: Active | nu
   if (outcome.kind === "complete") await forget(id);
 }
 
-function withoutFailure(record: Stored): Stored {
-  const { failure: _failure, ...rest } = record;
-  return rest;
+/**
+ * Writes a copy complete when the native side moved every byte into place at the whole size the
+ * server announced; else its file goes and it fails. Answers whether it is a copy.
+ */
+function completeCopy(
+  record: Stored,
+  outcome: { readonly size: number; readonly expected: number | null },
+) {
+  const media = mediaOf(record);
+  const bytes = media.exists ? (media.size ?? 0) : 0;
+  if (
+    bytes <= 0 ||
+    bytes !== outcome.size ||
+    (outcome.expected !== null && bytes !== outcome.expected)
+  ) {
+    if (media.exists) media.delete();
+    update(record.id, () => ({
+      ...unbound(record),
+      state: "failed",
+      failure: {
+        kind: "stream",
+        failure: { kind: "network", detail: "The file arrived incomplete." },
+      },
+    }));
+    return false;
+  }
+  missing.delete(record.id);
+  update(
+    record.id,
+    () => ({
+      ...unbound(record),
+      state: "complete",
+      size: bytes,
+      received: bytes,
+      completedAt: Date.now(),
+    }),
+    true,
+  );
+  return true;
+}
+
+/**
+ * Takes in a build-14 receipt with build 14's meanings: only a queued record's last attempt;
+ * a pause or a cancel queues it again.
+ */
+async function takeLegacy(receipt: LegacyReceipt) {
+  if (taking.has(receipt.receipt)) return;
+  taking.add(receipt.receipt);
+  try {
+    const record = find(receipt.id);
+    if (record?.state === "queued" && record.attempt === receipt.attempt && standing(record)) {
+      const { outcome } = receipt;
+      await apply(
+        record,
+        outcome.kind === "complete"
+          ? { kind: "complete", size: outcome.size, expected: outcome.expected }
+          : outcome.kind === "refused"
+            ? { kind: "refused", status: outcome.status }
+            : outcome.kind === "folder"
+              ? { kind: "folder" }
+              : { kind: "cancelled" },
+        false,
+        null,
+      );
+    }
+    await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
+  } finally {
+    taking.delete(receipt.receipt);
+  }
+}
+
+/** Takes in every receipt the native side kept, in order, build 14's first. */
+async function applyFacts(facts: {
+  readonly receipts: readonly ReceiptV2[];
+  readonly legacy: readonly LegacyReceipt[];
+}) {
+  for (const receipt of facts.legacy) await takeLegacy(receipt).catch(() => undefined);
+  const ordered = [...facts.receipts].toSorted((a, b) => a.sequence - b.sequence);
+  for (const receipt of ordered) await take(receipt, false).catch(() => undefined);
 }
 
 const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+// Removal: intent, fence, drop, then folder after actual closure.
+
+/** How removing one download ended. */
+type Removed =
+  /**
+   * Its record is gone, under a durable native fence. `saved` settles once the copy's final save
+   * of progress ended, if it played; `cleanup` once its folder went after its task and every
+   * reader actually closed, or `deferred` while one hasn't: the folder then goes later, never
+   * while a reader may still have it.
+   */
+  | {
+      readonly kind: "removed";
+      readonly saved: Promise<void>;
+      readonly cleanup: Promise<"closed" | "deferred">;
+    }
+  /** A copy that completed before its subscription's removal stays. */
+  | { readonly kind: "kept" }
+  /** Nothing to remove. */
+  | { readonly kind: "gone" };
+
+/** An intent's strength: an explicit removal replaces an automatic one, never the reverse. */
+const explicit = (reason: Reason) => reason !== "source-removed";
+
+/**
+ * Removes download `id` for `reason`, one removal of a record at a time: its intent is written
+ * first, its authorization fenced on the native side, then its record dropped. A complete copy
+ * stays for a subscription's removal. Rejects, its intent kept for the next reconciliation, when
+ * a write or the fence is refused. `fact` is the receipt that brought it here, if any.
+ */
+function removeRecord(id: string, reason: Reason, fact?: ReceiptV2): Promise<Removed> {
+  const before = removing.get(id);
+  const run = (before ?? Promise.resolve()).then(
+    () => removeNow(id, reason, fact),
+    () => removeNow(id, reason, fact),
+  );
+  const mine = run.finally(() => {
+    if (removing.get(id) === mine) removing.delete(id);
+  });
+  removing.set(id, mine);
+  return mine;
+}
+
+async function removeNow(id: string, asked: Reason, fact?: ReceiptV2): Promise<Removed> {
+  const record = find(id);
+  if (!record) return { kind: "gone" };
+  const transfer = transferOf(record);
+  if (transfer === "bad" && record.state !== "complete") {
+    throw new AppFailure({
+      kind: "unexpected",
+      detail: "This download's record is damaged, so it can't be removed safely yet.",
+    });
+  }
+  const now = removalOf(record);
+  const reason =
+    typeof now === "object" && !explicit(asked) && explicit(now.reason) ? now.reason : asked;
+  if (typeof now !== "object" || now.reason !== reason) {
+    update(id, (latest) => ({ ...latest, removal: { version: 1, reason } }));
+    tell();
+  }
+  let complete = record.state === "complete";
+  if (typeof transfer === "object") {
+    const fence = await transfers.cancelAuthorization(transfer.authorization, "remove");
+    // A completion committed before the fence wins an automatic removal.
+    const done = [...fence.receipts, ...(fact ? [fact] : [])].find(
+      (each) =>
+        each.authorization === transfer.authorization &&
+        each.outcome.kind === "complete" &&
+        each.sequence > transfer.appliedSequence,
+    );
+    const latest = find(id);
+    if (done?.outcome.kind === "complete" && latest && reason === "source-removed") {
+      const { removal: _removal, ...kept } = latest;
+      complete = completeCopy(kept, done.outcome);
+    }
+  }
+  const latest = find(id);
+  if (!latest) return { kind: "gone" };
+  if (reason === "source-removed" && complete) {
+    if (latest.removal !== undefined) {
+      update(id, ({ removal: _removal, ...rest }) => rest);
+    }
+    tell();
+    return { kind: "kept" };
+  }
+  drop(id);
+  if (reason === "source-removed" && latest.state !== "complete") ended++;
+  // Captured before Stop: every reader of the copy, the one playing, failed or still closing.
+  const readers = playbackReaders(copyKey(id));
+  const { phase } = playbackState.get();
+  // Failed too, so its Try again can't open the copy again. Stop queues its last save at once;
+  // its own promise also waits for reader closure, which `cleanup` follows instead.
+  if (phase.kind !== "idle" && phase.item.id === copyKey(id)) void stop();
+  const saved = progressSettled();
+  tell();
+  return { kind: "removed", saved, cleanup: clearFolder(id, readers) };
+}
 
 /**
  * Takes a download's record out at once, so nothing writes it back, with its resume data listed
@@ -858,18 +847,39 @@ function drop(id: string) {
   missing.delete(id);
 }
 
-/** After `drop`: its transfer stops, a copy that plays stops, and its resume data and folder go. */
-async function clear(id: string) {
-  const transferring = active?.id === id ? active : null;
-  if (transferring) {
-    halt(transferring, "cancel");
-    await transferring.over;
+/**
+ * After `drop`: once the native side has no task or publication of it and every reader captured
+ * has actually closed, its resume data and folder go. A closure that doesn't come in time leaves
+ * the folder for when it does, or for the next launch; one that fails or stays unknown never
+ * deletes it in this process.
+ */
+async function clearFolder(id: string, readers: readonly Promise<void>[]) {
+  closingFolders.add(id);
+  const closed = Promise.all([transfers.drainDownload(id), ...readers]);
+  const deadline = new Promise<"deferred">((resolve) =>
+    setTimeout(() => resolve("deferred"), CLOSE_MS),
+  );
+  const settled = await Promise.race([closed.then(() => "closed" as const), deadline]).catch(
+    () => "deferred" as const,
+  );
+  if (settled === "deferred") {
+    void closed.then(
+      () => deleteFolder(id),
+      () => undefined,
+    );
+    return "deferred";
   }
-  if (playingItem(playbackState.get().phase)?.id === copyKey(id)) stop();
+  await deleteFolder(id);
+  return "closed";
+}
+
+async function deleteFolder(id: string) {
+  if (find(id)) return;
   await forget(id);
   try {
     const folder = folderOf(id);
     if (folder.exists) folder.delete();
+    closingFolders.delete(id);
   } catch {
     // A folder no record names goes at the next launch.
   }
@@ -880,65 +890,26 @@ function endRemoved() {
   const roster = currentRoster();
   if (roster.kind !== "ready") return;
   const saved = new Set(roster.members.map((member) => member.entry.id));
-  const gone = doc.items.filter(
-    (record) => record.state !== "complete" && !saved.has(record.subscriptionId),
-  );
-  for (const record of gone) {
-    try {
-      drop(record.id);
-    } catch {
-      continue;
+  for (const record of doc.items) {
+    if (record.state !== "complete" && !saved.has(record.subscriptionId)) {
+      void removeRecord(record.id, "source-removed")
+        .catch(() => undefined)
+        .finally(tell);
     }
-    ended++;
-    void clear(record.id);
   }
 }
 
-/** Waits for the downloads to be ready; rejects, asking nothing, when they couldn't be. */
-async function whenReady(): Promise<void> {
-  startDownloads();
-  await readiness;
-  if (phase !== "ready") {
-    throw new AppFailure({
-      kind: "stream",
-      failure: {
-        kind: "network",
-        detail: t("A download still holds the provider's connection."),
-      },
-    });
+/** Finishes every removal an earlier run wrote down and couldn't finish. */
+async function finishRemovals() {
+  for (const record of doc.items) {
+    const removal = removalOf(record);
+    if (typeof removal === "object") {
+      await removeRecord(record.id, removal.reason).catch(() => undefined);
+    }
   }
 }
 
-/**
- * Gives a subscription's connection back to its stream: the transfer pauses, or is cancelled, and
- * the provider gets `RELEASE_MS` to free it. Rejects, so the stream fails without asking the
- * provider, when the transfer's request still hasn't ended, or the downloads aren't ready; the
- * stream's Try again asks again.
- */
-async function reclaim(subscriptionId: string): Promise<void> {
-  await whenReady();
-  const transferring = active;
-  if (transferring?.subscriptionId === subscriptionId) {
-    halt(transferring, "pause");
-    const closed = (ms: number) =>
-      Promise.race([transferring.closed.then(() => true), after(ms).then(() => false)]);
-    // Without a native attempt yet, a halted transfer asks the provider nothing.
-    if (transferring.attempt && !(await closed(RECLAIM_MS))) {
-      halt(transferring, "cancel");
-      if (!(await closed(RECLAIM_MS))) {
-        throw new AppFailure({
-          kind: "stream",
-          failure: {
-            kind: "network",
-            detail: t("A download still holds the provider's connection."),
-          },
-        });
-      }
-    }
-  }
-  const wait = freeing(subscriptionId);
-  if (wait > 0) await after(wait);
-}
+// Launch and the first foreground.
 
 /** Reads downloads.json; deletes what an earlier run listed to go. */
 function load() {
@@ -954,18 +925,20 @@ function load() {
   }
   doc = { items, forgetting: valid ? parsed.forgetting : [], unreadable };
   trusted = valid;
+  complete = read === null || valid;
   for (const id of doc.forgetting) void forget(id);
 }
 
 /** Deletes folders no entry names, left by a removal that couldn't finish. */
 function sweep() {
   if (!trusted) return;
-  // An entry this build can't read keeps its own.
+  // An entry this build can't read keeps its own; a folder a reader may still have stays.
   const named = new Set([
     ...doc.items.map((record) => record.id),
     ...doc.unreadable.flatMap((item) =>
       "id" in item && typeof item.id === "string" ? [item.id] : [],
     ),
+    ...closingFolders,
   ]);
   try {
     const root = new Directory(Paths.document, ROOT);
@@ -1014,44 +987,30 @@ async function migrate() {
 
 /** Takes in, oldest first, every receipt heard before the downloads were ready. */
 async function drain() {
-  for (const [key, receipt] of early) {
-    early.delete(key);
-    await take(receipt, null);
-  }
+  const heardEarly = [...early.values()];
+  early.clear();
+  await applyFacts({ receipts: heardEarly, legacy: [] });
 }
 
 /**
- * Accounts for every request and ending the native side has before anything else acts on
- * downloads: the request of a queued download's last attempt goes on as its transfer; any other
- * is cancelled and has ended; every receipt is taken in. Then resume data an earlier build kept
- * moves, folders no record names go, and removed subscriptions' downloads end.
+ * Takes in everything the native side kept before anything else acts on downloads: build 14's
+ * receipts, then every receipt in order. Then resume data an earlier build kept moves, folders no
+ * record names go, unfinished removals finish and removed subscriptions' downloads end.
  */
 async function prepare() {
   await rosterRead();
-  const { running, receipts, closed } = await transfers.reconcile();
-  for (const receipt of receipts) early.set(receipt.receipt, receipt);
-  // Requests that ended unheard, or that no attempt accounted for and were just ended.
-  let unwatched = receipts.length > 0 || closed > 0;
-  for (const each of running) {
-    if (active?.attempt === each.attempt) continue;
-    const record = find(each.id);
-    if (!active && record?.state === "queued" && record.attempt === each.attempt) {
-      adopt(record, each);
-    } else {
-      await transfers.cancel(each.attempt);
-      unwatched = true;
-    }
-  }
-  // When those requests ended isn't known: the providers get their time from now.
-  if (unwatched) releasedAll = Date.now();
+  const snapshot = await transfers.reconcile(foreground ? "ordinary" : "background");
+  known = new Map(snapshot.authorizations.map((each) => [each.authorization, each]));
+  await applyFacts(snapshot);
   await drain();
   await migrate();
   sweep();
+  void finishRemovals();
   endRemoved();
 }
 
-/** Prepares the downloads, then lets the queue go. */
-function prepareThenWake(): Promise<void> {
+/** Prepares the downloads, then, in the foreground, reconciles the first foreground. */
+function prepareThenGo(): Promise<void> {
   phase = "starting";
   return prepare()
     .then(drain)
@@ -1065,14 +1024,273 @@ function prepareThenWake(): Promise<void> {
     )
     .finally(() => {
       tell();
-      wake();
+      if (foreground) void firstForeground();
     });
 }
 
+/** Source ids a reset may start over: the saved subscriptions', the records' and the queue's. */
+function knownSourceIds(snapshot: Snapshot): string[] {
+  const ids = new Set([
+    ...members().map((member) => member.entry.id),
+    ...doc.items.map((record) => record.subscriptionId),
+    ...snapshot.sources,
+  ]);
+  return [...ids].filter((id) => id.length > 0 && id.length <= 128);
+}
+
 /**
- * At launch: reads the downloads, accounts for the native side's requests and endings, then
- * follows the subscriptions, the player and the app's state, starting the queue when it can.
- * Calling it again does nothing.
+ * Asks the account owner to bind each signed-in login to its download generation, once launch's
+ * passwords were read; a binding already asked for that exact login is waited for, not asked
+ * again. Each one settled tells the screens and refills the queue.
+ */
+async function bindLogins(): Promise<void> {
+  await launchSignIns();
+  await Promise.all(
+    members().flatMap((member) => {
+      const id = member.entry.id;
+      const source = currentSource(id);
+      if (!source || downloadGeneration(source) !== null) return [];
+      const asked = binding.get(source);
+      if (asked) return [asked];
+      const work = bindDownloadSource(id, source).finally(() => {
+        if (binding.get(source) === work) binding.delete(source);
+        tell();
+        refill();
+      });
+      binding.set(source, work);
+      return [work];
+    }),
+  );
+}
+
+/**
+ * The first foreground reconciliation of this process: under the native barrier, every receipt
+ * is taken in; a queue whose authority is damaged is started over once, its records' old
+ * authorizations and the logins' bindings let go of and bound again; unfinished removals finish;
+ * then the barrier ends and the queue is refilled. Refused or interrupted, it stays blocked, and
+ * is tried again at the next foreground; later foregrounds only refill.
+ */
+async function firstForeground(): Promise<void> {
+  if (barrier === "done") {
+    void bindLogins();
+    refill();
+    return;
+  }
+  if (barrier === "running" || phase !== "ready") return;
+  barrier = "running";
+  try {
+    let snapshot = await transfers.reconcile("first-foreground");
+    known = new Map(snapshot.authorizations.map((each) => [each.authorization, each]));
+    await applyFacts(snapshot);
+    let bound = false;
+    if (snapshot.blocked === "corrupt" && !repairTried) {
+      repairTried = true;
+      const reset = await transfers.resetQueue({
+        queueEpoch: snapshot.queueEpoch,
+        knownSourceIds: knownSourceIds(snapshot),
+      });
+      await applyFacts(reset);
+      // Every unfinished record's authorization was the old queue's: each is asked again.
+      for (const record of doc.items) {
+        if (record.state !== "complete" && record.transfer !== undefined) {
+          update(record.id, (latest) => ({
+            ...unbound(latest),
+            ...(latest.failure ? { failure: latest.failure } : {}),
+          }));
+        }
+      }
+      unbindDownloads();
+      binding = new WeakMap();
+      await bindLogins();
+      bound = true;
+      snapshot = await transfers.reconcile("first-foreground");
+      known = new Map(snapshot.authorizations.map((each) => [each.authorization, each]));
+      await applyFacts(snapshot);
+    }
+    const token = snapshot.foregroundToken;
+    if (token === null || ["corrupt", "locked", "recovering"].includes(snapshot.blocked)) {
+      barrier = "pending";
+      return;
+    }
+    await finishRemovals();
+    if (!bound) await bindLogins();
+    await transfers.finishForegroundReconcile(token);
+    barrier = "done";
+  } catch {
+    barrier = "pending";
+    return;
+  } finally {
+    tell();
+  }
+  refill();
+}
+
+// The queue's window of authorizations.
+
+/** Fills the native queue's window in the foreground, one refill at a time. */
+function refill() {
+  if (!foreground || barrier !== "done" || phase !== "ready") return;
+  if (filling) {
+    refillAgain = true;
+    return;
+  }
+  filling = fill()
+    .catch(() => undefined)
+    .finally(() => {
+      filling = null;
+      tell();
+      if (refillAgain) {
+        refillAgain = false;
+        refill();
+      }
+    });
+}
+
+async function fill() {
+  const snapshot = await transfers.reconcile("ordinary");
+  known = new Map(snapshot.authorizations.map((each) => [each.authorization, each]));
+  await applyFacts(snapshot);
+  const names = new Set(doc.items.flatMap((record) => boundOf(record)?.authorization ?? []));
+  for (const view of snapshot.authorizations) {
+    // Reserved, then never written on a record: its record went or this app stopped between.
+    if (view.state === "reserved" && !names.has(view.authorization)) {
+      await transfers.cancelAuthorization(view.authorization, "abandon").catch(() => undefined);
+    }
+  }
+  const pending = new Set(snapshot.receipts.map((receipt) => receipt.authorization));
+  for (const record of doc.items) {
+    const bound = boundOf(record);
+    // An authorization the queue no longer has, with nothing owed for it: asked anew.
+    if (
+      bound &&
+      record.state === "queued" &&
+      standing(record) &&
+      !known.has(bound.authorization) &&
+      !pending.has(bound.authorization)
+    ) {
+      update(record.id, (latest) => ({ ...unbound(latest), state: "queued" }));
+    }
+  }
+  let open = snapshot.authorizations.filter((view) => view.state !== "terminal").length;
+  for (const record of doc.items) {
+    if (open >= WINDOW || !foreground) break;
+    if (await authorize(record)) open++;
+  }
+}
+
+/**
+ * Reserves, writes down, then arms one exact file request for a queued record whose login is
+ * bound: only while its record, login and binding still stand once each answer came. A file left
+ * beside it from an attempt never written down as complete goes first.
+ */
+async function authorize(record: Stored): Promise<boolean> {
+  if (
+    record.state !== "queued" ||
+    !standing(record) ||
+    record.transfer !== undefined ||
+    held.has(record.id)
+  ) {
+    return false;
+  }
+  const source = currentSource(record.subscriptionId);
+  const generation = source ? downloadGeneration(source) : null;
+  if (!source || generation === null) return false;
+  const stands = () => {
+    const latest = find(record.id);
+    return (
+      latest?.state === "queued" &&
+      latest.transfer === undefined &&
+      standing(latest) &&
+      currentSource(record.subscriptionId) === source &&
+      downloadGeneration(source) === generation
+    );
+  };
+  const free = freeBytes();
+  const needed = record.size === null ? null : record.size - record.received;
+  if (needed !== null && free !== null && free < needed) {
+    update(record.id, (latest) => ({
+      ...latest,
+      state: "failed",
+      failure: { kind: "disk-full", needed },
+    }));
+    return false;
+  }
+  const file = await source.provider
+    .titleFile(record.title.kind, record.title.id, record.container, AbortSignal.timeout(20_000))
+    .catch((cause: unknown) => {
+      if (stands()) {
+        const detail = describeError(appError(cause));
+        update(record.id, (latest) => ({
+          ...latest,
+          state: "failed",
+          failure: { kind: "app", error: { kind: "unexpected", detail } },
+        }));
+      }
+      return null;
+    });
+  if (!file || !stands()) return false;
+  let authorization: string;
+  try {
+    authorization = await transfers.reserve({
+      id: record.id,
+      ext: extensionOf(record.container),
+      sourceId: record.subscriptionId,
+      sourceGeneration: generation,
+    });
+  } catch (cause) {
+    // A generation the queue no longer enables: bound again, then refilled.
+    if (refusalOf(cause) === "obsolete") {
+      unbindDownloads(source);
+      void bindLogins();
+    }
+    return false;
+  }
+  const abandon = () =>
+    transfers.cancelAuthorization(authorization, "abandon").then(
+      () => false,
+      () => false,
+    );
+  if (!stands()) return abandon();
+  try {
+    const folder = folderOf(record.id);
+    folder.create({ intermediates: true, idempotent: true });
+    // Left by an attempt never written down as complete: there is no proof it is whole.
+    const media = mediaOf(record);
+    if (media.exists) media.delete();
+    update(record.id, (latest) => {
+      const { attempt: _attempt, ...rest } = latest;
+      return {
+        ...rest,
+        transfer: { version: 2, authorization, sourceGeneration: generation, appliedSequence: 0 },
+      };
+    });
+  } catch (cause) {
+    await abandon();
+    update(record.id, (latest) => ({
+      ...latest,
+      state: "failed",
+      failure: { kind: "folder", detail: messageOf(cause) },
+    }));
+    return false;
+  }
+  tell();
+  try {
+    await transfers.authorize(authorization, { url: file.url, headers: { ...file.headers } });
+  } catch {
+    // Never armed: retired, and the record asked again at the next refill.
+    await abandon();
+    if (boundOf(find(record.id) ?? record)?.authorization === authorization) {
+      update(record.id, (latest) => ({ ...unbound(latest), state: "queued" }));
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * At launch: reads the downloads, takes in what the native side kept, then follows the
+ * subscriptions, the player and the app's state, refilling the queue in the foreground. Calling
+ * it again does nothing.
  */
 export function startDownloads(): void {
   if (started) return;
@@ -1083,37 +1301,50 @@ export function startDownloads(): void {
     // Shown empty; nothing is cleaned up.
   }
   look();
-  onReclaim(reclaim);
-  transfers.addListener("receipt", heard);
-  transfers.addListener("progress", moved);
+  onAdmission({
+    acquire: async (subscriptionId, lease) => {
+      if (!transfers.available()) return;
+      try {
+        await transfers.acquirePlayback(subscriptionId, lease);
+      } catch {
+        throw new AppFailure({
+          kind: "stream",
+          failure: {
+            kind: "network",
+            detail: t("A download still holds the provider's connection."),
+          },
+        });
+      }
+    },
+    release: (lease) => {
+      if (transfers.available()) void transfers.releasePlayback(lease).catch(() => undefined);
+    },
+  });
+  transfers.onReceipt(heard);
+  transfers.onProgress(moved);
   foreground = AppState.currentState === "active";
   AppState.addEventListener("change", (state) => {
     const now = state === "active";
     if (now === foreground) return;
     foreground = now;
-    // A transfer under way goes on in the background; the queue starts no other there.
+    // A transfer under way goes on in the background, and the native side starts the next.
     if (!foreground) return;
     look();
     tell();
-    if (phase === "failed") readiness = prepareThenWake();
-    else wake();
+    if (phase === "failed") void prepareThenGo();
+    else void firstForeground();
   });
-  playbackState.subscribe(() => {
-    const busy = borrowed();
-    // The provider gets its moment to free the connection from when playback let go of it.
-    for (const id of streaming) if (!busy.has(id)) released.set(id, Date.now());
-    streaming = busy;
-    if (active && busy.has(active.subscriptionId)) halt(active, "pause");
-    tell();
-    wake();
-  });
+  playbackState.subscribe(tell);
   onRoster(() => {
     if (phase === "ready") endRemoved();
     tell();
-    wake();
+    refill();
   });
+  // A login set or dropped is bound once launch's passwords were read, before or after the first
+  // foreground; a refused binding is asked again only at the next sign-in or foreground.
+  onSignedIn(() => void bindLogins());
   tell();
-  readiness = prepareThenWake();
+  void prepareThenGo();
 }
 
 /** The download of exactly this movie or episode of this subscription, if there is one. */
@@ -1149,11 +1380,11 @@ async function again(record: Stored, stands: Stands = always): Promise<Retried> 
     () => record.container,
   );
   const latest = find(record.id);
-  if (latest?.state !== "failed") return "unchanged";
+  if (latest?.state !== "failed" || !standing(latest)) return "unchanged";
   if (!stands()) return "stopped";
-  update(record.id, () => ({ ...withoutFailure(latest), container, state: "queued" }));
+  update(record.id, () => ({ ...unbound(latest), container, state: "queued" }));
   tell();
-  wake();
+  refill();
   return "queued";
 }
 
@@ -1203,7 +1434,7 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
   commit({ ...doc, items: [...doc.items, record] });
   void keepArtwork(record.id, kept.artwork);
   tell();
-  wake();
+  refill();
   return viewOf(record, new Map(members().map((m) => [m.entry.id, m.label])), borrowed());
 }
 
@@ -1215,20 +1446,74 @@ function newId(): string {
 }
 
 /**
- * Cancels an unfinished download or deletes a copy, with its files and resume data. A transfer
- * stops, and its request ends, before its files go. Rejects, changing nothing, when the record
- * can't be written.
+ * Cancels an unfinished download or deletes a copy, with its files and resume data: its
+ * authorization is fenced on the native side before its record goes, and its folder goes once
+ * its task and any player reading the copy actually closed, waited for a while. Rejects, its
+ * removal kept for the next launch to finish, when the record can't be written or the fence
+ * can't be made.
  */
 export async function removeDownload(id: string): Promise<void> {
-  const record = find(id);
-  if (!record) return;
-  // A copy has no request open; an unfinished download's may only be known once ready.
-  if (record.state !== "complete") await whenReady();
-  if (!find(id)) return;
-  drop(id);
-  await clear(id);
+  const removed = await removeRecord(id, "user");
   tell();
-  wake();
+  if (removed.kind === "removed") await removed.cleanup;
+  refill();
+}
+
+/** What removing a subscription's downloads for its reset established. */
+export interface Erased {
+  /**
+   * Whether every download of the subscription was known: downloads.json read as this build
+   * writes it, or absent, with no entry this build can't read that may be the subscription's.
+   */
+  readonly trusted: boolean;
+  /** Records gone, each under a durable native fence. */
+  readonly removed: number;
+  /** Records left with their removal written down, as a fence or a write was refused. */
+  readonly kept: number;
+  /** Settles once the removed copies' final saves of progress ended. */
+  readonly saved: Promise<void>;
+  /**
+   * Settles once every folder went after its task and readers actually closed, or `deferred`
+   * while one hasn't; such a folder goes later, never while a reader may still have it.
+   */
+  readonly cleanup: Promise<"closed" | "deferred">;
+}
+
+/**
+ * Removes every download of `subscriptionId`, copies too, for its reset: each record's intent is
+ * written, its authorization fenced, then its record dropped, and Watch showing one of its
+ * copies, failed or not, stops.
+ * Resolves once each record is gone or its intent written down; never waits for a task, a reader,
+ * the downloads' readiness or a binding, so an account change may await it. A record left keeps
+ * its intent: the next reconciliation finishes it, and never asks for it again.
+ */
+export async function eraseDownloads(
+  subscriptionId: string,
+  reason: "demo-reset",
+): Promise<Erased> {
+  const ids = doc.items
+    .filter((record) => record.subscriptionId === subscriptionId)
+    .map((r) => r.id);
+  const unknown = doc.unreadable.some(
+    (item) =>
+      !("subscriptionId" in item) ||
+      typeof item.subscriptionId !== "string" ||
+      item.subscriptionId === subscriptionId,
+  );
+  const settled = await Promise.allSettled(ids.map((id) => removeRecord(id, reason)));
+  const removed = settled.flatMap((each) =>
+    each.status === "fulfilled" && each.value.kind === "removed" ? [each.value] : [],
+  );
+  tell();
+  return {
+    trusted: complete && !unknown,
+    removed: removed.length,
+    kept: settled.filter((each) => each.status === "rejected").length,
+    saved: Promise.all(removed.map((each) => each.saved)).then(() => undefined),
+    cleanup: Promise.all(removed.map((each) => each.cleanup)).then((all) =>
+      all.includes("deferred") ? "deferred" : "closed",
+    ),
+  };
 }
 
 /**
@@ -1243,9 +1528,9 @@ export type Replaced =
 /**
  * Downloads a movie or an episode anew whose copy's file is gone: its record goes, with the
  * copy's own progress, then it is queued as `addDownload` queues it, only while `stands` still
- * holds once the removal ended. A removal that ended stays. A copy whose file is there after all
- * stays as it is. Rejects, changing nothing, while that copy is what Watch opens or plays: the
- * player may still read the file, so the viewer stops it first.
+ * holds once the removal and the old copy's readers ended. A removal that ended stays. A copy
+ * whose file is there after all stays as it is. Rejects, changing nothing, while that copy is
+ * what Watch opens or plays: the player may still read the file, so the viewer stops it first.
  */
 export async function replaceMissingDownload(
   ref: TitleRef,
@@ -1262,35 +1547,48 @@ export async function replaceMissingDownload(
     throw new AppFailure({ kind: "unexpected", detail: "Stop playing this copy first." });
   }
   // Checked and removed in one go: nothing plays it in between.
-  await removeDownload(record.id);
+  const removed = await removeRecord(record.id, "replace-missing");
+  tell();
+  const closed = removed.kind === "removed" ? await removed.cleanup : "closed";
   if (!stands()) return { kind: "stopped" };
+  if (closed === "deferred") {
+    throw new AppFailure({
+      kind: "unexpected",
+      detail: "The old copy is still closing. Try again.",
+    });
+  }
   if (doc.items.some((each) => sameTitle(each, ref))) return { kind: "unchanged" };
   // Asked at once: the login `addDownload` takes as it starts is the one `stands` just checked.
   return { kind: "replaced", download: await addDownload(ref) };
 }
 
 /**
- * Queues a failed download again, unless it is gone or no longer failed by the time its file type
- * is looked up, or `stands` no longer holds then.
+ * Queues a failed download again, unless it is gone, being removed or no longer failed by the
+ * time its file type is looked up, or `stands` no longer holds then.
  */
 export async function retryDownload(id: string, stands: Stands = always): Promise<Retried> {
   const record = find(id);
-  return record?.state === "failed" ? again(record, stands) : "unchanged";
+  return record?.state === "failed" && standing(record) ? again(record, stands) : "unchanged";
 }
+
+/** A complete copy that isn't being removed: the only kind that plays. */
+const playable = (record: Stored | undefined): record is Stored =>
+  record?.state === "complete" && removalOf(record) === undefined;
 
 /**
  * Plays a copy in Watch from where it was left, from the phone: no provider, login or network.
  * Where it was left is read once every save of progress asked before ended, so a position Close
- * or Stop just saved counts; anything the viewer asks meanwhile, or the copy going, cancels it.
- * Its progress stays with the copy, and goes to its subscription's viewing record too while that
- * subscription is saved (`keepProgress`). A copy whose file is gone fails in Watch as unavailable.
- * Manual Next follows only its saved immediate successor when that exact local copy is complete.
+ * or Stop just saved counts; anything the viewer asks meanwhile, the copy going or its removal
+ * being written down, cancels it. Its progress stays with the copy, and goes to its
+ * subscription's viewing record too while that subscription is saved (`keepProgress`). A copy
+ * whose file is gone fails in Watch as unavailable. Manual Next follows only its saved immediate
+ * successor when that exact local copy is complete.
  */
 export function playDownload(id: string): void {
   const asked = request();
   void progressSettled().then(() => {
     const record = find(id);
-    if (asked.stands() && record?.state === "complete") playCopy(id, record);
+    if (asked.stands() && playable(record)) playCopy(id, record);
   });
 }
 
@@ -1303,7 +1601,7 @@ function nextCopy(record: Stored): Stored | undefined {
   const ref: TitleRef = { ...edge.title, subscriptionId: record.subscriptionId };
   const copy = doc.items.find((each) => sameTitle(each, ref));
   if (
-    copy?.state === "complete" &&
+    playable(copy) &&
     copy.title.kind === "episode" &&
     copy.title.seriesId === record.title.seriesId &&
     copy.title.season === edge.title.season &&
@@ -1343,8 +1641,9 @@ function playCopy(id: string, record: Stored) {
   void play(
     item,
     async () => {
-      if (!media.exists) {
-        missing.add(id);
+      // A removal written down meanwhile, or done, closes the copy to new readers.
+      if (!playable(find(id)) || !media.exists) {
+        if (playable(find(id))) missing.add(id);
         tell();
         throw new AppFailure({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
       }
