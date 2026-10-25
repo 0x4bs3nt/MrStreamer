@@ -205,6 +205,8 @@ vi.mock("../src/storage.ts", () => ({ useSavedState: () => ({}), writeState: () 
 vi.mock("../src/titles.ts", () => ({
   useTitleLists: () => scenario.lists,
   useCollections: () => scenario.made,
+  useFileFacts: () => 0,
+  filterFilesOf: () => new Map(),
   useHolding: () => undefined,
   tilesOf: () => [],
 }));

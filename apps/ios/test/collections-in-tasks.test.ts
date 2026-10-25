@@ -90,6 +90,7 @@ vi.mock("../src/account.ts", async () => {
     readingSaved: () => false,
     onReadingSaved: () => () => undefined,
     onSavable: () => () => undefined,
+    savable: (id: string, source: unknown) => edges.sources.get(id) === source,
   };
 });
 vi.mock("../src/sources.ts", () => ({
@@ -1045,7 +1046,7 @@ describe("the collections Movies, Series, Home and details show", () => {
         await draw(React.createElement(CollectionScreen, { kind, id: "all" }));
         expect(container.textContent).toContain(`4 of 4 ${kind === "movie" ? "movies" : "series"}`);
         await click("Sort & filter");
-        expect(container.textContent).toContain("Unavailable. Verified track information");
+        expect(container.textContent).not.toContain("Known audio/subtitles");
         expect(container.textContent).toContain("provider name hints, not verified tracks");
         await click("4K · 2");
         await click("English · 1");

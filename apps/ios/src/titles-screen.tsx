@@ -22,8 +22,10 @@ import { store, useStore } from "./store.ts";
 import { useFixedTabBar } from "./tab-bar.ts";
 import {
   collectionSelection,
+  filterFilesOf,
   tilesOf,
   useCollections,
+  useFileFacts,
   useHolding,
   useTitleLists,
 } from "./titles.ts";
@@ -375,9 +377,11 @@ function CollectionGrid({
 }) {
   const lists = useTitleLists();
   const { choices, change } = useBrowseChoices(kind, id);
+  const factsRevision = useFileFacts();
+  const files = useMemo(() => filterFilesOf(kind), [kind, made, factsRevision]);
   const result = useMemo(
-    () => (made ? browseCollection(made, id, choices) : null),
-    [made, id, choices],
+    () => (made ? browseCollection(made, id, choices, files) : null),
+    [made, id, choices, files],
   );
   // Fresh handlers capture the current login; retained callbacks keep their old source fence.
   const selection = made ? collectionSelection(kind, made) : null;
@@ -396,7 +400,8 @@ function CollectionGrid({
       if (!mounted.current || !result || current.current !== result || !selection?.(title)) return;
       openDetails(
         title,
-        id === "4k" || Boolean(choices.filters.quality || choices.filters.language),
+        id === "4k" ||
+          Boolean(choices.filters.quality || choices.filters.language || choices.filters.verified),
       );
     },
     [result, selection, id, choices],
