@@ -376,7 +376,12 @@ export const transfers = {
     readonly queueEpoch: string;
     readonly knownSourceIds: readonly string[];
   }): Promise<Reset> => {
-    const body = await native().resetQueue({ ...scope, knownSourceIds: [...scope.knownSourceIds] });
+    // The native side refuses within fifteen seconds; this keeps a lost answer from holding the
+    // first foreground forever.
+    const body = await bounded(
+      native().resetQueue({ ...scope, knownSourceIds: [...scope.knownSourceIds] }),
+      20_000,
+    );
     const answer = typeof body === "object" && body !== null ? body : {};
     const epoch = "queueEpoch" in answer ? answer.queueEpoch : null;
     if (!("kind" in answer) || answer.kind !== "reset" || typeof epoch !== "string") {

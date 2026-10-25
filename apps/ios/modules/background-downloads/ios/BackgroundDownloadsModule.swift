@@ -140,15 +140,18 @@ private func answer(_ promise: Promise, _ result: Result<Void, Refusal>) {
 /**
  Makes the session as the app launches, before JavaScript, and takes iOS's wakes for it. A wake
  for any other session is answered at once: Expo calls the system's handler only once every
- subscriber answered. The app's first activation in a process puts up the queue's foreground
- barrier, which JavaScript's first foreground reconcile then finishes.
+ subscriber answered. The queue's foreground barrier, which JavaScript's first foreground
+ reconcile finishes, goes up before launch recovery could admit anything unless iOS launched the
+ app in the background, as for the session's own events, which go on without JavaScript; else at
+ the first activation. A scene-based app is expected to report `.inactive`, not `.background`,
+ while a launch the viewer sees finishes; that ordering is checked on a phone, not assumed proved.
  */
 public class BackgroundDownloadsLaunch: ExpoAppDelegateSubscriber {
   public func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
-    TransferOwner.shared.connect()
+    TransferOwner.shared.connect(foreground: application.applicationState != .background)
     let center = NotificationCenter.default
     center.addObserver(
       forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil

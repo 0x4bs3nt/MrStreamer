@@ -91,6 +91,17 @@ const refused = (code: string, message = "The downloads refused the command.") =
 
 const fresh = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 12)}`;
 
+/**
+ * Injected refusals: ledger writes; Keychain deletions; Keychain reads that don't answer, as
+ * before the first unlock; Keychain writes.
+ */
+const NO_FAULTS = {
+  ledger: false,
+  keychainDelete: false,
+  keychainUnavailable: false,
+  keychainWrite: false,
+};
+
 function initial() {
   return {
     // Durable: the queue file.
@@ -142,7 +153,20 @@ function initial() {
     /** While true, the queue's authority is damaged. */
     corrupt: false,
     /** Injected refusals: ledger writes, and Keychain deletions. */
-    faults: { ledger: false, keychainDelete: false },
+    faults: { ...NO_FAULTS },
+    /** A reset's final write waits for this, when set: a disk or Keychain that hasn't answered. */
+    resetHold: null as Promise<void> | null,
+    /** How long a reset may take before it is refused, its I/O left to settle. */
+    resetDeadlineMs: 15_000,
+    /** A reset's I/O still unresolved: admission and another reset wait for it. */
+    resetting: false,
+    /** A finished file whose publication the Keychain deferred, in its part file still. */
+    deferred: null as null | {
+      readonly id: string;
+      readonly task: Task;
+      readonly part: string;
+      readonly whole: number | null;
+    },
     /** What the native side did, in order: `start:<id>`, `end:<id>`, `receipt:<id>:<kind>`. */
     events: [] as string[],
 
@@ -215,6 +239,8 @@ function initial() {
     },
     /** Starts over, for a fresh install. */
     reset() {
+      // A deferred file's slot goes with the install it belonged to.
+      if (background.deferred) background.task = null;
       Object.assign(background, {
         install: fresh("q"),
         sequence: 0,
@@ -222,7 +248,11 @@ function initial() {
         unavailable: false,
         corrupt: false,
         down: false,
-        faults: { ledger: false, keychainDelete: false },
+        faults: { ...NO_FAULTS },
+        resetHold: null,
+        resetDeadlineMs: 15_000,
+        resetting: false,
+        deferred: null,
       });
       for (const each of [
         background.sources,
@@ -299,12 +329,19 @@ const load = () => {
   };
 };
 
-/** Whether `id`'s authority still stands: enabled ledger generation, anchor and request item. */
-function authorized(id: string, grant: Grant): "valid" | "source" | "request" | "gone" {
+/**
+ * Whether `id`'s authority still stands: enabled ledger generation, anchor and request item. A
+ * Keychain that doesn't answer is `unavailable`, never missing.
+ */
+function authorized(
+  id: string,
+  grant: Grant,
+): "valid" | "source" | "request" | "gone" | "unavailable" {
   if (grant.state === "terminal" || background.removed.has(id)) return "gone";
   if (background.fenced.has(grant.sourceId)) return "gone";
   const source = background.sources.get(grant.sourceId);
   if (source?.state !== "enabled" || source.generation !== grant.sourceGeneration) return "gone";
+  if (background.faults.keychainUnavailable) return "unavailable";
   const anchor = background.anchors.get(grant.sourceId);
   if (anchor?.epoch !== background.install || anchor.generation !== grant.sourceGeneration) {
     return "source";
@@ -345,7 +382,10 @@ function pump() {
   const b = background;
   if (b.down) return;
   recover();
-  if (b.task || b.admitting || b.strays.size > 0 || b.corrupt || b.unavailable) return;
+  if (b.deferred) return retryDeferred();
+  if (b.task || b.admitting || b.strays.size > 0 || b.corrupt || b.unavailable || b.resetting) {
+    return;
+  }
   if (b.barrier.kind === "installed") return;
   const { open, receipts } = load();
   if (open + receipts >= 128) return;
@@ -370,6 +410,11 @@ function admit(id: string, grant: Grant) {
   const b = background;
   if (b.admitting !== id) return;
   const verdict = authorized(id, grant);
+  // Unreadable: no request, fresh or resumed, until a later legitimate trigger.
+  if (verdict === "unavailable") {
+    b.admitting = null;
+    return;
+  }
   if (verdict !== "valid") {
     b.admitting = null;
     if (verdict === "request") {
@@ -391,6 +436,11 @@ function admit(id: string, grant: Grant) {
         ? legacy.data
         : null;
   if (resumeData) {
+    // Made this authorization's own first; a Keychain that won't take it defers admission.
+    if (b.faults.keychainWrite) {
+      b.admitting = null;
+      return;
+    }
     b.resume.set(grant.id, { ...request, authorization: id, data: resumeData });
     b.legacy.delete(grant.id);
   }
@@ -466,9 +516,15 @@ function finish(task: Task, grant: Grant | null, outcome: OutcomeV2 | null) {
       grant.fresh === 1 &&
       ((outcome.kind === "refused" && (outcome.status === 412 || outcome.status === 416)) ||
         (outcome.kind === "network" && outcome.code === -3001));
-    if (refusedResume) {
+    const owned = b.resume.get(grant.id)?.authorization === id || !b.resume.has(grant.id);
+    if (refusedResume && (b.faults.keychainDelete || !owned)) {
+      // The refused bytes can't go: ended, for an explicit Retry, never started again on them.
+      grant.state = "terminal";
+      record(id, grant, { kind: "refresh", reason: "resume-unusable" }, task);
+      b.requests.delete(id);
+    } else if (refusedResume) {
       // Its refused resume data goes first, then the same authorization starts from nothing.
-      if (b.resume.get(grant.id)?.authorization === id) b.resume.delete(grant.id);
+      b.resume.delete(grant.id);
       grant.restarted = true;
       grant.fresh = 0;
       grant.state = "queued";
@@ -567,18 +623,16 @@ function transfer(
           });
         }
         if (whole !== null && written !== whole) throw new Error("The connection was lost.");
-        const folder = folderOf(grant.id);
-        const media = join(folder, `media.${grant.ext}`);
-        if (authorized(id, grant) !== "valid") {
-          rmSync(part, { force: true });
-          outcome = { kind: "refresh", reason: "secret-missing" };
-        } else if (!existsSync(folder) || !statSync(folder).isDirectory() || existsSync(media)) {
-          outcome = { kind: "folder" };
-        } else {
-          const size = statSync(part).size;
-          renameSync(part, media);
-          outcome = { kind: "complete", size, expected: whole };
+        const published = publishPart(id, grant, part, whole);
+        if (published === "later") {
+          // The Keychain didn't answer: every byte stays, the slot with it, for a later trigger.
+          // Its request did end: what waits for that closure goes on.
+          native.open--;
+          background.deferred = { id, task, part, whole };
+          task.settle();
+          return;
         }
+        outcome = published;
       }
     } catch (cause) {
       const kept =
@@ -603,6 +657,43 @@ function transfer(
     native.open--;
     finish(task, background.grants.get(id) ?? null, outcome);
   })();
+}
+
+/**
+ * Publishes a finished part file under authority read now: in place and complete; refused when
+ * that authority is positively gone; `later` while the Keychain doesn't answer.
+ */
+function publishPart(
+  id: string,
+  grant: Grant,
+  part: string,
+  whole: number | null,
+): OutcomeV2 | "later" {
+  const folder = folderOf(grant.id);
+  const media = join(folder, `media.${grant.ext}`);
+  const verdict = authorized(id, grant);
+  if (verdict === "unavailable") return "later";
+  if (verdict !== "valid") {
+    rmSync(part, { force: true });
+    return { kind: "refresh", reason: verdict === "source" ? "source" : "secret-missing" };
+  }
+  if (!existsSync(folder) || !statSync(folder).isDirectory() || existsSync(media)) {
+    return { kind: "folder" };
+  }
+  const size = statSync(part).size;
+  renameSync(part, media);
+  return { kind: "complete", size, expected: whole };
+}
+
+/** A deferred publication, tried again on a later trigger. */
+function retryDeferred() {
+  const deferred = background.deferred;
+  if (!deferred) return;
+  const grant = background.grants.get(deferred.id) ?? null;
+  const published = grant ? publishPart(deferred.id, grant, deferred.part, deferred.whole) : null;
+  if (published === "later") return;
+  background.deferred = null;
+  finish(deferred.task, grant, published);
 }
 
 /** Stops the slot's task of `sourceId`, or every task: a pause or a cancel, honoring held endings. */
@@ -666,6 +757,17 @@ function observe(sourceId: string) {
         expected: { queueEpoch: epoch, expected: source.generation },
       }
     : { state: "fenced", generation: token, expected: { queueEpoch: epoch, expected: token } };
+}
+
+/** Deletes a source's whole Keychain service: its anchor, request items and resume data. */
+function clearService(sourceId: string) {
+  background.anchors.delete(sourceId);
+  for (const [id, request] of background.requests) {
+    if (request.sourceId === sourceId) background.requests.delete(id);
+  }
+  for (const [download, resume] of background.resume) {
+    if (resume.sourceId === sourceId) background.resume.delete(download);
+  }
 }
 
 /** Ends `sourceId`'s unfinished authorizations of another generation than `keeping`. */
@@ -747,6 +849,9 @@ const module = {
     }
     if (seen.state === "enabled") return { generation: seen.generation };
     const generation = fresh("g");
+    // Not enabled: everything in its service is an older generation's, and goes first.
+    if (background.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+    clearService(command.sourceId);
     background.anchors.set(command.sourceId, { epoch: background.install, generation });
     if (!write()) throw refused("ERR_DOWNLOADS_UNAVAILABLE");
     background.sources.set(command.sourceId, { generation, state: "enabled" });
@@ -775,20 +880,12 @@ const module = {
       background.sources.set(source, { generation: fresh("g"), state: "revoked" });
       endSource(source, null);
       cancel();
-      for (const [id, grant] of background.grants) {
-        if (grant.sourceId === source && grant.state === "terminal") background.requests.delete(id);
-      }
-      background.anchors.delete(source);
+      // The fence is durable; the revoked source's whole service goes after it.
+      if (!background.faults.keychainDelete) clearService(source);
       return { ...fenceOf("ledger"), source: observe(source) };
     }
     if (background.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
-    background.anchors.delete(source);
-    for (const [id, request] of background.requests) {
-      if (request.sourceId === source) background.requests.delete(id);
-    }
-    for (const [download, resume] of background.resume) {
-      if (resume.sourceId === source) background.resume.delete(download);
-    }
+    clearService(source);
     background.fenced.add(source);
     cancel();
     return { ...fenceOf("secrets"), source: observe(source) };
@@ -841,7 +938,11 @@ const module = {
       url: request.url,
       headers: { ...request.headers },
     });
-    if (!write()) throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+    if (!write()) {
+      // Never armed: the request item just written goes with it.
+      background.requests.delete(request.authorization);
+      throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+    }
     grant.state = "queued";
     pump();
   },
@@ -853,6 +954,7 @@ const module = {
     if (reason === "abandon") {
       if (grant.state !== "reserved") throw refused("ERR_DOWNLOADS_INVALID");
       background.grants.delete(authorization);
+      background.requests.delete(authorization);
       return { durable: "ledger" };
     }
     if (grant.state === "terminal") return fenceOf("already-terminal", authorization);
@@ -952,44 +1054,66 @@ const module = {
     throw refused("ERR_DOWNLOADS_OBSOLETE");
   },
 
+  /**
+   * Corrupt only. One operation: its deadline covers the drain and the final write, refusing the
+   * caller while either is pending; a write already started keeps the reset gate until it settles,
+   * then applies late without a second reset.
+   */
   async resetQueue(scope: { queueEpoch: string; knownSourceIds: string[] }) {
     const b = background;
     b.events.push("reset-attempt");
-    if (scope.queueEpoch !== (b.corrupt || b.unavailable ? "q-process" : b.install)) {
-      throw refused("ERR_DOWNLOADS_OBSOLETE");
+    if (b.resetting) throw refused("ERR_DOWNLOADS_BUSY");
+    if (!b.corrupt) throw refused("ERR_DOWNLOADS_OBSOLETE");
+    if (scope.queueEpoch !== "q-process") throw refused("ERR_DOWNLOADS_OBSOLETE");
+    b.resetting = true;
+    let answered = false;
+    const operation = (async () => {
+      const task = b.task;
+      if (task) {
+        stopTask(task, "cancel");
+        if (!(await within(task.ended, 10_000))) throw refused("ERR_DOWNLOADS_UNKNOWN_CLOSURE");
+      }
+      if (answered) return null;
+      await b.resetHold;
+      if (b.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+      for (const source of scope.knownSourceIds) clearService(source);
+      b.legacy.clear();
+      b.install = fresh("q");
+      b.grants.clear();
+      b.sources.clear();
+      for (const source of scope.knownSourceIds) {
+        b.sources.set(source, { generation: fresh("g"), state: "revoked" });
+      }
+      b.corrupt = false;
+      b.removed.clear();
+      b.fenced.clear();
+      b.events.push(answered ? "reset-late" : "reset");
+      return {
+        kind: "reset",
+        queueEpoch: b.install,
+        preservedReceipts: [...b.receipts],
+        legacy: [...b.legacyReceipts],
+        unreadableFacts: false,
+        legacyCleanup: "complete",
+        cleanupScope: "known-sources-only",
+      };
+    })().finally(() => {
+      b.resetting = false;
+      pump();
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(refused("ERR_DOWNLOADS_BUSY")), b.resetDeadlineMs);
+    });
+    try {
+      const result = await Promise.race([operation, deadline]);
+      if (!result) throw refused("ERR_DOWNLOADS_BUSY");
+      return result;
+    } finally {
+      answered = true;
+      clearTimeout(timer);
+      void operation.catch(() => undefined);
     }
-    const task = b.task;
-    if (task) {
-      stopTask(task, "cancel");
-      if (!(await within(task.ended, 10_000))) throw refused("ERR_DOWNLOADS_UNKNOWN_CLOSURE");
-    }
-    if (b.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
-    for (const source of scope.knownSourceIds) {
-      b.anchors.delete(source);
-      for (const [id, request] of b.requests)
-        if (request.sourceId === source) b.requests.delete(id);
-      for (const [id, resume] of b.resume) if (resume.sourceId === source) b.resume.delete(id);
-    }
-    b.legacy.clear();
-    b.install = fresh("q");
-    b.grants.clear();
-    b.sources.clear();
-    for (const source of scope.knownSourceIds) {
-      b.sources.set(source, { generation: fresh("g"), state: "revoked" });
-    }
-    b.corrupt = false;
-    b.removed.clear();
-    b.fenced.clear();
-    b.events.push("reset");
-    return {
-      kind: "reset",
-      queueEpoch: b.install,
-      preservedReceipts: [...b.receipts],
-      legacy: [...b.legacyReceipts],
-      unreadableFacts: false,
-      legacyCleanup: "complete",
-      cleanupScope: "known-sources-only",
-    };
   },
 
   async acknowledge(receipts: readonly string[]) {

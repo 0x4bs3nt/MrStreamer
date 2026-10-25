@@ -271,6 +271,11 @@ let known = new Map<string, AuthorizationView>();
 const early = new Map<string, ReceiptV2>();
 /** Receipts being taken in, by receipt: an event and a reconcile may bring the same one. */
 const taking = new Set<string>();
+/**
+ * Receipts the native side kept that couldn't be written down yet, by download: nothing asks for
+ * such a download again, nor deletes its file, until each is.
+ */
+const owed = new Map<string, Set<string>>();
 /** Downloads whose earlier build's resume data couldn't be read: they wait for the next launch. */
 const held = new Set<string>();
 /** Removals under way, by download: one at a time for a record. */
@@ -565,10 +570,28 @@ async function take(receipt: ReceiptV2, heardLive: boolean): Promise<void> {
   if (taking.has(receipt.receipt)) return;
   taking.add(receipt.receipt);
   try {
-    await reduce(receipt, heardLive);
+    await written(receipt.id, receipt.receipt, reduce(receipt, heardLive));
     await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
   } finally {
     taking.delete(receipt.receipt);
+  }
+}
+
+/** Settles as `work` does, keeping download `id` owed `receipt` while what it writes is refused. */
+async function written(id: string, receipt: string, work: Promise<void>) {
+  let refused = false;
+  try {
+    await work;
+  } catch (cause) {
+    refused = true;
+    throw cause;
+  } finally {
+    // Read as it stands now: another receipt of the same download may have settled meanwhile.
+    const pending = owed.get(id) ?? new Set<string>();
+    if (refused) pending.add(receipt);
+    else pending.delete(receipt);
+    if (pending.size > 0) owed.set(id, pending);
+    else owed.delete(id);
   }
 }
 
@@ -644,8 +667,20 @@ async function apply(record: Stored, outcome: OutcomeV2, inFront: boolean, bound
       }
       break;
     case "refresh":
-      // The login it was authorized under is gone: asked again under the one signed in now.
-      requeue();
+      if (outcome.reason === "resume-unusable") {
+        // The server refused its resume data and the phone couldn't let go of it: only the
+        // viewer's Retry asks again, never the queue on its own.
+        fail({
+          kind: "stream",
+          failure: {
+            kind: "network",
+            detail: "The download couldn't go on from where it stopped.",
+          },
+        });
+      } else {
+        // The login it was authorized under is gone: asked again under the one signed in now.
+        requeue();
+      }
       break;
   }
   // Shown before the Keychain answers: until then a screen would still offer the transfer's
@@ -706,17 +741,22 @@ async function takeLegacy(receipt: LegacyReceipt) {
     const record = find(receipt.id);
     if (record?.state === "queued" && record.attempt === receipt.attempt && standing(record)) {
       const { outcome } = receipt;
-      await apply(
-        record,
-        outcome.kind === "complete"
-          ? { kind: "complete", size: outcome.size, expected: outcome.expected }
-          : outcome.kind === "refused"
-            ? { kind: "refused", status: outcome.status }
-            : outcome.kind === "folder"
-              ? { kind: "folder" }
-              : { kind: "cancelled" },
-        false,
-        null,
+      // A refused write keeps the copy's file and its receipt for the next try.
+      await written(
+        record.id,
+        receipt.receipt,
+        apply(
+          record,
+          outcome.kind === "complete"
+            ? { kind: "complete", size: outcome.size, expected: outcome.expected }
+            : outcome.kind === "refused"
+              ? { kind: "refused", status: outcome.status }
+              : outcome.kind === "folder"
+                ? { kind: "folder" }
+                : { kind: "cancelled" },
+          false,
+          null,
+        ),
       );
     }
     await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
@@ -1188,7 +1228,8 @@ async function authorize(record: Stored): Promise<boolean> {
     record.state !== "queued" ||
     !standing(record) ||
     record.transfer !== undefined ||
-    held.has(record.id)
+    held.has(record.id) ||
+    owed.has(record.id)
   ) {
     return false;
   }

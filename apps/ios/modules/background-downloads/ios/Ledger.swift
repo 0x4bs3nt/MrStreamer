@@ -311,11 +311,20 @@ struct Salvage {
   var raw: Data?
 }
 
+/**
+ A damaged queue read field by field and entry by entry: a field of the wrong shape, or one bad
+ entry, leaves every other readable. A decoded optional `Failable` never throws, so `Pieces`
+ decodes for any JSON object.
+ */
 private struct Pieces: Decodable {
-  let sources: [String: Failable<SourceAuthority>]?
-  let authorizations: [String: Failable<Grant>]?
-  let receipts: [Failable<ReceiptV2>]?
-  let legacy: Failable<LegacyFacts>?
+  let sources: Failable<[String: Failable<SourceAuthority>]>?
+  let authorizations: Failable<[String: Failable<Grant>]>?
+  let receipts: Failable<[Failable<ReceiptV2>]>?
+  let legacy: Failable<LegacyPieces>?
+}
+
+private struct LegacyPieces: Decodable {
+  let receipts: Failable<[Failable<Receipt>]>?
 }
 
 /**
@@ -365,21 +374,33 @@ struct LedgerFile {
     return .corrupt(salvage(data))
   }
 
-  /** Every fact of a damaged queue that reads on its own. */
+  /**
+   Every fact of a damaged queue that reads on its own: receipts, v2 and build 14's, each entry by
+   itself, and the source ids it names, for the scope of a reset. Nothing of it is authority.
+   `unreadable` says whether any field or entry, receipts or not, couldn't be read.
+   */
   private func salvage(_ data: Data) -> Salvage {
     var found = Salvage(raw: data)
     guard let pieces = try? JSONDecoder().decode(Pieces.self, from: data) else { return found }
-    let receipts = pieces.receipts ?? []
+    let receipts = pieces.receipts?.value ?? []
     found.receipts = receipts.compactMap(\.value).filter(\.valid)
-    found.legacy = pieces.legacy?.value?.receipts ?? []
-    found.sources = Array((pieces.sources ?? [:]).keys.filter(Names.isSource))
-    for grant in (pieces.authorizations ?? [:]).values.compactMap(\.value)
+    let legacy = pieces.legacy?.value?.receipts?.value ?? []
+    found.legacy = legacy.compactMap(\.value).filter { Names.isReceipt($0.receipt) }
+    let sources = pieces.sources?.value ?? [:]
+    found.sources = Array(sources.keys.filter(Names.isSource))
+    let grants = pieces.authorizations?.value ?? [:]
+    for grant in grants.values.compactMap(\.value)
     where Names.isSource(grant.sourceId) && !found.sources.contains(grant.sourceId) {
       found.sources.append(grant.sourceId)
     }
+    let fields: [Bool?] = [
+      pieces.sources.map { $0.value != nil }, pieces.authorizations.map { $0.value != nil },
+      pieces.receipts.map { $0.value != nil }, pieces.legacy.map { $0.value != nil },
+    ]
     found.unreadable =
-      found.receipts.count != receipts.count || pieces.legacy?.value == nil
-      || (pieces.authorizations ?? [:]).values.contains { $0.value == nil }
+      fields.contains(false) || pieces.receipts == nil
+      || found.receipts.count != receipts.count || found.legacy.count != legacy.count
+      || sources.values.contains { $0.value == nil } || grants.values.contains { $0.value == nil }
     return found
   }
 

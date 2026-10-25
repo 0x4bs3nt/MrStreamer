@@ -349,13 +349,20 @@ Each responsibility has one owner, a plain module with a store the screens read:
   lists, Live and artwork never wait on it and a failed binding holds back downloads alone. A new
   password or a removal first fences the subscription's downloads durably, in the native ledger or
   by deleting its Keychain items, without waiting for a transfer to end; when neither can be made
-  the change is refused. Only an authorization's own receipt changes its record, once, by its
+  the change is refused. After a ledger fence the subscription's whole Keychain service goes too,
+  requests and resume data of reservations never armed included, or at the next reconcile. Only an
+  authorization's own receipt changes its record, once, by its
   sequence, and is acknowledged once written down. A pause for playback keeps the same
   authorization; a request that breaks in front of the viewer fails, and Retry goes on from its
   resume data; one that breaks while nobody watched waits for the app to be open. When the server
-  refuses resume data, the native side deletes it and starts once more from nothing, and says so.
-  The first time the app is open in a process, every receipt is taken in, unfinished removals
-  finish and logins are bound before anything new starts; a native queue whose authority is damaged
+  refuses resume data, the native side deletes it and starts once more from nothing, and says so;
+  when the phone can't delete it, the download fails, and only Retry asks again. A Keychain that
+  doesn't answer, as before the first unlock, never counts as a missing login: a finished file
+  waits with every byte, and nothing starts in place of resume data it couldn't read, until a later
+  reconcile. The first time the app is open in a process, every receipt is taken in, unfinished
+  removals finish and logins are bound before anything new starts, a launch the viewer sees
+  holding the native queue from its first moment; a receipt that can't be written down keeps its
+  file and holds its download back until it is; a native queue whose authority is damaged
   is started over once then, keeping copies, records and logins, and a locked or full one never is.
   A stream of the same subscription takes the connection first with a lease of this process
   (`onAdmission` in `playback.ts`): the transfer pauses, then is cancelled, and the stream waits for

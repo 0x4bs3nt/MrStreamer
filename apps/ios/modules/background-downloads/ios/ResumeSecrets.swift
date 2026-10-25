@@ -113,6 +113,21 @@ struct Vault {
     return remove(service, Self.account(resume: download))
   }
 
+  /**
+   Deletes a download's resume data only while `owner` owns it, for a refused resume: true once
+   that exact item, or one that doesn't decode, is gone. Another owner's item is not this one's
+   refused bytes, so it answers false, as a Keychain that won't answer does.
+   */
+  func removeOwnedResume(_ source: String, _ download: String, owner: String) -> Bool {
+    let service = Self.service(source)
+    let found: Read<Resume> = read(service, Self.account(resume: download))
+    switch found {
+    case .found(let resume) where resume.authorization != owner: return false
+    case .unavailable: return false
+    case .found, .missing: return remove(service, Self.account(resume: download))
+    }
+  }
+
   /** Deletes the source's whole service: its anchor, requests and resume data. */
   func removeSource(_ source: String) -> Bool { remove(Self.service(source), nil) }
 

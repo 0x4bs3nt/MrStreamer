@@ -1657,11 +1657,11 @@ describe("the native queue's contract", { timeout: 40_000 }, () => {
     await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
     // Neither the ledger nor the Keychain can fence it: the change is refused, nothing changes.
     const before = sources.currentSource(a);
-    background.faults = { ledger: true, keychainDelete: true };
+    background.faults = { ...background.faults, ledger: true, keychainDelete: true };
     await expect(app.update(a, { password: ONE.password })).rejects.toThrow();
     expect(sources.currentSource(a)).toBe(before);
     expect(statusOf(app, film.id)?.kind).toBe("transferring");
-    background.faults = { ledger: false, keychainDelete: false };
+    background.faults = { ...background.faults, ledger: false, keychainDelete: false };
     await app.update(a, { password: ONE.password });
     expect(sources.currentSource(a)).not.toBe(before);
     one.stallMovieFile(movie().id, 0, 0);
@@ -1955,5 +1955,212 @@ describe("the native queue's contract", { timeout: 40_000 }, () => {
     appGoes("active");
     await until(() => isComplete(app, film.id), "the copy once the queue reads");
     expect(background.events).not.toContain("reset");
+  });
+});
+
+/** Pauses `film`'s transfer for a stream of its provider, keeping resume data, then stops it. */
+async function pausedWithResume(app: App, a: string, film: Download) {
+  playFilm(app, a, otherMovie().id);
+  await until(() => memory.played.at(-1)?.status != null, "the film");
+  await until(() => nativeSecrets().includes(film.id), "the transfer's resume data");
+  return background.resume.get(film.id)!;
+}
+
+describe("the native queue's corrections", { timeout: 40_000 }, () => {
+  it("keeps a finished file while the Keychain doesn't answer, and publishes it once it does", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 1_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    background.faults.keychainUnavailable = true;
+    await until(() => background.deferred !== null, "the finished file to wait for the Keychain");
+    await sleep(300);
+    // Unreadable isn't missing: no failure, no refresh, no second request.
+    expect(background.receipts).toEqual([]);
+    expect(doc().items[0]).toMatchObject({ id: film.id, state: "queued" });
+    expect(native.requests).toHaveLength(1);
+    background.faults.keychainUnavailable = false;
+    appGoes("background");
+    appGoes("active");
+    await until(() => isComplete(app, film.id), "the copy once the Keychain answers");
+    expect(native.requests).toHaveLength(1);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+  });
+
+  it("starts a refused resume again only on the viewer's Retry when its resume data can't be deleted", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    const kept = await pausedWithResume(app, a, film);
+    // The file the resume data names is gone: the server-side resume is refused.
+    const { part } = JSON.parse(Buffer.from(kept.data, "base64").toString()) as { part: string };
+    new DiskFile(part).delete();
+    background.faults.keychainDelete = true;
+    one.stallMovieFile(movie().id, 0, 0);
+    await app.stop();
+    await until(() => statusOf(app, film.id)?.kind === "failed", "the refused resume to fail");
+    expect(statusOf(app, film.id)).toMatchObject({
+      kind: "failed",
+      failure: { kind: "stream", failure: { kind: "network" } },
+    });
+    const asked = native.requests.length;
+    appGoes("background");
+    appGoes("active");
+    await sleep(1_500);
+    // Not asked again on its own, though the queue refilled.
+    expect(native.requests).toHaveLength(asked);
+    background.faults.keychainDelete = false;
+    await app.retryDownload(film.id);
+    await until(() => isComplete(app, film.id), "the copy after Retry");
+    // Retry's resumed request is refused too; the bytes go, and it starts once from nothing.
+    expect(native.requests.slice(asked).map((each) => each.range)).toEqual(["bytes=20000-", null]);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+  });
+
+  it("defers a resumed start whose resume data can't be made its own, then goes on from it", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    await pausedWithResume(app, a, film);
+    background.faults.keychainWrite = true;
+    one.stallMovieFile(movie().id, 0, 0);
+    await app.stop();
+    await sleep(1_500);
+    // Neither a fresh request in its place nor a resumed one it doesn't own.
+    expect(native.requests).toHaveLength(1);
+    background.faults.keychainWrite = false;
+    appGoes("background");
+    appGoes("active");
+    await until(() => isComplete(app, film.id), "the copy once its resume data is its own");
+    expect(native.requests.map((each) => each.range)).toEqual([null, "bytes=20000-"]);
+  });
+
+  it("removes a revoked login's resume data with it, a failed download's included", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    await background.breakConnection();
+    await until(() => statusOf(app, film.id)?.kind === "failed", "the failure");
+    expect(nativeSecrets()).toEqual([film.id]);
+    const old = background.sources.get(a)!.generation;
+    await app.update(a, { password: ONE.password });
+    const ofOld = (each: { sourceGeneration: string }) => each.sourceGeneration === old;
+    expect([...background.requests.values()].filter(ofOld)).toEqual([]);
+    expect([...background.resume.values()].filter(ofOld)).toEqual([]);
+    expect(background.anchors.get(a)?.generation).not.toBe(old);
+    // Its Retry asks anew under the new login, from the start.
+    one.stallMovieFile(movie().id, 0, 0);
+    await app.retryDownload(film.id);
+    await until(() => isComplete(app, film.id), "the copy under the new login");
+    expect(native.requests.map((each) => each.range)).toEqual([null, null]);
+  });
+
+  it("keeps a build-14 copy's file while its record can't be written, and completes it without asking again", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => isComplete(app, film.id), "the copy");
+    const size = mediaFile(film.id)!.size;
+    // As build 14 left it: queued under its own attempt, with that attempt's complete receipt
+    // not yet taken in.
+    background.die();
+    background.down = true;
+    const stored = doc();
+    const row = stored.items[0];
+    delete row.transfer;
+    Object.assign(row, { state: "queued", attempt: "a-build14", completedAt: null });
+    new DiskFile(native.root, "documents", "downloads.json").writeSync(JSON.stringify(stored));
+    background.legacyReceipts.push({
+      receipt: "r-build14",
+      attempt: "a-build14",
+      id: film.id,
+      outcome: { kind: "complete", size, expected: size },
+    });
+    const asked = native.requests.length;
+    // downloads.json can't be written.
+    const blocked = new Folder(native.root, "documents", "downloads.json.next");
+    blocked.create();
+    app = await launch();
+    await sleep(1_500);
+    expect(mediaFile(film.id)?.size).toBe(size);
+    expect(native.requests).toHaveLength(asked);
+    expect(background.legacyReceipts).toHaveLength(1);
+    blocked.delete();
+    app = await launch();
+    await until(() => isComplete(app, film.id), "the copy taken in");
+    expect(mediaFile(film.id)?.size).toBe(size);
+    expect(native.requests).toHaveLength(asked);
+    await until(() => background.legacyReceipts.length === 0, "build 14's receipt acknowledged");
+  });
+
+  it("keeps a native completion its damaged queue still reads through the queue's reset", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 20_000, 1_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    const blocked = new Folder(native.root, "documents", "downloads.json.next");
+    blocked.create();
+    await until(
+      () => background.events.includes(`receipt:${film.id}:complete`),
+      "the transfer to complete natively",
+    );
+    background.corrupt = true;
+    blocked.delete();
+    app = await launch();
+    await until(() => background.events.includes("reset"), "the reset");
+    await until(() => isComplete(app, film.id), "the copy from its kept receipt");
+    expect(native.requests).toHaveLength(1);
+    expect(mediaFile(film.id)?.size).toBe(fixture(movie().fixture!).length);
+  });
+
+  it("refuses a reset whose final write doesn't answer in time, then lets its late write settle once", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    appGoes("background");
+    const film = await app.addDownload(movieRef(a));
+    background.corrupt = true;
+    const hold = Promise.withResolvers<void>();
+    background.resetHold = hold.promise;
+    background.resetDeadlineMs = 300;
+    onTestFinished(() => {
+      hold.resolve();
+      background.resetHold = null;
+      background.resetDeadlineMs = 15_000;
+    });
+    memory.appState = "active";
+    app = await launch();
+    const attempts = () => background.events.filter((each) => each === "reset-attempt").length;
+    await until(() => attempts() === 1, "the one automatic reset attempt");
+    await sleep(600);
+    expect(background.corrupt).toBe(true);
+    expect(background.resetting).toBe(true);
+    // Another foreground while its write is outstanding starts no second reset.
+    appGoes("background");
+    appGoes("active");
+    await sleep(300);
+    expect(attempts()).toBe(1);
+    expect(native.requests).toEqual([]);
+    hold.resolve();
+    await until(() => background.events.includes("reset-late"), "the late write to apply");
+    expect(background.events).not.toContain("reset");
+    appGoes("background");
+    appGoes("active");
+    await until(() => isComplete(app, film.id), "the copy under the fresh queue");
+    expect(attempts()).toBe(1);
   });
 });
