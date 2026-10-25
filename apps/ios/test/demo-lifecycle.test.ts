@@ -16,6 +16,8 @@ const memory = vi.hoisted(() => ({
   appState: "active",
   appListeners: [] as Array<(state: string) => void>,
   requests: 0,
+  readSecret: null as null | ((key: string) => Promise<void>),
+  personalSeries: false,
 }));
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
@@ -37,6 +39,7 @@ vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
   getItemAsync: async (key: string) => {
     memory.secretCalls.push(`read:${key}`);
+    if (memory.readSecret) await memory.readSecret(key);
     return memory.secrets.get(key) ?? null;
   },
   setItemAsync: async (key: string, value: string) => {
@@ -106,6 +109,27 @@ vi.stubGlobal("fetch", async (input: string | URL | Request) => {
   const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
   memory.requests++;
   if (url.hostname === "personal.example") {
+    if (memory.personalSeries && url.searchParams.get("action") === "get_series") {
+      return Response.json([
+        { series_id: "series", name: "Personal series", category_id: "1", tmdb: "0" },
+      ]);
+    }
+    if (memory.personalSeries && url.searchParams.get("action") === "get_series_info") {
+      return Response.json({
+        info: { name: "Personal series" },
+        seasons: [],
+        episodes: {
+          "1": [1, 2].map((number) => ({
+            id: `episode-${number}`,
+            episode_num: number,
+            season: 1,
+            title: `Episode ${number}`,
+            container_extension: "mp4",
+            info: { duration_secs: 90 },
+          })),
+        },
+      });
+    }
     return Response.json(
       url.searchParams.has("action")
         ? []
@@ -201,6 +225,8 @@ beforeEach(async () => {
   memory.players.length = 0;
   memory.played.length = 0;
   memory.requests = 0;
+  memory.readSecret = null;
+  memory.personalSeries = false;
   memory.appState = "active";
   native.sync = null;
   native.gate = null;
@@ -213,6 +239,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const release of releases.splice(0)) release();
   vi.useRealTimers();
+  memory.readSecret = null;
   native.sync = null;
   native.gate = null;
   native.undeletable = null;
@@ -225,6 +252,240 @@ afterEach(async () => {
 });
 
 describe("Demo through the production lifecycle", () => {
+  it("queues an ordinary Demo download while its Source is eligible", async () => {
+    const app = await withDemo();
+    const added = await app.addDownload(movie);
+    expect(app.downloadList().items.map((item) => item.id)).toEqual([added.id]);
+    expect(added.title).toEqual({ kind: "movie", id: "movie" });
+  });
+
+  it("refuses a validated download crossing Reset's erase snapshot while its old Source is current", async () => {
+    const first = await withDemo();
+    const port = host.expo!.modules!["BackgroundDownloads"] as {
+      authorize: (...args: unknown[]) => Promise<unknown>;
+      revokeSource: (...args: unknown[]) => Promise<unknown>;
+      cancelAuthorization: (...args: unknown[]) => Promise<unknown>;
+      finishForegroundReconcile: (...args: unknown[]) => Promise<unknown>;
+    };
+    let armed = false;
+    const authorize = port.authorize;
+    vi.spyOn(port, "authorize").mockImplementation(async (...args) => {
+      const answer = await authorize(...args);
+      armed = true;
+      return answer;
+    });
+    await first.addDownload({
+      kind: "episode",
+      subscriptionId: "demo",
+      id: "episode-1",
+      seriesId: "series",
+      season: 1,
+      episode: 1,
+    });
+    await until(() => armed);
+    memory.appState = "background";
+    for (const listener of memory.appListeners) listener("background");
+    await background.pauseAll();
+    const lists = first.titleLists();
+    if (lists.kind !== "ready") throw new Error("No titles");
+    const title = first.titleOf(lists.index, "movie", movie)!;
+    await first.detailsOf(title);
+    const cached = new DiskFile(
+      native.root,
+      "cache",
+      "details",
+      "providers",
+      "demo",
+      "movie.movie.json",
+    );
+    await until(() => cached.exists);
+
+    // Initial preparation stays at an existing legacy Keychain read through Reset. Its roster
+    // listener cannot remove a late addition before the new Demo incarnation becomes saved.
+    const legacy = held();
+    let migrating = false;
+    memory.readSecret = async (key) => {
+      if (!key.startsWith("s.download")) return;
+      migrating = true;
+      await legacy.promise;
+    };
+    const app = await launch();
+    await until(() => migrating && app.titleLists().kind === "ready");
+    const oldSource = app.currentSource("demo");
+    if (!oldSource) throw new Error("No Demo Source");
+    const read = held();
+    let reading = false;
+    native.gate = (operation, path) => {
+      if (operation !== "text" || path !== cached.path) return;
+      reading = true;
+      return read.promise;
+    };
+    const { AppFailure } = await import("@mrstreamer/contracts/errors");
+    let admission:
+      | {
+          readonly result: "added" | "refused";
+          readonly erasing: boolean;
+          readonly oldSource: boolean;
+          readonly error?: unknown;
+        }
+      | undefined;
+    const adding = app.addDownload(movie).then(
+      () => {
+        admission = {
+          result: "added",
+          erasing: (marker() as { state?: string } | undefined)?.state === "erasing",
+          oldSource: app.currentSource("demo") === oldSource,
+        };
+      },
+      (cause: unknown) => {
+        if (!(cause instanceof AppFailure)) throw cause;
+        admission = {
+          result: "refused",
+          error: cause.error,
+          erasing: (marker() as { state?: string } | undefined)?.state === "erasing",
+          oldSource: app.currentSource("demo") === oldSource,
+        };
+      },
+    );
+    await until(() => reading);
+    const source = held();
+    const record = held();
+    let sourceFencing = false;
+    let recordFencing = false;
+    const revoke = port.revokeSource;
+    const cancel = port.cancelAuthorization;
+    vi.spyOn(port, "revokeSource").mockImplementation(async (...args) => {
+      const answer = await revoke(...args);
+      sourceFencing = true;
+      await source.promise;
+      return answer;
+    });
+    vi.spyOn(port, "cancelAuthorization").mockImplementation(async (...args) => {
+      recordFencing = true;
+      await record.promise;
+      return cancel(...args);
+    });
+    const resetting = app.resetDemo();
+    await until(() => sourceFencing);
+    read.resolve();
+    // Deliver the source fence behind the cache read, allowing its already-validated result to
+    // reach the Download caller while the finite per-record fence is still unanswered.
+    for (let turn = 0; turn < 1; turn++) await Promise.resolve();
+    source.resolve();
+    await until(() => recordFencing);
+    await wait();
+    const atFence = admission;
+    record.resolve();
+    expect(await resetting).toEqual({ kind: "started" });
+    await adding;
+    let prepared = false;
+    const finish = port.finishForegroundReconcile;
+    vi.spyOn(port, "finishForegroundReconcile").mockImplementation(async (...args) => {
+      const answer = await finish(...args);
+      prepared = true;
+      return answer;
+    });
+    memory.readSecret = null;
+    native.gate = null;
+    legacy.resolve();
+    memory.appState = "active";
+    for (const listener of memory.appListeners) listener("active");
+    await until(() => prepared);
+    expect(app.downloadList().items).toEqual([]);
+    expect(atFence).toEqual({
+      result: "refused",
+      error: { kind: "no-subscription" },
+      erasing: true,
+      oldSource: true,
+    });
+    expect(demoListed(app)).toBe(true);
+  });
+
+  it("lets a pending personal Resume finish after an erasing Demo's ready retry", async () => {
+    memory.personalSeries = true;
+    save(
+      "subscriptions.json",
+      envelope({ subscriptions: [personal()], demo: { version: 1, state: "erasing" } }),
+    );
+    memory.secrets.set("s.personal", "fixture");
+    const app = await launch(false);
+    await wait(20);
+    await until(() => app.titleLists().kind === "ready");
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No titles");
+    const title = app.titleOf(lists.index, "series", { subscriptionId: "personal", id: "series" })!;
+    const details = await app.detailsOf(title);
+    if (details.kind !== "series") throw new Error("No series");
+    const episode = details.seasons[0]!.episodes[0]!;
+    const gate = held();
+    let reading = false;
+    app.serveViewing({
+      series: async () => {
+        reading = true;
+        await gate.promise;
+        return title;
+      },
+      details: async () => details,
+    });
+    app.resumeEpisode(details, episode, undefined, () => undefined);
+    await until(() => reading);
+    app.startDownloads();
+    await until(() => marker() === undefined);
+    gate.resolve();
+    await wait(30);
+    expect(app.playback.playbackState.get().phase).toMatchObject({
+      item: { subscriptionId: "personal" },
+    });
+    await until(() => memory.played.length === 1);
+    player().ready();
+    player().state(true);
+    expect(app.playback.playbackState.get().phase.kind).toBe("playing");
+  });
+
+  it("notifies Demo eligibility before its awaited record fence, but not for a refused marker", async () => {
+    const app = await withDemo();
+    const prior = await app.addDownload(movie);
+    await until(() =>
+      downloads().items.some((item) => item["id"] === prior.id && item["transfer"] !== undefined),
+    );
+    await until(() =>
+      [...background.grants.values()].some(
+        (grant) => grant.id === prior.id && grant.state !== "reserved",
+      ),
+    );
+    background.listeners.get("receipt")?.clear();
+    const source = app.currentSource("demo");
+    if (!source) throw new Error("No Demo Source");
+    const eligibility: boolean[] = [];
+    const off = app.onSavable(() => {
+      if (app.currentSource("demo") === source) eligibility.push(app.savable("demo", source));
+    });
+    native.sync = (operation, path) => {
+      if (operation === "write" && path.endsWith("subscriptions.json.next"))
+        throw new Error("Registry write refused");
+    };
+    expect(await app.endDemo()).toEqual({ kind: "refused", reason: "registry-refused" });
+    expect(eligibility).toEqual([]);
+    native.sync = null;
+    const gate = held();
+    let fencing = false;
+    const port = host.expo!.modules!["BackgroundDownloads"] as {
+      cancelAuthorization: (...args: unknown[]) => Promise<unknown>;
+    };
+    const cancel = port.cancelAuthorization;
+    vi.spyOn(port, "cancelAuthorization").mockImplementation(async (...args) => {
+      fencing = true;
+      await gate.promise;
+      return cancel(...args);
+    });
+    const resetting = app.resetDemo();
+    await until(() => fencing);
+    expect(eligibility).toEqual([false]);
+    gate.resolve();
+    expect(await resetting).toEqual({ kind: "started" });
+    off();
+  });
+
   it("starts once on a clean install without waiting for native readiness or touching secrets", async () => {
     const ready = held();
     const port = host.expo!.modules!["BackgroundDownloads"] as {

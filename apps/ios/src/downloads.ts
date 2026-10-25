@@ -17,6 +17,7 @@ import {
   launchSignIns,
   members,
   onRoster,
+  savable,
   unbindDownloads,
 } from "./account.ts";
 import {
@@ -1493,7 +1494,7 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
   const source = sourceOf(ref.subscriptionId);
   const file = await titleFile(ref, AbortSignal.timeout(20_000));
   const kept = await aboutOf(ref, AbortSignal.timeout(20_000));
-  if (currentSource(ref.subscriptionId) !== source) {
+  if (!savable(ref.subscriptionId, source)) {
     throw new AppFailure({ kind: "no-subscription" });
   }
   const added = doc.items.find((each) => sameTitle(each, ref));

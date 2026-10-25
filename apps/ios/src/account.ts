@@ -895,6 +895,7 @@ async function eraseDemo(): Promise<DemoErase> {
     if (demoReserved()) return { kind: "refused", reason: "reserved-id" } as const;
     if (file.demo.kind === "unreadable")
       return { kind: "refused", reason: "unreadable-demo" } as const;
+    const leaving = file.demo.kind === "active";
     // Source revocation is finite, distinct from each record's explicit removal fence below.
     try {
       await fenceDownloads(DEMO_ID);
@@ -907,6 +908,7 @@ async function eraseDemo(): Promise<DemoErase> {
       } catch {
         return { kind: "refused", reason: "registry-refused" } as const;
       }
+      savableChanged();
     }
     // Intents and their finite domain removals precede Source/roster changes, even on refusal.
     const removal = await demoDownloads?.erase(DEMO_ID, "demo-reset").catch(() => undefined);
@@ -926,10 +928,12 @@ async function eraseDemo(): Promise<DemoErase> {
     for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${DEMO_ID}`)?.abort();
     dropSource(DEMO_ID);
     const savedGone = dropSaved(DEMO_ID).catch(() => false);
-    const { phase } = playbackState.get();
-    const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
-    if (from === DEMO_ID || (entriesOf().length === 0 && from !== null)) void stop();
-    else request();
+    if (leaving) {
+      const { phase } = playbackState.get();
+      const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
+      if (from === DEMO_ID || (entriesOf().length === 0 && from !== null)) void stop();
+      else request();
+    }
     syncRoster();
     return { kind: "staged", removal, saved, savedGone, filesDeleted: () => filesDeleted } as const;
   });
