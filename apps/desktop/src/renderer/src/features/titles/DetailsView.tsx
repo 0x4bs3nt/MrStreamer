@@ -14,11 +14,13 @@
 // (`@mrstreamer/core/viewing/episodes`), which Continue watching and the player go by too, on
 // what the viewing record says: when it can't be read, the sheet says so, names no episode to go
 // on with and shows none as watched or not. The title from the lists heads the sheet at once; the
-// rest follows when the provider answers, and TMDB's details when they arrive.
+// rest follows when the provider answers, and TMDB's details when they arrive. A related title
+// opens its details in place of these, and Back in the sheet's top bar returns through them as
+// they stood (`openRelated` in `app/ui-store.ts`); Close and Escape return to the page.
 import { Dialog } from "@base-ui/react/dialog";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, CircleDashed, Play, RotateCcw } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   Episode,
   EpisodeDetails,
@@ -36,7 +38,13 @@ import { versionOptions } from "@mrstreamer/core/ondemand/version-options";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { continuation, episodeStates } from "@mrstreamer/core/viewing/episodes";
 import { formatDate, formatDecimal, t } from "@mrstreamer/core/i18n";
-import { openSubscription, useUi, type DetailsTarget } from "../../app/ui-store.ts";
+import {
+  closeDetails,
+  openSubscription,
+  useUi,
+  type DetailsPlace,
+  type DetailsTarget,
+} from "../../app/ui-store.ts";
 import { Progress } from "../../components/Progress.tsx";
 import { Sheet } from "../../components/Sheet.tsx";
 import { Artwork } from "../../components/TitleArt.tsx";
@@ -75,7 +83,16 @@ import { EpisodeMenu, MarkNotice, useEpisodeMarks } from "./EpisodeMarks.tsx";
 import { RelatedTitles } from "./RelatedTitles.tsx";
 import { VersionMenu } from "./VersionMenu.tsx";
 
-const close = () => useUi.setState({ details: null });
+/** Where the sheet stands, for a related title to leave from and for Back to restore. */
+interface SheetPlace {
+  /** The season picked, null for the one being watched. */
+  readonly season: number | null;
+  readonly onSeason: (season: number) => void;
+  readonly here: (related: string) => DetailsPlace;
+  /** The related title, by `Title.key`, Back returned here from. */
+  readonly returnTo: string | null;
+  readonly onReturn: (tile: HTMLElement | null) => void;
+}
 
 /** Which version plays, and how the arrow beside Play offers the others. */
 interface Versions {
@@ -88,7 +105,14 @@ interface Versions {
   readonly onPick: (version: OwnedId | null) => void;
 }
 
-export function DetailsView({ target }: { target: DetailsTarget }) {
+export function DetailsView({
+  target,
+  bar,
+}: {
+  target: DetailsTarget;
+  /** The window's top bar, drawn above the sheet's backdrop so its Back works over the details. */
+  bar?: ReactNode;
+}) {
   // Which version plays comes from the lists, the progress and the picks, all read without the
   // network, so only that version's details are asked for.
   const listed = useQuery(queries.titles(target.kind, [target]));
@@ -153,14 +177,39 @@ export function DetailsView({ target }: { target: DetailsTarget }) {
   const playlist = locked?.kind === "m3u";
   // Saving needs the title from the lists alone, so it works while the details are on their way.
   const saving = useSaveToggle(target.kind, target, title !== null);
+  // Back returns here as a related title left these details (see `openRelated`): the season
+  // picked shows at once, and the scroll and the keyboard come back as the related titles show,
+  // to the sheet itself when they no longer show the one opened. Once, not after playback.
+  const [returned] = useState(() => useUi.getState().place);
+  useEffect(() => {
+    if (returned) useUi.setState({ place: null });
+  }, [returned]);
+  const [season, setSeason] = useState(returned?.season ?? null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const place: SheetPlace = {
+    season,
+    onSeason: setSeason,
+    here: (related) => ({ season, scroll: scroller.current?.scrollTop ?? 0, related }),
+    returnTo: returned?.related ?? null,
+    onReturn: (tile) => {
+      const sheet = scroller.current;
+      if (!returned || !sheet) return;
+      sheet.scrollTop = returned.scroll;
+      if (!tile)
+        return sheet.closest<HTMLElement>('[role="dialog"]')?.focus({ preventScroll: true });
+      tile.focus({ preventScroll: true });
+      tile.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+  };
   return (
-    <Sheet onClose={close}>
+    <Sheet onClose={closeDetails} bar={bar} scroller={scroller}>
       {details.data && ready ? (
         <Content
           details={details.data}
           versions={{ title, playing, picked, automatic, onPick: chooseVersion }}
           switching={details.isPlaceholderData}
           saving={saving}
+          place={place}
         />
       ) : title ? (
         <Header title={title} backdropUrl={title.backdropUrl} facts={factsOf(title)}>
@@ -217,12 +266,14 @@ function Content({
   versions,
   switching,
   saving,
+  place,
 }: {
   details: TitleDetails;
   versions: Versions;
   /** Another version's details are on their way. */
   switching: boolean;
   saving: SaveToggle;
+  place: SheetPlace;
 }) {
   return (
     <Header
@@ -246,10 +297,16 @@ function Content({
         </p>
       )}
       <Credits details={details} />
-      <RelatedTitles details={details} switching={switching} />
+      <RelatedTitles
+        details={details}
+        switching={switching}
+        here={place.here}
+        returnTo={place.returnTo}
+        onReturn={place.onReturn}
+      />
       {details.kind === "series" && (
         <div inert={switching || undefined}>
-          <Episodes details={details} />
+          <Episodes details={details} season={place.season} onSeason={place.onSeason} />
         </div>
       )}
     </Header>
@@ -701,7 +758,16 @@ function EpisodeFacts({
   );
 }
 
-function Episodes({ details }: { details: SeriesDetails }) {
+function Episodes({
+  details,
+  season: picked,
+  onSeason: setSeason,
+}: {
+  details: SeriesDetails;
+  /** The season picked here, which the sheet keeps for Back; null until one is. */
+  season: number | null;
+  onSeason: (season: number) => void;
+}) {
   // How far the episodes got in this version's own subscription, and the ones marked there:
   // another subscription's are other files. While that can't be read, a row says nothing of how
   // its episode stands and offers no mark.
@@ -712,7 +778,6 @@ function Episodes({ details }: { details: SeriesDetails }) {
   // Whose record a mark goes to, said once the title's versions are of several subscriptions.
   const source = useVersionNames(details.title)(details.title)?.source ?? null;
   // The season picked here, else the one being watched once progress has loaded.
-  const [picked, setSeason] = useState<number | null>(null);
   const season = picked ?? target?.episode.season ?? details.seasons[0]?.number ?? 1;
   const shown = details.seasons.find((each) => each.number === season) ?? details.seasons[0];
   // TMDB's details for the season shown, asked for as it shows. The provider's episodes stand

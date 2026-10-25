@@ -11,7 +11,7 @@ import { episodeFileVersion, seriesEpisodeOrder } from "@mrstreamer/core/ondeman
 import { episodeStates } from "@mrstreamer/core/viewing/episodes";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { t } from "@mrstreamer/core/i18n";
-import { useUi } from "../../app/ui-store.ts";
+import { openView } from "../../app/ui-store.ts";
 import { Progress } from "../../components/Progress.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { menuItem, menuSurface } from "../../components/ui/menu.ts";
@@ -299,11 +299,7 @@ export function SeriesDownload({
                 </Menu.Item>
               )}
               <Menu.Separator className="my-2 border-t border-white/15" />
-              <Menu.Item
-                closeOnClick
-                className={itemClass}
-                onClick={() => useUi.setState({ view: "downloads", details: null })}
-              >
+              <Menu.Item closeOnClick className={itemClass} onClick={() => openView("downloads")}>
                 {t("Open Downloads")}
               </Menu.Item>
             </Menu.Popup>

@@ -43,6 +43,7 @@ pnpm verify:desktop catch-up-hls
 pnpm verify:desktop guide-grid
 pnpm verify:desktop reminders
 pnpm verify:desktop titles
+pnpm verify:desktop details-back
 pnpm verify:desktop watchlist
 pnpm verify:desktop poster-grid
 pnpm verify:desktop downloads

@@ -11,7 +11,14 @@ import type { Locale } from "@mrstreamer/contracts/language";
 import { hasTitles } from "@mrstreamer/contracts/subscription";
 import { useLocale } from "../app/language.ts";
 import { isMac, useWindowFullScreen } from "../app/platform.ts";
-import { closeWatch, withoutTitles, openView, useUi, type View } from "../app/ui-store.ts";
+import {
+  backDetails,
+  closeWatch,
+  withoutTitles,
+  openView,
+  useUi,
+  type View,
+} from "../app/ui-store.ts";
 import { DownloadsNotice, useDownloadsStatus } from "../features/downloads/DownloadsNotice.tsx";
 import { UpdateNotice, updateNoticeLabel } from "../features/updates/UpdateNotice.tsx";
 import { useQuery } from "@tanstack/react-query";
@@ -36,8 +43,10 @@ const VIEWS = [
  * The top of the window: brand, the pages, how far TMDB has come, search and settings. It is also
  * the window's drag area; macOS draws its traffic lights on the left and Windows its controls on
  * the right, except in full screen, where the bar takes their room. Over Settings, Watch or a
- * title's details, Back takes the pages' place and returns to the page underneath. `onBack`
- * overrides where it goes, as a playing title or an open collection does. Subscriptions with
+ * title's details, Back takes the pages' place and returns to the page underneath; over details
+ * a related title opened, it first returns through those it was opened from (`backDetails`).
+ * Details get a bar of their own above their backdrop for it (`App.tsx`). `onBack` overrides
+ * where it goes, as a playing title or an open collection does. Subscriptions with
  * live TV only have no Movies or Series; Watchlist stays reachable. Where the window is too
  * narrow for every page's name, Downloads goes beside Search as a button of its own, under the same name. That
  * place also says how the downloads stand while one is under way, waits or stopped, except over
@@ -54,7 +63,8 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
   const alone = useQuery(queries.subscriptions()).data?.length === 0;
   const watching = useUi((state) => state.watching);
   const settingsOpen = useUi((state) => state.settings !== null);
-  const detailsOpen = useUi((state) => state.details !== null || state.savedEntry !== null);
+  const detailsOpen = useUi((state) => state.details !== null);
+  const savedOpen = useUi((state) => state.savedEntry !== null);
   const status = useDownloadsStatus();
   const locale = useLocale();
   const update = useQuery(queries.updates()).data;
@@ -70,8 +80,10 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
       : watching
         ? closeWatch
         : detailsOpen
-          ? () => useUi.setState({ details: null, savedEntry: null })
-          : null);
+          ? () => void backDetails()
+          : savedOpen
+            ? () => useUi.setState({ savedEntry: null })
+            : null);
   const shown = liveOnly ? VIEWS.filter((entry) => withoutTitles(entry.view)) : VIEWS;
   return (
     <BarFrame className={className}>

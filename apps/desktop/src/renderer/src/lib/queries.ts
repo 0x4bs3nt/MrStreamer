@@ -32,6 +32,7 @@ import {
 import type { TitleFilter, Viewing } from "@mrstreamer/contracts/viewing";
 import type { WatchlistSort } from "@mrstreamer/contracts/watchlist";
 import type { TitleFilters } from "@mrstreamer/contracts/title-filters";
+import { invalidateDetailsCatalogue } from "../app/ui-store.ts";
 import { player } from "../player/player.ts";
 import { hostOf } from "./format.ts";
 import { call, listen, searchCall } from "./ipc.ts";
@@ -801,6 +802,7 @@ export function syncOnDemand(client: QueryClient): () => void {
     const newLists = now !== fetched;
     fetched = now;
     const marked = status.markedForAdults === true;
+    if (newLists || marked) invalidateDetailsCatalogue();
     const dropped = (part: unknown) =>
       part === "related" ? newLists || marked : marked && TITLE_LISTS.has(part);
     // Lists change with a refresh and as TMDB's metadata arrives. A season shown is read again

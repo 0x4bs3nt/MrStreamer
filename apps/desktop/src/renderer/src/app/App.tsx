@@ -7,6 +7,7 @@ import { HomeScreen } from "../features/home/HomeScreen.tsx";
 import { GuidePage } from "../features/live/GuidePage.tsx";
 import { ReminderBanners } from "../features/reminders/ReminderBanners.tsx";
 import { SearchPalette } from "../features/search/SearchPalette.tsx";
+import { WindowBar } from "../components/WindowBar.tsx";
 import { SettingsPage } from "../features/settings/SettingsPage.tsx";
 import { TitlesPage } from "../features/titles/TitlesPage.tsx";
 import { DetailsView } from "../features/titles/DetailsView.tsx";
@@ -94,6 +95,7 @@ function Shell({ liveOnly }: { liveOnly: boolean }) {
   const watching = useUi((state) => state.watching);
   const playingTitle = useUi((state) => state.playingTitle);
   const details = useUi((state) => state.details);
+  const visit = useUi((state) => state.visit);
   const savedEntry = useUi((state) => state.savedEntry);
   const settingsOpen = useUi((state) => state.settings !== null);
   const covered = watching || playingTitle;
@@ -159,9 +161,16 @@ function Shell({ liveOnly }: { liveOnly: boolean }) {
           )}
         </PresentationVisible>
       </div>
-      {/* Closed under Settings, whose Escape would otherwise reach the sheet's focus first. */}
+      {/* Closed under Settings, whose Escape would otherwise reach the sheet's focus first. The
+          page's bar is inert behind them, so details keep one of their own for Back. Each visit
+          gets a sheet of its own, the same title's on Back too, so what Back restores applies
+          once. */}
       {details && !covered && !settingsOpen && (
-        <DetailsView key={`${details.kind}:${ownedKey(details)}`} target={details} />
+        <DetailsView
+          key={`${visit}:${details.kind}:${ownedKey(details)}`}
+          target={details}
+          bar={<WindowBar className="bg-black" />}
+        />
       )}
       {savedEntry && !covered && !settingsOpen && (
         <SavedSheet key={ownedKey(savedEntry)} entry={savedEntry} />
