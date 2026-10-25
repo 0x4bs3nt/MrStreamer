@@ -21,6 +21,7 @@ import {
   ViewingRecord,
   ViewingSeries,
 } from "@mrstreamer/core/viewing/service";
+import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { databaseLayer } from "./platform/database.ts";
@@ -274,14 +275,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
   const viewing = ViewingRecord.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.effect(
-          ViewingAccount,
-          Effect.map(Subscriptions, (subscriptions) => ({
-            owners: Effect.map(subscriptions.saved, (saved) =>
-              saved.map(({ id, key, original }) => ({ subscriptionId: id, key, original })),
-            ),
-          })),
-        ),
+        Layer.effect(ViewingAccount, Effect.map(Subscriptions, viewingAccount)),
         Layer.effect(
           ViewingChannels,
           Effect.map(Library, (library) => ({ lookup: library.lookup })),
@@ -341,4 +335,20 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     Layer.provideMerge(services),
     Layer.provideMerge(diagnosticsLogLayer(dataDir)),
   );
+}
+
+/** Maps the saved roster to viewing owners, keeping their transaction-time presence check. */
+export function viewingAccount(
+  subscriptions: Context.Service.Shape<typeof Subscriptions>,
+): Context.Service.Shape<typeof ViewingAccount> {
+  return {
+    owners: Effect.map(subscriptions.saved, (saved) =>
+      saved.map((owner) => ({
+        subscriptionId: owner.id,
+        key: owner.key,
+        original: owner.original,
+        stands: () => subscriptions.standsNow(owner),
+      })),
+    ),
+  };
 }
