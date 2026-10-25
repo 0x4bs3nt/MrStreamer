@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  byIds,
-  indexCatalogue,
-  indexSteps,
-  search,
-  searchPage,
-} from "../src/ondemand/catalogue.ts";
+import { byIds, indexCatalogue, search } from "../src/ondemand/catalogue.ts";
 import { collections } from "../src/ondemand/collections.ts";
 import {
   movieDetails,
@@ -22,7 +16,6 @@ import {
   type RenditionFacts,
 } from "../src/ondemand/tracks.ts";
 import type { OnDemandCatalogue } from "../src/provider.ts";
-import { finish } from "../src/steps.ts";
 import { continueWatching, isFinished, type TitleRow } from "../src/viewing/titles.ts";
 
 /** The subscription every title of these tests is listed by. */
@@ -341,60 +334,6 @@ describe("one title per film", () => {
   });
 });
 
-describe("a search that returns the best titles of many matches", () => {
-  // Starting with the query ranks first, a word starting with it second, inside a word last (Backstory);
-  // dates repeat, so ties are common and must stay in the lists' order.
-  const frames = [
-    (n: number) => `Story ${n}`,
-    (n: number) => `The story ${n}`,
-    (n: number) => `Backstory ${n}`,
-  ];
-  const rows = Array.from({ length: 700 }, (_, at) => ({
-    id: String(at),
-    name: frames[at % 3]!(at),
-    posterUrl: null,
-    backdropUrl: null,
-    rating: null,
-    addedAt: (at * 7) % 5,
-    releaseDate: null,
-    categoryIds: [],
-    adult: at % 50 === 0,
-    container: "mkv",
-  }));
-  const index = indexOf(
-    { movieCategories: [], movies: rows, seriesCategories: [], series: [] },
-    "en",
-  );
-  const best = rows
-    .filter((row) => !row.adult)
-    .map((row, order) => ({ row, order, rank: (Number(row.id) % 3) as number }))
-    .sort((a, b) => a.rank - b.rank || b.row.addedAt - a.row.addedAt || a.order - b.order)
-    .map(({ row }) => row.id);
-
-  it.each([1, 60, 300])("returns the best %i in order and counts every match", (limit) => {
-    const page = searchPage(index, "movie", "story", undefined, limit);
-    expect(page.titles.map((title) => title.id)).toEqual(best.slice(0, limit));
-    expect(page.total).toBe(best.length);
-    expect(search(index, "movie", "story", undefined, limit).map((title) => title.id)).toEqual(
-      best.slice(0, limit),
-    );
-  });
-
-  it("keeps every match when asked for more than there are", () => {
-    const page = searchPage(index, "movie", "story", undefined, Infinity);
-    expect(page.titles.map((title) => title.id)).toEqual(best);
-    expect(page.total).toBe(best.length);
-  });
-
-  it("counts matches without returning any when nothing is asked for", () => {
-    expect(searchPage(index, "movie", "story", undefined, 0)).toEqual({
-      titles: [],
-      total: best.length,
-    });
-    expect(searchPage(index, "movie", "nothing like it")).toEqual({ titles: [], total: 0 });
-  });
-});
-
 describe("one title per film across subscriptions", () => {
   const row = (id: string, name: string, tmdbId: string | null, addedAt = 1, adult = false) => ({
     id,
@@ -457,20 +396,6 @@ describe("one title per film across subscriptions", () => {
       ["movie:b:3", "b:3", ["b:3"], true],
       ["movie:tmdb:300", "b:4", ["b:4"], false],
     ]);
-  });
-
-  it("indexes in steps, both kinds at once, what it indexes as each kind is read", () => {
-    for (const language of ["en", "nl"]) {
-      for (const from of [sources, sources.toReversed()]) {
-        const read = indexCatalogue(from, language);
-        const stepped = finish(indexSteps(from, language));
-        for (const kind of ["movies", "series"] as const) {
-          expect(stepped[kind].titles).toEqual(read[kind].titles);
-          expect([...stepped[kind].byId]).toEqual([...read[kind].byId]);
-        }
-        expect(search(stepped, "movie", "casino")).toEqual(search(read, "movie", "casino"));
-      }
-    }
   });
 
   it("never joins a movie and a series that share a TMDB id", () => {

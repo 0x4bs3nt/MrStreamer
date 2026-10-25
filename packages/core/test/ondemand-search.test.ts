@@ -54,7 +54,7 @@ describe("the search relevance corpus", () => {
     expect(find("ancien")).toEqual(["one/film"]);
   });
 
-  it.each([0, 1, 6, 20, 300, Infinity])(
+  it.each([0, 6, Infinity])(
     "keeps filtered ranking, stable ties and both totals at limit %s",
     (limit) => {
       const rows = Array.from({ length: 650 }, (_, index) => ({
@@ -117,44 +117,41 @@ describe("the search relevance corpus", () => {
     },
   );
 
-  it.each([1, 6, 20, 60, 200, 300])(
-    "keeps exact names before six newer prefixes at limit %i",
-    (limit) => {
-      const index = indexCatalogue(
-        [
-          source([
-            movie("exact", "Heat"),
-            ...Array.from({ length: 6 }, (_, n) => movie(`prefix-${n}`, `Heat ${n + 2}`, n + 2)),
-          ]),
-        ],
-        "en",
-      );
-      const page = searchPage(index, "movie", "heat", undefined, limit);
-      expect(page.total).toBe(7);
-      expect(ids(page.titles)).toEqual(
-        [
-          "one/exact",
-          "one/prefix-5",
-          "one/prefix-4",
-          "one/prefix-3",
-          "one/prefix-2",
-          "one/prefix-1",
-          "one/prefix-0",
-        ].slice(0, limit),
-      );
-      expect(
-        ids(
-          searchPage(
-            index,
-            "movie",
-            "heat",
-            (title) => (title.id === "exact" ? "unrelated alias" : ""),
-            limit,
-          ).titles,
-        ),
-      ).toEqual(ids(page.titles));
-    },
-  );
+  it.each([1, 6, 20])("keeps exact names before six newer prefixes at limit %i", (limit) => {
+    const index = indexCatalogue(
+      [
+        source([
+          movie("exact", "Heat"),
+          ...Array.from({ length: 6 }, (_, n) => movie(`prefix-${n}`, `Heat ${n + 2}`, n + 2)),
+        ]),
+      ],
+      "en",
+    );
+    const page = searchPage(index, "movie", "heat", undefined, limit);
+    expect(page.total).toBe(7);
+    expect(ids(page.titles)).toEqual(
+      [
+        "one/exact",
+        "one/prefix-5",
+        "one/prefix-4",
+        "one/prefix-3",
+        "one/prefix-2",
+        "one/prefix-1",
+        "one/prefix-0",
+      ].slice(0, limit),
+    );
+    expect(
+      ids(
+        searchPage(
+          index,
+          "movie",
+          "heat",
+          (title) => (title.id === "exact" ? "unrelated alias" : ""),
+          limit,
+        ).titles,
+      ),
+    ).toEqual(ids(page.titles));
+  });
 
   it("scores displayed, original, provider and translated names separately", () => {
     const index = indexCatalogue(

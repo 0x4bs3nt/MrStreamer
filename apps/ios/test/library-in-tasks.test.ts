@@ -1,5 +1,5 @@
 import type { LiveCatalogue } from "@mrstreamer/core/provider";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildLibrary, combineSteps, inTasks, partSteps, type LiveSource } from "../src/library.ts";
 
 // Large channel lists worked out a few slices per task, as the account owner does on iOS: other
@@ -41,19 +41,21 @@ const home: LiveSource = { subscriptionId: "a", label: "Home", catalogue: catalo
 const cabin: LiveSource = { subscriptionId: "b", label: "Cabin", catalogue: catalogue(1500, 1200) };
 const sources = [home, cabin];
 
-/** Counts tasks that run while `work` runs: a stand-in for taps. */
+/** Competing input tasks during work whose scheduler clock advances independently of host speed. */
 async function alongside<A>(work: () => Promise<A>): Promise<{ result: A; tasks: number }> {
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => ++now);
   let tasks = 0;
-  let running = true;
-  const task = () => {
-    if (!running) return;
+  let timer = setTimeout(function task() {
     tasks += 1;
-    setTimeout(task, 0);
-  };
-  setTimeout(task, 0);
-  const result = await work();
-  running = false;
-  return { result, tasks };
+    timer = setTimeout(task, 0);
+  }, 0);
+  try {
+    return { result: await work(), tasks };
+  } finally {
+    clearTimeout(timer);
+    clock.mockRestore();
+  }
 }
 
 /** Every part worked out in tasks, then joined in tasks, as the account owner does. */

@@ -7,6 +7,10 @@ description: Verify MR Streamer's desktop player and marketing website through r
 
 This is the repo's control skill. The installed task skill owns the implementation, investigation or review method; this skill supplies launch, driving and proof. Choose desktop or website by the changed user surface; read the relevant entry in [the feature map](features/README.md) before deciding what a passing check means.
 
+## Test value
+
+Before adding or keeping a test, name the user-visible failure or public contract it protects, its unique protection and whether a cheaper existing check covers it. Keep the minimum representative public behavior that survives an internal refactor. Use the compiler, type checks and linters for structure. Skip or remove checks without useful evidence; preserve distinct safety and failure boundaries.
+
 ## Launch
 
 Run from the repository root with Node 24+ and the pinned pnpm. Prepare once, and rebuild after product changes:

@@ -1,52 +1,13 @@
-// A selective marketing capture run: the stages it takes for the captures asked for, and the
-// manifest it leaves after each master is written.
+// A partial capture run records each new master without replacing unrelated provenance.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  CAPTURES,
-  capturePlan,
-  parseOnly,
   recordCapture,
   type CaptureEntry,
   type CaptureName,
 } from "../scripts/marketing-captures.ts";
-
-const stages = (only?: readonly CaptureName[]) => {
-  const { series, episode, liveTv } = capturePlan(only);
-  return { series, episode, liveTv };
-};
-
-describe("the stages a run takes", () => {
-  it("takes every stage for every capture", () => {
-    expect(stages()).toEqual({ series: true, episode: true, liveTv: true });
-    expect(stages(["home"])).toEqual({ series: true, episode: true, liveTv: true });
-  });
-
-  it("opens the series' details for the library alone, playing nothing", () => {
-    expect(stages(["library"])).toEqual({ series: true, episode: false, liveTv: false });
-  });
-
-  it("plays the episode for watching without Live TV", () => {
-    expect(stages(["watching"])).toEqual({ series: true, episode: true, liveTv: false });
-  });
-
-  it("goes straight to Live TV for its own capture and the guide grid", () => {
-    expect(stages(["tv-guide"])).toEqual({ series: false, episode: false, liveTv: true });
-    expect(stages(["live-tv", "tv-guide"])).toEqual({
-      series: false,
-      episode: false,
-      liveTv: true,
-    });
-  });
-
-  it("names the captures it takes and refuses one it doesn't know", () => {
-    const { wanted } = capturePlan(parseOnly("tv-guide, live-tv"));
-    expect(CAPTURES.filter(wanted)).toEqual(["live-tv", "tv-guide"]);
-    expect(() => parseOnly("tv-guide,grid")).toThrow("No capture named grid");
-  });
-});
 
 describe("recording a master", () => {
   let folder = "";

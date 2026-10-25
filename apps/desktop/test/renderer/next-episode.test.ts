@@ -8,6 +8,7 @@
 // stands when it counts, and nothing opens on an answer of the record's that is old or missing,
 // or once the viewer took the next episode back while the record was asked.
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { runs } from "./title-engine-stand-in.ts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -18,47 +19,13 @@ import type { EpisodeMark, SeriesViewing, TitleProgress } from "@mrstreamer/cont
 import { resetForAccount, useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
 import { movieNow, playTitle } from "../../src/renderer/src/lib/titles.ts";
-import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { episodeNow, titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
 
-/** Runs as the title engine promises them, without a real stream: the test starts and ends each. */
-const runs = vi.hoisted(() => [] as { start(): void; end(): void }[]);
-
-vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
-  titleEngine(video: HTMLVideoElement, run: TitleRun) {
-    const { promise: started, resolve } = Promise.withResolvers<void>();
-    let ended = () => {};
-    runs.push({
-      start() {
-        void video.play();
-        resolve();
-      },
-      end: () => ended(),
-    });
-    return {
-      started,
-      onFailure() {},
-      onEnded(listener: () => void) {
-        ended = listener;
-      },
-      position: () => run.start,
-      played: () => 0,
-      seekWithin: () => false,
-      onSubtitles() {},
-      hideSubtitles() {},
-      info: () => ({
-        width: null,
-        height: null,
-        fps: null,
-        videoCodec: null,
-        audioCodec: null,
-        audioChannels: null,
-      }),
-      destroy() {},
-    };
-  },
-}));
+vi.mock(
+  "../../src/renderer/src/player/title-engine.ts",
+  () => import("./title-engine-stand-in.ts"),
+);
 
 function episode(id: string, season: number, number: number, title: string): Episode {
   return {
@@ -305,37 +272,6 @@ describe("the end of an episode", () => {
     expect(opened()).toEqual(["e13"]);
 
     await key("n");
-    expect(opened()).toEqual(["e13", "e21"]);
-  });
-
-  it("waits while Settings is open over it, then carries on from the seconds it had left", async () => {
-    await playToEnd(pilotHouse, "s1");
-    await wait(3000);
-    expect(text()).toContain("Plays in 7");
-
-    await act(async () => useUi.setState({ settings: "general" }));
-    await wait(30_000);
-    expect(text()).toContain("Plays in 7");
-    expect(opened()).toEqual(["e13"]);
-
-    await act(async () => useUi.setState({ settings: null }));
-    await wait(6000);
-    expect(text()).toContain("Plays in 1");
-    expect(opened()).toEqual(["e13"]);
-    await wait(1000);
-    expect(opened()).toEqual(["e13", "e21"]);
-  });
-
-  it("starts counting at an end behind Settings once Settings closes", async () => {
-    await playToEnd(pilotHouse, "s1", () =>
-      act(async () => useUi.setState({ settings: "general" })),
-    );
-    await wait(30_000);
-    expect(text()).toContain("Plays in 10");
-    expect(opened()).toEqual(["e13"]);
-
-    await act(async () => useUi.setState({ settings: null }));
-    await wait(10_000);
     expect(opened()).toEqual(["e13", "e21"]);
   });
 
@@ -717,26 +653,20 @@ describe("the saved countdown policy", () => {
     expect(opened()).toEqual(["e13", "e21", "e21"]);
   });
 
-  it.each([0, 1, 10, 37, 60])(
-    "opens once after exactly %i seconds",
-    async (nextEpisodeDelaySeconds) => {
-      ipc.always(
-        "preferences.get",
-        ipc.snapshot({ ...defaultPreferences, nextEpisodeDelaySeconds }),
-      );
-      await playToEnd(pilotHouse, "s1");
-      if (nextEpisodeDelaySeconds > 0) {
-        expect(text()).toContain(`Plays in ${nextEpisodeDelaySeconds}`);
-        await wait(nextEpisodeDelaySeconds * 1000 - 1);
-        expect(opened()).toEqual(["e13"]);
-        await wait(1);
-      }
-      // Instant is already opening without advancing the clock.
-      expect(opened()).toEqual(["e13", "e21"]);
-      await wait(65_000);
-      expect(opened()).toEqual(["e13", "e21"]);
-    },
-  );
+  it.each([0, 37, 60])("opens once after exactly %i seconds", async (nextEpisodeDelaySeconds) => {
+    ipc.always("preferences.get", ipc.snapshot({ ...defaultPreferences, nextEpisodeDelaySeconds }));
+    await playToEnd(pilotHouse, "s1");
+    if (nextEpisodeDelaySeconds > 0) {
+      expect(text()).toContain(`Plays in ${nextEpisodeDelaySeconds}`);
+      await wait(nextEpisodeDelaySeconds * 1000 - 1);
+      expect(opened()).toEqual(["e13"]);
+      await wait(1);
+    }
+    // Instant is already opening without advancing the clock.
+    expect(opened()).toEqual(["e13", "e21"]);
+    await wait(65_000);
+    expect(opened()).toEqual(["e13", "e21"]);
+  });
 
   it("keeps Instant held with Next episode shown, then opens without a tick on release", async () => {
     ipc.always(

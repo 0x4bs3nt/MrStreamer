@@ -5,13 +5,15 @@ The suite checks what the services promise, through their public functions, agai
 ## Running the suite
 
 ```sh
+pnpm check                                                             # lint, format, types, unused code and workflows
+pnpm lint:fix                                                          # apply safe lint fixes, then check again
 pnpm test                                                              # every test file
 pnpm vitest run apps/desktop/test/receiver.test.ts --reporter=verbose  # one file, with each test's time
 pnpm vitest run -t "a segment away from the start"                     # tests whose names match
 pnpm vitest list --filesOnly                                           # the files a run takes
 ```
 
-[`test/suites.ts`](../../test/suites.ts) says where test files live: `*.test.ts` under `test/`, `packages/*/test/` and `apps/*/test/`. Vitest runs every one, and [CI](#ci) requires every one in its report, so a new test file needs no list of its own. CI's Check job runs `pnpm knip`, `pnpm lint`, `pnpm fmt:check`, `pnpm typecheck` and `pnpm build`.
+[`test/suites.ts`](../../test/suites.ts) says where test files live: `*.test.ts` under `test/`, `packages/*/test/` and `apps/*/test/`. Vitest runs every one, and [CI](#ci) requires every one in its report, so a new test file needs no list of its own. `pnpm check` runs the static checks; tests and the production build run separately. `pnpm lint:fix` keeps lint's failure flags while applying safe fixes. CI's Check job runs the static checks and the production build.
 
 Before any test runs, Vitest's global setup, [`catalogue-worker-bundle.ts`](../../apps/desktop/test/catalogue-worker-bundle.ts), bundles the catalogue worker from its source, as the app's build does, and every app a test starts runs that bundle. Watch mode makes none, and starts the worker from its source, so a rerun runs the code as it is. Started from the source files, each worker found and read some 150 modules one by one, a third or more of its start.
 
@@ -71,7 +73,7 @@ The bounded component diagnostic runs separately from correctness tests: create 
 
 ### Release, packaging and CI
 
-[`test/release.test.ts`](../../test/release.test.ts) covers version order, when a nightly is due, which commit a stable release builds and the update feed. [`release-workflow`](../../test/release-workflow.test.ts), [`marketing-workflow`](../../test/marketing-workflow.test.ts) and [`ci-test-results`](../../test/ci-test-results.test.ts) read the workflows and run their bash steps and scripts against repositories made for them: artifact names kept apart across a stable run's two releases, an older tested nightly built under main's workflow, the Store job's reach and credential, the website's publication gate, and the completeness of CI's test report. `store-release`, `store-submission` (against a stand-in for Microsoft), `zip` and `setup-microsoft-store` cover the Store tooling. In `apps/desktop/test`, `licences`, `release-sources`, `msix`, `mac-release-phases` and `airplay-helper-key` cover notices, source archives, Store package versions, timing a Mac release step and the AirPlay helper's cache key, and `measurement` and `measurement-cli` the [measurement tools](#app-measurements).
+[`test/release.test.ts`](../../test/release.test.ts) covers version order, when a nightly is due, which commit a stable release builds and the update feed. [`publication-guard`](../../test/publication-guard.test.ts) evaluates the workflows' actual conditions to refuse publication from pull requests and dry runs. `pnpm actionlint` checks workflow syntax and shell steps. [`ci-test-results`](../../test/ci-test-results.test.ts) checks the completeness of CI's test report, including missing suites and disallowed skips. `store-release`, `store-submission` (against a stand-in for Microsoft), `zip` and `setup-microsoft-store` cover the Store tooling. In `apps/desktop/test`, `licences`, `release-sources`, `msix`, `mac-release-phases` and `airplay-helper-key` cover notices, source archives, Store package versions, timing a Mac release step and the AirPlay helper's cache key, and `measurement` and `measurement-cli` the [measurement tools](#app-measurements).
 
 ### Website
 

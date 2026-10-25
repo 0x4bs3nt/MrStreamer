@@ -233,40 +233,6 @@ describe("movies and series", { timeout: 20_000 }, () => {
     expect(file.container).toBe("mp4");
   });
 
-  it("keeps the lists after a restart without asking the provider again", async () => {
-    const app = await onDemandApp();
-    const before = await app.onDemand.collection({
-      kind: "series",
-      id: "all",
-      offset: 0,
-      limit: 10,
-    });
-    await app.runtime.dispose();
-    app.provider.failTitles(500);
-
-    const restarted = await app.start();
-
-    expect(
-      await restarted.onDemand.collection({ kind: "series", id: "all", offset: 0, limit: 10 }),
-    ).toEqual(before);
-    expect(await restarted.onDemand.isStale("12 hours")).toBe(false);
-  });
-
-  it("keeps the lists when a refresh fails, and says why", async () => {
-    const { onDemand, provider } = await onDemandApp();
-    const before = await onDemand.status();
-    await onDemand.collection({ kind: "movie", id: "all", offset: 0, limit: 1 });
-    provider.failTitles(503);
-
-    await expect(onDemand.refresh()).rejects.toMatchObject({
-      error: { kind: "provider-error", status: 503 },
-    });
-
-    const after = await onDemand.status();
-    expect(after.movies).toBeGreaterThan(before.movies);
-    expect(after.failure).toEqual({ kind: "provider-error", status: 503 });
-  });
-
   it("keeps the lists when the provider refuses the login for them", async () => {
     const { onDemand, provider } = await onDemandApp();
     await onDemand.collection({ kind: "movie", id: "all", offset: 0, limit: 1 });

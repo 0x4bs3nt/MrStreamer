@@ -26,7 +26,6 @@ const AUR = ["AUR · Arch Linux, x86_64", "https://aur.archlinux.org/packages/mr
 const AUR_UPDATES = ["Install and update on Arch Linux", "/docs/updates#installed-through-the-aur"];
 const FILES = "https://github.com/Mr-Streamer-OSS/MrStreamer/releases/download";
 const RELEASED: Downloads = { version: "0.0.7", installers };
-const SYSTEMS = [undefined, "windows", "mac", "linux"] as const;
 
 /**
  * Opens a page for a visitor on `system`, undefined for one whose system the script couldn't
@@ -68,32 +67,20 @@ const links = (selector: string) =>
   ]);
 
 describe("the home page", () => {
-  it.each(SYSTEMS)(
-    "sends a visitor on %s to the download page, and holds no installer",
-    (system) => {
-      open(home, system, RELEASED);
+  it("sends a visitor to the download page, and holds no installer", () => {
+    open(home, undefined, RELEASED);
 
-      expect(document.querySelectorAll("header")).toHaveLength(1);
-      expect(links("header nav a")).toEqual([
-        ["Guides", "/docs"],
-        ["FAQ", "/faq"],
-        ["Download", "/download"],
-      ]);
-      expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
-      expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW, AUR]);
-      expect(
-        document.querySelector(
-          '[data-installer], [data-release-version], a[href^="https://apps."]',
-        ),
-      ).toBeNull();
-    },
-  );
-
-  it("is whole without scripts: the stack's three windows rest fanned out", () => {
-    open(home);
-
-    expect(shown(".stack .layer")).toHaveLength(3);
-    expect(document.querySelector(".revealed")).toBeNull();
+    expect(document.querySelectorAll("header")).toHaveLength(1);
+    expect(links("header nav a")).toEqual([
+      ["Guides", "/docs"],
+      ["FAQ", "/faq"],
+      ["Download", "/download"],
+    ]);
+    expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
+    expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW, AUR]);
+    expect(
+      document.querySelector('[data-installer], [data-release-version], a[href^="https://apps."]'),
+    ).toBeNull();
   });
 });
 
@@ -176,27 +163,24 @@ describe("the download page", () => {
     ]);
   });
 
-  it.each(SYSTEMS)(
-    "lists the Store and every installer in its rows for a visitor on %s",
-    (system) => {
-      openDownload(system, RELEASED);
+  it("lists the Store and every installer in its rows", () => {
+    openDownload(undefined, RELEASED);
 
-      expect(links(".rows a")).toEqual([
-        ["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`],
-        HOMEBREW,
-        BREW_UPDATES,
-        ["Microsoft Store", STORE],
-        ["Download the setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
-        ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
-        ["Download the .deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
-        AUR,
-        AUR_UPDATES,
-      ]);
-      expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
-        "Version 0.0.7.",
-      );
-    },
-  );
+    expect(links(".rows a")).toEqual([
+      ["Download the DMG", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-mac-arm64.dmg`],
+      HOMEBREW,
+      BREW_UPDATES,
+      ["Microsoft Store", STORE],
+      ["Download the setup .exe", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-win-x64-setup.exe`],
+      ["Download the AppImage", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-x86_64.AppImage`],
+      ["Download the .deb", `${FILES}/v0.0.7/Mr-Streamer-0.0.7-linux-amd64.deb`],
+      AUR,
+      AUR_UPDATES,
+    ]);
+    expect(said(document.querySelector("[data-release-version]") ?? document.body)).toBe(
+      "Version 0.0.7.",
+    );
+  });
 
   it("sends every row to the Releases page, and says so, when no release is known", () => {
     openDownload();

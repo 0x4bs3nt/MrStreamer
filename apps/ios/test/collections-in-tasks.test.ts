@@ -2,32 +2,22 @@ import * as React from "react";
 import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import type { TitleMetadata } from "@mrstreamer/core/metadata/tmdb";
-import { indexCatalogue, kindOf, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
+import { kindOf, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import {
   collectionRows,
   collections,
-  collectionSteps,
   type Collections,
-  type CollectionSource,
   type ServiceTitles,
 } from "@mrstreamer/core/ondemand/collections";
 import type { OnDemandCatalogue } from "@mrstreamer/core/provider";
 import { xtreamProvider } from "@mrstreamer/core/xtream";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { inTasks } from "../src/library.ts";
 
-// The collections Movies, Series, Home and details show, made in short tasks: worked out between
-// other tasks they hold what making them at once gives, with TMDB's metadata or without. The app's
-// owner (titles.ts) makes them after the lists are indexed and whenever the metadata changes what
-// they show, never while a screen draws: lists show only together with collections made of them,
-// those that show stay until newer lists' or metadata's are made, none made for lists that no
-// longer show ever show, and a removed subscription's titles go at once. Both
-// paths agree on how long collections hold: until a title passes New's 7 or 30 days, metadata
-// expires, the year turns or the clock goes back; the owner then makes them again once a screen
-// reads them, as Movies and a collection do when what they show by changes. The subscriptions,
-// viewing, TMDB's metadata store and React Native's views stand in at the owner's edges; tasks
-// run as the app runs them.
+// The titles owner publishes lists only once both kinds' collections are ready. It keeps the
+// last usable collections through metadata work, drops replaced/removed sources, and rebuilds
+// expired collections when a screen reads them. Native I/O and views stand in at its edges;
+// the real indexing and collection tasks run between the tests' observations.
 
 const edges = vi.hoisted(() => ({
   members: [] as Array<{
@@ -254,82 +244,6 @@ beforeAll(async () => {
   ).onDemandCatalogue();
 });
 afterAll(() => provider.close());
-
-describe("collections made in tasks", () => {
-  it("hold what making them at once gives, with TMDB's metadata or without, in any language", async () => {
-    for (const language of ["en", "nl"]) {
-      const index = indexCatalogue([{ subscriptionId: "a", catalogue }], language);
-      for (const known of [null, tmdbOf(0)]) {
-        for (const kind of ["movie", "series"] as const) {
-          const source: CollectionSource = {
-            kind,
-            titles: kindOf(index, kind).titles,
-            language,
-            metadata: (id) => known?.(kind, id) ?? null,
-            names: () => null,
-            services: known ? servicesOf(index, kind) : [],
-            now: Date.now(),
-          };
-          const made = await inTasks(collectionSteps(source), () => true);
-          if (!made) throw new Error("Stopped");
-          const like = kindOf(index, kind).titles.find((title) => title.tmdbId && !title.adult);
-          const atOnce = shown(collections(source), like);
-          expect(shown(made, like)).toEqual(atOnce);
-          expect(atOnce.lists.every((list) => list.size === list.titles.length)).toBe(true);
-          expect(atOnce.lists.find((list) => list.id === "4k")?.size).toBeGreaterThan(0);
-          expect(atOnce.fresh.length).toBeGreaterThan(0);
-          if (known) expect(atOnce.genres.length).toBeGreaterThan(0);
-        }
-      }
-    }
-  });
-
-  it("hold for as long as making them at once holds: New's cutoffs, the year, expiry and the clock", async () => {
-    const DAY = 86_400_000;
-    const index = indexCatalogue([{ subscriptionId: "a", catalogue }], "en");
-    const now = Date.now();
-    const titles = kindOf(index, "movie").titles;
-    // A few titles' metadata expires soon, and once already; the services in a while.
-    const ids = titles.flatMap((title) => (title.tmdbId ? [title.tmdbId] : []));
-    const soon = new Map(ids.slice(0, 5).map((id, at) => [id, now + (at + 1) * 60_000]));
-    soon.set(ids[5] ?? "", now - 1);
-    for (const expiresAt of [
-      undefined,
-      (id?: string) => (id ? (soon.get(id) ?? Infinity) : now + 3 * DAY),
-    ]) {
-      const source: CollectionSource = {
-        kind: "movie",
-        titles,
-        language: "en",
-        metadata: tmdbOf(0).bind(null, "movie"),
-        names: () => null,
-        services: servicesOf(index, "movie"),
-        now,
-        ...(expiresAt ? { expiresAt } : {}),
-      };
-      const made = await inTasks(collectionSteps(source), () => true);
-      if (!made) throw new Error("Stopped");
-      const atOnce = collections(source);
-      const year = Date.UTC(new Date(now).getUTCFullYear() + 1, 0, 1);
-      const cutoffs = titles
-        .flatMap((title) =>
-          title.addedAt ? [title.addedAt + 7 * DAY, title.addedAt + 30 * DAY] : [],
-        )
-        .filter((at) => at > now)
-        .sort((a, b) => a - b)
-        .slice(0, 3);
-      const probes = [now - 1, now, now + 3 * DAY, year, ...cutoffs, ...soon.values()].flatMap(
-        (at) => [at - 1, at, at + 1],
-      );
-      expect(probes.map((at) => made.validAt(at))).toEqual(probes.map((at) => atOnce.validAt(at)));
-      expect(made.validAt(now)).toBe(true);
-      expect(made.validAt(now - 1)).toBe(false);
-      // The earliest of what it was made with, past or absent expiries left out.
-      const earliest = Math.min(year, ...cutoffs, ...(expiresAt ? [now + 60_000] : []));
-      expect([made.validAt(earliest - 1), made.validAt(earliest)]).toEqual([true, false]);
-    }
-  });
-});
 
 describe("the collections Movies, Series, Home and details show", () => {
   type Owner = typeof import("../src/titles.ts");

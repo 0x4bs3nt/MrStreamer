@@ -10,6 +10,7 @@
 // poster, also after search opened and closed over the details. Hiding titles for adults closes an
 // adult title's details, which head a chain at most. Removing the last subscription starts over.
 import type { FakeTitles } from "../../../../apps/desktop/test/fake-provider.ts";
+import { tmdbName } from "../../../../apps/desktop/test/fake-tmdb.ts";
 import type { Driver } from "./language.ts";
 
 /** What the scenario needs of the two fixture providers. */
@@ -74,6 +75,18 @@ const expect = (value: boolean, message: string) => {
 
 export async function detailsBackScenario(d: Driver, fixture: DetailsBackFixture): Promise<void> {
   const name = () => d.evaluate<string | null>(NAME);
+  /** Waits for a chosen poster's fixture metadata name before using it as an expected heading. */
+  const metadataName = async (poster: string) => {
+    let title: string | null = null;
+    await d.wait(async () => {
+      title = await d.evaluate<string | null>(
+        `(${poster})?.querySelector('span.truncate')?.textContent ?? null`,
+      );
+      const id = /^(?:Original|Origineel|English) (\d+)$/.exec(title ?? "")?.[1];
+      return !!id && title === tmdbName(Number(id), "en").name;
+    });
+    return title!;
+  };
   /** Waits for the details of `title`, with their related titles settled. */
   const showing = async (title: string) => {
     await d.wait(async () => (await name()) === title);
@@ -90,7 +103,7 @@ export async function detailsBackScenario(d: Driver, fixture: DetailsBackFixture
       return (a.getAttribute('aria-label') || a.textContent.trim()).slice(0, 60) + (a.closest('[role=dialog]') ? ' (sheet)' : ' (page)');
     })()`);
   const pressWith = async (key: string, code: string, keyCode: number, modifiers: number) => {
-    d.action(`Press ${modifiers === 2 ? "Ctrl+" : ""}${key}`);
+    d.action(`Press ${modifiers === 4 ? "Cmd+" : modifiers === 2 ? "Ctrl+" : ""}${key}`);
     for (const type of ["rawKeyDown", "keyUp"])
       await d.send("Input.dispatchKeyEvent", {
         type,
@@ -327,24 +340,21 @@ export async function detailsBackScenario(d: Driver, fixture: DetailsBackFixture
   await d.click("Open Movies", named("header button", "Movies"));
   await d.click("Open For you", named("nav button", "For you"));
   await d.wait(() => d.exists(POSTER));
+  const first = await metadataName(POSTER);
   await tabTo("For you's first poster", POSTER);
   await d.key("Enter", 13);
-  await d.wait(() => d.exists(SHEET));
-  await d.wait(async () => (await name()) !== null);
-  const first = (await name())!;
   await showing(first);
   await d.wait(() => d.evaluate<boolean>(`${RELATED}.length > 0`));
-  const related = await d.evaluate<string>(`${RELATED}[0].textContent`);
-  await tabTo("the first related title", `${RELATED}[0]`);
+  const second = await metadataName(`${RELATED}[0]`);
+  const related = `${RELATED}.find(b => b.querySelector('span.truncate')?.textContent === ${JSON.stringify(second)})`;
+  await tabTo("the first related title", related);
   await d.key("Enter", 13);
-  await d.wait(async () => (await name()) !== first);
-  const second = (await name())!;
   await showing(second);
   await tabTo("Back above the details", BACK);
   await d.key("Enter", 13);
   await showing(first);
   const keyboardBack = await d.evaluate<{ focus: boolean; visible: boolean }>(`({
-    focus: document.activeElement?.textContent === ${JSON.stringify(related)},
+    focus: document.activeElement === (${related}),
     visible: document.activeElement?.matches(':focus-visible') ?? false,
   })`);
   d.observed["keyboardBack"] = { ...keyboardBack, first, second };
@@ -352,7 +362,7 @@ export async function detailsBackScenario(d: Driver, fixture: DetailsBackFixture
   expect(keyboardBack.focus, `Keyboard Back left the keyboard on ${await focused()}.`);
   await d.key("Enter", 13);
   await showing(second);
-  await pressWith("k", "KeyK", 75, 2);
+  await pressWith("k", "KeyK", 75, process.platform === "darwin" ? 4 : 2);
   await d.wait(() => d.evaluate<boolean>(`!!document.querySelector('[role=dialog] input')`));
   await d.key("Escape", 27);
   await d.wait(() => d.evaluate<boolean>(`!document.querySelector('[role=dialog] input')`));

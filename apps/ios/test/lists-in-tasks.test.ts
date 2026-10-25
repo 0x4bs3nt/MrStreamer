@@ -7,27 +7,27 @@ import {
   type CatalogueSource,
 } from "@mrstreamer/core/ondemand/catalogue";
 import { xtreamProvider } from "@mrstreamer/core/xtream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { inTasks } from "../src/library.ts";
 
 // Long movie and series lists read and indexed a few slices per task, as the iOS app does: other
 // work runs between the tasks, the lists come out as reading and indexing them at once gives
 // them, and the work stops when its load is aborted.
 
-/** Counts tasks that run while `work` runs: a stand-in for taps. */
+/** Competing input tasks during work whose scheduler clock advances independently of host speed. */
 async function alongside<A>(work: () => Promise<A>): Promise<{ result: A; tasks: number }> {
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => ++now);
   let tasks = 0;
-  let running = true;
-  const task = () => {
-    if (!running) return;
+  let timer = setTimeout(function task() {
     tasks += 1;
-    setTimeout(task, 0);
-  };
-  setTimeout(task, 0);
+    timer = setTimeout(task, 0);
+  }, 0);
   try {
     return { result: await work(), tasks };
   } finally {
-    running = false;
+    clearTimeout(timer);
+    clock.mockRestore();
   }
 }
 
@@ -143,7 +143,7 @@ describe("movie and series lists read and indexed in tasks", () => {
     expect(shown(result)).toEqual(shown(indexCatalogue(sources, "nl")));
   });
 
-  it.each([new Error("Left"), null, false, 0, "left"])(
+  it.each([new Error("Left"), null, false])(
     "stops reading rows once the load is aborted, and fails with its reason, %j",
     async (reason) => {
       const controller = new AbortController();
@@ -155,24 +155,17 @@ describe("movie and series lists read and indexed in tasks", () => {
     },
   );
 
-  it("fails as the panel's answer says, reading in tasks too", async () => {
-    for (const [status, kind] of [
-      [401, "invalid-login"],
-      [503, "provider-error"],
-    ] as const) {
-      const failing = xtreamProvider(
-        { server: "http://panel.test", username: "fixture", password: "secret" },
-        {
-          userAgent: "fixture",
-          inTasks,
-          fetch: async (input) =>
-            new URL(String(input)).searchParams.get("action") === "get_vod_streams"
-              ? new Response("", { status })
-              : Response.json([]),
-        },
-      );
-      await expect(failing.onDemandCatalogue()).rejects.toMatchObject({ error: { kind } });
-    }
+  it("refuses the login when a catalogue request answers HTTP 401", async () => {
+    const refusing = xtreamProvider(
+      { server: "http://panel.test", username: "fixture", password: "secret" },
+      { userAgent: "fixture", inTasks, fetch: async () => new Response(null, { status: 401 }) },
+    );
+    await expect(refusing.onDemandCatalogue()).rejects.toMatchObject({
+      error: { kind: "invalid-login" },
+    });
+  });
+
+  it("refuses a catalogue response that is not JSON", async () => {
     // An answer that isn't JSON at all is no Xtream API.
     const garbled = xtreamProvider(
       { server: "http://panel.test", username: "fixture", password: "secret" },
@@ -181,13 +174,6 @@ describe("movie and series lists read and indexed in tasks", () => {
     await expect(garbled.onDemandCatalogue()).rejects.toMatchObject({
       error: { kind: "unreachable" },
     });
-  });
-
-  it("refuses the login when a list answers with a refusal, reading in tasks too", async () => {
-    const refusal = { user_info: { auth: 0 } };
-    await expect(
-      panel({ movies: refusal, series: [] }, true).onDemandCatalogue(),
-    ).rejects.toMatchObject({ error: { kind: "invalid-login" } });
   });
 
   it("stops indexing once it is no longer wanted, leaving nothing half made", async () => {

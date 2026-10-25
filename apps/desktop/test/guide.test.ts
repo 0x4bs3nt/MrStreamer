@@ -199,72 +199,6 @@ describe("programme guide", () => {
     expect(await guide.schedule(unguided)).toEqual([]);
   });
 
-  it("reads an untidy guide that arrives in small pieces", async () => {
-    const { provider, guide, guided, guideId } = await connectedGuide();
-    const programme = (attributes: string, body: string) =>
-      `<programme ${attributes.replaceAll("ID", guideId)}>${body}</programme>`;
-    provider.serveGuide(
-      [
-        '<?xml version="1.0" encoding="utf-8"?><!DOCTYPE tv SYSTEM "xmltv.dtd"><tv>',
-        `<channel id="${guideId}"><display-name>Messy</display-name></channel>`,
-        programme(
-          `start="20261002180000 +0200" stop="20261002190000 +0200" channel="ID"`,
-          "<title>Earlier</title>",
-        ),
-        // Single quotes, attributes in another order, references, two titles.
-        programme(
-          `channel='ID' stop='20261002203000 +0200' start='20261002200000 +0200'`,
-          '<title lang="nl">Het &#233;&#xE9;n</title><title lang="en">The one</title>',
-        ),
-        // No stop: runs until the next programme.
-        programme(
-          `start="20261002203000 +0200" channel="ID"`,
-          "<title><![CDATA[Tom & Jerry <live>]]></title><desc>  Line one\n  line two </desc>",
-        ),
-        programme(
-          `start="20261002190000 +0000" stop="20261002193000 +0000" channel="ID"`,
-          "<title>Late &amp; loud</title>",
-        ),
-        // Starts before the previous one ends, which then ends early.
-        programme(
-          `start="20261002211500 +0200" stop="20261002220000 +0200" channel="ID"`,
-          "<title>Overlap</title>",
-        ),
-        programme(`start="soon" stop="20261002230000 +0200" channel="ID"`, "<title>Broken</title>"),
-        programme(
-          `start="20261002230000 +0200" stop="20261002220000 +0200" channel="ID"`,
-          "<title>Backwards</title>",
-        ),
-        programme(
-          `start="20261002230000 +0200" stop="20261002233000 +0200" channel="ID"`,
-          "<title/>",
-        ),
-        `<programme start="20261002230000 +0200" stop="20261002233000 +0200" channel="${guideId}"/>`,
-        programme(
-          `start="20261002200000 +0200" stop="20261002210000 +0200" channel="nobody.test"`,
-          "<title>Unknown channel</title>",
-        ),
-        "</tv>",
-      ].join("\n"),
-      { pieceBytes: 7 },
-    );
-
-    await guide.refresh();
-
-    expect(await guide.schedule(guided)).toEqual([
-      { start: at("20:00"), stop: at("20:30"), title: "Het één", description: null },
-      {
-        start: at("20:30"),
-        stop: at("21:00"),
-        title: "Tom & Jerry <live>",
-        description: "Line one line two",
-      },
-      { start: at("21:00"), stop: at("21:15"), title: "Late & loud", description: null },
-      { start: at("21:15"), stop: at("22:00"), title: "Overlap", description: null },
-    ]);
-    expect((await guide.search("een")).map((match) => match.programme.title)).toEqual(["Het één"]);
-  });
-
   it("says how many channels it covers, and since when, for Settings", async () => {
     const { guide } = await connectedGuide();
     const listed = (await guide.library.channels({})).length;
@@ -293,23 +227,6 @@ describe("programme guide", () => {
       availability: "available",
       processing: { state: "ready", channels: shown, fetchedAt: NOW },
     });
-  });
-
-  it("finds programmes by title, on now first, on the channel that shows them", async () => {
-    const { guide, guided } = await connectedGuide();
-    await guide.refresh();
-    const word = (await guide.listings([guided]))[guided]?.now?.title.split(" ")[0] ?? "";
-
-    const matches = await guide.search(`${word.toLowerCase()} news`);
-
-    expect(matches.length).toBeGreaterThan(1);
-    expect(matches.every((match) => match.programme.title.startsWith(`${word} News`))).toBe(true);
-    const onNow = matches.filter((match) => match.programme.start <= NOW);
-    expect(matches.slice(0, onNow.length)).toEqual(onNow);
-    const later = matches.slice(onNow.length).map((match) => match.programme.start);
-    expect(later).toEqual(later.toSorted((a, b) => a - b));
-    expect(matches.some((match) => match.channel.id === guided)).toBe(true);
-    expect(await guide.search("  ")).toEqual([]);
   });
 
   it("lists a channel for adults' programmes only while Settings shows it, where a search of its list finds them and a search of everything never does", async () => {

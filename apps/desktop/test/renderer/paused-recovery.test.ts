@@ -5,64 +5,15 @@
 // lets go of the provider after five minutes, however it came to be paused, and saves no
 // progress meanwhile.
 import { ipc, SUBSCRIPTION } from "./support.ts";
+import { runs } from "./title-engine-stand-in.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EngineError } from "../../src/renderer/src/player/engine.ts";
-import type { TitleRun } from "../../src/renderer/src/player/title-engine.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
 
-/**
- * Runs as the title engine promises them, without a real stream: one started paused holds its
- * picture, any other plays. The test starts or fails each.
- */
-const runs = vi.hoisted(
-  () =>
-    [] as {
-      readonly run: TitleRun;
-      destroyed: boolean;
-      start(): void;
-      fail(error: EngineError): void;
-    }[],
+vi.mock(
+  "../../src/renderer/src/player/title-engine.ts",
+  () => import("./title-engine-stand-in.ts"),
 );
-
-vi.mock("../../src/renderer/src/player/title-engine.ts", () => ({
-  titleEngine(video: HTMLVideoElement, run: TitleRun) {
-    const { promise: started, resolve, reject } = Promise.withResolvers<void>();
-    started.catch(() => {});
-    const entry = {
-      run,
-      destroyed: false,
-      start() {
-        if (run.paused) video.pause();
-        else void video.play();
-        resolve();
-      },
-      fail: reject,
-    };
-    runs.push(entry);
-    return {
-      started,
-      onFailure() {},
-      onEnded() {},
-      position: () => run.start,
-      played: () => 0,
-      seekWithin: () => false,
-      onSubtitles() {},
-      hideSubtitles() {},
-      info: () => ({
-        width: null,
-        height: null,
-        fps: null,
-        videoCodec: null,
-        audioCodec: null,
-        audioChannels: null,
-      }),
-      destroy() {
-        entry.destroyed = true;
-      },
-    };
-  },
-}));
 
 /** Lets the player's answers through and moves the fake clock a millisecond. */
 const settle = () => vi.advanceTimersByTimeAsync(1);

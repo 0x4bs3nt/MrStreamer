@@ -41,6 +41,14 @@ const STATE = `(() => {
     columns: tiles.filter((tile) => Math.abs(tile.getBoundingClientRect().top - top) < 2).length,
     visibleRows: view ? rowTops.filter(top => top < view.bottom && top + rowHeight > view.top).length : 0,
     fullRows: view ? rowTops.filter(top => top >= view.top && top + rowHeight <= view.bottom).length : 0,
+    geometry: view && scroller ? {
+      scrollTop: scroller.scrollTop,
+      top: view.top,
+      bottom: view.bottom,
+      clientHeight: scroller.clientHeight,
+      rowHeight: Number.isFinite(rowHeight) ? rowHeight : null,
+      rowTops,
+    } : null,
     tiles: tiles.length,
     innerWidth,
     innerHeight,
@@ -65,6 +73,14 @@ interface GridState {
   readonly columns: number;
   readonly visibleRows: number;
   readonly fullRows: number;
+  readonly geometry: {
+    readonly scrollTop: number;
+    readonly top: number;
+    readonly bottom: number;
+    readonly clientHeight: number;
+    readonly rowHeight: number | null;
+    readonly rowTops: readonly number[];
+  } | null;
   readonly tiles: number;
   readonly innerWidth: number;
   readonly innerHeight: number;
@@ -96,6 +112,21 @@ export async function posterGridScenario(
   const steps: Record<string, unknown>[] = [];
   d.observed["posterGridSteps"] = steps;
   const state = () => d.evaluate<GridState>(STATE);
+  /** Focus can arrive before the scrolled virtual rows; measure a page after both have settled. */
+  const settledState = async () => {
+    let previous = await state();
+    await d.wait(async () => {
+      await d.evaluate(
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+      );
+      const now = await state();
+      const stable =
+        !!now.geometry && JSON.stringify(now.geometry) === JSON.stringify(previous.geometry);
+      previous = now;
+      return stable && now.inGrid && now.ringIndex === now.index && now.inView;
+    }, 15_000);
+    return previous;
+  };
   const shiftTab = async () => {
     d.action("Press Shift+Tab");
     for (const type of ["rawKeyDown", "keyUp"])
@@ -160,20 +191,27 @@ export async function posterGridScenario(
         .replace(/[^0-9]/g, ""),
     );
   /**
-   * Reads the open details' name and closes them with Escape. Fake TMDB renames titles as its
-   * answers arrive, and the grid reads them a moment after the details do, so the name is the
-   * poster's from before it opened, from after it closed, or what the focused poster comes to.
+   * Matches the open details to the chosen poster while both names can still refresh. The
+   * provider-name tooltip identifies the poster throughout; Escape must return to that poster.
    */
-  const closeDetails = async (step: string, before: string) => {
-    await d.wait(() => d.evaluate<boolean>(`${DIALOG_TITLE} !== null`));
+  const closeDetails = async (step: string, before: Pick<GridState, "title" | "name">) => {
+    expect(!!before.title, `${step}: the chosen poster has no provider-name tooltip`);
+    await d.wait(
+      () =>
+        d.evaluate<boolean>(`(() => {
+          const posters = [...(${GRID})?.querySelectorAll('button[title]') ?? []]
+            .filter(b => b.title === ${JSON.stringify(before.title)});
+          const name = posters[0]?.querySelector('span.truncate')?.textContent;
+          return posters.length === 1 && !!name && (${DIALOG_TITLE}) === name;
+        })()`),
+      15_000,
+    );
     const title = await d.evaluate<string>(DIALOG_TITLE);
     await d.key("Escape", 27);
     await d.wait(() => d.evaluate<boolean>(`!document.querySelector('[role="dialog"]')`));
-    return async (after: GridState) => {
-      const same = (name: string | null) => !!name && title.includes(name);
-      if (!same(before) && !same(after.name))
-        await d.wait(async () => same((await state()).name), 15_000);
-      steps.push({ step: `${step}: details`, title, before, after: (await state()).name });
+    return (after: GridState) => {
+      expect(after.title === before.title, `${step}: Escape returned to another poster`);
+      steps.push({ step: `${step}: details`, title, before, after: after.name });
     };
   };
 
@@ -226,7 +264,7 @@ export async function posterGridScenario(
   );
   await d.capture("collection-arrows");
   await d.key("Enter", 13);
-  const opened = await closeDetails("Enter opens the focused poster", arrowed.name!);
+  const opened = await closeDetails("Enter opens the focused poster", arrowed);
   await opened(await aligned("Escape returns to the poster that opened details", 1, total));
   await d.capture("collection-returned");
 
@@ -234,7 +272,8 @@ export async function posterGridScenario(
   let previous = 1;
   const pages: number[] = [];
   while (previous < 130) {
-    const beforePage = await state();
+    const beforePage = await settledState();
+    steps.push({ step: `Before PageDown from ${previous}`, ...beforePage });
     const least = Math.min(
       total - 1,
       previous + beforePage.columns * Math.max(1, beforePage.fullRows),
@@ -259,7 +298,8 @@ export async function posterGridScenario(
   await d.key("End", 35);
   await aligned("End", total - 1, total);
   await d.capture("collection-end");
-  const beforeUp = await state();
+  const beforeUp = await settledState();
+  steps.push({ step: "Before PageUp from End", ...beforeUp });
   await d.key("PageUp", 33);
   await d.wait(async () => (await state()).index !== total - 1);
   const up = await aligned("PageUp goes back one visible page", (await state()).index!, total);
@@ -275,7 +315,10 @@ export async function posterGridScenario(
   // The pointer only hovers; a click opens its poster, and closing returns the focus to it.
   const fourth = `(${GRID}).querySelector('[data-index="3"] button')`;
   await d.click("Open the fourth poster with the pointer", fourth);
-  const clicked = await d.evaluate<string>(`${fourth}.querySelector('span.truncate').textContent`);
+  const clicked = await d.evaluate<Pick<GridState, "title" | "name">>(`({
+    title: ${fourth}.title,
+    name: ${fourth}.querySelector('span.truncate').textContent,
+  })`);
   const pressed = await closeDetails("A click opens its poster", clicked);
   await d.wait(async () => (await state()).index === 3);
   const afterClick = await state();
@@ -346,7 +389,7 @@ export async function posterGridScenario(
   const second = await aligned("ArrowRight in the results", 1, found.setsize!);
   await d.capture("search-results");
   await d.key("Enter", 13);
-  const result = await closeDetails("Enter opens the focused result", second.name!);
+  const result = await closeDetails("Enter opens the focused result", second);
   await result(await aligned("Escape returns to the result", 1, found.setsize!));
   // Typing again keeps the focus in the field while the results change.
   await d.click("Focus the Movies search again", field);
@@ -437,7 +480,7 @@ export async function posterGridScenario(
   await shiftTab();
   const last = await aligned("The poster before it", 1, 2, true);
   await d.key("Enter", 13);
-  const entry = await closeDetails("Enter opens a Watchlist title", last.name!);
+  const entry = await closeDetails("Enter opens a Watchlist title", last);
   await entry(await aligned("Escape returns to the Watchlist tile", 1, 2, true));
   await d.capture("watchlist-returned");
   d.observed["requests"] = counts();
