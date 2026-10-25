@@ -7,7 +7,9 @@ import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core
 import Constants from "expo-constants";
 import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
 import { dropTitles, pruneDetails } from "./details-cache.ts";
+import { DEMO_ID, demoEntry, demoProvider, type DemoEntry } from "./demo.ts";
 import { transfers } from "./download-task.ts";
+import type { Erased } from "./downloads.ts";
 import { appError, hostOf } from "./errors.ts";
 import { guide } from "./guide.ts";
 import {
@@ -21,7 +23,7 @@ import {
   type LiveSource,
   type Part,
 } from "./library.ts";
-import { play, playbackState, request, stop } from "./playback.ts";
+import { play, playbackState, progressSettled, request, stop } from "./playback.ts";
 import { keychainSecrets } from "./secrets.ts";
 import {
   currentSource,
@@ -44,6 +46,7 @@ import {
 import { store, useStore } from "./store.ts";
 import {
   EMPTY_REGISTRY,
+  demoConflict,
   migrated,
   newSubscriptionId,
   readRegistry,
@@ -53,10 +56,17 @@ import {
   withPending,
   writeRegistry,
   type Registry,
+  type RegistryFile,
   type SubscriptionEntry,
 } from "./subscriptions.ts";
 import { noteAction } from "./telemetry/index.ts";
-import { eraseViewing, setViewingChannels, setViewingOwners } from "./viewing.ts";
+import {
+  eraseViewing,
+  setViewingChannels,
+  setViewingOwners,
+  viewingChangesSettled,
+  viewingHolds,
+} from "./viewing.ts";
 import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 
 // The saved subscriptions, each signed in on its own, and their lists. Everything from all of them
@@ -118,7 +128,7 @@ export type Loadable<A> =
 
 /** A saved subscription as the screens see it: no login. */
 export interface Member {
-  readonly entry: SubscriptionEntry;
+  readonly entry: SubscriptionEntry | DemoEntry;
   /** What lists call it: its name, else its server's host, numbered where two read the same. */
   readonly label: string;
   /** What the provider said at the last sign-in, null while it is asked, or why it couldn't say. */
@@ -198,6 +208,16 @@ const providerFor = (account: XtreamAccount): Provider =>
 
 /** The registry as last written. */
 let registry: Registry = EMPTY_REGISTRY;
+let file: RegistryFile = { registry, demo: { kind: "absent" }, opaque: {} };
+/** Personal cleanup must not turn a launch-time reserved id into demo authority mid-launch. */
+let demoReservedAtLaunch = false;
+const demoReserved = () => demoReservedAtLaunch || demoConflict(registry);
+
+/** The personal entries and, when enabled and unreserved, the labelled demo. */
+const entriesOf = () => [
+  ...registry.subscriptions,
+  ...(file.demo.kind === "active" && !demoReserved() ? [demoEntry] : []),
+];
 /** Loads under way, by `kind|id`. */
 const loads = new Map<string, AbortController>();
 let revisions = 0;
@@ -296,12 +316,17 @@ async function fenceDownloads(id: string): Promise<void> {
 }
 
 function commit(next: Registry) {
+  commitFile({ ...file, registry: next });
+}
+
+function commitFile(next: RegistryFile) {
   writeRegistry(next);
-  registry = next;
+  file = next;
+  registry = next.registry;
 }
 
 /** Names by id: a subscription's own, else its host; two that read the same are numbered. */
-function labelsOf(entries: readonly SubscriptionEntry[]): ReadonlyMap<string, string> {
+function labelsOf(entries: readonly Member["entry"][]): ReadonlyMap<string, string> {
   const seen = new Map<string, number>();
   return new Map(
     entries.map((entry) => {
@@ -317,9 +342,10 @@ const IDLE = { kind: "idle" } as const;
 
 /** The roster in the registry's order, each member keeping its standing and lists. */
 function syncRoster() {
-  const labels = labelsOf(registry.subscriptions);
+  const entries = entriesOf();
+  const labels = labelsOf(entries);
   const known = new Map(members().map((member) => [member.entry.id, member]));
-  const next = registry.subscriptions.map((entry): Member => {
+  const next = entries.map((entry): Member => {
     const label = labels.get(entry.id) ?? entry.server;
     const member = known.get(entry.id);
     if (!member) {
@@ -382,7 +408,7 @@ type Kind = Saved["kind"];
 export const savable = (id: string, source: Source) =>
   currentSource(id) === source &&
   source.revision > (dropped.get(id) ?? 0) &&
-  registry.subscriptions.some((entry) => entry.id === id);
+  entriesOf().some((entry) => entry.id === id);
 
 /**
  * Calls `listener` whenever `savable` may answer otherwise for a login that stays the current
@@ -533,7 +559,7 @@ export function reloadChannels(id: string) {
     (provider, signal) => provider.liveCatalogue(signal),
     (change) => setMember(id, (member) => ({ ...member, live: change(member.live) })),
     (catalogue, source, fetchedAt) => {
-      noteAction("playlist_refreshed");
+      if (id !== DEMO_ID || demoReserved()) noteAction("playlist_refreshed");
       save(id, source, { kind: "live", catalogue, fetchedAt });
     },
   );
@@ -601,12 +627,25 @@ function signIn(
   password: string,
   checked: AccountStatus | null | "again",
 ) {
-  const { id } = entry;
   const source: Source = {
     revision: ++revisions,
     provider: providerFor({ server: entry.server, username: entry.username, password }),
     login: [entry.username, password],
   };
+  signedSource(entry, source, checked);
+}
+
+/** Every demo incarnation has its own Source, with no Keychain item or login values. */
+function signInDemo(checked: null | "again") {
+  signedSource(demoEntry, { revision: ++revisions, provider: demoProvider(), login: [] }, checked);
+}
+
+function signedSource(
+  entry: Member["entry"],
+  source: Source,
+  checked: AccountStatus | null | "again",
+) {
+  const { id } = entry;
   setSource(id, source);
   void guide.attach(id);
   if (checked === null) {
@@ -693,10 +732,12 @@ async function restorePassword(entry: SubscriptionEntry): Promise<void> {
 export function restore(): Promise<void> {
   const restored = serially(async () => {
     const saved = readRegistry();
-    registry = saved ?? migrated(readState());
+    file = saved ?? { registry: migrated(readState()), demo: { kind: "absent" }, opaque: {} };
+    registry = file.registry;
+    demoReservedAtLaunch ||= demoConflict(registry);
     reading.set(
       new Map(
-        registry.subscriptions.flatMap(({ id }) => [
+        entriesOf().flatMap(({ id }) => [
           [`live|${id}`, null],
           [`titles|${id}`, null],
         ]),
@@ -710,17 +751,18 @@ export function restore(): Promise<void> {
     }
     // A write that fails leaves the old files as they were, and the next launch tries again.
     try {
-      if (!saved) writeRegistry(registry);
+      if (!saved) writeRegistry(file);
       migrateRecentChannels();
     } catch {
       // Shown from memory for now.
     }
     for (const id of registry.pendingSecrets) await settleSecret(id).catch(() => undefined);
     for (const id of registry.erasing) await eraseHistory(id).catch(() => undefined);
-    const ids = registry.subscriptions.map((entry) => entry.id);
+    const ids = entriesOf().map((entry) => entry.id);
     await guide.restore(ids);
     pruneLists(ids);
     pruneDetails(ids);
+    if (entriesOf().some((entry) => entry.kind === "demo")) signInDemo(null);
     return registry.subscriptions;
   }).then(
     (entries) =>
@@ -741,7 +783,191 @@ export function restore(): Promise<void> {
       }),
   );
   void restored.then(launchSettled, launchSettled);
+  void restored.then(retryDemoAfterLaunch, () => undefined);
   return restored;
+}
+
+export type DemoPending = "downloads" | "history" | "saved-data" | "registry";
+export type DemoRefusal =
+  | "reserved-id"
+  | "unreadable-demo"
+  | "registry-refused"
+  | "marker-not-absent"
+  | "downloads-refused";
+export type DemoErase =
+  | { readonly kind: "erased"; readonly files: "deleted" | "deferred" }
+  | { readonly kind: "incomplete"; readonly pending: readonly DemoPending[] }
+  | { readonly kind: "refused"; readonly reason: DemoRefusal };
+export type DemoStart =
+  { readonly kind: "started" } | Exclude<DemoErase, { readonly kind: "erased" }>;
+
+interface DemoDownloads {
+  readonly erase: (id: string, reason: "demo-reset") => Promise<Erased>;
+  readonly ready: Promise<void>;
+}
+let demoDownloads: DemoDownloads | undefined;
+let connectedDownloads = (_port: DemoDownloads) => {};
+const downloadsConnected = new Promise<DemoDownloads>((resolve) => (connectedDownloads = resolve));
+
+/** Downloads registers once after loading its document. An absent owner is never trusted empty. */
+export function connectDemoDownloads(port: DemoDownloads): void {
+  if (demoDownloads) return;
+  demoDownloads = port;
+  connectedDownloads(port);
+}
+
+/** Whole demo operations are ordered; personal account changes can still run between stages. */
+let demoChain: Promise<unknown> = Promise.resolve();
+function demoOperation<A>(run: () => Promise<A>): Promise<A> {
+  const next = demoChain.then(run);
+  demoChain = next.catch(() => undefined);
+  return next;
+}
+
+export const startDemo = (): Promise<DemoStart> =>
+  demoOperation(async () => {
+    if (!demoReserved() && file.demo.kind === "active") return { kind: "started" };
+    const erased = await eraseDemo();
+    return erased.kind === "erased" ? activateDemo() : erased;
+  });
+
+/** Exit removes demo data. Deferred file cleanup remains owned by Downloads. */
+export const endDemo = (): Promise<DemoErase> => demoOperation(eraseDemo);
+
+/** Reset is one chain entry, including activation, so an older erase cannot clear a new demo. */
+export const resetDemo = (): Promise<DemoStart> =>
+  demoOperation(async () => {
+    const erased = await eraseDemo();
+    return erased.kind === "erased" ? activateDemo() : erased;
+  });
+
+function activateDemo(): Promise<DemoStart> {
+  return serially(async () => {
+    if (demoReserved()) return { kind: "refused", reason: "reserved-id" };
+    if (file.demo.kind !== "absent") return { kind: "refused", reason: "marker-not-absent" };
+    try {
+      commitFile({ ...file, demo: { kind: "active" } });
+    } catch {
+      return { kind: "refused", reason: "registry-refused" };
+    }
+    syncRoster();
+    signInDemo("again");
+    return { kind: "started" };
+  });
+}
+
+let launchRetryAsked = false;
+function retryDemoAfterLaunch() {
+  if (launchRetryAsked || file.demo.kind !== "erasing" || demoReserved()) return;
+  launchRetryAsked = true;
+  const retry = () =>
+    demoOperation(() =>
+      file.demo.kind === "erasing" && !demoReserved() ? eraseDemo() : Promise.resolve(null),
+    );
+  void retry()
+    .then((result) => {
+      if (result?.kind !== "incomplete" || !result.pending.includes("downloads")) return;
+      void downloadsConnected
+        .then((port) => port.ready)
+        .then(retry)
+        .catch(() => undefined);
+    })
+    .catch(() => undefined);
+}
+
+/** A deadline only refuses settlement. Late work cannot erase history or clear the marker. */
+async function demoSettlement(run: () => Promise<boolean>): Promise<boolean | "unsettled"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run().catch(() => "unsettled" as const),
+      new Promise<"unsettled">((resolve) => {
+        timer = setTimeout(() => resolve("unsettled"), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function eraseDemo(): Promise<DemoErase> {
+  const staged = await serially(async () => {
+    if (demoReserved()) return { kind: "refused", reason: "reserved-id" } as const;
+    if (file.demo.kind === "unreadable")
+      return { kind: "refused", reason: "unreadable-demo" } as const;
+    const leaving = file.demo.kind === "active";
+    // Source revocation is finite, distinct from each record's explicit removal fence below.
+    try {
+      await fenceDownloads(DEMO_ID);
+    } catch {
+      return { kind: "refused", reason: "downloads-refused" } as const;
+    }
+    if (file.demo.kind !== "erasing") {
+      try {
+        commitFile({ ...file, demo: { kind: "erasing" } });
+      } catch {
+        return { kind: "refused", reason: "registry-refused" } as const;
+      }
+      savableChanged();
+    }
+    // Intents and their finite domain removals precede Source/roster changes, even on refusal.
+    const removal = await demoDownloads?.erase(DEMO_ID, "demo-reset").catch(() => undefined);
+    let filesDeleted = false;
+    void removal?.cleanup.then(
+      (result) => {
+        filesDeleted = result === "closed";
+      },
+      () => undefined,
+    );
+    // Observe an early save failure while the remaining serial work runs.
+    const saved =
+      removal?.saved.then(
+        () => true,
+        () => false,
+      ) ?? Promise.resolve(true);
+    for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${DEMO_ID}`)?.abort();
+    dropSource(DEMO_ID);
+    const savedGone = dropSaved(DEMO_ID).catch(() => false);
+    if (leaving) {
+      const { phase } = playbackState.get();
+      const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
+      if (from === DEMO_ID || (entriesOf().length === 0 && from !== null)) void stop();
+      else request();
+    }
+    syncRoster();
+    return { kind: "staged", removal, saved, savedGone, filesDeleted: () => filesDeleted } as const;
+  });
+  if (staged.kind !== "staged") return staged;
+
+  // Never hold the account writer while waiting for progress, viewing or cache work.
+  const settled = await demoSettlement(async () => {
+    if (!(await staged.saved)) throw new Error("Demo progress did not settle");
+    await progressSettled();
+    await viewingChangesSettled();
+    return staged.savedGone;
+  });
+  return serially(async () => {
+    const pending: DemoPending[] = [];
+    if (!staged.removal?.trusted || staged.removal.kept !== 0) pending.push("downloads");
+    if (settled === "unsettled") pending.push("history");
+    else if (!settled) pending.push("saved-data");
+    if (pending.length === 0) {
+      try {
+        writeState((state) => forgotten(state, DEMO_ID, true));
+        eraseWatchlist(DEMO_ID);
+        if (viewingHolds(DEMO_ID)) await eraseViewing(DEMO_ID);
+      } catch {
+        pending.push("history");
+      }
+    }
+    if (pending.length > 0) return { kind: "incomplete", pending };
+    try {
+      commitFile({ ...file, demo: { kind: "absent" } });
+    } catch {
+      return { kind: "incomplete", pending: ["registry"] };
+    }
+    return { kind: "erased", files: staged.filesDeleted() ? "deleted" : "deferred" };
+  });
 }
 
 /** A name as typed: none when empty, unchanged when not given. */
@@ -932,7 +1158,7 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
     // unless it shows a downloaded copy, which needs no subscription.
     const { phase } = playbackState.get();
     const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
-    if (from === id || (registry.subscriptions.length === 0 && from !== null)) stop();
+    if (from === id || (entriesOf().length === 0 && from !== null)) stop();
     else request();
     // The roster without it ends its unfinished downloads (downloads.ts); finished copies stay.
     syncRoster();

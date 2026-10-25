@@ -1,5 +1,7 @@
 import { router } from "expo-router";
+import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { startDemo } from "../account.ts";
 import { DownloadsLink } from "../downloads-screen.tsx";
 import { useDownloads } from "../downloads.ts";
 import { ProviderForm } from "../provider-form.tsx";
@@ -12,6 +14,23 @@ import { colors, TextButton } from "../ui.tsx";
  */
 export default function Connect() {
   const downloads = useDownloads();
+  const [trying, setTrying] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const tryDemo = () => {
+    setTrying(true);
+    setNote(null);
+    void startDemo()
+      .then((result) => {
+        setTrying(false);
+        if (result.kind === "incomplete")
+          setNote("Earlier demo data couldn't all be removed. Try again.");
+        else if (result.kind === "refused") setNote("Demo isn't available right now. Try again.");
+      })
+      .catch(() => {
+        setTrying(false);
+        setNote("Demo isn't available right now. Try again.");
+      });
+  };
   return (
     <ScrollView
       style={styles.screen}
@@ -27,6 +46,12 @@ export default function Connect() {
       </View>
       <ProviderForm mode={{ kind: "connect" }} />
       <Text style={styles.footnote}>The password stays in this iPhone's Keychain.</Text>
+      <TextButton label="Try demo" onPress={tryDemo} disabled={trying} testID="connect-demo" />
+      {note ? (
+        <Text accessibilityRole="alert" style={styles.footnote}>
+          {note}
+        </Text>
+      ) : null}
       {downloads.items.length > 0 ? (
         <View style={styles.downloads}>
           <DownloadsLink onPress={() => router.push("/offline")} />

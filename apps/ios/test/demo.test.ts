@@ -438,7 +438,7 @@ describe("the demo's certification playlist capability, in tests only", () => {
     }
   });
 
-  it("plays the newest read's streams whichever answer arrives last", async () => {
+  it("plays the newest successful read's streams whichever answer arrives last", async () => {
     for (const order of [
       ["newer", "older"],
       ["older", "newer"],
@@ -458,6 +458,23 @@ describe("the demo's certification playlist capability, in tests only", () => {
       });
       expect(asked).toHaveLength(2);
     }
+  });
+
+  it("installs an older successful read when the newer read failed", async () => {
+    const older = held();
+    const { fetch } = answering(older.answer, () => new Response("unavailable", { status: 503 }));
+    const provider = demoProvider({ fetch, ...PLAYLIST_LIVE });
+    const reading = provider.liveCatalogue();
+    expect(await refusal(provider.liveCatalogue())).toMatchObject({
+      kind: "provider-error",
+      status: 503,
+    });
+    older.give(new Response(playlist(...channel("X.test@HD", "https://older.example/x.m3u8"))));
+    await reading;
+    expect(await provider.liveStream("X.test@HD")).toEqual({
+      url: "https://older.example/x.m3u8",
+      format: "hls",
+    });
   });
 
   it("keeps the streams it had when a newer read is stopped", async () => {

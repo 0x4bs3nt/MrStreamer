@@ -18,8 +18,10 @@ import {
   type Continuation,
 } from "@mrstreamer/core/viewing/episodes";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
+import { members } from "./account.ts";
+import { DEMO_ID } from "./demo.ts";
 import { play, progressSettled, request, type Playing, type Request } from "./playback.ts";
-import { loginOf } from "./sources.ts";
+import { currentSource, loginOf } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { titleFile } from "./titles.ts";
 import { finishSeries, progressOf, recordProgress, seriesViewing } from "./viewing.ts";
@@ -118,6 +120,9 @@ export function playEpisode(
     episode: episode.number,
   };
   const series = { subscriptionId: episode.subscriptionId, id: episode.seriesId };
+  const demo =
+    episode.subscriptionId === DEMO_ID && members().some(({ entry }) => entry.kind === "demo");
+  const demoSource = demo ? currentSource(DEMO_ID) : undefined;
   const since = Date.now();
   const key = ownedKey(episode);
   const at = { id: episode.id, season: episode.season, episode: episode.number };
@@ -147,6 +152,7 @@ export function playEpisode(
       void saved
         .then(standing)
         .then(({ progress, marks }) =>
+          (!demo || currentSource(DEMO_ID) === demoSource) &&
           finishes(details, { ...ref, id: episode.id, since }, progress, marks)
             ? finishSeries(details.title.versions.map(ownedId), since)
             : (finishing = false),
