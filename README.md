@@ -17,6 +17,8 @@
 - Movies and series with resume, a [watchlist](docs/user/movies-and-series.md#watchlist) and [offline downloads](docs/user/downloads.md).
 - Every sound and subtitle track your provider sends, and [online subtitle search](docs/user/playback.md#online-subtitles-from-009) with your own API key.
 
+Stable 0.0.19 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](docs/user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](docs/user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](docs/user/movies-and-series.md).
+
 The pictures come from a test provider with made-up titles and public-domain footage.
 
 ## Your subscription
@@ -25,11 +27,11 @@ Connect Xtream Codes or an M3U playlist. Mr. Streamer includes no channels and s
 
 ## Install
 
-macOS 13 or later on Apple silicon, Windows 11, or 64-bit Linux. [Installers, requirements and checksums](https://mrstreamer.app/download) are on the website, and the files on [GitHub Releases](https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest).
+macOS 13 or later on Apple silicon, Windows 11 on x64, or x86_64 Linux. [Installers, requirements and checksums](https://mrstreamer.app/download) are on the website, and the files on [GitHub Releases](https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest). [Updates and channels](docs/user/updates.md) also covers Homebrew and the AUR.
 
 ## Help
 
-[Subscriptions](docs/user/subscriptions.md) · [Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md)
+[Subscriptions](docs/user/subscriptions.md) · [Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md) · [Security](docs/security.md)
 
 Found a bug? [Report it](https://github.com/Mr-Streamer-OSS/MrStreamer/issues/new/choose) with your system, the Mr. Streamer version from Settings > About, and what happened.
 

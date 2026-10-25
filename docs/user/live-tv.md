@@ -1,5 +1,7 @@
 # Live TV
 
+Custom channel lists and programme reminders are new in 0.0.20, including its Nightly previews.
+
 ## Home
 
 Home plays the channel you watched last, muted, in a compact preview with what's on it now: the programme, how long it has left and what comes next. **Watch** opens it full window with sound, on the same stream, so it doesn't start again. The speaker button turns the sound on without leaving Home.
@@ -16,13 +18,13 @@ Your subscription may allow a single connection. Home then uses it as soon as it
 
 ## The guide
 
-**Live TV** keeps Favourites, Recently watched and All channels beside nine fixed topics: News, Sports, Kids, Movies, Entertainment, Music, Documentary, Regional and Other. Topics span [every subscription you added](subscriptions.md#everything-together). They describe the provider's category labels, never a guessed channel identity. A channel can appear in several content topics. Regional is for recognized place-only category labels; uncertain labels stay in Other. All channels and **Provider lists** always remain available.
+**Live TV** keeps Favourites, Recently watched and All channels, then [your own lists](#your-lists), beside nine fixed topics: News, Sports, Kids, Movies, Entertainment, Music, Documentary, Regional and Other. Topics span [every subscription you added](subscriptions.md#everything-together). They describe the provider's category labels, never a guessed channel identity. A channel can appear in several content topics. Regional is for recognized place-only category labels; uncertain labels stay in Other. All channels and **Provider lists** always remain available.
 
 Country, Language and Source filter the current selection. Several choices within one filter match any of them; different filters apply together. Each menu counts its alternatives under the other active filters. Unknown country or language stays reachable with Any and through Provider lists. **Reset filters** clears the session filters. F opens Country; Tab reaches the other filters, and the menus take Up, Down, Enter, Space and Escape. Watch shows the same active filters and Reset.
 
 **Provider lists** opens your provider's countries and categories in their original order. Open a country to see its categories; Left or Backspace returns. **Find** searches those country and category names across the catalogue, separately from channel and programme search. Duplicate category names include source context.
 
-The last topic or provider category is remembered globally. All channels clears that choice, so Home and restart stay on All. Filters reset on a different base selection and at startup, and stay when returning from Watch to the same selection. Favourites and Recently watched are never remembered as discovery choices. A removed provider category falls back to All channels with a message. Home's existing category row follows the same discovery view, including its session filters, and its All action opens exactly that view. While browsing Favourites or Recently watched it uses your last remembered topic or provider category. Adults never appear on Home.
+The last topic, provider category or custom list is remembered globally. All channels clears that choice, so Home and restart stay on All. Filters reset on a different base selection and at startup, and stay when returning from Watch to the same selection. Favourites and Recently watched are never remembered as discovery choices. A removed provider category falls back to All channels with a message. Home's existing category row follows the same discovery view, including its session filters, and its All action opens exactly that view. While browsing Favourites or Recently watched it uses your last remembered topic, provider category or custom list. Adults never appear on Home.
 
 A channel that reads like one of another subscription says which one it is from. When a subscription's channels couldn't be fetched, a line above the list says so, with **Retry**, and the others show as usual. The channels on the right show what's on now, with how long it has left, and what's next. The channel you're watching plays muted at the top.
 
@@ -33,7 +35,7 @@ A channel that reads like one of another subscription says which one it is from.
 
 **Guide**, beside **Watch** at the top, or G, shows the same channels as a grid: channels down the side and time across, with a line at now. It goes ahead as far as your provider's guide reaches, and back a couple of hours, or as many days as the longest catch-up among the list's channels keeps, at most a week; hatched stretches are where the guide has nothing. Left and Right move between programmes, Up and Down between channels at the same time, and Page Up, Page Down, Home and End jump as in the list. Click a programme, or move to it, to see what it is under its channel. **Watch live**, Enter or a double click watches the channel; click a channel's name to watch it. Channels with catch-up have a clock sign beside their name. A programme that aired and that catch-up keeps plays from its start with Enter, a double click or **Play from start**, and one on now has **Play from start** after **Watch live**. Programmes that aired and can't be played again are dimmed. Wheels and trackpads scroll both ways, and **Now** comes back to now. **List**, G again or Escape goes back to the list, and Live TV opens in the view you left it in. A search shows each channel it finds once, as the list's shared rows do.
 
-The field beside the list's name searches the list you're looking at: Favourites, Recently watched, All channels, a topic or one provider category. It finds a channel by its name, also the full name your provider gives it, and by the programmes on now and later today, whatever the capitals and accents. The channels it finds stay in the list's order, with what matched underlined. A later programme that matched stands at the end of its row with its time, and the arrow opens the rest of the day on it. Clicking the row still watches the channel as it is now.
+The field beside the list's name searches the list you're looking at: Favourites, Recently watched, All channels, one of your lists, a topic or one provider category. It finds a channel by its name, also the full name your provider gives it, and by the programmes on now and later today, whatever the capitals and accents. The channels it finds stay in the list's order, with what matched underlined. A later programme that matched stands at the end of its row with its time, and the arrow opens the rest of the day on it. Clicking the row still watches the channel as it is now.
 
 In search results, copies that the catalogue can safely identify as one channel share a row. The count says how many channels and playable streams match. **Show copies**, or Right, lists each provider's actual copy with its category and qualities. Individual rows also name their subscription when several are saved. Enter on the shared row prefers a favourite copy, then the saved subscription order. Enter on a copy plays that copy. Left closes its open schedule first, then the copies. Stars and S apply to individual copies.
 
@@ -52,6 +54,12 @@ Providers often list a channel once per quality: "VRT 1 FHD", "VRT 1 HD", "VRT 1
 Channels your provider marks for adults, or files in a category named for adults, stay hidden until you turn on **For adults** in Settings > Movies and series. Then they show in Live TV's lists and the guide, where the field beside a list's name finds them, but never on Home or in ⌘K's search.
 
 Programme information comes from your provider. Many providers only cover some channels, and some cover none; those channels show their name and category instead. Some providers file unrelated channels under one channel's guide; Mr. Streamer leaves those channels without programmes rather than show the wrong ones. The guide updates every six hours. To add guides from other addresses, or to give a channel the guide channel you pick, see [Guides from other addresses](subscriptions.md#guides-from-other-addresses).
+
+### Your lists
+
+**New list**, after your lists below All channels, makes a list of your own: type its name and press Enter, and it opens, empty. Escape leaves it. A row's list button, beside its star, shows your lists: tick one to put the channel at its end, clear it to take the channel out, or choose **New list** to make one that holds the channel. A list holds channels of any of your subscriptions, in your order, and **Reorder** works as in Favourites. Its **…** button renames it, moves it up or down among your lists, or deletes it after asking once. Two lists can't share a name, whatever the capitals and accents.
+
+The guide, the channel list while watching and Home's category row show the list you picked, in its order, and channel up and down follow it. A channel your provider stops listing stays at the end, dimmed, with **Remove**; if your provider lists it again, even under another of its qualities, it's back in its place. Channels of a subscription you removed are counted under the filters and come back when you add the same account again, unless you ticked **Also delete**, which takes them out of every list. Your lists themselves stay. Channels for adults neither show nor count while those are hidden. If a change can't be saved, Mr. Streamer says so, with **Retry**.
 
 ## Watching
 
@@ -96,6 +104,14 @@ When the picture stands still for three seconds, "Waiting for data" shows at the
 
 ⌘K (Ctrl K on Windows and Linux) searches every channel, movies and series, and the programmes on now and later today, in every subscription. Pick a channel, or a programme that's on, to watch it. Pick a later programme to read about it, or a movie or series to see its details. Opened from Live TV, it starts with what the list's field searched for. Live TV searches the list it shows from [that field](#the-guide), and Movies and Series their own titles from a field in their tabs; see [Movies and series](movies-and-series.md#finding-something). Channel name results use the same safe groups and **Show copies**. Right expands and Left collapses while the search field keeps focus. Programme results keep their own rows after movies and series.
 
+## Reminders
+
+A programme still to come has **Remind me** in its details: under its channel in the guide grid, under its description in the rest of a day, and in ⌘K's search. Once set it reads **Reminder set**, and the programme shows a bell. Press it again to cancel. The bell beside the list's name in Live TV counts the reminders still to come and lists them, with when and on which channel each is. The cross beside one takes it out. Tab reaches the buttons, and Enter presses them.
+
+When the programme starts, Mr. Streamer shows a notice at the top of its window, on any page, with **Watch** and **Dismiss**, and asks your system to show a notification with the programme and its channel. Nothing plays until you press Watch. Mr. Streamer has to be open to remind you: it doesn't wake or start your computer. After the computer slept or the app was closed, a programme that's still on reminds you once, saying how long ago it started; one that already ended is listed as Missed. The in-app notice does not depend on system notifications. System delivery is not guaranteed, and the app cannot tell whether you disabled notifications. If the system reports a delivery failure, the list says so. What a locked screen shows is your system's setting. Clicking a notification brings Mr. Streamer's window forward with its notice.
+
+A reminder belongs to its subscription, channel and start time. If the guide later lists another programme then, the reminder says what it was and reminds you of the new one. If it lists nothing then, or your provider stops listing the channel, it says it's not in the guide now and doesn't remind you, unless the programme comes back. It never moves to a programme of the same name at another time. Reminders are kept in a local `reminders.json` file and cleared when the app checks after the end of the day their programme ends. Removing a subscription removes its reminders. Reminders of adult channels show only in the app while **For adults** is on. A reminder due while they are hidden becomes Missed and does not notify when you show them again.
+
 ## Keys
 
 | Key                | In the guide                                                                              | While watching                                                          |
@@ -107,7 +123,7 @@ When the picture stands still for three seconds, "Waiting for data" shows at the
 | Left               | Close the rest of the day, then go to the categories; in a country, back to the countries | Open the list, then its categories; in a country, back to the countries |
 | Digits             | Jump to a channel number                                                                  | Jump to a channel number                                                |
 | S                  | Add to or remove from favourites                                                          | The same, for the channel you're watching                               |
-| R                  | Reorder the favourites, in Favourites                                                     | Retry, once a channel failed                                            |
+| R                  | Reorder, in Favourites or one of your lists                                               | Retry, once a channel failed                                            |
 | /                  | Search the list                                                                           |                                                                         |
 | Escape             | Clear the search, then Home                                                               | Close the list, leave full screen, go back                              |
 | Backspace          | In a country, back to the countries                                                       | The previous channel; in a country, back to the countries               |
@@ -119,7 +135,7 @@ When the picture stands still for three seconds, "Waiting for data" shows at the
 
 Number entry searches All channels with the current adult visibility, even while browsing a filtered or personal list. It keeps the browsing selection and filters and chooses the first matching source when numbers repeat.
 
-While you reorder favourites, the keys are these alone:
+While you reorder favourites or a list, the keys are these alone:
 
 | Key                             | While reordering                                |
 | ------------------------------- | ----------------------------------------------- |

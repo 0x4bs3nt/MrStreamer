@@ -1,23 +1,24 @@
 # Development
 
-Needs Node 24 and pnpm 11. `package.json` lists every script.
+Needs Node 24 or later and the pnpm version pinned in [package.json](../../package.json), which also lists every script.
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev          # the app with hot reload
-pnpm knip         # unused files, exports and dependencies
-pnpm lint         # oxlint
-pnpm fmt:check    # Prettier
-pnpm typecheck    # main, preload and shared code, then the renderer
+pnpm check        # lint, formatting, types, unused code and workflows
+pnpm lint:fix     # apply Oxlint's safe fixes
+pnpm fmt          # format with Prettier
 pnpm test         # Vitest
 pnpm build        # production bundles in apps/desktop/out/
 ```
 
 The repository is a pnpm workspace: the app is `apps/desktop`, the website is `apps/marketing`, shared contracts and rules are in `packages/`; [architecture](architecture.md) shows the layout. `pnpm dev:marketing`, `pnpm build:marketing` and `pnpm preview:marketing` run the website, which [its README](../../apps/marketing/README.md) describes. The scripts above run from the root. If `pnpm dev` reports that Electron failed to install, as a fresh install from pnpm's store can leave it, run `node node_modules/electron/install.js`.
 
+`pnpm check` runs static checks; tests and builds are separate. `pnpm lint` and `pnpm fmt:check` check without writing. [The root scripts](../../package.json) also expose each check separately.
+
 ## Running the app
 
-Live TV works without a subscription: on the Connect screen, choose **Use an M3U link** and paste iptv-org's public playlist, `https://iptv-org.github.io/iptv/index.m3u`. [Testing](testing.md#a-real-provider) says what it covers and how to read a channel that fails. Movies and series need a provider that offers them, through an Xtream Codes login. If you use your own subscription, keep its details out of the repository: the gitignored `.local/` folder is the place for private notes and test access.
+Live TV works with a public playlist: on the Connect screen, choose **Use an M3U link** and paste iptv-org's public playlist, `https://iptv-org.github.io/iptv/index.m3u`. [Testing](testing.md#a-real-provider) says what it covers and how to read a channel that fails. Movies and series need a provider that offers them, through Xtream Codes or [mapped M3U groups](../user/subscriptions.md#mapping-mixed-playlists). If you use your own subscription, keep its details out of the repository: the gitignored `.local/` folder is the place for private notes and test access.
 
 Genres, streaming services and popularity in Movies and Series come from TMDB. A development build has no key built in: set `MR_STREAMER_TMDB_KEY`, or paste one in Settings > Movies and series with **Own key…**. A free TMDB account gets one.
 
@@ -83,4 +84,4 @@ Chromium's credits, which hold Node.js's licence too, are 20 MB of HTML from Ele
 - App icons come from `apps/desktop/assets/brand/`; `pnpm --filter mrstreamer icons:export` renders `apps/desktop/build/icon.*` from `icon.svg` and the Store package's logos in `apps/desktop/build/appx` from `mark.svg` ([releasing](../maintainers/releasing.md#microsoft-store-package) lists them).
 - The DMG window background is `apps/desktop/build/dmg-background.png` and its `@2x` twin; `pnpm --filter mrstreamer dmg:background` renders them on a Mac, so the text uses the system font.
 - The README poster and light/dark marks come from the committed marketing captures and brand artwork. [Marketing artwork](marketing-artwork.md) describes how to regenerate them and records the sources. Never use a real provider's catalogue, posters or private media.
-- The website's pictures, `docs/assets/marketing-*.png`, are captures of the whole window at 2560 × 1600, taken on Linux by `apps/desktop/scripts/marketing-capture.ts` against a made-up subscription and public-domain footage. [Marketing artwork](marketing-artwork.md) has the recipe and the sources.
+- The website's pictures, `docs/assets/marketing-*.png`, are captures of the whole window at 2560 × 1600, taken on the Mac mini with `apps/desktop/scripts/marketing-capture.ts` against a made-up subscription and public-domain footage. [Marketing artwork](marketing-artwork.md) has the recipe, sources and each capture's provenance.

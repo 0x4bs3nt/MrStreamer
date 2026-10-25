@@ -10,6 +10,8 @@ Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. Brin
 
 You can [download movies and episodes](user/downloads.md) to watch offline. Mr. Streamer does not record live TV, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
 
+Stable 0.0.19 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](user/movies-and-series.md).
+
 It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI movies and episodes. Playback depends on the file's tracks and your system's decoders; [What plays](user/playback.md) describes conversion and the known limits. DASH streams are not supported.
 
 ## Systems
@@ -17,14 +19,14 @@ It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI m
 | System  | Requirements                                                                |
 | ------- | --------------------------------------------------------------------------- |
 | macOS   | macOS 13 or later, Apple silicon                                            |
-| Windows | Windows 11, 64-bit                                                          |
-| Linux   | 64-bit Linux. The AppImage needs FUSE 2; the .deb is for Ubuntu and Debian. |
+| Windows | Windows 11, x64                                                             |
+| Linux   | x86_64 Linux. The AppImage needs FUSE 2; the .deb is for Ubuntu and Debian. |
 
 [Downloads](https://mrstreamer.app/download) lists the stable installers, checksums and release sources. [Updates and channels](user/updates.md) explains Stable, Nightly and Microsoft Store updates.
 
 ## Your data
 
-Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider logins go to the provider in each request. From 0.0.11, usage statistics default on and can be turned off in **Settings > Privacy**: first-seen profiles and daily app use, and from 0.0.12 the parts of the app opened, playback, download and update-check results, and unexpected window stops. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections and the website's analytics; [Security](security.md) explains login storage and installer signing.
+Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider requests go directly from the app to the configured addresses and any redirects or stream addresses they supply, subject to the [login checks](security.md#your-login). From 0.0.11, usage statistics default on and can be turned off in **Settings > Privacy**: first-seen profiles and daily app use, and from 0.0.12 the parts of the app opened, playback, download and update-check results, and unexpected window stops. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections and the website's analytics; [Security](security.md) explains login storage and installer signing.
 
 ## Licence and source
 
