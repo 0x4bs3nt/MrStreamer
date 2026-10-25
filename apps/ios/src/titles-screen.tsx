@@ -3,7 +3,7 @@ import { ownedId } from "@mrstreamer/contracts/subscription";
 import { seriesOf } from "@mrstreamer/contracts/ondemand";
 import { collectionRows, rowIds, type Collections } from "@mrstreamer/core/ondemand/collections";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { reloadTitles, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
@@ -383,12 +383,18 @@ function CollectionGrid({
     () => (made ? browseCollection(made, id, choices, files) : null),
     [made, id, choices, files],
   );
-  // Fresh handlers capture the current login; retained callbacks keep their old source fence.
-  const selection = made ? collectionSelection(kind, made) : null;
+  // A new login replaces the captured fence; unrelated renders keep the tile handler stable.
+  const roster = useRoster();
+  const selection = useMemo(
+    () => (made ? collectionSelection(kind, made) : null),
+    [kind, made, roster],
+  );
   // A retained press from a replaced grid or a popped route must never open its old version.
   const current = useRef(result);
   const mounted = useRef(true);
-  current.current = result;
+  useLayoutEffect(() => {
+    current.current = result;
+  }, [result]);
   useEffect(() => {
     mounted.current = true;
     return () => {

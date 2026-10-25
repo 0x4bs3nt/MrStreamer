@@ -138,7 +138,13 @@ export function createGuide(
       ];
   };
   async function refresh(key: string, explicit = true): Promise<void> {
-    const entry = entries.get(key);
+    if (!foreground) return;
+    let entry = entries.get(key);
+    // A failed activation has no usable lease. The public Retry action must acquire one.
+    if (!entry && explicit && sourceOf(key)) {
+      await service.attach(key);
+      entry = entries.get(key);
+    }
     if (!entry || entry.activating || !entry.source || !stands(key, entry) || !foreground) return;
     if (entry.refresh) return entry.refresh;
     if (!explicit && now() - entry.failedAt < 15 * 60_000) return;
@@ -172,7 +178,17 @@ export function createGuide(
           native.revoke(key);
           if (!(await native.forget(key))) throw new GuideFault("disk");
           if (!stands(key, entry)) return;
-          entry.activation = await native.attach(key, source.revision);
+          try {
+            entry.activation = await native.attach(key, source.revision);
+          } catch {
+            if (stands(key, entry)) {
+              cancelEntry(entry);
+              entries.delete(key);
+              update(key, { availability: "none", activity: "idle", error: "unavailable" });
+            }
+            return;
+          }
+          if (!stands(key, entry)) return;
           entry.generation = null;
           invalidate(entry);
           update(key, { availability: "none" });
@@ -400,7 +416,12 @@ export function createGuide(
         });
         if (status(key).stale) void refresh(key, false);
       } catch {
-        if (sourceOf(key) === source) update(key, { error: "unavailable" });
+        if (pending && entries.get(key) === pending) {
+          cancelEntry(pending);
+          entries.delete(key);
+        }
+        if (sourceOf(key) === source && versions.get(key) === version && cycle === era)
+          update(key, { error: "unavailable" });
       }
     },
     setPart(part: Part) {

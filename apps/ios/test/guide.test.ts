@@ -479,6 +479,67 @@ describe("guide control and publication lifecycle", () => {
     expect(row?.now?.title).toBe("News");
   });
 
+  it("retries a failed cache activation through the public refresh action", async () => {
+    const { owner, native, control, sources } = setup();
+    await owner.restore(["a"]);
+    owner.setPart(part());
+    sources.set("a", source);
+    const attach = vi.spyOn(native, "attach");
+    attach.mockRejectedValueOnce(new Error("unavailable"));
+    await owner.attach("a");
+    expect(owner.status("a").error).toBe("unavailable");
+    control.query = async () => ({
+      kind: "ok",
+      value: { guideId: "trusted.tv", rows: [programme], more: false },
+    });
+    control.prepare = async () => ({ kind: "failed", error: "network" });
+    const request = vi
+      .spyOn(source.provider, "liveGuideRequest")
+      .mockResolvedValue({ kind: "request", url: "https://fixture.test/guide", headers: {} });
+    try {
+      await owner.refresh("a");
+      expect(owner.status("a")).toMatchObject({
+        activity: "idle",
+        availability: "available",
+        error: "network",
+      });
+      expect(request).toHaveBeenCalledOnce();
+      expect((await owner.listings(["a:1"])).get("a:1")?.now).toEqual(programme);
+    } finally {
+      request.mockRestore();
+      attach.mockRestore();
+      owner.background();
+    }
+  });
+
+  it("retries after a no-guide answer revoked the lease and re-attachment failed", async () => {
+    const { owner, native, sources } = setup();
+    await owner.restore(["a"]);
+    owner.setPart(part());
+    sources.set("a", source);
+    await owner.attach("a");
+    const attach = vi.spyOn(native, "attach").mockRejectedValueOnce(new Error("unavailable"));
+    const request = vi
+      .spyOn(source.provider, "liveGuideRequest")
+      .mockResolvedValue({ kind: "none" });
+    try {
+      await owner.refresh("a");
+      expect(owner.status("a").activity).toBe("idle");
+      expect(owner.status("a").error).not.toBeNull();
+      await owner.refresh("a");
+      expect(owner.status("a")).toMatchObject({
+        activity: "idle",
+        availability: "none",
+        error: null,
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      request.mockRestore();
+      attach.mockRestore();
+      owner.background();
+    }
+  });
+
   it("retries a background-cancelled cold refresh on foreground without a failure backoff", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(at);

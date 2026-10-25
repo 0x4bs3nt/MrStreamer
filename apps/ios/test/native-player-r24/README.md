@@ -1,9 +1,11 @@
 These fixtures exercise the patched production package. No Swift/native result is recorded by adding them.
 
-Run the binding check on Linux, after the frozen iOS install:
+Run the binding check on Linux, after the frozen iOS install. Set `MRSTREAMER_RUNTIME_LOCK` to
+the coordinated runtime lock on a shared machine, or a writable lock file for a standalone run.
+Its parent directory must already exist.
 
 ```sh
-flock -w 30 /home/t3/.local/state/mrstreamer-0.0.14/runtime.lock \
+flock -w 30 "${MRSTREAMER_RUNTIME_LOCK:?set to the runtime lock file}" \
   node --experimental-vm-modules apps/ios/test/native-player-r24/binding.ts
 ```
 

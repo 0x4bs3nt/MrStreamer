@@ -3,7 +3,15 @@ import type { IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import { pacer, type Steps } from "@mrstreamer/core/steps";
 import { router } from "expo-router";
 import { SymbolView } from "expo-symbols";
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import {
   Animated,
   Keyboard,
@@ -124,7 +132,9 @@ interface Request {
 /** Same-query rows stay visible during replacement; only the current publication can act. */
 function useSection(request: Request | null, session: RefObject<SearchSession>) {
   const latest = useRef(request);
-  latest.current = request;
+  useLayoutEffect(() => {
+    latest.current = request;
+  }, [request]);
   const mounted = useRef(false);
   const [finished, setFinished] = useState<{ request: Request; found: Found | null } | null>(null);
   useEffect(() => {
