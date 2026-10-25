@@ -8,6 +8,12 @@ Save/remove movies or whole series from details, browse Watchlist and Home, sort
 
 A movie or series poster opens details. **Save** becomes **Saved** after saving; pressing it again removes the title. **Watchlist** in the window bar after Series permanently opens saved titles, including when its row is hidden or empty. Home also offers its Watchlist row and **All** entry. It remains available for live-only subscriptions. Tiles open details and have a removal control.
 
+`apps/desktop/test/viewing-erasure.test.ts` holds pending viewing and Watchlist writes across
+subscription removal on real SQLite. Public reads after re-adding must keep Also delete erased,
+preserve accounts removed without erasure, and allow retries after failed removal. A shared-title
+save is refused wholly when one source goes; an unrelated account's writes still commit. These
+service checks cover that timing separately from the ordinary built-window path below.
+
 ## Driving it with Electron CDP
 
 Preconditions: fresh built desktop session with fake provider/TMDB. Run `pnpm verify:desktop watchlist`. Open the fixture movie through Movies > All movies, click Save, observe Saved, close details, and open Watchlist from the top navigation. Require the same title's saved tile, a persisted app database and before/after screenshots. The baseline proves the details-to-navigation entry path, not restart persistence.

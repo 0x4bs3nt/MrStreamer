@@ -78,6 +78,8 @@ export interface ViewingOwner {
   readonly key: string;
   /** The subscription older releases know: the lists preferences.json kept were its account's. */
   readonly original: boolean;
+  /** Rechecks this saved source inside a write's transaction when roster reads can wait. */
+  readonly stands?: () => boolean;
 }
 
 /** Which subscriptions are saved, in their order, also while a secret can't be read. */
@@ -649,9 +651,8 @@ function make() {
      * channels and from the records as stored when the change commits, or refuses with the
      * `Failed` it gives instead. `named` are what the change is about: it is refused with `gone`
      * unless the subscription of each is saved, when it arrives and again once the channels are
-     * found. Nothing waits between that second answer and the commit, so a subscription that went
-     * meanwhile gets no change, none lands in a record erased with it, and the records read as
-     * one are those of the subscriptions saved as it commits.
+     * found. The transaction checks the named owners' presence again, so no change lands after
+     * a removal erased their records, even if the last roster read answered an older snapshot.
      */
     const run = (
       commandId: string,
@@ -673,7 +674,10 @@ function make() {
           accounts: found.owners.map((owner) => owner.key),
           commandId,
           at,
-          decide: (stored, look) => events({ ...found, stored }, owners, look),
+          decide: (stored, look) =>
+            owners.some((owner) => owner.stands?.() === false)
+              ? gone
+              : events({ ...found, stored }, owners, look),
         });
         yield* PubSub.publish(changes, stored.sequence);
         return shown({ ...found, stored });

@@ -28,7 +28,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { TITLE_KINDS } from "@mrstreamer/contracts/ondemand";
-import type { Failed } from "@mrstreamer/core/failure";
+import { Failed } from "@mrstreamer/core/failure";
 import {
   sameEntry,
   sameTitle,
@@ -127,6 +127,8 @@ export class WatchlistStore extends Context.Service<
     readonly save: (input: {
       readonly listed: readonly ListedTitle[];
       readonly at: number;
+      /** Checked inside the transaction, before any account changes. */
+      readonly stands: () => boolean;
     }) => Effect.Effect<Membership | null, Failed>;
     /**
      * In one transaction: takes the entry that `account`'s row `id` is of out of `accounts`,
@@ -134,9 +136,11 @@ export class WatchlistStore extends Context.Service<
      * any more. A row that is no other's entry goes alone. None of that id changes nothing.
      */
     readonly remove: (input: {
-      readonly accounts: readonly string[];
+      /** Accounts still saved when the transaction runs. */
+      readonly accounts: () => readonly string[];
       readonly account: string;
       readonly id: string;
+      readonly stands: () => boolean;
     }) => Effect.Effect<void, Failed>;
     /**
      * In one transaction: gives each row of `account` that is one of `titles`, as its lists
@@ -144,7 +148,11 @@ export class WatchlistStore extends Context.Service<
      * one. Rows that turn out to be one title become the one saved first. A title nothing is
      * saved as changes nothing, so a row removed meanwhile stays removed.
      */
-    readonly adopt: (account: string, titles: readonly TitleFacts[]) => Effect.Effect<void, Failed>;
+    readonly adopt: (
+      account: string,
+      titles: readonly TitleFacts[],
+      stands: () => boolean,
+    ) => Effect.Effect<void, Failed>;
   }
 >()("mrstreamer/WatchlistStore") {}
 
@@ -169,6 +177,7 @@ export const watchlistStoreLayer: Layer.Layer<WatchlistStore, never, Database> =
 );
 
 function storeOn(db: DatabaseSync): WatchlistStore["Service"] {
+  const noSubscription = new Failed({ error: { kind: "no-subscription" } });
   const statements = {
     entries: db.prepare("select rowid, * from watchlist where account = ?"),
     // In the order they were written, which is the order the lists showed them in.
@@ -308,9 +317,10 @@ function storeOn(db: DatabaseSync): WatchlistStore["Service"] {
         ),
       ),
     find: (listed) => attempt(() => saved(listed)[0] ?? null),
-    save: ({ listed, at }) =>
+    save: ({ listed, at, stands }) =>
       attempt(() =>
         transaction(db, () => {
+          if (!stands()) throw noSubscription;
           // The entry keeps the place it has, whichever account's row gave it that, and the
           // id: a row written now stands behind that one, with the same time.
           const savedAt = saved(listed)[0]?.savedAt ?? at;
@@ -321,23 +331,25 @@ function storeOn(db: DatabaseSync): WatchlistStore["Service"] {
           return saved(listed)[0] ?? null;
         }),
       ),
-    remove: ({ accounts, account, id }) =>
+    remove: ({ accounts, account, id, stands }) =>
       attempt(() =>
         transaction(db, () => {
+          if (!stands()) throw noSubscription;
           const [named] = row(account, id);
           if (!named) return;
           drop(account, id);
           // What the other accounts saved of the same film is the same entry, and goes with it.
-          for (const other of accounts) {
+          for (const other of accounts()) {
             for (const found of sharing(other, named).flatMap((each) => row(other, each))) {
               if (sameEntry(found, named)) drop(other, found.id);
             }
           }
         }),
       ),
-    adopt: (account, titles) =>
+    adopt: (account, titles, stands) =>
       attempt(() =>
         transaction(db, () => {
+          if (!stands()) throw noSubscription;
           for (const facts of titles) take(account, facts);
         }),
       ),

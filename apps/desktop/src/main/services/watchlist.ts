@@ -114,9 +114,9 @@ function make() {
         if (entries.length === 0) return true;
         const titles = yield* onDemand.savedFacts(found, source, entries);
         // The lists went meanwhile, or the subscription did, or its login was stored anew: what
-        // was worked out for it is no longer its own. Asked last, with nothing waiting after.
+        // was worked out for it is no longer its own. Check again in the write transaction.
         if (!titles || !(yield* subscriptions.stands(source))) return false;
-        yield* store.adopt(source.key, titles);
+        yield* store.adopt(source.key, titles, () => subscriptions.standsNow(source));
         return true;
       }).pipe(
         Effect.catchTag("Failed", (failed) =>
@@ -214,9 +214,8 @@ function make() {
           const title = yield* listed(kind, version);
           if (!title) return yield* missing;
           const at = yield* Clock.currentTimeMillis;
-          // Nothing waits from here to the commit. Every subscription the lists gave a version
-          // of has to be saved still, with the login it had when the lists were asked: what was
-          // read for one that went or changed meanwhile is stored for none of them.
+          // Every subscription the lists gave a version of must keep its source, including at
+          // the transaction itself: a roster read may have answered a pre-removal snapshot.
           const found = yield* saving;
           const stands = title.versions.every(({ subscriptionId }) => {
             const was = before.find((each) => each.id === subscriptionId);
@@ -227,6 +226,11 @@ function make() {
           const first = yield* store.save({
             listed: found.map((each) => ({ account: each.key, facts: factsOf(title, each.id) })),
             at,
+            stands: () =>
+              title.versions.every(({ subscriptionId }) => {
+                const source = before.find((each) => each.id === subscriptionId);
+                return source !== undefined && subscriptions.standsNow(source);
+              }),
           });
           if (!first) return yield* missing;
           yield* PubSub.publish(changes, undefined);
@@ -235,15 +239,17 @@ function make() {
 
       remove: (entry: OwnedId) =>
         Effect.gen(function* () {
-          // The subscriptions saved now, with nothing waiting before the change: what one that
-          // went kept is no longer the viewer's to change from here.
+          // What a subscription that went kept is no longer the viewer's to change. The
+          // transaction checks the named owner and selects the other accounts still saved.
           const found = yield* saving;
           const owner = found.find((each) => each.id === entry.subscriptionId);
           if (!owner) return yield* noSubscription;
           yield* store.remove({
-            accounts: found.map((each) => each.key),
+            accounts: () =>
+              found.filter((each) => subscriptions.standsNow(each)).map((each) => each.key),
             account: owner.key,
             id: entry.id,
+            stands: () => subscriptions.standsNow(owner),
           });
           yield* PubSub.publish(changes, undefined);
         }),
