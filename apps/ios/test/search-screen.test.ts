@@ -197,6 +197,7 @@ vi.mock("../src/account.ts", () => ({
     titles.kind === "ready" ? titles.value : (titles.last ?? null),
   readingSaved: () => false,
   onReadingSaved: () => () => undefined,
+  onSavable: () => () => undefined,
 }));
 vi.mock("expo-file-system", () => ({
   File: class {},
