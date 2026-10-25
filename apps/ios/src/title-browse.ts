@@ -6,17 +6,26 @@ import { filterOptions, filterTitles, type FilterFiles } from "@mrstreamer/core/
 /** Collection choices live for this route's session, never in saved preferences. */
 export interface BrowseChoices {
   readonly sort?: CollectionSort;
-  readonly filters: Pick<TitleFilters, "quality" | "language">;
+  readonly filters: TitleFilters;
 }
 
 export const DEFAULT_BROWSE: BrowseChoices = { filters: {} };
 
-// iOS has no validated exact-file track-facts owner yet. Core falls back to each listed
-// version's declared tags. Provider language labels never become observed audio/subtitles.
+// Without file facts, core falls back to each listed version's declared tags. Provider language
+// labels never become observed audio/subtitles: only the tracks playback found in a file do
+// (titles.ts `filterFilesOf`), and core counts them for the one file they were found in.
 const declaredFiles: FilterFiles = new Map();
 
-/** Core owns membership, stable ordering on ties and same-version filter conjunction. */
-export function browseCollection(made: Collections, id: CollectionId, choices: BrowseChoices) {
+/**
+ * Core owns membership, stable ordering on ties and same-version filter conjunction. `files` are
+ * the facts playback found in listed files, by version; without them only declared hints count.
+ */
+export function browseCollection(
+  made: Collections,
+  id: CollectionId,
+  choices: BrowseChoices,
+  files: FilterFiles = declaredFiles,
+) {
   const titles = made.list(id, choices.sort ?? collectionSort(id));
   // A language filter in 4K must still open a 4K version, as that collection already promises.
   const eligible = (version: Title["versions"][number]) =>
@@ -25,10 +34,10 @@ export function browseCollection(made: Collections, id: CollectionId, choices: B
     id === "4k"
       ? titles.map((title) => ({ ...title, versions: title.versions.filter(eligible) }))
       : titles,
-    declaredFiles,
+    files,
   );
   const matching = (filters: BrowseChoices["filters"]) =>
-    filterTitles(titles, filters, declaredFiles, eligible);
+    filterTitles(titles, filters, files, eligible);
   return {
     titles: matching(choices.filters),
     total: titles.length,
@@ -41,6 +50,13 @@ export function browseCollection(made: Collections, id: CollectionId, choices: B
       value,
       count: matching({ ...choices.filters, language: value }).length,
     })),
+    /** Languages of tracks found in a file, with how many titles have one that matches. */
+    verified: options.verified.map((value) => ({
+      value,
+      count: matching({ ...choices.filters, verified: value }).length,
+    })),
+    /** Listed files whose tracks were found, not titles or episodes. */
+    files: options.files,
   };
 }
 

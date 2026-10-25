@@ -9,10 +9,12 @@ import { holds, safeUrl, URL_LENGTH } from "./login-safety.ts";
 
 // Title and season details the app has opened, kept in Caches/details so a launch shows them
 // before, or instead of, asking again: each provider's facts of a title, under its subscription,
-// and TMDB's about of a title and of a season, shared by every subscription as tmdb.json is.
-// titles.ts alone reads and writes them and decides when one shows; account.ts deletes a
-// subscription's with its saved lists (catalogue-cache.ts). They are display data only: where a
-// title streams from is always asked of the provider under the current login, never read here.
+// and TMDB's about of a title and of a season, shared by every subscription as tmdb.json is. Each
+// subscription also keeps the languages of the tracks playback found in its files (files.json),
+// which Browse's filters read. titles.ts alone reads and writes them and decides when one shows;
+// account.ts deletes a subscription's with its saved lists (catalogue-cache.ts). They are display
+// data only: where a title streams from is always asked of the provider under the current login,
+// never read here.
 //
 // As with the saved lists, iOS may empty Caches: a record that is missing, unreadable, too old or
 // doubtful is simply not there, and is deleted. Reading, saving and tidying never throw; deleting
@@ -35,6 +37,24 @@ export interface SavedTitle extends Saved<ProviderDetails> {
   readonly listedAt: number | null;
 }
 
+/**
+ * A movie's or an episode's file that playback read: the listed row it was looked up by, and the
+ * languages of the tracks this iPhone could play, null where a track names none. No address,
+ * login or native track identity.
+ */
+export interface SavedFile {
+  readonly kind: "movie" | "episode";
+  readonly id: string;
+  /** An episode's series version. */
+  readonly seriesId?: string;
+  readonly name: string;
+  readonly container: string;
+  readonly audio: readonly (string | null)[];
+  readonly subtitles: readonly (string | null)[];
+  /** When playback found them, epoch milliseconds. */
+  readonly at: number;
+}
+
 const VERSION = 1;
 /** A record larger than this isn't written or read. */
 const RECORD_BYTES = 8 * 1024 * 1024;
@@ -47,6 +67,11 @@ const PRUNE_BATCH = 64;
 const MAX_AGE = 182 * 24 * 60 * 60 * 1000;
 /** A record from further ahead than the clock may drift isn't shown. */
 const MAX_AHEAD = 10 * 60 * 1000;
+/** Files kept per subscription, the latest found; a file's tracks per kind; a text's length. */
+const FILES = 2048;
+const FILE_TRACKS = 32;
+const FILE_TEXT = 512;
+const FILES_NAME = "files.json";
 
 const folder = () => new Directory(Paths.cache, "details");
 const providers = () => new Directory(folder(), "providers");
@@ -127,7 +152,29 @@ const Episode = lazy(() =>
     directors: "string[]",
   }),
 );
+const SavedFiles = lazy(() =>
+  type({
+    "+": "reject",
+    kind: "'movie' | 'episode'",
+    id: "string",
+    "seriesId?": "string",
+    name: "string",
+    container: "string",
+    audio: "(string | null)[]",
+    subtitles: "(string | null)[]",
+    at: Finite(),
+  }).array(),
+);
 const Records = {
+  files: lazy(() =>
+    type({
+      "+": "reject",
+      version: `${VERSION}`,
+      subscriptionId: "string",
+      at: Finite(),
+      files: SavedFiles(),
+    }),
+  ),
   title: lazy(() =>
     type({
       "+": "reject",
@@ -463,6 +510,81 @@ export function writeSeason(
   return queued(name, undefined, () =>
     store(tmdbFolder(), name, JSON.stringify({ version: VERSION, at: saved.at, value }), always),
   );
+}
+
+/**
+ * Whether a file's facts may be kept: within the bounds, of a time the clock can stand behind,
+ * and with no text that gives `login` away (its username, or anything holding its password).
+ */
+function keepable(file: SavedFile, now: number, login: readonly string[]): boolean {
+  const [username = "", password = ""] = login;
+  const texts = [file.id, file.seriesId ?? "", file.name, file.container];
+  const age = now - file.at;
+  return (
+    texts.every((text) => text.length <= FILE_TEXT && (username === "" || text !== username)) &&
+    file.audio.length <= FILE_TRACKS &&
+    file.subtitles.length <= FILE_TRACKS &&
+    age <= MAX_AGE &&
+    age >= -MAX_AHEAD &&
+    (password === "" || !holds(file, password))
+  );
+}
+
+/**
+ * `id`'s saved file facts, each one still keepable for `login`; null when there are none, or
+ * they don't read as this release writes them, which deletes them. Null too once `stands` fails
+ * while they are read.
+ */
+export function readFiles(
+  id: string,
+  login: readonly string[],
+  stands: () => boolean,
+): Promise<readonly SavedFile[] | null> {
+  return queued(`provider|${id}`, null, async () => {
+    const record = await load(
+      new File(subscriptionFolder(id), FILES_NAME),
+      (json) => {
+        const parsed = Records.files()(json);
+        return parsed instanceof type.errors || parsed.subscriptionId !== id ? null : parsed;
+      },
+      MAX_AGE,
+      stands,
+    );
+    if (!record) return null;
+    const now = Date.now();
+    return record.files.filter((file) => keepable(file, now, login));
+  });
+}
+
+/**
+ * Saves `files` as `id`'s file facts while `stands` holds: the latest found, up to FILES of them,
+ * leaving out any not keepable for `login`. Never rejects.
+ */
+export function writeFiles(
+  id: string,
+  files: readonly SavedFile[],
+  login: readonly string[],
+  stands: () => boolean,
+): Promise<void> {
+  return queued(`provider|${id}`, undefined, async () => {
+    const now = Date.now();
+    const kept = files
+      .filter((file) => keepable(file, now, login))
+      .toSorted((a, b) => b.at - a.at)
+      .slice(0, FILES)
+      .map((file) => ({
+        kind: file.kind,
+        id: file.id,
+        ...(file.seriesId === undefined ? {} : { seriesId: file.seriesId }),
+        name: file.name,
+        container: file.container,
+        audio: [...file.audio],
+        subtitles: [...file.subtitles],
+        at: file.at,
+      }));
+    const text = JSON.stringify({ version: VERSION, subscriptionId: id, at: now, files: kept });
+    await store(subscriptionFolder(id), FILES_NAME, text, stands);
+  });
 }
 
 /**

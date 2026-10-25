@@ -33,6 +33,7 @@ import {
   type CollectionSource,
 } from "@mrstreamer/core/ondemand/collections";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
+import type { FilterFile, FilterFiles } from "@mrstreamer/core/ondemand/filters";
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
 import { finish, pacer, type Steps } from "@mrstreamer/core/steps";
 import { File, Paths } from "expo-file-system";
@@ -49,15 +50,19 @@ import {
 } from "./account.ts";
 import {
   readAbout,
+  readFiles,
   readSeason,
   readTitle,
   writeAbout,
+  writeFiles,
   writeSeason,
   writeTitle,
   type Saved,
+  type SavedFile,
 } from "./details-cache.ts";
 import { inTasks } from "./library.ts";
-import { getMediaPreferences, onMediaPreferences } from "./media-preferences.ts";
+import type { ObservedFileTracks } from "./media-policy.ts";
+import { effectiveTitleLanguage, onMediaPreferences } from "./media-preferences.ts";
 import { currentSource, sourceOf, type Source } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
@@ -88,6 +93,12 @@ import { alignWatchlist } from "./watchlist.ts";
 // a kind's made again for the lists that show, those before showing meanwhile. A subscription
 // that no longer lists any titles, as once it is removed, takes the view with it at once: what
 // the others list shows again once it is indexed without it.
+//
+// It alone keeps what playback found in a file: the languages of its tracks (`titleFile`'s
+// `observed`), saved per subscription beside the details (details-cache.ts). Browse's filters
+// read them (`filterFilesOf`) only while the file is still the row the lists show: a movie's
+// listed name and file type, an episode's in this run's answer for its series, asked under the
+// lists that show now. Anything else is unknown, never absent.
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -195,7 +206,7 @@ export const useTitleTimings = () => useStore(timings);
 
 const locale = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale);
 /** The viewer's language, which version of a title shows first and which names TMDB gives. */
-export let language: string = getMediaPreferences().titleLanguage ?? locale.language;
+export let language: string = effectiveTitleLanguage();
 /** A-B-A is three distinct runs, even when the language string agrees again. */
 let languageEpoch = 0;
 interface ReadingLanguage {
@@ -668,7 +679,17 @@ function used<V>(map: Map<string, V>, key: string): V | undefined {
 interface Asked {
   readonly subscriptionId: string;
   readonly source: Source;
+  readonly kind: TitleKind;
+  /** The version asked about. */
+  readonly id: string;
   readonly read: Promise<ProviderDetails>;
+  /**
+   * The subscription's lists that showed when it was asked: an answer counts for file facts only
+   * while those are the lists that show. Never changed when the answer is used again.
+   */
+  readonly listing: OnDemandCatalogue | null;
+  /** The answer, once it came. */
+  value?: ProviderDetails;
 }
 
 /**
@@ -702,15 +723,28 @@ function askUnder(title: Title, source: Source): Promise<ProviderDetails> {
     title.kind === "movie"
       ? source.provider.movieDetails(title.id, signal)
       : source.provider.seriesDetails(title.id, signal);
-  const asking: Asked = { subscriptionId: id, source, read };
+  const listing = listedOf(members()).find((each) => each.subscriptionId === id)?.catalogue;
+  const asking: Asked = {
+    subscriptionId: id,
+    source,
+    kind: title.kind,
+    id: title.id,
+    read,
+    listing: listing ?? null,
+  };
   keep(asked, key, asking);
+  factsChanged();
   read.then(
     (value) => {
+      asking.value = value;
+      if (asked.get(key) === asking) factsChanged();
       const saved = { at: Date.now(), listedAt: listed, value };
       void writeTitle(id, title.kind, title.id, saved, source.login, () => savable(id, source));
     },
     () => {
-      if (asked.get(key) === asking) asked.delete(key);
+      if (asked.get(key) !== asking) return;
+      asked.delete(key);
+      factsChanged();
     },
   );
   return read;
@@ -946,17 +980,31 @@ export async function episodesOf(
   return worked(told);
 }
 
+/** The listed row a file was looked up by: what its facts are checked against. No address. */
+type FileRow = Pick<SavedFile, "kind" | "id" | "seriesId" | "name" | "container">;
+
+/**
+ * A movie's or an episode's file: where it streams from and, when the row it was looked up by
+ * can be checked again later, where playback tells the languages of the tracks it could play in
+ * it (`observed`). That is for a provider file AVPlayer opens as it is, never a format session,
+ * a downloaded copy or a channel; telling unknown tracks is telling nothing.
+ */
+export type TitleFile = ProviderFile & {
+  readonly observed?: (tracks: ObservedFileTracks) => void;
+};
+
 /**
  * Where a movie or an episode streams from, by the file type its provider lists: a movie's in the
  * lists or this run's answer for its details, an episode's in this run's answer for its series'.
  * Asks the subscription that lists it, under its current login, which the address carries; never
  * a saved record. While the lists are made again with its subscription's in them, it waits for
- * them (`listedIndex`).
+ * them (`listedIndex`). A movie listed with its name and file type, and an episode, come with
+ * `observed`, kept under the login that looked them up.
  */
-export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<ProviderFile> {
+export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<TitleFile> {
   const index = await listedIndex(ref.subscriptionId, signal);
   // The login that stands now, whichever was signed in while the lists were made again.
-  const reading = sourceOf(ref.subscriptionId).provider;
+  const reading = sourceOf(ref.subscriptionId);
   const missing = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   const answered = (title: Title) =>
     underLogin(ref.subscriptionId, async (source) => ({
@@ -966,8 +1014,15 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
   if (ref.kind === "movie") {
     const title = titleOf(index, "movie", ref);
     if (!title) throw missing;
-    const listed = title.versions.find((version) => sameOwned(version, ref))?.container;
-    if (listed) return reading.titleFile("movie", ref.id, listed, signal);
+    const version = title.versions.find((each) => sameOwned(each, ref));
+    if (version?.container) {
+      const container = version.container;
+      const name = version.name;
+      const file = await reading.provider.titleFile("movie", ref.id, container, signal);
+      if (name === undefined) return file;
+      const row: FileRow = { kind: "movie", id: ref.id, name, container };
+      return { ...file, observed: observing(ref.subscriptionId, reading, row) };
+    }
     const { raw, source } = await answered({ ...title, ...ownedId(ref) });
     return source.provider.titleFile("movie", ref.id, raw.container ?? "mp4", signal);
   }
@@ -977,18 +1032,215 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
   const { raw, source } = await answered({ ...title, ...series });
   const episode = raw.episodes.find((each) => each.id === ref.id);
   if (!episode) throw missing;
-  return source.provider.titleFile("episode", ref.id, episode.container, signal);
+  const file = await source.provider.titleFile("episode", ref.id, episode.container, signal);
+  const row: FileRow = {
+    kind: "episode",
+    id: episode.id,
+    seriesId: ref.seriesId,
+    name: episode.name,
+    container: episode.container,
+  };
+  return { ...file, observed: observing(ref.subscriptionId, source, row) };
 }
 
-/** Drops this run's answers of logins replaced or removed since. */
-function forgetLogins() {
-  for (const [key, each] of asked) {
-    if (currentSource(each.subscriptionId) !== each.source) asked.delete(key);
+/** One subscription's file facts under one login: those saved, with what playback found since. */
+interface Facts {
+  readonly source: Source;
+  /** By kind, series and file id. */
+  readonly files: Map<string, SavedFile>;
+  /** Settles once the saved facts were read and taken in, or found missing. */
+  readonly ready: Promise<void>;
+}
+
+/** File facts by subscription, each under the login it was read for. */
+const facts = new Map<string, Facts>();
+/** Rises whenever file facts, or this run's answers they are checked against, change. */
+const factsRevision = store(0);
+const factsChanged = () => factsRevision.set((revision) => revision + 1);
+/** The most files whose facts one subscription keeps in memory, as on disk. */
+const FACT_FILES = 2048;
+
+const fileKey = (file: Pick<SavedFile, "kind" | "id" | "seriesId">) =>
+  `${file.kind}|${file.seriesId ?? ""}|${file.id}`;
+
+/**
+ * `id`'s file facts under `source`, its saved facts read once, in the subscription's turn on the
+ * disk. A read that finishes once `source` no longer stands, or after these were replaced, takes
+ * nothing in.
+ */
+function factsOf(id: string, source: Source): Facts {
+  const known = facts.get(id);
+  if (known?.source === source) return known;
+  const files = new Map<string, SavedFile>();
+  const stands = () => savable(id, source) && facts.get(id) === held;
+  const held: Facts = {
+    source,
+    files,
+    ready: readFiles(id, source.login, stands).then((saved) => {
+      if (!saved || saved.length === 0 || !stands()) return;
+      // Oldest first, as `remember` keeps them, so the oldest go first past FACT_FILES.
+      for (const file of saved.toSorted((a, b) => a.at - b.at)) files.set(fileKey(file), file);
+      factsChanged();
+    }),
+  };
+  facts.set(id, held);
+  return held;
+}
+
+/** `id`'s file facts under the login that stands now, if it may keep any. */
+function standingFacts(id: string): Facts | undefined {
+  const source = currentSource(id);
+  return source && savable(id, source) ? factsOf(id, source) : undefined;
+}
+
+const sameTracks = (a: readonly (string | null)[], b: readonly (string | null)[]) =>
+  a.length === b.length && a.every((language, at) => language === b[at]);
+
+/**
+ * Keeps what playback found in `row`'s file under `source`: once the saved facts were taken in,
+ * so they never replace it, and only when it changes them. Nothing once `source` no longer stands.
+ */
+async function remember(id: string, source: Source, row: FileRow, tracks: ObservedFileTracks) {
+  if (!savable(id, source)) return;
+  const held = factsOf(id, source);
+  await held.ready;
+  if (!savable(id, source) || facts.get(id) !== held) return;
+  const key = fileKey(row);
+  const known = held.files.get(key);
+  if (
+    known &&
+    known.name === row.name &&
+    known.container === row.container &&
+    sameTracks(known.audio, tracks.audio) &&
+    sameTracks(known.subtitles, tracks.subtitles)
+  ) {
+    return;
   }
+  held.files.delete(key);
+  held.files.set(key, {
+    ...row,
+    audio: [...tracks.audio],
+    subtitles: [...tracks.subtitles],
+    at: Date.now(),
+  });
+  // The files found longest ago go first, as they do on disk.
+  for (const oldest of held.files.keys()) {
+    if (held.files.size <= FACT_FILES) break;
+    held.files.delete(oldest);
+  }
+  factsChanged();
+  void writeFiles(id, [...held.files.values()], source.login, () => {
+    return savable(id, source) && facts.get(id) === held;
+  });
+}
+
+/** `remember`, for one file looked up under `source`. */
+const observing = (id: string, source: Source, row: FileRow) => (tracks: ObservedFileTracks) =>
+  void remember(id, source, row, tracks);
+
+type Showing = Exclude<Shown, { readonly made: null }>;
+
+/** Each listed movie whose file facts are of the row the lists show now. */
+function movieFiles(now: Showing): FilterFiles {
+  const files = new Map<string, readonly FilterFile[]>();
+  const { byId } = kindOf(now.lists.index, "movie");
+  for (const { subscriptionId } of now.listed) {
+    const held = standingFacts(subscriptionId);
+    for (const file of held?.files.values() ?? []) {
+      if (file.kind !== "movie") continue;
+      const key = ownedKey({ subscriptionId, id: file.id });
+      const version = byId.get(key)?.versions.find((each) => ownedKey(each) === key);
+      if (!version || version.name !== file.name || version.container !== file.container) continue;
+      files.set(key, [
+        { tags: version.tags, tracks: { audio: file.audio, subtitles: file.subtitles } },
+      ]);
+    }
+  }
+  return files;
+}
+
+/**
+ * Each series version this run has an answer for, asked under the login that stands and the
+ * lists that show now: every episode it lists, with the facts of those whose row they are of. A
+ * series with no episodes keeps its declared row. Nothing is asked for this.
+ */
+function seriesFiles(now: Showing): FilterFiles {
+  const files = new Map<string, readonly FilterFile[]>();
+  const { byId } = kindOf(now.lists.index, "series");
+  for (const asking of asked.values()) {
+    const details = asking.value;
+    const { subscriptionId } = asking;
+    const lists = now.listed.find((each) => each.subscriptionId === subscriptionId);
+    if (
+      asking.kind !== "series" ||
+      !details ||
+      !lists ||
+      asking.listing !== lists.catalogue ||
+      currentSource(subscriptionId) !== asking.source ||
+      !savable(subscriptionId, asking.source)
+    ) {
+      continue;
+    }
+    const key = ownedKey({ subscriptionId, id: asking.id });
+    const version = byId.get(key)?.versions.find((each) => ownedKey(each) === key);
+    if (!version) continue;
+    const held = standingFacts(subscriptionId);
+    const episodes = details.episodes.map((episode): FilterFile => {
+      const found = held?.files.get(
+        fileKey({ kind: "episode", seriesId: asking.id, id: episode.id }),
+      );
+      return found && found.name === episode.name && found.container === episode.container
+        ? { tags: version.tags, tracks: { audio: found.audio, subtitles: found.subtitles } }
+        : { tags: version.tags };
+    });
+    files.set(key, episodes.length > 0 ? episodes : [{ tags: version.tags }]);
+  }
+  return files;
+}
+
+const NO_FILES: FilterFiles = new Map();
+/** What `filterFilesOf` last answered for each kind, and for which lists and facts. */
+const filesMade = new Map<
+  TitleKind,
+  { readonly shown: Shown; readonly revision: number; readonly files: FilterFiles }
+>();
+
+/**
+ * The file facts of `kind` Browse's filters count, by version, for the lists that show: core's
+ * FilterFiles, which fall back to each version's declared tags where a version has none here.
+ * Reads saved facts from the phone the first time; never asks a provider.
+ */
+export function filterFilesOf(kind: TitleKind): FilterFiles {
+  const now = shown.get();
+  if (!now.made) return NO_FILES;
+  const kept = filesMade.get(kind);
+  if (kept?.shown === now && kept.revision === factsRevision.get()) return kept.files;
+  const files = kind === "movie" ? movieFiles(now) : seriesFiles(now);
+  filesMade.set(kind, { shown: now, revision: factsRevision.get(), files });
+  return files;
+}
+
+/** Rises whenever what `filterFilesOf` answers may have changed, for screens to read it again. */
+export const useFileFacts = () => useStore(factsRevision);
+
+/** Drops this run's answers, and file facts, of logins replaced or removed since. */
+function forgetLogins() {
+  let changed = false;
+  for (const [key, each] of asked) {
+    if (currentSource(each.subscriptionId) === each.source) continue;
+    asked.delete(key);
+    changed = true;
+  }
+  for (const [id, held] of facts) {
+    if (currentSource(id) === held.source) continue;
+    facts.delete(id);
+    changed = true;
+  }
+  if (changed) factsChanged();
 }
 
 onMediaPreferences(() => {
-  const next = getMediaPreferences().titleLanguage ?? locale.language;
+  const next = effectiveTitleLanguage();
   if (next === language) return;
   language = next;
   languageEpoch++;
