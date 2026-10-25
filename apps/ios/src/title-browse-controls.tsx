@@ -1,6 +1,7 @@
 import { COLLECTION_SORTS, type TitleKind } from "@mrstreamer/contracts/ondemand";
 import type { QualityHint } from "@mrstreamer/contracts/title-filters";
 import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
+import { languageName as trackLanguageName } from "@mrstreamer/core/ondemand/tracks";
 import { useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -17,6 +18,9 @@ const qualities: Record<QualityHint, string> = {
 const languageName = (code: string) =>
   TITLE_LANGUAGES.find((language) => language.code === code)?.name ??
   (code === "multi" ? "Multiple languages" : "Unknown");
+// Observed languages are canonical codes, including those outside the offered hint languages.
+const knownLanguageName = (code: string) =>
+  code === "unknown" ? "Unknown" : (trackLanguageName(code) ?? code);
 const trackName = (kind: "audio" | "subtitles") => (kind === "audio" ? "Audio" : "Subtitles");
 
 /** One native sheet, with scrollable choices that grow with the viewer's text size. */
@@ -154,7 +158,7 @@ export function BrowseControls({
                   {result.verified.map(({ value, count }) => (
                     <Choice
                       key={`${value.kind}:${value.language}`}
-                      label={`${trackName(value.kind)}: ${languageName(value.language)} · ${count}`}
+                      label={`${trackName(value.kind)}: ${knownLanguageName(value.language)} · ${count}`}
                       selected={
                         verified?.kind === value.kind && verified.language === value.language
                       }
@@ -171,7 +175,7 @@ export function BrowseControls({
               ) ? (
                 <Text style={styles.text}>
                   Selected {trackName(verified.kind).toLowerCase()}:{" "}
-                  {languageName(verified.language)}. No matching files listed.
+                  {knownLanguageName(verified.language)}. No matching files listed.
                 </Text>
               ) : null}
               <Choice label="Reset" onPress={() => onChange(DEFAULT_BROWSE)} />

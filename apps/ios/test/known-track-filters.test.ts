@@ -328,6 +328,69 @@ async function found(
 }
 
 describe("Known audio/subtitles on the real title grids", () => {
+  it("distinguishes observed Japanese, Russian and unknown languages in accessible choices", async () => {
+    const app = await launch();
+    await draw(app);
+    await click("Sort & filter");
+    const observations = await React.act(() =>
+      Promise.all(
+        [
+          { id: "91000", language: "ja" },
+          { id: "91001", language: "ru" },
+          { id: "91002", language: null },
+        ].map(async ({ id, language }) => {
+          const file = await fileFor(app, "movie", id);
+          if (!file.observed) throw new Error("No public observation callback");
+          return { id, language, observed: file.observed };
+        }),
+      ),
+    );
+    await React.act(async () => {
+      for (const { language, observed } of observations)
+        observed({ audio: [language], subtitles: [language] });
+    });
+    await until(
+      () =>
+        buttons().filter((node) => node.getAttribute("aria-label") === "Audio: Unknown · 1")
+          .length > 0,
+      "the observed choices",
+    );
+    for (const group of ["Audio", "Subtitles"]) {
+      const labels = buttons()
+        .map((node) => node.getAttribute("aria-label"))
+        .filter((label) => label?.startsWith(`${group}:`));
+      expect(labels).toEqual([
+        `${group}: 日本語 · 1`,
+        `${group}: Русский · 1`,
+        `${group}: Unknown · 1`,
+      ]);
+    }
+    const requests = memory.requests.length;
+    for (const group of ["Audio", "Subtitles"]) {
+      for (const [label, id] of [
+        ["日本語", "91000"],
+        ["Русский", "91001"],
+        ["Unknown", "91002"],
+      ]) {
+        await click(`${group}: ${label} · 1`);
+        expect(posters()).toEqual([`title-${id}`]);
+      }
+    }
+    await click("Audio: 日本語 · 1");
+    const japanese = observations.find(({ language }) => language === "ja");
+    if (!japanese) throw new Error("No Japanese file callback");
+    await React.act(async () => japanese.observed({ audio: ["zz"], subtitles: ["zz"] }));
+    await until(() => Boolean(button("Audio: zz · 1")), "the changed language");
+    expect(container.textContent).toContain("Selected audio: 日本語. No matching files listed.");
+    expect(button("Audio: 日本語 · 1")).toBeUndefined();
+    await click("Audio: zz · 1");
+    expect(posters()).toEqual(["title-91000"]);
+    expect(button("Subtitles: zz · 1")).toBeDefined();
+    await click("Reset");
+    expect(posters()).toHaveLength(2);
+    expect(memory.requests.length).toBe(requests);
+  });
+
   it("hides unread choices and labels a read track without a language as Unknown", async () => {
     const app = await launch();
     await draw(app);
