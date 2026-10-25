@@ -1,4 +1,4 @@
-import { QUALITIES, type Quality } from "@mrstreamer/contracts/library";
+import { QUALITIES, type LiveChannel, type Quality } from "@mrstreamer/contracts/library";
 import { DEFAULT_LIVE_QUALITY } from "@mrstreamer/contracts/preferences";
 import { TITLE_LANGUAGES, type TitleLanguage } from "@mrstreamer/core/ondemand/languages";
 import { File, Paths } from "expo-file-system";
@@ -38,6 +38,15 @@ let cached: Store<MediaPreferences> | undefined;
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const knownLanguage = (value: unknown) => TITLE_LANGUAGES.find(({ code }) => code === value)?.code;
+
+/** Each subscription's chosen stream per channel, by channel id: what core's chosenVariant reads. */
+type ChannelPicks = Readonly<Record<string, Readonly<Record<string, string>>>>;
+const channelPicksShape = (value: unknown): value is ChannelPicks =>
+  record(value) &&
+  Object.values(value).every(
+    (channels) =>
+      record(channels) && Object.values(channels).every((stream) => typeof stream === "string"),
+  );
 
 function audioOf(value: unknown): Audio {
   if (record(value)) {
@@ -101,25 +110,32 @@ function saved(): Store<MediaPreferences> {
   return cached;
 }
 
-/** Only accepted, durable choices. No source, file or native track identities belong here. */
+/**
+ * Only accepted, durable choices. Opaque subscription, channel and stream ids appear solely as
+ * per-channel quality keys (`channelPicks`); no source, login, address, file or native track
+ * identity belongs here.
+ */
 export const getMediaPreferences = (): MediaPreferences => saved().get();
 export const useMediaPreferences = (): MediaPreferences => useStore(saved());
 export const onMediaPreferences = (listener: () => void): (() => void) =>
   saved().subscribe(listener);
 
+/** The device's language, as the title owner reads it, kept when it isn't an offered choice. */
+const deviceLanguage = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale).language;
+
+/** The language titles and follow-title sound use: the saved choice, else the device's. */
+export const effectiveTitleLanguage = (): string =>
+  getMediaPreferences().titleLanguage ?? deviceLanguage;
+
 /**
- * Saves one field before publishing it. False leaves the accepted snapshot unchanged; Settings
- * reports a generic failure. Untouched future fields survive, and a future file version is read-only.
+ * Makes `next` the accepted contents, for every writer of this file. True once the primary holds
+ * it. False when the file is read-only or the disk refuses: the accepted contents and published
+ * values stay as they were, and the next launch prefers the accepted backup to the refused
+ * proposal. That is not a promise the files are untouched: a checkpoint that succeeded stays
+ * committed when the primary write then fails, and the primary may already be deleted.
  */
-export function updateMediaPreferences<K extends keyof MediaPreferences>(
-  field: K,
-  value: MediaPreferences[K],
-): boolean {
-  const source = saved();
-  const current = source.get();
-  if (JSON.stringify(current[field]) === JSON.stringify(value)) return true;
+function propose(next: Record<string, unknown>): boolean {
   if (!writable) return false;
-  const next = { ...contents, version: 1, [field]: value };
   if (!checkpointed) {
     try {
       // Expo overwrites by deleting then moving. A checkpoint refusal must leave the
@@ -145,6 +161,88 @@ export function updateMediaPreferences<K extends keyof MediaPreferences>(
   }
   contents = next;
   checkpointed = false;
+  return true;
+}
+
+/**
+ * Saves one field before publishing it. False leaves the accepted snapshot unchanged; Settings
+ * reports a generic failure. Untouched future fields survive, and a future file version is read-only.
+ */
+export function updateMediaPreferences<K extends keyof MediaPreferences>(
+  field: K,
+  value: MediaPreferences[K],
+): boolean {
+  const source = saved();
+  const current = source.get();
+  if (JSON.stringify(current[field]) === JSON.stringify(value)) return true;
+  if (!propose({ ...contents, version: 1, [field]: value })) return false;
   source.set(accepted({ ...current, [field]: value }));
   return true;
+}
+
+/** The accepted picks to change: none saved reads as empty, a shape this build doesn't know as null. */
+function changeablePicks(): ChannelPicks | null {
+  saved();
+  const picks = contents["channelVariants"];
+  if (picks === undefined) return {};
+  return channelPicksShape(picks) ? picks : null;
+}
+
+/** Proposes `subscriptionId`'s picks, leaving every other subscription's and field as accepted. */
+function proposePicks(
+  picks: ChannelPicks,
+  subscriptionId: string,
+  channels: Readonly<Record<string, string>>,
+): boolean {
+  const { [subscriptionId]: _replaced, ...others } = picks;
+  const next =
+    Object.keys(channels).length > 0 ? { ...others, [subscriptionId]: channels } : others;
+  return propose({ ...contents, version: 1, channelVariants: next });
+}
+
+const samePicks = (a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>) =>
+  Object.keys(a).length === Object.keys(b).length &&
+  Object.entries(a).every(([channel, stream]) => b[channel] === stream);
+
+/**
+ * One subscription's chosen stream per channel, by channel id, as accepted: what core's
+ * chosenVariant reads. Empty for Automatic everywhere, and while the saved picks are in a shape
+ * this build doesn't know.
+ */
+export function channelPicks(subscriptionId: string): Readonly<Record<string, string>> {
+  return changeablePicks()?.[subscriptionId] ?? {};
+}
+
+/**
+ * Saves `streamId` as the channel's stream, or Automatic for null. Picks kept under the
+ * channel's other stream ids go, as chosenVariant would read any of them. True once accepted,
+ * or when that is already the accepted choice. False saves nothing, for a stream the channel
+ * doesn't list, picks in a shape this build doesn't know, a read-only file or a refused write:
+ * the accepted picks stay, now and at the next launch.
+ */
+export function updateChannelPick(
+  channel: Pick<LiveChannel, "subscriptionId" | "id" | "variants">,
+  streamId: string | null,
+): boolean {
+  if (streamId !== null && !channel.variants.some(({ id }) => id === streamId)) return false;
+  const picks = changeablePicks();
+  if (!picks) return false;
+  const aliases = new Set([channel.id, ...channel.variants.map(({ id }) => id)]);
+  const before = picks[channel.subscriptionId] ?? {};
+  const others = Object.fromEntries(Object.entries(before).filter(([id]) => !aliases.has(id)));
+  const after = streamId === null ? others : { ...others, [channel.id]: streamId };
+  if (samePicks(before, after)) return true;
+  return proposePicks(picks, channel.subscriptionId, after);
+}
+
+/**
+ * Forgets every pick of one subscription, as erasing its history does. True once none is left,
+ * at once when there were none. False keeps them: picks in a shape this build doesn't know, a
+ * read-only file or a refused write.
+ */
+export function forgetChannelPicks(subscriptionId: string): boolean {
+  const picks = changeablePicks();
+  if (!picks) return false;
+  if (!Object.hasOwn(picks, subscriptionId)) return true;
+  return proposePicks(picks, subscriptionId, {});
 }

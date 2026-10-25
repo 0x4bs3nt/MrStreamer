@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ChannelVariant, Quality } from "@mrstreamer/contracts/library";
+import { chosenVariant } from "@mrstreamer/core/catalogue/variants";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -329,4 +331,212 @@ describe("R77 accepted-value recovery", () => {
       expect((await restart()).getMediaPreferences().titleLanguage).toBe("nl");
     },
   );
+});
+
+describe("per-channel quality picks", () => {
+  const stream = (id: string, quality: Quality | null): ChannelVariant => ({
+    id,
+    name: `Stream ${id}`,
+    tags: [],
+    quality,
+  });
+  // A channel is named by its lowest stream id; a pick may sit under any of its streams' ids.
+  const news = {
+    subscriptionId: "s1",
+    id: "10",
+    variants: [stream("10", "fhd"), stream("11", "hd"), stream("12", null)],
+  };
+  const sport = { subscriptionId: "s1", id: "20", variants: [stream("20", "uhd")] };
+  const elsewhere = { subscriptionId: "s2", id: "10", variants: [stream("10", "sd")] };
+  const picked = (app: typeof import("../src/media-preferences.ts"), channel: typeof news) =>
+    chosenVariant(channel, app.channelPicks(channel.subscriptionId))?.id ?? "Automatic";
+
+  it("keeps a channel's stream beside the global policies across cold launches, and Automatic resets it", async () => {
+    let app = await restart();
+    expect(app.updateMediaPreferences("liveQuality", "hd")).toBe(true);
+    const heard = vi.fn();
+    app.onMediaPreferences(heard);
+    expect(app.updateChannelPick(news, "11")).toBe(true);
+    expect(picked(app, news)).toBe("11");
+    expect(heard).not.toHaveBeenCalled();
+    app = await restart();
+    expect(picked(app, news)).toBe("11");
+    expect(app.getMediaPreferences().liveQuality).toBe("hd");
+    expect(app.updateChannelPick(news, null)).toBe(true);
+    expect(picked(app, news)).toBe("Automatic");
+    app = await restart();
+    expect(app.channelPicks("s1")).toEqual({});
+    expect(JSON.parse(bytes())).toEqual({ version: 1, liveQuality: "hd", channelVariants: {} });
+  });
+
+  it("saves nothing for a stream the channel doesn't list, nor for the accepted choice again", async () => {
+    const app = await restart();
+    expect(app.updateChannelPick(news, "11")).toBe(true);
+    expect(app.updateChannelPick(elsewhere, "10")).toBe(true);
+    const before = bytes();
+    const write = vi.fn();
+    native.sync = write;
+    expect(app.updateChannelPick(news, "20")).toBe(false);
+    expect(app.updateChannelPick(news, "11")).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+    expect(bytes()).toBe(before);
+    expect(app.channelPicks("s1")).toEqual({ "10": "11" });
+    expect(app.channelPicks("s2")).toEqual({ "10": "10" });
+  });
+
+  it("replaces a pick kept under another of the channel's stream ids, keeping every other pick and field", async () => {
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        liveQuality: "uhd",
+        channelVariants: { s1: { "11": "12", "20": "20" }, s2: { "10": "10" } },
+        future: { keep: 1 },
+      }),
+    );
+    const app = await restart();
+    expect(picked(app, news)).toBe("12");
+    expect(app.updateChannelPick(news, "10")).toBe(true);
+    expect(app.channelPicks("s1")).toEqual({ "10": "10", "20": "20" });
+    expect(picked(app, news)).toBe("10");
+    expect(picked(app, sport)).toBe("20");
+    expect(JSON.parse(bytes())).toEqual({
+      version: 1,
+      liveQuality: "uhd",
+      channelVariants: { s1: { "10": "10", "20": "20" }, s2: { "10": "10" } },
+      future: { keep: 1 },
+    });
+    expect(app.updateChannelPick(news, null)).toBe(true);
+    expect(picked(app, news)).toBe("Automatic");
+    expect(app.channelPicks("s1")).toEqual({ "20": "20" });
+  });
+
+  it.each([
+    { unknown: ["future"] },
+    { unknown: { s1: ["future-layout"] } },
+    { unknown: { s1: { "10": 11 } } },
+  ])(
+    "reads picks in an unknown shape as Automatic, refuses to change them and keeps them: $unknown",
+    async ({ unknown }) => {
+      writeFileSync(
+        path,
+        JSON.stringify({ version: 1, liveQuality: "hd", channelVariants: unknown }),
+      );
+      const app = await restart();
+      expect(app.channelPicks("s1")).toEqual({});
+      expect(app.updateChannelPick(news, "11")).toBe(false);
+      expect(app.forgetChannelPicks("s1")).toBe(false);
+      expect(app.updateMediaPreferences("liveQuality", "sd")).toBe(true);
+      expect(JSON.parse(bytes())).toEqual({
+        version: 1,
+        liveQuality: "sd",
+        channelVariants: unknown,
+      });
+    },
+  );
+
+  it("shows a future file version's picks without changing that file", async () => {
+    const original = '{ "version": 88, "channelVariants": { "s1": { "10": "11" } }, "future": 9 }';
+    writeFileSync(path, original);
+    const app = await restart();
+    expect(picked(app, news)).toBe("11");
+    expect(app.updateChannelPick(news, "12")).toBe(false);
+    expect(app.forgetChannelPicks("s1")).toBe(false);
+    expect(bytes()).toBe(original);
+  });
+
+  it.each([false, true])(
+    "keeps the accepted pick now and after relaunch when a pick is refused after destination deletion, cleanup refused=%s",
+    async (cleanupRefused) => {
+      const prior = {
+        version: 1,
+        titleLanguage: "nl",
+        liveQuality: "hd",
+        channelVariants: { s1: { "10": "11" } },
+        future: { nested: ["keep", 7] },
+      };
+      writeFileSync(path, JSON.stringify(prior));
+      const app = await restart();
+      const before = app.getMediaPreferences();
+      const heard = vi.fn();
+      app.onMediaPreferences(heard);
+      native.sync = (step, file) => {
+        if (step === "move-after-delete" && file === `${path}.next`)
+          throw new Error("move refused after destination deletion");
+      };
+      native.undeletable = (file) => cleanupRefused && file === `${path}.next`;
+      expect(app.updateChannelPick(news, "12")).toBe(false);
+      expect(picked(app, news)).toBe("11");
+      expect(app.getMediaPreferences()).toBe(before);
+      expect(heard).not.toHaveBeenCalled();
+      native.sync = null;
+      native.undeletable = null;
+      const cold = await restart();
+      expect(picked(cold, news)).toBe("11");
+      expect(cold.getMediaPreferences()).toEqual(before);
+      expect(cold.updateMediaPreferences("liveQuality", "sd")).toBe(true);
+      expect(JSON.parse(bytes())).toEqual({ ...prior, liveQuality: "sd" });
+    },
+  );
+
+  it("keeps the picks now and after relaunch when forgetting them is refused", async () => {
+    const app = await restart();
+    expect(app.updateChannelPick(news, "12")).toBe(true);
+    native.sync = (step, file) => {
+      if (step === "move" && file === `${path}.next`) throw new Error("refused");
+    };
+    expect(app.forgetChannelPicks("s1")).toBe(false);
+    expect(picked(app, news)).toBe("12");
+    native.sync = null;
+    expect(picked(await restart(), news)).toBe("12");
+  });
+
+  it("merges a pick into the latest accepted contents, leaving the global policies and their listeners alone", async () => {
+    let app = await restart();
+    const heard = vi.fn();
+    app.onMediaPreferences(heard);
+    expect(app.updateMediaPreferences("audio", { kind: "language", language: "de" })).toBe(true);
+    expect(app.updateChannelPick(news, "11")).toBe(true);
+    expect(app.updateMediaPreferences("subtitles", { kind: "off" })).toBe(true);
+    expect(app.updateChannelPick(sport, "20")).toBe(true);
+    expect(heard).toHaveBeenCalledTimes(2);
+    app = await restart();
+    expect(app.getMediaPreferences()).toEqual({
+      titleLanguage: null,
+      audio: { kind: "language", language: "de" },
+      subtitles: { kind: "off" },
+      liveQuality: "fhd",
+    });
+    expect(app.channelPicks("s1")).toEqual({ "10": "11", "20": "20" });
+  });
+
+  it("forgets one subscription's picks, keeps the others, and does nothing when there are none", async () => {
+    let app = await restart();
+    app.updateChannelPick(news, "11");
+    app.updateChannelPick(elsewhere, "10");
+    expect(app.forgetChannelPicks("s1")).toBe(true);
+    expect(app.channelPicks("s1")).toEqual({});
+    expect(app.channelPicks("s2")).toEqual({ "10": "10" });
+    const write = vi.fn();
+    native.sync = write;
+    expect(app.forgetChannelPicks("s1")).toBe(true);
+    expect(app.forgetChannelPicks("never-saved")).toBe(true);
+    expect(write).not.toHaveBeenCalled();
+    native.sync = null;
+    app = await restart();
+    expect(app.channelPicks("s1")).toEqual({});
+    expect(picked(app, elsewhere)).toBe("10");
+  });
+});
+
+it("uses the device's language for titles until one is saved", async () => {
+  const device = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale).language;
+  let app = await restart();
+  expect(app.effectiveTitleLanguage()).toBe(device);
+  app.updateMediaPreferences("titleLanguage", "pl");
+  expect(app.effectiveTitleLanguage()).toBe("pl");
+  app = await restart();
+  expect(app.effectiveTitleLanguage()).toBe("pl");
+  app.updateMediaPreferences("titleLanguage", null);
+  expect(app.effectiveTitleLanguage()).toBe(device);
 });
