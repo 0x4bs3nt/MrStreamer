@@ -29,6 +29,7 @@ const held: {
   progress: Array<Answer<readonly TitleProgress[]>>;
 } = { details: [], standing: [], unreadable: [], progress: [] };
 
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 vi.mock("../src/account.ts", () => ({
   members: () => [{ entry: { id: "demo", kind: "xtream" } }],
@@ -187,7 +188,13 @@ async function answer(details: SeriesDetails) {
 const live = (id: string) =>
   play(
     { id, subscriptionId: SUB, title: id, place: "", live: true, next: false, versions: false },
-    async () => ({ url: `live:${id}`, container: "m3u8" }),
+    {
+      kind: "live",
+      candidates: [
+        { variantId: "stream", open: async () => ({ url: `live:${id}`, container: "m3u8" }) },
+      ],
+      explicit: false,
+    },
     { watch: true, login: [] },
   );
 

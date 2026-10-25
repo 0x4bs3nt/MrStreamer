@@ -11,6 +11,7 @@ const fakePlayer = nativePlayer((source) => {
   given.push(source);
 });
 
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 
 function deferred<T>() {
@@ -103,10 +104,18 @@ beforeEach(async () => {
 
 describe("a file AVPlayer can't open", () => {
   it("plays from where it stopped through the session, without seeking again", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), {
-      ...options,
-      from: 300,
-    });
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      {
+        ...options,
+        from: 300,
+      },
+    );
     await settle();
     expect(sessions).toMatchObject([{ url: "http://panel/a.mkv", start: 300 }]);
     session("1").opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/t/main.m3u8" });
@@ -117,7 +126,15 @@ describe("a file AVPlayer can't open", () => {
   });
 
   it("asks the provider nothing more until the session it let go of has closed", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
     await settle();
@@ -125,7 +142,7 @@ describe("a file AVPlayer can't open", () => {
     expect(sessions[0]!.closeAsked).toBe(true);
     expect(playbackState.get().closing).toEqual(["sub"]);
     const opened = vi.fn(async () => ({ url: "http://panel/b.mp4", container: "mp4" }));
-    void play(movie("b"), opened, options);
+    void play(movie("b"), { kind: "file", originalLanguage: null, open: opened }, options);
     await settle();
     expect(opened).not.toHaveBeenCalled();
     sessions[0]!.closed.resolve();
@@ -135,7 +152,15 @@ describe("a file AVPlayer can't open", () => {
   });
 
   it("says Stop settled only once the session's request ended", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
     await settle();
@@ -150,10 +175,18 @@ describe("a file AVPlayer can't open", () => {
   });
 
   it("closes a session that opens after the viewer moved on, and never plays it", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     const next = vi.fn(async () => ({ url: "http://panel/b.mp4", container: "mp4" }));
-    void play(movie("b"), next, options);
+    void play(movie("b"), { kind: "file", originalLanguage: null, open: next }, options);
     expect(sessions[0]!.closeAsked).toBe(true);
     sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
     await settle();
@@ -165,7 +198,15 @@ describe("a file AVPlayer can't open", () => {
   });
 
   it("says why the provider stopped sending it, by the status it answered", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
     await settle();
@@ -176,7 +217,15 @@ describe("a file AVPlayer can't open", () => {
       error: "The provider refused this title. Another device may be using your connection.",
     });
 
-    void play(movie("b"), async () => ({ url: "http://panel/b.mkv", container: "mkv" }), options);
+    void play(
+      movie("b"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/b.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     sessions[0]!.closed.resolve();
     await settle();
@@ -191,7 +240,15 @@ describe("a file AVPlayer can't open", () => {
   describe("when the session stops serving while the player only waits", () => {
     const gap = "The chosen sound has a gap here that can't be played.";
     const opening = async () => {
-      void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+      void play(
+        movie("a"),
+        {
+          kind: "file",
+          originalLanguage: null,
+          open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+        },
+        options,
+      );
       await settle();
       sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/a/main.m3u8" });
       await settle();
@@ -227,7 +284,15 @@ describe("a file AVPlayer can't open", () => {
 
     it("says nothing of a session it let go of, to the next title or after stopping", async () => {
       await opening();
-      void play(movie("b"), async () => ({ url: "http://panel/b.mkv", container: "mkv" }), options);
+      void play(
+        movie("b"),
+        {
+          kind: "file",
+          originalLanguage: null,
+          open: async () => ({ url: "http://panel/b.mkv", container: "mkv" }),
+        },
+        options,
+      );
       sessionFails(sessions[0]!.id, { kind: "unsupported", detail: gap });
       sessions[0]!.closed.resolve();
       await settle();
@@ -243,7 +308,15 @@ describe("a file AVPlayer can't open", () => {
   });
 
   it("plays a file that turns out to be MP4 directly, once the session's request ended", async () => {
-    void play(movie("a"), async () => ({ url: "http://panel/a.mkv", container: "mkv" }), options);
+    void play(
+      movie("a"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/a.mkv", container: "mkv" }),
+      },
+      options,
+    );
     await settle();
     sessions[0]!.opened.resolve({ kind: "direct" });
     await settle();
@@ -255,16 +328,47 @@ describe("a file AVPlayer can't open", () => {
 });
 
 it("plays MP4, AVI and other files, and live channels, directly as before", async () => {
-  await play(movie("a"), async () => ({ url: "http://panel/a.mp4", container: "mp4" }), options);
-  await play(movie("e"), async () => ({ url: "http://panel/e.avi", container: "avi" }), options);
+  await play(
+    movie("a"),
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: "http://panel/a.mp4", container: "mp4" }),
+    },
+    options,
+  );
+  await play(
+    movie("e"),
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: "http://panel/e.avi", container: "avi" }),
+    },
+    options,
+  );
   await play(
     { ...movie("c"), live: true },
-    async () => ({ url: "http://panel/c.ts", container: "ts" }),
+    {
+      kind: "live",
+      candidates: [
+        { variantId: "stream", open: async () => ({ url: "http://panel/c.ts", container: "ts" }) },
+      ],
+      explicit: false,
+    },
     options,
   );
   await play(
     { ...movie("d"), live: true },
-    async () => ({ url: "http://panel/d.m3u8", container: "m3u8" }),
+    {
+      kind: "live",
+      candidates: [
+        {
+          variantId: "stream",
+          open: async () => ({ url: "http://panel/d.m3u8", container: "m3u8" }),
+        },
+      ],
+      explicit: false,
+    },
     options,
   );
   expect(sessions).toEqual([]);
@@ -280,7 +384,11 @@ it("keeps a local copy's reader handle pending through both native detach and fo
   const app = await import("../src/playback.ts");
   void play(
     movie("copy:local", null),
-    async () => ({ url: "file:copy.mkv", container: "mkv" }),
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: "file:copy.mkv", container: "mkv" }),
+    },
     options,
   );
   await settle();
@@ -310,3 +418,81 @@ it("keeps a local copy's reader handle pending through both native detach and fo
   await stopping;
   expect(closed).toBe(true);
 });
+
+it.each(["session", "direct"] as const)(
+  "uses the actual %s format outcome to gate original-file facts",
+  async (kind) => {
+    const observed = vi.fn();
+    const opening = play(
+      movie("provider"),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "http://panel/provider.mkv", container: "mkv", observed }),
+      },
+      options,
+    );
+    await settle();
+    const reader = sessions.at(-1);
+    if (!reader) throw new Error("No format reader");
+    reader.opened.resolve(
+      kind === "session"
+        ? { kind: "session", playlist: "file:rendition.m3u8" }
+        : { kind: "direct" },
+    );
+    await settle();
+    if (kind === "direct") {
+      expect(observed).not.toHaveBeenCalled();
+      reader.closed.resolve();
+    }
+    await opening;
+    const identity = fakePlayer.identity();
+    const tracks = {
+      ...identity,
+      revision: 1,
+      audio: {
+        state: "ready" as const,
+        options: [
+          {
+            ...identity,
+            revision: 1,
+            id: "0",
+            group: "audio" as const,
+            label: "English",
+            language: "en",
+            isDefault: true,
+            isPlayable: true,
+          },
+        ],
+      },
+      subtitles: { state: "absent" as const, options: [] },
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+      subtitleOffAllowed: false,
+    };
+    fakePlayer.tracks = tracks;
+    fakePlayer.observation({ kind: "tracks", tracks });
+    await settle();
+    if (kind === "session") expect(observed).not.toHaveBeenCalled();
+    else {
+      expect(observed).toHaveBeenCalledOnce();
+      expect(observed).toHaveBeenCalledWith({ audio: ["en"], subtitles: [] });
+    }
+    reader.closed.resolve();
+    if (kind === "session") {
+      const later = {
+        ...tracks,
+        revision: 2,
+        audio: {
+          ...tracks.audio,
+          options: tracks.audio.options.map((track) => ({ ...track, revision: 2 })),
+        },
+      };
+      fakePlayer.tracks = later;
+      fakePlayer.observation({ kind: "tracks", tracks: later });
+      await settle();
+      expect(observed).not.toHaveBeenCalled();
+    }
+    await stop();
+  },
+);

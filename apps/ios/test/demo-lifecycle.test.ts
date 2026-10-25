@@ -851,7 +851,11 @@ describe("Demo through the production lifecycle", () => {
         next: false,
         versions: false,
       },
-      async () => ({ url: "https://personal.example/movie.mp4", container: "mp4" }),
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => ({ url: "https://personal.example/movie.mp4", container: "mp4" }),
+      },
       { watch: true, login: [] },
     );
     await wait(20);

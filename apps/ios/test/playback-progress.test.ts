@@ -3,6 +3,7 @@ import { nativePlayer } from "./native-player.ts";
 
 // Real playback and progress callbacks, with native observations delivered once a second.
 const port = nativePlayer();
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-video", () => ({ createVideoPlayer: () => port }));
 const { play, playbackClock, playbackState, progressSettled, stop, togglePause } =
   await import("../src/playback.ts");
@@ -11,7 +12,11 @@ const saves: Array<{ id: string; at: number; position: number; duration: number 
 async function watching(id: string) {
   await play(
     { id, subscriptionId: null, title: id, place: "", live: false, next: false, versions: false },
-    async () => ({ url: `file:${id}.mp4`, container: "mp4" }),
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: `file:${id}.mp4`, container: "mp4" }),
+    },
     {
       watch: true,
       login: [],

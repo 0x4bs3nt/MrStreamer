@@ -1251,7 +1251,7 @@ export function playChannel(channel: Channel, place: string, options: { watch: b
       next: false,
       versions: false,
     },
-    open,
+    { kind: "live", candidates: [{ variantId: variant.id, open }], explicit: false },
     { ...options, login: loginOf(subscriptionId) },
   );
 }

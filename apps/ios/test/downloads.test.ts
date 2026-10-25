@@ -376,6 +376,73 @@ function appGoes(state: "background" | "active") {
 }
 
 describe("downloads", { timeout: 30_000 }, () => {
+  it("applies a saved copy's original language through the real play action without establishing provider-file facts", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    const copy = await app.addDownload(movieRef(a));
+    await until(() => isComplete(app, copy.id), "the saved copy");
+    const disk = new DiskFile(native.root, "documents", "downloads.json");
+    const stored: unknown = JSON.parse(disk.textSync(), (key, value: unknown) =>
+      key === "about" && typeof value === "object" && value !== null
+        ? { ...value, originalLanguage: "fr" }
+        : value,
+    );
+    disk.writeSync(JSON.stringify(stored));
+    app = await launch();
+    const preferences = await import("../src/media-preferences.ts");
+    preferences.updateMediaPreferences("audio", { kind: "original" });
+    app.playDownload(copy.id);
+    await until(() => memory.played.length === 1, "the copy to open");
+    const player = memory.player;
+    if (!player) throw new Error("No player");
+    const identity = player.identity();
+    const tracks = {
+      ...identity,
+      revision: 1,
+      audio: {
+        state: "ready" as const,
+        options: ["en", "fr"].map((language, index) => ({
+          ...identity,
+          revision: 1,
+          id: String(index),
+          group: "audio" as const,
+          language,
+          label: language,
+          isDefault: index === 0,
+          isPlayable: true,
+        })),
+      },
+      subtitles: { state: "absent" as const, options: [] },
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+      subtitleOffAllowed: false,
+    };
+    player.selectObservedTrackAsync.mockImplementation(async (_item, _revision, choice) => {
+      const current = player.tracks;
+      if (!current) throw new Error("No native snapshot");
+      player.tracks = {
+        ...current,
+        ...(choice.kind === "audio"
+          ? { selectedAudioId: choice.track.id }
+          : { selectedSubtitleId: choice.track?.id ?? null }),
+      };
+      return { kind: "requested" };
+    });
+    const files = one.fileRequests();
+    player.tracks = tracks;
+    player.observation({ kind: "tracks", tracks });
+    await until(() => player.tracks?.selectedAudioId === "1", "French saved original sound");
+    expect(one.fileRequests()).toBe(files);
+    expect(
+      app
+        .filterFilesOf("movie")
+        .get(`${a}:${copy.title.id}`)
+        ?.some((file) => file.tracks !== undefined) ?? false,
+    ).toBe(false);
+    await app.stop();
+  });
+
   it("adds the remaining provider's downloads asked for before or while a removed one's titles go", async () => {
     await install();
     const app = await launch();
@@ -873,7 +940,11 @@ describe("downloads", { timeout: 30_000 }, () => {
       const options = { watch: true, login: [] };
       await app.playback.play(
         item(a),
-        async () => ({ url: "file:a.mkv", container: "mkv" }),
+        {
+          kind: "file",
+          originalLanguage: null,
+          open: async () => ({ url: "file:a.mkv", container: "mkv" }),
+        },
         options,
       );
       const film = await app.addDownload(movieRef(a));
@@ -881,7 +952,11 @@ describe("downloads", { timeout: 30_000 }, () => {
       native.requests.length = 0;
       const playing = app.playback.play(
         item(next),
-        async () => ({ url: "file:next.mp4", container: "mp4" }),
+        {
+          kind: "file",
+          originalLanguage: null,
+          open: async () => ({ url: "file:next.mp4", container: "mp4" }),
+        },
         options,
       );
       // Longer than the provider's moment to free a connection: A's session still holds it.

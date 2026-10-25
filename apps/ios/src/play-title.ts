@@ -71,14 +71,7 @@ function outcomeOf(kind: TitleKind, version: OwnedId, failure: Failure) {
 /** Shows the title's version choice, after one failed. */
 export type ShowVersions = () => void;
 
-const sourceOf = (ref: TitleRef) => async (signal: AbortSignal) => {
-  const file = await titleFile(ref, signal);
-  return {
-    url: file.url,
-    container: file.container,
-    ...(file.headers ? { headers: file.headers } : {}),
-  };
-};
+const sourceOf = (ref: TitleRef) => (signal: AbortSignal) => titleFile(ref, signal);
 
 /** Plays a movie's `version` in Watch, from `from` seconds. */
 export function playMovie(title: Title, version: OwnedId, from: number, versions: ShowVersions) {
@@ -94,14 +87,18 @@ export function playMovie(title: Title, version: OwnedId, from: number, versions
     next: false,
     versions: title.versions.length > 1,
   };
-  void play(item, sourceOf(ref), {
-    watch: true,
-    login: loginOf(version.subscriptionId),
-    from,
-    progress: (position, duration) => recordProgress(ref, position, duration, since),
-    outcome: outcomeOf("movie", version, "file"),
-    versions,
-  });
+  void play(
+    item,
+    { kind: "file", open: sourceOf(ref), originalLanguage: title.originalLanguage },
+    {
+      watch: true,
+      login: loginOf(version.subscriptionId),
+      from,
+      progress: (position, duration) => recordProgress(ref, position, duration, since),
+      outcome: outcomeOf("movie", version, "file"),
+      versions,
+    },
+  );
 }
 
 /** Plays an episode of `details`, a series version, in Watch, from `from` seconds. */
@@ -139,50 +136,54 @@ export function playEpisode(
     next: after !== null,
     versions: details.title.versions.length > 1,
   };
-  void play(item, sourceOf(ref), {
-    watch: true,
-    login: loginOf(episode.subscriptionId),
-    from,
-    progress: (position, duration) => {
-      const saved = recordProgress(ref, position, duration, since);
-      if (after !== null || finishing || !isFinished(position, duration)) return saved;
-      // In the credits of an episode with none after it: once the progress is saved, the series
-      // is finished if the record says no numbered episode is left to watch.
-      finishing = true;
-      void saved
-        .then(standing)
-        .then(({ progress, marks }) =>
-          (!demo || currentSource(DEMO_ID) === demoSource) &&
-          finishes(details, { ...ref, id: episode.id, since }, progress, marks)
-            ? finishSeries(details.title.versions.map(ownedId), since)
-            : (finishing = false),
-        )
-        .catch(() => (finishing = false));
-      return saved;
+  void play(
+    item,
+    { kind: "file", open: sourceOf(ref), originalLanguage: details.title.originalLanguage },
+    {
+      watch: true,
+      login: loginOf(episode.subscriptionId),
+      from,
+      progress: (position, duration) => {
+        const saved = recordProgress(ref, position, duration, since);
+        if (after !== null || finishing || !isFinished(position, duration)) return saved;
+        // In the credits of an episode with none after it: once the progress is saved, the series
+        // is finished if the record says no numbered episode is left to watch.
+        finishing = true;
+        void saved
+          .then(standing)
+          .then(({ progress, marks }) =>
+            (!demo || currentSource(DEMO_ID) === demoSource) &&
+            finishes(details, { ...ref, id: episode.id, since }, progress, marks)
+              ? finishSeries(details.title.versions.map(ownedId), since)
+              : (finishing = false),
+          )
+          .catch(() => (finishing = false));
+        return saved;
+      },
+      outcome: outcomeOf("series", series, "episode"),
+      // The next one not yet watched, as the record stands once this one's progress is saved, else
+      // the next in order, unless the viewer did something else while the record answered. A
+      // refused save was told (`onProgressRefused`), and an unreadable record can't say which
+      // episode goes on or from where: either way this one stays, for Next to be pressed again.
+      next: (saved) => {
+        const asked = request();
+        void saved
+          .then(async ({ saved: kept }) => {
+            if (!kept || !asked.stands()) return;
+            const { progress, marks } = await standing();
+            if (!asked.stands()) return;
+            const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
+            if (!upcoming) return;
+            const found = progress.find(
+              ({ title }) => title.kind === "episode" && title.id === upcoming.id,
+            );
+            playEpisode(details, upcoming, resumePoint(found), versions);
+          })
+          .catch(() => undefined);
+      },
+      versions,
     },
-    outcome: outcomeOf("series", series, "episode"),
-    // The next one not yet watched, as the record stands once this one's progress is saved, else
-    // the next in order, unless the viewer did something else while the record answered. A
-    // refused save was told (`onProgressRefused`), and an unreadable record can't say which
-    // episode goes on or from where: either way this one stays, for Next to be pressed again.
-    next: (saved) => {
-      const asked = request();
-      void saved
-        .then(async ({ saved: kept }) => {
-          if (!kept || !asked.stands()) return;
-          const { progress, marks } = await standing();
-          if (!asked.stands()) return;
-          const upcoming = nextUnwatched(details, at, progress, marks) ?? after;
-          if (!upcoming) return;
-          const found = progress.find(
-            ({ title }) => title.kind === "episode" && title.id === upcoming.id,
-          );
-          playEpisode(details, upcoming, resumePoint(found), versions);
-        })
-        .catch(() => undefined);
-    },
-    versions,
-  });
+  );
 }
 
 /**

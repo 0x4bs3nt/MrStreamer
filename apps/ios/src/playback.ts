@@ -1,6 +1,7 @@
 import { appFailure, type AnalyticsFailure } from "@mrstreamer/contracts/analytics";
 import type { StreamFailure } from "@mrstreamer/contracts/playback";
 import type { AppError } from "@mrstreamer/contracts/errors";
+import { languageCode } from "@mrstreamer/core/ondemand/tracks";
 import {
   createVideoPlayer,
   type ObservedFailure,
@@ -11,6 +12,24 @@ import {
   type VideoPlayer,
 } from "expo-video";
 import { appError, describeError, withoutLogin } from "./errors.ts";
+import {
+  confirms,
+  decideAudio,
+  decideSubtitles,
+  holdOf,
+  observedFileTracks,
+  rematch,
+  remembered,
+  type MediaPolicy,
+  type ObservedFileTracks,
+  type TrackContext,
+  type TrackHold,
+} from "./media-policy.ts";
+import {
+  effectiveTitleLanguage,
+  getMediaPreferences,
+  updateMediaPreferences,
+} from "./media-preferences.ts";
 import { currentSource, onSignedIn } from "./sources.ts";
 import { store, useStore, type Store } from "./store.ts";
 import { openFormat, type FormatSession } from "./title-formats.ts";
@@ -94,6 +113,8 @@ export interface Source {
   readonly headers?: Readonly<Record<string, string>>;
   /** "m3u8" for HLS; a title's listed container, or a copy's. */
   readonly container: string;
+  /** Bound by titles.ts to the exact provider row; only original AVPlayer reads report facts. */
+  readonly observed?: (tracks: ObservedFileTracks) => void;
 }
 
 /**
@@ -107,6 +128,19 @@ export type Saved = { readonly saved: true } | { readonly saved: false; readonly
 
 /** Opens what plays; aborted when the viewer moves on first. */
 type Open = (signal: AbortSignal) => Promise<Source>;
+
+export interface LiveCandidate {
+  readonly variantId: string;
+  readonly open: Open;
+}
+
+export type Plan =
+  | { readonly kind: "file"; readonly open: Open; readonly originalLanguage: string | null }
+  | {
+      readonly kind: "live";
+      readonly candidates: readonly [LiveCandidate, ...LiveCandidate[]];
+      readonly explicit: boolean;
+    };
 
 export interface PlayOptions {
   /** In Watch, else in Home's preview. */
@@ -223,9 +257,19 @@ let soundOnPlay = false;
 /** How often a playing title says how far it got. */
 const CHECKPOINT_MS = 60_000;
 
+/** One viewer choice, kept across Try again, including its frozen policy and confirmed holds. */
+interface Choice {
+  readonly item: Playing;
+  readonly plan: Plan;
+  readonly options: PlayOptions;
+  readonly policy: MediaPolicy;
+  readonly context: TrackContext;
+  readonly holds: { audio?: TrackHold; subtitles?: TrackHold };
+}
+
 let current: {
   readonly item: Playing;
-  readonly open: Open;
+  readonly choice: Choice;
   readonly options: PlayOptions;
   /** Seconds to seek to once the title is ready; null once done. */
   seek: number | null;
@@ -244,6 +288,23 @@ type PlaybackFailure =
   | { readonly kind: "bridge" | "reset" | "cancelled" | "detach-timeout" };
 
 type FormatReader = ReturnType<typeof openFormat>;
+type Group = "audio" | "subtitles";
+interface PendingConfirmation {
+  readonly kind: "manual" | "hold";
+  readonly selection: ObservedTrackSelection;
+  readonly revision: number;
+  readonly op: number;
+  readonly changed: boolean;
+  readonly choice: Choice;
+}
+interface GroupState {
+  authority: "automatic" | "hold" | "manual";
+  evaluated: number;
+  op: number;
+  stale: number;
+  queued: boolean;
+  pending: PendingConfirmation | null;
+}
 interface Resource {
   readonly id: number;
   /** The item key it plays, `copy:<id>` for a downloaded copy. */
@@ -268,6 +329,19 @@ interface Resource {
   session: FormatSession | null;
   tracks: ObservedTrackSnapshot | null;
   querying: Promise<ObservedTrackSnapshot | null> | null;
+  readonly audio: GroupState;
+  readonly subtitles: GroupState;
+  /** Includes queued work, until each operation's readback or drop finishes. */
+  audioWork: number;
+  accepted: number;
+  audioAck: number;
+  confirmedSound: string | null | undefined;
+  subtitleSound: string | null | undefined;
+  selections: Promise<void>;
+  viaSession: boolean;
+  observed: Source["observed"] | null;
+  facts: ObservedFileTracks | null;
+  factsRevision: number;
   /** A viewer Pause applied before admission resolves must still suppress its initial play. */
   holdInitialPlay: boolean;
   /** Its subscription's connection lease from downloads, while held. */
@@ -327,6 +401,10 @@ function noteClosing() {
 function retire(resource: Resource) {
   if (resource.settlement) return resource.settlement;
   resource.retired = true;
+  for (const group of [resource.audio, resource.subtitles]) {
+    group.op++;
+    group.pending = null;
+  }
   closing.add(resource);
   if (!resource.submitted) giveBack(resource);
   resource.detach = Promise.resolve().then(() => player().detachObservedAsync(resource.id));
@@ -599,6 +677,226 @@ function acceptTracks(resource: Resource, tracks: ObservedTrackSnapshot) {
   )
     return;
   resource.tracks = tracks;
+  resource.accepted++;
+  onSnapshot(resource);
+}
+
+const soundOf = (resource: Resource) =>
+  resource.audioWork > 0 ? undefined : resource.confirmedSound;
+const selectedId = (tracks: ObservedTrackSnapshot, group: Group) =>
+  group === "audio" ? tracks.selectedAudioId : tracks.selectedSubtitleId;
+const sameLanguages = (a: readonly (string | null)[], b: readonly (string | null)[]) =>
+  a.length === b.length && a.every((language, at) => language === b[at]);
+
+/** Every accepted event or query, including same-revision selection readback, reaches this owner. */
+function onSnapshot(resource: Resource) {
+  const tracks = resource.tracks;
+  if (!tracks || !stands(resource)) return;
+  if (tracks.revision > resource.factsRevision) {
+    resource.factsRevision = tracks.revision;
+    const facts = resource.observed && !resource.viaSession ? observedFileTracks(tracks) : null;
+    if (
+      facts &&
+      (!resource.facts ||
+        !sameLanguages(facts.audio, resource.facts.audio) ||
+        !sameLanguages(facts.subtitles, resource.facts.subtitles))
+    ) {
+      resource.facts = facts;
+      try {
+        resource.observed?.(facts);
+      } catch {
+        // A facts sink cannot fail playback.
+      }
+    }
+  }
+  for (const group of ["audio", "subtitles"] as const) {
+    if (!stands(resource)) return;
+    tryConfirm(resource, group);
+  }
+  settleSound(resource);
+  for (const group of ["audio", "subtitles"] as const) {
+    const state = resource[group];
+    if (state.authority !== "manual" && tracks.revision > state.evaluated)
+      schedule(resource, group);
+  }
+}
+
+/** Only the latest post-ack snapshot with all audio work finished confirms the actual sound. */
+function settleSound(resource: Resource) {
+  const tracks = resource.tracks;
+  if (resource.audioWork > 0 || !tracks || !stands(resource)) return;
+  if (resource.accepted > resource.audioAck) {
+    resource.confirmedSound =
+      tracks.audio.state === "ready"
+        ? languageCode(
+            tracks.audio.options.find((track) => track.id === tracks.selectedAudioId)?.language,
+          )
+        : tracks.audio.state === "absent"
+          ? null
+          : undefined;
+  }
+  const sound = resource.confirmedSound;
+  if (
+    resource.subtitles.authority !== "manual" &&
+    sound !== undefined &&
+    sound !== resource.subtitleSound
+  ) {
+    schedule(resource, "subtitles");
+  }
+}
+
+/** A requested selection holds and remembers only once an accepted snapshot confirms it. */
+function tryConfirm(resource: Resource, group: Group) {
+  const state = resource[group];
+  const pending = state.pending;
+  const tracks = resource.tracks;
+  if (!pending || !tracks) return;
+  if (!stands(resource) || current?.choice !== pending.choice || state.op !== pending.op) {
+    state.pending = null;
+    return;
+  }
+  if (!confirms(pending.selection, pending.revision, tracks)) return;
+  state.pending = null;
+  if (pending.kind === "hold") {
+    state.authority = "manual";
+    return;
+  }
+  pending.choice.holds[group] = holdOf(pending.selection);
+  if (!pending.changed) return;
+  const memory = remembered(
+    pending.selection,
+    soundOf(resource),
+    getMediaPreferences(),
+    pending.choice.context,
+  );
+  if (memory?.field === "audio") updateMediaPreferences("audio", memory.value);
+  else if (memory) updateMediaPreferences("subtitles", memory.value);
+}
+
+/** An earlier query cannot stand in for readback of a newer native request. */
+async function readbackAfterRequest(resource: Resource, group: Group, op: number) {
+  await resource.querying?.catch(() => null);
+  if (!stands(resource) || resource[group].op !== op) return;
+  await refreshTracks(resource);
+  if (!stands(resource) || resource[group].op !== op) return;
+}
+
+/** One pending evaluate-now token per group, deciding from current facts only at dequeue. */
+function schedule(resource: Resource, group: Group) {
+  const state = resource[group];
+  if (!stands(resource) || state.queued || state.authority === "manual") return;
+  const choice = current!.choice;
+  state.queued = true;
+  const token = state.op;
+  if (group === "audio") resource.audioWork++;
+  resource.selections = resource.selections.then(async () => {
+    state.queued = false;
+    try {
+      if (!stands(resource) || state.op !== token || state.authority === "manual") return;
+      const tracks = resource.tracks;
+      if (!tracks || (state.pending && state.pending.revision >= tracks.revision)) return;
+      state.evaluated = tracks.revision;
+      const sound = soundOf(resource);
+      if (group === "subtitles") resource.subtitleSound = sound;
+      const hold = choice.holds[group];
+      const held = state.authority === "hold" && hold ? rematch(hold, tracks) : null;
+      if (held && confirms(held, tracks.revision, tracks)) {
+        state.authority = "manual";
+        state.pending = null;
+        return;
+      }
+      const decision = held
+        ? { kind: "select" as const, selection: held }
+        : group === "audio"
+          ? decideAudio(tracks, choice.policy, choice.context)
+          : decideSubtitles(tracks, choice.policy, choice.context, sound);
+      if (decision.kind !== "select" || state.stale >= 3) return;
+      const op = ++state.op;
+      state.pending = null;
+      const result = await player().selectObservedTrackAsync(
+        tracks,
+        tracks.revision,
+        decision.selection,
+      );
+      if (!stands(resource) || state.op !== op) return;
+      if (result.kind === "stale") {
+        state.stale++;
+        return;
+      }
+      if (result.kind !== "requested") return;
+      state.stale = 0;
+      if (group === "audio") {
+        resource.audioAck = resource.accepted;
+        resource.confirmedSound = undefined;
+      }
+      if (held) {
+        state.pending = {
+          kind: "hold",
+          selection: held,
+          revision: tracks.revision,
+          op,
+          changed: false,
+          choice,
+        };
+        tryConfirm(resource, group);
+      }
+      await readbackAfterRequest(resource, group, op);
+      if (!stands(resource) || state.op !== op) return;
+    } catch {
+      // A refused bridge call changes no authority, hold or accepted preference.
+    } finally {
+      if (group === "audio" && --resource.audioWork === 0) settleSound(resource);
+    }
+  });
+}
+
+/** Manual intent supersedes older work now; acknowledgement and confirmation are separate. */
+function chooseManually(resource: Resource, revision: number, selection: ObservedTrackSelection) {
+  if (!stands(resource)) return Promise.resolve();
+  const choice = current!.choice;
+  const group = selection.kind;
+  const state = resource[group];
+  const op = ++state.op;
+  state.pending = null;
+  if (group === "audio") resource.audioWork++;
+  resource.selections = resource.selections.then(async () => {
+    let dropped = true;
+    try {
+      const tracks = resource.tracks;
+      if (!tracks || !stands(resource) || state.op !== op || tracks.revision !== revision) return;
+      if (selection.track ? !selection.track.isPlayable : !tracks.subtitleOffAllowed) return;
+      const before = selectedId(tracks, group);
+      const result = await player().selectObservedTrackAsync(tracks, revision, selection);
+      if (!stands(resource) || state.op !== op || result.kind !== "requested") return;
+      dropped = false;
+      state.authority = "manual";
+      state.stale = 0;
+      if (group === "audio") {
+        resource.audioAck = resource.accepted;
+        resource.confirmedSound = undefined;
+      }
+      state.pending = {
+        kind: "manual",
+        selection,
+        revision,
+        op,
+        changed: before !== (selection.track?.id ?? null),
+        choice,
+      };
+      tryConfirm(resource, group);
+      await readbackAfterRequest(resource, group, op);
+      if (!stands(resource) || state.op !== op) return;
+    } catch {
+      // Rejection never confirms a pick.
+    } finally {
+      if (group === "audio" && --resource.audioWork === 0) settleSound(resource);
+      if (dropped && stands(resource) && state.op === op) {
+        state.evaluated = -1;
+        schedule(resource, group);
+      }
+    }
+  });
+  return resource.selections;
 }
 
 function refreshTracks(resource: Resource): Promise<ObservedTrackSnapshot | null> {
@@ -607,10 +905,10 @@ function refreshTracks(resource: Resource): Promise<ObservedTrackSnapshot | null
   const expected = { attemptId: resource.id, itemId: resource.itemId };
   const before = resource.tracks;
   resource.querying = Promise.resolve()
-    .then(() => player().getObservedTracksAsync(expected))
+    .then(() => (stands(resource) ? player().getObservedTracksAsync(expected) : null))
     .then(
       (tracks) => {
-        if ("kind" in tracks || !stands(resource)) return null;
+        if (!tracks || "kind" in tracks || !stands(resource)) return null;
         if (resource.tracks === before) acceptTracks(resource, tracks);
         return resource.tracks;
       },
@@ -740,8 +1038,28 @@ async function attach(
   }
 }
 
+/** A new viewer choice freezes the accepted policies and the caller's actual language context. */
+export function play(item: Playing, plan: Plan, options: PlayOptions) {
+  const { audio, subtitles } = getMediaPreferences();
+  const choice: Choice = {
+    item,
+    plan,
+    options,
+    policy: Object.freeze({ audio, subtitles }),
+    context: Object.freeze({
+      media: plan.kind,
+      titleLanguage: languageCode(effectiveTitleLanguage()),
+      originalLanguage: plan.kind === "file" ? languageCode(plan.originalLanguage) : null,
+    }),
+    holds: {},
+  };
+  return start(choice, choice.options);
+}
+
 /** Plays only after earlier native and format readers positively close. No source probes. */
-export async function play(item: Playing, open: Open, options: PlayOptions) {
+async function start(choice: Choice, options: PlayOptions) {
+  const { item, plan } = choice;
+  const open = plan.kind === "file" ? plan.open : plan.candidates[0].open;
   requests++;
   release();
   const controller = new AbortController();
@@ -782,13 +1100,25 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     session: null,
     tracks: null,
     querying: null,
+    audio: groupState(choice.holds.audio),
+    subtitles: groupState(choice.holds.subtitles),
+    audioWork: 0,
+    accepted: 0,
+    audioAck: 0,
+    confirmedSound: undefined,
+    subtitleSound: undefined,
+    selections: Promise.resolve(),
+    viaSession: false,
+    observed: null,
+    facts: null,
+    factsRevision: -1,
     holdInitialPlay: false,
     lease: null,
     submitted: false,
   };
   current = {
     item,
-    open,
+    choice,
     options,
     seek: options.from ?? null,
     loaded: false,
@@ -827,6 +1157,10 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
     resource.redaction = signedIn?.login ?? [];
     const source = await open(controller.signal);
     if (!stands(resource)) return;
+    resource.observed =
+      plan.kind === "file" && !item.live && item.subscriptionId !== null
+        ? (source.observed ?? null)
+        : null;
     let playable = {
       uri: source.url,
       ...(source.headers ? { headers: { ...source.headers } } : {}),
@@ -843,6 +1177,7 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
       if (opened.kind === "session") {
         const { session } = opened;
         resource.session = session;
+        resource.viaSession = true;
         void session.failed.then((failure) => {
           if (stands(resource)) fail({ kind: "format", failure });
         });
@@ -886,12 +1221,35 @@ export async function play(item: Playing, open: Open, options: PlayOptions) {
   }
 }
 
+function groupState(hold: TrackHold | undefined): GroupState {
+  return {
+    authority: hold ? "hold" : "automatic",
+    evaluated: -1,
+    op: 0,
+    stale: 0,
+    queued: false,
+    pending: null,
+  };
+}
+
+/** The current live candidate; U1 opens the plan's first candidate only. */
+export function liveStream() {
+  if (!current || current.choice.plan.kind !== "live") return null;
+  const { kind } = state.get().phase;
+  return {
+    channel: current.item.id,
+    explicit: current.choice.plan.explicit,
+    playing:
+      kind === "playing" || kind === "paused" ? current.choice.plan.candidates[0].variantId : null,
+  };
+}
+
 /** Plays what failed or stopped again, a title from where it got to. */
 export function retry() {
   if (!current) return;
-  const { item, open, options, stoppedAt } = current;
+  const { choice, options, stoppedAt } = current;
   const from = stoppedAt ?? options.from;
-  void play(item, open, {
+  void start(choice, {
     ...options,
     watch: state.get().watch,
     ...(from === undefined ? {} : { from }),
@@ -992,17 +1350,8 @@ export async function trackChoices(of: "audio" | "subtitles"): Promise<readonly 
   if (!resource) return [];
   const tracks = await refreshTracks(resource);
   if (!tracks || !stands(resource)) return [];
-  const choose = async (selection: ObservedTrackSelection) => {
-    if (!stands(resource) || resource.tracks?.revision !== tracks.revision) return;
-    if (selection.track && !selection.track.isPlayable) return;
-    if (!selection.track && !tracks.subtitleOffAllowed) return;
-    try {
-      const result = await player().selectObservedTrackAsync(tracks, tracks.revision, selection);
-      if (result.kind === "requested" && stands(resource)) await refreshTracks(resource);
-    } catch {
-      /* Selection is unconfirmed. No optimistic checkmark or raw bridge error. */
-    }
-  };
+  const choose = (selection: ObservedTrackSelection) =>
+    chooseManually(resource, tracks.revision, selection);
   if (of === "audio") {
     if (tracks.audio.state !== "ready") return [];
     return labelled(

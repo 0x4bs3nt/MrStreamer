@@ -13,13 +13,14 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "no
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { browseCollection } from "../src/title-browse.ts";
+import { nativePlayer } from "./native-player.ts";
 
 // The languages of the tracks playback finds in a provider file, as titles.ts keeps them and
 // Browse's filters count them: through `titleFile`'s `observed`, over real files on disk
-// (`native-files.ts`) and the desktop tests' fake Xtream panel. These cases call `observed` as
-// playback will once it is wired to it; they say nothing of which files playback tells, or of
-// what a native player reports. A screen that reads them as `useFileFacts` says runs with React
-// DOM on a happy-dom window.
+// (`native-files.ts`) and the desktop tests' fake Xtream panel. Cache cases call the public
+// `observed` sink directly; caller cases deliver native-port snapshots through the real player
+// and play-title owners. Neither establishes AVFoundation behavior. A screen that reads them
+// as `useFileFacts` says runs with React DOM on a happy-dom window.
 
 const REACT_DOM = "react-dom/client";
 const window = new Window();
@@ -40,14 +41,8 @@ const memory = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
-vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async () => undefined,
-    play: () => undefined,
-    pause: () => undefined,
-  }),
-}));
+const player = nativePlayer();
+vi.mock("expo-video", () => ({ createVideoPlayer: () => player }));
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
   getItemAsync: async (key: string) => memory.keychain.get(key) ?? null,
@@ -165,18 +160,32 @@ async function until(ready: () => boolean, what = "the condition") {
 }
 
 /** The app as a launch starts it: fresh modules over the same files. */
+let runningPlayback: typeof import("../src/playback.ts") | undefined;
 async function launch() {
+  await runningPlayback?.stop();
   vi.resetModules();
   vi.stubEnv("EXPO_PUBLIC_TMDB_KEY", "");
   const account = await import("../src/account.ts");
   const titles = await import("../src/titles.ts");
   const cache = await import("../src/details-cache.ts");
   const { currentSource } = await import("../src/sources.ts");
+  const playback = await import("../src/playback.ts");
+  runningPlayback = playback;
+  const playTitle = await import("../src/play-title.ts");
+  const preferences = await import("../src/media-preferences.ts");
   await account.restore();
   if (account.members().length > 0) {
     await until(() => titles.titleLists().kind === "ready", "the movie and series lists");
   }
-  return { ...account, ...titles, readFiles: cache.readFiles, currentSource };
+  return {
+    ...account,
+    ...titles,
+    readFiles: cache.readFiles,
+    currentSource,
+    playback,
+    playTitle,
+    preferences,
+  };
 }
 type App = Awaited<ReturnType<typeof launch>>;
 
@@ -308,16 +317,208 @@ beforeEach(async () => {
   memory.aliases = [];
   memory.holdSecrets = false;
   panel.serveTitles((all) => all);
+  player.tracks = null;
+  player.play.mockClear();
+  player.selectObservedTrackAsync.mockReset().mockResolvedValue({ kind: "requested" });
   releases = [];
 });
-afterEach(() => {
+afterEach(async () => {
   native.gate = null;
   for (const release of [...releases.splice(0), ...memory.heldSecrets.splice(0)]) release();
   for (const unmount of unmounts.splice(0)) unmount();
   vi.unstubAllEnvs();
+  await runningPlayback?.stop();
 });
 
 describe("tracks found in a movie's file", () => {
+  it("forwards a real movie play's settled snapshots into Browse, using its actual original language", async () => {
+    panel.serveTitles(twoVersions);
+    const app = await launch();
+    const id = await added(app);
+    const version = { subscriptionId: id, id: "91000" };
+    const key = ownedKey(version);
+    app.preferences.updateMediaPreferences("audio", { kind: "original" });
+    app.playTitle.playMovie(
+      { ...titleAt(app, "movie", key), originalLanguage: "fr" },
+      version,
+      0,
+      () => undefined,
+    );
+    await until(
+      () =>
+        player.identity().attemptId > 0 &&
+        app.playback.playbackState.get().phase.kind === "loading",
+      "movie attachment",
+    );
+    await until(() => player.play.mock.calls.length > 0, "movie admission");
+    const identity = player.identity();
+    const tracks = {
+      ...identity,
+      revision: 1,
+      audio: {
+        state: "ready" as const,
+        options: ["en", "fr"].map((language, index) => ({
+          ...identity,
+          revision: 1,
+          id: String(index),
+          group: "audio" as const,
+          language,
+          label: language,
+          isDefault: index === 0,
+          isPlayable: true,
+        })),
+      },
+      subtitles: { state: "absent" as const, options: [] },
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+      subtitleOffAllowed: false,
+    };
+    player.selectObservedTrackAsync.mockImplementation(async (_item, _revision, choice) => {
+      const current = player.tracks;
+      if (!current) throw new Error("No native snapshot");
+      player.tracks = {
+        ...current,
+        ...(choice.kind === "audio"
+          ? { selectedAudioId: choice.track.id }
+          : { selectedSubtitleId: choice.track?.id ?? null }),
+      };
+      return { kind: "requested" };
+    });
+    player.tracks = tracks;
+    player.observation({ kind: "tracks", tracks });
+    await until(() => player.tracks?.selectedAudioId === "1", "French original sound");
+    await until(
+      () => tracksOf(app.filterFilesOf("movie"), key) !== undefined,
+      "facts forwarded by playback",
+    );
+    expect(tracksOf(app.filterFilesOf("movie"), key)).toEqual({
+      audio: ["en", "fr"],
+      subtitles: [],
+    });
+    const changed = {
+      ...tracks,
+      revision: 2,
+      audio: {
+        ...tracks.audio,
+        options: tracks.audio.options.map((track) => ({ ...track, revision: 2 })),
+      },
+      subtitles: {
+        state: "ready" as const,
+        options: [
+          {
+            ...identity,
+            revision: 2,
+            id: "0",
+            group: "subtitles" as const,
+            language: "nl",
+            label: "Dutch",
+            isDefault: false,
+            isPlayable: true,
+            forcedOnly: false,
+          },
+        ],
+      },
+    };
+    player.tracks = changed;
+    player.observation({ kind: "tracks", tracks: changed });
+    await until(
+      () => tracksOf(app.filterFilesOf("movie"), key)?.subtitles.length === 1,
+      "later settled subtitles",
+    );
+    const unknown = {
+      ...changed,
+      revision: 3,
+      audio: {
+        ...changed.audio,
+        options: changed.audio.options.map((track) => ({ ...track, revision: 3 })),
+      },
+      subtitles: { state: "unavailable" as const, options: [] },
+    };
+    player.tracks = unknown;
+    player.observation({ kind: "tracks", tracks: unknown });
+    await settle(0);
+    expect(tracksOf(app.filterFilesOf("movie"), key)?.subtitles).toEqual(["nl"]);
+    const asked = memory.requests.length;
+    const made = app.collectionsOf("movie");
+    if (!made) throw new Error("No movie collections");
+    expect(
+      browseCollection(
+        made,
+        "all",
+        { filters: { verified: { kind: "audio", language: "fr" } } },
+        app.filterFilesOf("movie"),
+      ).titles.some((title) => title.id === "91000"),
+    ).toBe(true);
+    expect(memory.requests).toHaveLength(asked);
+    await app.playback.stop();
+  });
+
+  it("binds a real episode play's facts to its listing and uses details.title.originalLanguage", async () => {
+    const app = await launch();
+    const id = await added(app);
+    const key = ownedKey({ subscriptionId: id, id: "80001" });
+    const details = seriesOf(await app.detailsOf(titleAt(app, "series", key)));
+    const episode = details.seasons[0]?.episodes[0];
+    if (!episode) throw new Error("No episode");
+    app.preferences.updateMediaPreferences("audio", { kind: "original" });
+    player.play.mockClear();
+    app.playTitle.playEpisode(
+      { ...details, title: { ...details.title, originalLanguage: "de" } },
+      episode,
+      0,
+      () => undefined,
+    );
+    await until(() => player.play.mock.calls.length > 0, "episode admission");
+    const identity = player.identity();
+    const tracks = {
+      ...identity,
+      revision: 1,
+      audio: {
+        state: "ready" as const,
+        options: ["en", "de"].map((language, index) => ({
+          ...identity,
+          revision: 1,
+          id: String(index),
+          group: "audio" as const,
+          language,
+          label: language,
+          isDefault: index === 0,
+          isPlayable: true,
+        })),
+      },
+      subtitles: { state: "absent" as const, options: [] },
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+      subtitleOffAllowed: false,
+    };
+    player.selectObservedTrackAsync.mockImplementation(async (_item, _revision, choice) => {
+      const current = player.tracks;
+      if (!current) throw new Error("No native snapshot");
+      player.tracks = {
+        ...current,
+        ...(choice.kind === "audio"
+          ? { selectedAudioId: choice.track.id }
+          : { selectedSubtitleId: choice.track?.id ?? null }),
+      };
+      return { kind: "requested" };
+    });
+    player.tracks = tracks;
+    player.observation({ kind: "tracks", tracks });
+    await until(() => player.tracks?.selectedAudioId === "1", "German original sound");
+    await until(
+      () => tracksOf(app.filterFilesOf("series"), key) !== undefined,
+      "episode file facts",
+    );
+    expect(tracksOf(app.filterFilesOf("series"), key)).toEqual({
+      audio: ["en", "de"],
+      subtitles: [],
+    });
+    const before = memory.requests.length;
+    app.filterFilesOf("series");
+    expect(memory.requests).toHaveLength(before);
+    await app.playback.stop();
+  });
+
   it("count for its listed row, across a relaunch, against that one version, asking nothing", async () => {
     panel.serveTitles(twoVersions);
     let app = await launch();
