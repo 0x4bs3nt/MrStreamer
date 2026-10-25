@@ -44,6 +44,7 @@ pnpm verify:desktop guide-grid
 pnpm verify:desktop reminders
 pnpm verify:desktop titles
 pnpm verify:desktop watchlist
+pnpm verify:desktop poster-grid
 pnpm verify:desktop downloads
 pnpm verify:desktop downloads-queue
 pnpm verify:desktop downloads-series

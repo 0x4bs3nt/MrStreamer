@@ -29,6 +29,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { SearchField } from "../../components/ui/search-field.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
 import { appError, describeError } from "../../lib/errors.ts";
+import { showSelection } from "../../lib/input-mode.ts";
 import { queries, useSubscriptions, useSubscriptionPreferences } from "../../lib/queries.ts";
 import { call } from "../../lib/ipc.ts";
 import {
@@ -142,6 +143,9 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
   ];
 
   const searching = place.query.trim() !== "";
+  // Down or Enter in the field handed the keys to the results: the selected one takes the focus
+  // once it is drawn, unless the field has it again by then.
+  const [handed, setHanded] = useState(false);
   const measuredQuery = useDebounced(place.query.trim(), 120);
   useSearchUsage(kind === "movie" ? "movies" : "series", searching ? measuredQuery : "", active);
   // Escape leaves an open collection, or the search, for the tab, one layer at a time.
@@ -214,7 +218,16 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
                 </button>
               );
             })}
-            <TitleSearch kind={kind} value={place.query} onChange={(query) => go({ query })} />
+            <TitleSearch
+              kind={kind}
+              value={place.query}
+              onChange={(query) => go({ query })}
+              onLeave={() => {
+                showSelection();
+                setHanded(true);
+              }}
+              onEnter={() => setHanded(false)}
+            />
           </nav>
           {failure ? (
             <div className="px-10 text-[0.9375rem]">
@@ -242,6 +255,8 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
               active={active}
               filters={filters}
               onFilters={onFilters}
+              takeFocus={handed}
+              onFocusTaken={() => setHanded(false)}
             />
           ) : tab === "for-you" || tab === "new" ? (
             <Rows kind={kind} tab={tab} onOpen={open} />
@@ -271,25 +286,31 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
 }
 
 /**
- * The field at the end of the tabs. Down or Enter hands the keys to the results, Escape clears
- * it and returns to the tab.
+ * The field at the end of the tabs. Down or Enter hands the keys to the results (`onLeave`);
+ * Escape clears it and returns to the tab. `onEnter` says it has the focus again.
  */
 function TitleSearch({
   kind,
   value,
   onChange,
+  onLeave,
+  onEnter,
 }: {
   kind: TitleKind;
   value: string;
   onChange: (query: string) => void;
+  onLeave: () => void;
+  onEnter: () => void;
 }) {
   return (
     <SearchField
       value={value}
       onChange={(event) => onChange(event.target.value)}
+      onFocus={onEnter}
       onKeyDown={(event) => {
         if (event.key === "Escape") onChange("");
-        else if (event.key !== "ArrowDown" && event.key !== "Enter") return;
+        else if (event.key === "ArrowDown" || event.key === "Enter") onLeave();
+        else return;
         event.currentTarget.blur();
         event.preventDefault();
       }}
@@ -300,17 +321,24 @@ function TitleSearch({
   );
 }
 
-/** What the field found, as posters, with how many and a way to search everything. */
+/**
+ * What the field found, as posters, with how many and a way to search everything. `takeFocus`
+ * gives the focus to the selected result once the results are the query's.
+ */
 function SearchResults({
   kind,
   query,
   active,
   filters,
   onFilters,
+  takeFocus,
+  onFocusTaken,
 }: {
   kind: TitleKind;
   query: string;
   active: boolean;
+  takeFocus: boolean;
+  onFocusTaken: () => void;
 } & TitleFilterControls) {
   const debounced = useDebounced(query, 120);
   const found = useQuery({
@@ -361,6 +389,8 @@ function SearchResults({
             active={active && !found.isPlaceholderData && debounced === query}
             caption={searchCaption}
             asked={Object.keys(filters).length > 0}
+            takeFocus={takeFocus}
+            onFocusTaken={onFocusTaken}
           />
         </div>
       )}
