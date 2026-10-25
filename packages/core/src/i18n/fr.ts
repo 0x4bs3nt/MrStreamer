@@ -1345,4 +1345,36 @@ export const fr: Translation = {
   },
   "No channels yet.": "Pas encore de chaînes.",
   "{list}, in the order to save": "{list}, dans l'ordre à enregistrer",
+  // Programme reminders.
+  "{channel} · now": "{channel} · maintenant",
+  "{channel} · started {time} ago": "{channel} · commencé il y a {time}",
+  "Remind me": "Me le rappeler",
+  "Reminder set": "Rappel programmé",
+  Reminders: "Rappels",
+  "Reminders, {count} to come": {
+    one: "Rappels, {count} à venir",
+    other: "Rappels, {count} à venir",
+  },
+  "No reminders yet.": "Aucun rappel pour l'instant.",
+  "Set one on a programme still to come. Mr. Streamer reminds you while it's open.":
+    "Programmez-en un sur une émission à venir. Mr. Streamer vous prévient tant que l'app est ouverte.",
+  "was {title}": "auparavant {title}",
+  "Not in the guide now": "Plus dans le guide",
+  Missed: "Manqué",
+  "Today {time}": "Aujourd'hui {time}",
+  "Yesterday {time}": "Hier {time}",
+  "Starts now": "Commence maintenant",
+  "Started {time} ago": "Commencé il y a {time}",
+  Dismiss: "Ignorer",
+  "Not available now": "Indisponible pour l'instant",
+  "Remove the reminder for {title}": "Supprimer le rappel de {title}",
+  "The system didn't show the last reminder. Reminders still show here while the app is open.":
+    "Le système n'a pas affiché le dernier rappel. Les rappels s'affichent toujours ici tant que l'app est ouverte.",
+  "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.":
+    "Ce système n'affiche pas les notifications de Mr. Streamer. Les rappels s'affichent toujours ici tant que l'app est ouverte.",
+  "This programme has started.": "Cette émission a commencé.",
+  "The guide doesn't list this programme now.": "Le guide ne mentionne plus cette émission.",
+  "Couldn't read your reminders.": "Impossible de lire vos rappels.",
+  "Your reminders were saved by a newer version of Mr. Streamer.":
+    "Vos rappels ont été enregistrés par une version plus récente de Mr. Streamer.",
 };

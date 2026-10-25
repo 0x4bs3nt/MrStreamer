@@ -412,6 +412,8 @@ describe("searching the list Live TV shows", () => {
     ]);
     expect(page.row("ITV1")?.textContent).toContain("The day's news.");
     expect(page.row("ITV1")?.textContent).not.toContain("Not what was searched for.");
+    // A programme still to come opens with Remind me under its description.
+    expect(page.row("ITV1")?.textContent).toContain("The day's news.Remind me");
     // Opening it plays nothing: only the row itself watches the channel.
     expect(useUi.getState().watching).toBe(false);
   });

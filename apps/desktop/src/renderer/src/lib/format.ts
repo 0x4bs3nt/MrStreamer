@@ -98,6 +98,22 @@ export function comingTime(at: number, now: number): string {
   return t("{day} {time}", { day: days < 7 ? formatDate(at, "weekday") : shortDay(at), time });
 }
 
+/**
+ * When `at` is, at the start of a line: "Today 22:30", "Tomorrow 06:00", "Yesterday 23:00", "Fri
+ * 23:00" within the week, "12 Oct 23:00" beyond.
+ */
+export function dayTime(at: number, now: number): string {
+  const days = daysFrom(now, at);
+  const time = formatDate(at, "time");
+  if (days === 0) return t("Today {time}", { time });
+  if (days === 1) return t("Tomorrow {time}", { time });
+  if (days === -1) return t("Yesterday {time}", { time });
+  return t("{day} {time}", {
+    day: days > 0 && days < 7 ? formatDate(at, "weekday") : shortDay(at),
+    time,
+  });
+}
+
 /** The midnight that ends the day of `at`. */
 export function endOfDay(at: number): number {
   return new Date(at).setHours(24, 0, 0, 0);

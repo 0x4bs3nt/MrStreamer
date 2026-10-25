@@ -64,6 +64,8 @@ export function describeError(error: AppError): string {
       return describeOutputFailure(error.failure);
     case "guide":
       return describeGuideFailure(error.failure);
+    case "reminder":
+      return describeReminderFailure(error.reason);
     case "favourites-changed":
       return t("Your favourites changed.");
     case "mark-changed":
@@ -126,6 +128,22 @@ function describeOutputFailure(failure: OutputFailure): string {
       return `${t("Mr. Streamer can't reach receivers right now.")} ${failure.detail}`;
     case "stream":
       return describeStreamFailure(failure.failure);
+  }
+}
+
+/** Why a reminder wasn't set, or reminders can't be read. */
+function describeReminderFailure(
+  reason: Extract<AppError, { kind: "reminder" }>["reason"],
+): string {
+  switch (reason) {
+    case "started":
+      return t("This programme has started.");
+    case "not-in-guide":
+      return t("The guide doesn't list this programme now.");
+    case "unreadable":
+      return t("Couldn't read your reminders.");
+    case "newer":
+      return t("Your reminders were saved by a newer version of Mr. Streamer.");
   }
 }
 

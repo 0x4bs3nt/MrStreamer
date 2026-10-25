@@ -17,6 +17,8 @@
 // playback, programmes watch live only: catch-up plays on this computer.
 //   A click on a programme opens its details, and on it again closes them; a double click does
 // what Enter does, and a click on the channel watches it. Wheels and trackpads scroll both ways.
+//   A programme still to come offers Remind me beside Watch live in its details, and once a
+// reminder is set its cell shows a bell (../reminders/).
 //   The timeline goes back as far as the list's longest archive, and ahead to where the guide
 // ends: see `timeline`. Rows are drawn as they come into view, and each draws only the hours in
 // view. The grid reads slots with `guide.range` in pages of channels by hours, those in view and
@@ -24,7 +26,7 @@
 // is in, nothing. The details read the programme's description with `guide.programme`.
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
-import { History, Play, RotateCcw } from "lucide-react";
+import { Bell, History, Play, RotateCcw } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -40,6 +42,7 @@ import {
 } from "react";
 import type { GuideSlot, Programme } from "@mrstreamer/contracts/guide";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
+import type { ReminderList } from "@mrstreamer/contracts/reminders";
 import { ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { formatDate, t } from "@mrstreamer/core/i18n";
 import { ChannelLogo } from "../../components/ChannelLogo.tsx";
@@ -49,10 +52,12 @@ import { useNow } from "../../lib/clock.ts";
 import { usePresentationVisible } from "../../lib/presentation.ts";
 import { comingTime, endOfDay, pastTime, progressOf, timeLeft } from "../../lib/format.ts";
 import { queries } from "../../lib/queries.ts";
+import { reminderAt, useReminders } from "../../lib/reminders.ts";
 import { useOutput } from "../../player/output.ts";
 import { archiveHolds } from "@mrstreamer/core/catchup";
 import { useRem } from "../../lib/use-rem.ts";
 import { cn } from "../../lib/utils.ts";
+import { ReminderButton } from "../reminders/ReminderButton.tsx";
 import {
   blocksIn,
   cellAt,
@@ -167,6 +172,7 @@ export function GuideGrid({
     null,
   );
   const archiveDays = useMemo(() => longestArchive(channels), [channels]);
+  const reminders = useReminders().data;
   const now = useNow();
   const visible = usePresentationVisible();
   const minute = Math.floor(now / MINUTE_MS) * MINUTE_MS;
@@ -585,7 +591,11 @@ export function GuideGrid({
                   cursor={here && cursorShown ? cursorCell : null}
                   details={here && open ? width : null}
                   actions={here && open ? offered(channel, cursorCell) : null}
+                  remind={
+                    here && open && cursorCell.kind === "programme" && cursorCell.slot.start > now
+                  }
                   remote={remote}
+                  reminders={reminders}
                   onPick={pick}
                   onWatch={watch}
                   onPlay={play}
@@ -713,7 +723,9 @@ const GridRow = memo(function GridRow({
   cursor,
   details,
   actions,
+  remind,
   remote,
+  reminders,
   ids,
   onPick,
   onWatch,
@@ -738,8 +750,12 @@ const GridRow = memo(function GridRow({
   details: number | null;
   /** What the cursor's programme offers, while its details are open. */
   actions: readonly GridAction[] | null;
+  /** The cursor's programme is still to come, by the clock: its details offer Remind me. */
+  remind: boolean;
   /** A receiver has playback, so programmes watch live only. */
   remote: boolean;
+  /** The reminders set, whose programmes' cells show a bell. */
+  reminders: ReminderList | undefined;
   /** The grid's prefix for its cells' ids, which name the cursor's to assistive technology. */
   ids: string;
   onPick: (row: number, at: number) => void;
@@ -820,6 +836,7 @@ const GridRow = memo(function GridRow({
             const replay = ended && archiveHolds(channel.catchupDays, slot.start, minute);
             const chosen = selected(block);
             const box = place(block);
+            const reminded = reminderAt(reminders, channel, slot.start) !== undefined;
             return (
               <div
                 key={slot.start}
@@ -828,7 +845,12 @@ const GridRow = memo(function GridRow({
                 id={cellId(ids, index, block)}
                 role="gridcell"
                 aria-selected={chosen}
-                aria-label={[slot.title, spanText(slot, minute), replay && !remote && t("Catch-up")]
+                aria-label={[
+                  slot.title,
+                  spanText(slot, minute),
+                  replay && !remote && t("Catch-up"),
+                  reminded && t("Reminder set"),
+                ]
                   .filter(Boolean)
                   .join(", ")}
                 onMouseDown={(event) => event.preventDefault()}
@@ -847,6 +869,9 @@ const GridRow = memo(function GridRow({
                 {/* Padding stays inside the clipped cell, so tiny slots keep their timeline width.
                     The grid moves this title into view when the programme's start is scrolled past. */}
                 <span className={cn("truncate px-2.5 text-sm", on && "font-semibold")}>
+                  {reminded && (
+                    <Bell aria-hidden className="mr-1.5 -mt-0.5 inline size-3 align-middle" />
+                  )}
                   {slot.title}
                 </span>
               </div>
@@ -871,6 +896,7 @@ const GridRow = memo(function GridRow({
           minute={minute}
           width={details}
           actions={actions ?? ["live"]}
+          remind={remind}
           onAction={(action) => onAction(channel, cursor, action)}
         />
       )}
@@ -880,7 +906,7 @@ const GridRow = memo(function GridRow({
 
 /**
  * What the cursor's programme is, under its row: its title, when it is on, its description once
- * read, and what it plays, the first of `actions` foremost.
+ * read, and what it plays, the first of `actions` foremost, then Remind me while it is to come.
  */
 function Details({
   channel,
@@ -888,6 +914,7 @@ function Details({
   minute,
   width,
   actions,
+  remind,
   onAction,
 }: {
   channel: LiveChannel;
@@ -896,6 +923,8 @@ function Details({
   /** The grid's width in view: the details stay in place while it scrolls across. */
   width: number;
   actions: readonly GridAction[];
+  /** It is still to come: Remind me follows what it plays. */
+  remind: boolean;
   onAction: (action: GridAction) => void;
 }) {
   const slot = cell.kind === "programme" ? cell.slot : null;
@@ -923,7 +952,7 @@ function Details({
           {read.description}
         </p>
       )}
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         {actions.map((action, at) => (
           <Button
             key={action}
@@ -935,6 +964,13 @@ function Details({
             {action === "live" ? t("Watch live") : t("Play from start")}
           </Button>
         ))}
+        {slot && remind && (
+          <ReminderButton
+            key={`${ownedKey(channel)}:${slot.start}`}
+            channel={channel}
+            start={slot.start}
+          />
+        )}
       </div>
     </div>
   );

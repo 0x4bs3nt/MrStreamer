@@ -43,6 +43,7 @@ import { outputHandlers } from "./handlers/output.ts";
 import { viewingHandlers } from "./handlers/viewing.ts";
 import { customListHandlers } from "./handlers/custom-lists.ts";
 import { downloadHandlers } from "./handlers/downloads.ts";
+import { reminderHandlers } from "./handlers/reminders.ts";
 import { analyticsHandlers } from "./handlers/analytics.ts";
 import { preferenceHandlers } from "./handlers/preferences.ts";
 import { updateHandlers } from "./handlers/updates.ts";
@@ -54,6 +55,7 @@ import { installedDistribution } from "./platform/installation.ts";
 import { electronInstaller } from "./platform/installer.ts";
 import { diagnosticsExporter } from "./platform/diagnostics-export.ts";
 import { removeUnfinishedWrites } from "./platform/json-file.ts";
+import { electronNotifier } from "./platform/notifier.ts";
 import { keychainSecrets } from "./platform/secrets.ts";
 import type { ReceiverAdapter, ScreenRect } from "./receivers/adapter.ts";
 import { airplayAdapter } from "./receivers/airplay/adapter.ts";
@@ -74,6 +76,7 @@ import { Output } from "./services/output.ts";
 import { Licences } from "./services/licences.ts";
 import { PlaybackCoordination } from "./services/playback-coordination.ts";
 import { Playback } from "./services/playback.ts";
+import { Reminders } from "./services/reminders.ts";
 import { OnlineSubtitles } from "./services/online-subtitles.ts";
 import { Settings } from "./services/preferences.ts";
 import { preferencePublication } from "./preference-publication.ts";
@@ -475,9 +478,12 @@ async function start(): Promise<void> {
     }
   };
 
+  /** Brings the window forward, or opens it again, for a reminder's notice that was clicked. */
+  let showWindow = () => {};
   const runtime = ManagedRuntime.make(
     mainLayer({
       dataDir,
+      notifier: electronNotifier(() => showWindow()),
       usage: {
         action: (action) => analytics.actionObserver(action),
         setting: (setting) => analytics.settingObserver(setting),
@@ -521,6 +527,7 @@ async function start(): Promise<void> {
     diagnostics,
     licences,
     downloads,
+    reminders,
   } = await runtime.runPromise(
     Effect.all({
       subscriptions: Subscriptions,
@@ -540,12 +547,18 @@ async function start(): Promise<void> {
       diagnostics: Diagnostics,
       licences: Licences,
       downloads: Downloads,
+      reminders: Reminders,
     }),
   );
 
-  // Back from sleep or unlocked, the clock may have moved past where a guide hands a channel on.
-  powerMonitor.on("resume", () => void runtime.runFork(guide.checkTime));
-  powerMonitor.on("unlock-screen", () => void runtime.runFork(guide.checkTime));
+  // Back from sleep or unlocked, the clock may have moved past where a guide hands a channel on,
+  // and past a reminder's start.
+  const woke = () => {
+    void runtime.runFork(guide.checkTime);
+    void runtime.runFork(reminders.check);
+  };
+  powerMonitor.on("resume", woke);
+  powerMonitor.on("unlock-screen", woke);
 
   // mrstreamer://download/<id>/<poster|wide>: a download's kept picture, from its own folder.
   // Nothing else answers: no other host, path or file.
@@ -651,6 +664,7 @@ async function start(): Promise<void> {
     return status;
   });
   forward(downloads.changes, "downloads.changed", (list) => list);
+  forward(reminders.changes, "reminders.changed", () => null);
   forward(playback.fileReplaced, "playback.fileReplaced", (sessionId) => ({ sessionId }));
   forward(playback.readingAhead, "playback.readingAhead", (sessionId) => ({ sessionId }));
   forward(playback.tracksChanged, "playback.tracksChanged", (sessionId) => ({ sessionId }));
@@ -731,6 +745,7 @@ async function start(): Promise<void> {
       ...viewingHandlers({ viewing, settings }),
       ...customListHandlers({ customLists }),
       ...downloadHandlers({ downloads }),
+      ...reminderHandlers({ reminders }),
       ...analyticsHandlers({ analytics, playback }),
       ...preferenceHandlers({ preferences }),
       ...updateHandlers({
@@ -851,6 +866,13 @@ async function start(): Promise<void> {
       mainWindow = openWindow(closeStreams, keeps, followList, trackForeground);
     } else if (away) bringBack(mainWindow);
   });
+  // A reminder's notice that was clicked brings the window forward, or opens it once more where
+  // macOS kept the app without one.
+  showWindow = () => {
+    if (closing) return;
+    if (mainWindow) bringBack(mainWindow);
+    else mainWindow = openWindow(closeStreams, keeps, followList, trackForeground);
+  };
   app.on("will-quit", (event) => {
     // The quit waits for the runtime to close, which stops background work, closes the database
     // and writes the diagnostics still queued. An update's restart comes this way too: its
@@ -859,6 +881,7 @@ async function start(): Promise<void> {
     event.preventDefault();
     if (closing) return;
     closing = true;
+    powerMonitor.off("resume", woke).off("unlock-screen", woke);
     // Streams close right away, so no ffmpeg or provider connection outlives the app.
     runtime.runSyncExit(playback.closeAll);
     // Exits instead of quitting again: with nothing left to write, closing can finish before this

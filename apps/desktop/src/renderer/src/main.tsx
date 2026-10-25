@@ -15,6 +15,7 @@ import {
   syncWatchlist,
 } from "./lib/queries.ts";
 import { syncPreferences } from "./lib/preferences.ts";
+import { syncReminders } from "./lib/reminders.ts";
 import { player } from "./player/player.ts";
 import { useUi } from "./app/ui-store.ts";
 import "./styles.css";
@@ -37,6 +38,7 @@ syncWatchlist(client);
 syncCustomLists(client);
 syncUpdates(client);
 syncDownloads(client);
+syncReminders(client);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html is missing #root");

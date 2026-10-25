@@ -42,6 +42,7 @@
     "./playlist/import": "./src/playlist/import.ts",
     "./playlist/m3u": "./src/playlist/m3u.ts",
     "./provider": "./src/provider.ts",
+    "./reminders/rules": "./src/reminders/rules.ts",
     "./search/names": "./src/search/names.ts",
     "./steps": "./src/steps.ts",
     "./subtitles/captions": "./src/subtitles/captions.ts",

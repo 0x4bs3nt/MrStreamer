@@ -1353,4 +1353,36 @@ export const es: Translation = {
   },
   "No channels yet.": "Aún no hay canales.",
   "{list}, in the order to save": "{list}, en el orden que se guardará",
+  // Programme reminders.
+  "{channel} · now": "{channel} · ahora",
+  "{channel} · started {time} ago": "{channel} · empezó hace {time}",
+  "Remind me": "Recordármelo",
+  "Reminder set": "Recordatorio puesto",
+  Reminders: "Recordatorios",
+  "Reminders, {count} to come": {
+    one: "Recordatorios, {count} pendiente",
+    other: "Recordatorios, {count} pendientes",
+  },
+  "No reminders yet.": "Aún no hay recordatorios.",
+  "Set one on a programme still to come. Mr. Streamer reminds you while it's open.":
+    "Pon uno en un programa que aún no ha empezado. Mr. Streamer te avisa mientras la app está abierta.",
+  "was {title}": "antes {title}",
+  "Not in the guide now": "Ya no está en la guía",
+  Missed: "Perdido",
+  "Today {time}": "Hoy {time}",
+  "Yesterday {time}": "Ayer {time}",
+  "Starts now": "Empieza ahora",
+  "Started {time} ago": "Empezó hace {time}",
+  Dismiss: "Descartar",
+  "Not available now": "No disponible ahora",
+  "Remove the reminder for {title}": "Quitar el recordatorio de {title}",
+  "The system didn't show the last reminder. Reminders still show here while the app is open.":
+    "El sistema no mostró el último recordatorio. Los recordatorios siguen apareciendo aquí mientras la app está abierta.",
+  "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.":
+    "Este sistema no muestra notificaciones de Mr. Streamer. Los recordatorios siguen apareciendo aquí mientras la app está abierta.",
+  "This programme has started.": "Este programa ya ha empezado.",
+  "The guide doesn't list this programme now.": "La guía ya no incluye este programa.",
+  "Couldn't read your reminders.": "No se pudieron leer tus recordatorios.",
+  "Your reminders were saved by a newer version of Mr. Streamer.":
+    "Tus recordatorios los guardó una versión más reciente de Mr. Streamer.",
 };

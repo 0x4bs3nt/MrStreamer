@@ -45,6 +45,7 @@ import { Output, type OutputDeps } from "./services/output.ts";
 import { appNotices, Licences } from "./services/licences.ts";
 import { PlaybackCoordination } from "./services/playback-coordination.ts";
 import { Playback } from "./services/playback.ts";
+import { Reminders, type Notifier } from "./services/reminders.ts";
 import { Settings } from "./services/preferences.ts";
 import { SubtitleAccounts } from "./services/subtitle-accounts.ts";
 import { OnlineSubtitles, SubtitleSessions } from "./services/online-subtitles.ts";
@@ -79,6 +80,8 @@ export interface MainConfig {
   readonly output?: OutputDeps;
   /** Where downloads write and fetch artwork with, when not the file system and `fetch`. */
   readonly downloads?: Pick<DownloadsDeps, "disk" | "fetch" | "observeTransfer">;
+  /** The system's notifications, for reminders; they tell in the window alone without. */
+  readonly notifier?: Notifier;
 }
 
 export type MainServices =
@@ -101,7 +104,8 @@ export type MainServices =
   | SavedSubtitles
   | SubtitleAccounts
   | OnlineSubtitles
-  | Downloads;
+  | Downloads
+  | Reminders;
 
 /** Every main-process service, with the app's adapters for their ports. */
 export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
@@ -318,9 +322,21 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     Layer.provide(Layer.mergeAll(services, downloadStoreLayer.pipe(Layer.provide(database)))),
   );
   const output = Output.layer(config.output ?? { adapters: [] }).pipe(Layer.provide(viewing));
+  const reminders = Reminders.layer({ dataDir, notifier: config.notifier ?? null }).pipe(
+    Layer.provide(Layer.mergeAll(guide, services)),
+  );
   return Roster.layer.pipe(
     Layer.provideMerge(
-      Layer.mergeAll(guide, viewing, watchlist, customLists, output, onlineSubtitles, downloads),
+      Layer.mergeAll(
+        guide,
+        viewing,
+        watchlist,
+        customLists,
+        output,
+        onlineSubtitles,
+        downloads,
+        reminders,
+      ),
     ),
     Layer.provideMerge(services),
     Layer.provideMerge(diagnosticsLogLayer(dataDir)),

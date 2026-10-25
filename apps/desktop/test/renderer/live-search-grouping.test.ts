@@ -242,6 +242,12 @@ async function page(
   return { client, watch, field, press, rows, button, click, type, search, scope };
 }
 
+/** The palette's programme results: its rows that aren't a channel's. */
+const programmeResults = () =>
+  [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')].filter(
+    (row) => !row.querySelector("[data-group-row]"),
+  );
+
 describe("real search components with two subscriptions", () => {
   it("uses a complete fresh palette answer immediately without another IPC read", async () => {
     const p = await page("palette", "");
@@ -1136,11 +1142,13 @@ describe("real search components with two subscriptions", () => {
   it("SearchPalette keeps later programme rows and opens their description without playing", async () => {
     const p = await page("palette", "news");
     expect(p.rows()).toHaveLength(0);
-    const row = document.querySelector<HTMLElement>('button[role="treeitem"]')!;
-    expect(row.textContent).toContain("Evening news");
-    expect(row.textContent).not.toContain("From this copy's guide.");
+    const [row] = programmeResults();
+    expect(row!.textContent).toContain("Evening news");
+    expect(row!.textContent).not.toContain("From this copy's guide.");
     await p.press("Enter", p.field());
-    expect(row.textContent).toContain("From this copy's guide.");
+    expect(row!.textContent).toContain("From this copy's guide.");
+    // Still to come: its details offer Remind me.
+    expect(row!.textContent).toContain("From this copy's guide.Remind me");
     expect(p.watch).not.toHaveBeenCalled();
   });
 
@@ -1163,10 +1171,8 @@ describe("real search components with two subscriptions", () => {
     });
     await settled();
     const programmeRow = (title: string) =>
-      [...document.querySelectorAll<HTMLElement>('button[role="treeitem"]')].find((row) =>
-        row.textContent?.includes(title),
-      )!;
-    await p.click(programmeRow("Epsilon"));
+      programmeResults().find((row) => row.textContent?.includes(title))!;
+    await p.click(programmeRow("Epsilon").querySelector("button")!);
     expect(programmeRow("Epsilon").textContent).toContain("About Epsilon");
     await p.click(
       p.rows()[0]!.parentElement!.querySelector<HTMLElement>('[aria-label="Show copies"]')!,
@@ -1192,7 +1198,7 @@ describe("real search components with two subscriptions", () => {
       ]),
     );
     await settled();
-    const rows = [...document.querySelectorAll<HTMLElement>('button[role="treeitem"]')];
+    const rows = programmeResults();
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain("Morning news");
     expect(rows[0]!.textContent).toContain("On now");

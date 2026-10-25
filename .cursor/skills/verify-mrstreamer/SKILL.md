@@ -41,6 +41,7 @@ pnpm verify:desktop guide-labels
 pnpm verify:desktop catch-up
 pnpm verify:desktop catch-up-hls
 pnpm verify:desktop guide-grid
+pnpm verify:desktop reminders
 pnpm verify:desktop titles
 pnpm verify:desktop watchlist
 pnpm verify:desktop downloads

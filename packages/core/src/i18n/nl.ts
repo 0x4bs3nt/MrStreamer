@@ -1282,4 +1282,36 @@ export const nl: Translation = {
   },
   "No channels yet.": "Nog geen zenders.",
   "{list}, in the order to save": "{list}, in de te bewaren volgorde",
+  // Programme reminders.
+  "{channel} · now": "{channel} · nu",
+  "{channel} · started {time} ago": "{channel} · {time} geleden begonnen",
+  "Remind me": "Herinner me",
+  "Reminder set": "Herinnering ingesteld",
+  Reminders: "Herinneringen",
+  "Reminders, {count} to come": {
+    one: "Herinneringen, {count} komt nog",
+    other: "Herinneringen, {count} komen nog",
+  },
+  "No reminders yet.": "Nog geen herinneringen.",
+  "Set one on a programme still to come. Mr. Streamer reminds you while it's open.":
+    "Stel er een in bij een programma dat nog komt. Mr. Streamer herinnert je zolang de app open is.",
+  "was {title}": "was {title}",
+  "Not in the guide now": "Nu niet in de gids",
+  Missed: "Gemist",
+  "Today {time}": "Vandaag {time}",
+  "Yesterday {time}": "Gisteren {time}",
+  "Starts now": "Begint nu",
+  "Started {time} ago": "{time} geleden begonnen",
+  Dismiss: "Sluiten",
+  "Not available now": "Nu niet beschikbaar",
+  "Remove the reminder for {title}": "Herinnering voor {title} verwijderen",
+  "The system didn't show the last reminder. Reminders still show here while the app is open.":
+    "Het systeem toonde de laatste herinnering niet. Herinneringen verschijnen hier zolang de app open is.",
+  "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.":
+    "Dit systeem toont geen meldingen van Mr. Streamer. Herinneringen verschijnen hier zolang de app open is.",
+  "This programme has started.": "Dit programma is al begonnen.",
+  "The guide doesn't list this programme now.": "De gids vermeldt dit programma nu niet.",
+  "Couldn't read your reminders.": "Je herinneringen konden niet worden gelezen.",
+  "Your reminders were saved by a newer version of Mr. Streamer.":
+    "Je herinneringen zijn bewaard door een nieuwere versie van Mr. Streamer.",
 };

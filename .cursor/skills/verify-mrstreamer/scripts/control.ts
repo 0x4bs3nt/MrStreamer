@@ -37,6 +37,7 @@ import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
 import { nextEpisodeScenario } from "./next-episode.ts";
 import { removeDuringGuideScenario } from "./remove-during-guide.ts";
+import { remindersScenario } from "./reminders.ts";
 import {
   electronExecutable,
   evidenceDirectory,
@@ -75,6 +76,7 @@ const scenarios = [
   "guide-grid",
   "guide-grid-cells",
   "guide-grid-scroll",
+  "reminders",
   "titles",
   "next-episode",
   "watchlist",
@@ -209,6 +211,17 @@ async function run(scenario: Scenario, prior?: string) {
             // The playable test channels get guides of their own, but for the third.
             channelOf: (channel) =>
               channel.fixture && channel.streamId !== 1002
+                ? { ...channel, guideId: channel.guideId ?? `test${channel.streamId}.grid` }
+                : channel,
+          }
+        : {}),
+      ...(scenario === "reminders"
+        ? {
+            // Three-minute programmes, so one comes due within the run.
+            guideHours: { past: 1, ahead: 6 },
+            guideLengths: [3],
+            channelOf: (channel) =>
+              channel.fixture
                 ? { ...channel, guideId: channel.guideId ?? `test${channel.streamId}.grid` }
                 : channel,
           }
@@ -976,6 +989,29 @@ async function run(scenario: Scenario, prior?: string) {
         });
       else if (scenario === "guide-grid-cells") await guideGridCellsScenario(driver);
       else await guideGridScrollScenario(driver);
+    } else if (scenario === "reminders") {
+      await remindersScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          streams: () => ({
+            requests: provider!.streamRequests(),
+            active: provider!.activeStreams(),
+          }),
+        },
+      );
     } else if (scenario === "next-episode") {
       await nextEpisodeScenario(
         {

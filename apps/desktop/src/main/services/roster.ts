@@ -22,6 +22,7 @@ import { OnDemand } from "./ondemand.ts";
 import { Output } from "./output.ts";
 import { Playback } from "./playback.ts";
 import { Settings } from "./preferences.ts";
+import { Reminders } from "./reminders.ts";
 import { Subscriptions, type Source } from "./subscription.ts";
 
 /** Lists older than this are fetched again in the background when the app starts. */
@@ -61,7 +62,8 @@ export class Roster extends Context.Service<
      * progress, once the subscription is saved no more and before its login goes. Whatever was
      * starred, saved or played for it while the removal took its time is deleted with the rest
      * or never stored. A record that can't be erased leaves the subscription to try again. Its
-     * unfinished downloads are cancelled; its downloaded copies stay.
+     * unfinished downloads are cancelled; its downloaded copies stay. Its reminders go, with
+     * their notices.
      */
     remove(subscriptionId: string, eraseViewing: boolean): Effect.Effect<void, Failed>;
     /**
@@ -86,6 +88,7 @@ function make() {
     const guide = yield* Guide;
     const viewing = yield* ViewingRecord;
     const downloads = yield* Downloads;
+    const reminders = yield* Reminders;
     const scope = yield* Effect.scope;
 
     /** A subscription's guide, when it is due. A failure keeps the guide in use until the next check. */
@@ -196,6 +199,7 @@ function make() {
               onDemand.forget(subscription),
               guide.forget({ id: subscriptionId, store: subscription.dir }),
               forgetSettings,
+              reminders.subscriptionGone(subscriptionId),
             ],
           });
           // An open asked for as it went has had its turn by now, and found it saved still.

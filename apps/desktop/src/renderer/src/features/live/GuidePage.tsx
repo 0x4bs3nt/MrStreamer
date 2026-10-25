@@ -22,6 +22,8 @@ import { useSearchUsage } from "../../app/analytics.ts";
 //   Reorder, beside the field of Favourites or of one of the viewer's lists, or R, puts it in
 // another order: see ./reorder.ts for its keys, which replace these until the order is saved or
 // cancelled.
+//   The bell beside the field lists the programme reminders, set from a future programme's
+// details in the grid, the rest of a day or Search (../reminders/).
 //   The viewer's lists are made with New list at the end of them in the lists, and a channel goes
 // in one, or out, from its row's lists menu, whose New list opens that field from wherever the
 // lists were, for a list with the channel. A list's header menu renames, moves and deletes it,
@@ -75,6 +77,7 @@ import { cn } from "../../lib/utils.ts";
 import { usePreviewWaits } from "../../player/output.ts";
 import { Picture } from "../../player/Picture.tsx";
 import { player, usePlayer } from "../../player/player.ts";
+import { RemindersMenu } from "../reminders/RemindersMenu.tsx";
 import { numberEntry, NumberEntry } from "../watch/NumberEntry.tsx";
 import { rowPlays, searchChannelRows } from "./search-rows.ts";
 import { BrowseFilters } from "./BrowseFilters.tsx";
@@ -123,9 +126,9 @@ export function watchChannel(channel: LiveChannel): void {
 
 /**
  * Plays a channel live and opens Watch on it, for a channel or programme the viewer picked to
- * watch live: a recording of it gives way to the channel live.
+ * watch live, as from a reminder's notice: a recording of it gives way to the channel live.
  */
-function watchLive(channel: LiveChannel): void {
+export function watchLive(channel: LiveChannel): void {
   player.watchLive(channel);
   openWatch();
 }
@@ -772,6 +775,7 @@ export function GuidePage({ active }: { active: boolean }) {
                   )}
                   <div className="ml-auto flex flex-none items-center gap-2">
                     {playingKey === null && viewSwitch}
+                    <RemindersMenu />
                     {order.available && liveView === "list" && (
                       <Button
                         ref={reorderButton}

@@ -11,6 +11,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Programme } from "@mrstreamer/contracts/guide";
+import type { Reminder, ReminderList } from "@mrstreamer/contracts/reminders";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
@@ -815,4 +816,89 @@ it("opens a newly read list on the playing channel", async () => {
   expect(page.active()).toContain("Two");
   await page.press("Enter");
   expect(player.state().channel).toMatchObject({ subscriptionId: SUBSCRIPTION, id: "2" });
+});
+
+describe("reminders in the guide grid", () => {
+  /** The main process's reminders, which `reminders.set` and `reminders.cancel` change. */
+  function remindersOf(...kept: Reminder[]) {
+    let list: ReminderList = { reminders: kept, notifications: null };
+    ipc.answer("reminders.list", () => list);
+    ipc.answer("reminders.set", ({ channel, start }) => {
+      const programme = guide.get(channel.id)!.find((each) => each.start === start)!;
+      const reminder: Reminder = {
+        id: `r${start}`,
+        channel,
+        streams: [channel.id],
+        channelName: "One",
+        start,
+        stop: programme.stop,
+        title: programme.title,
+        status: { kind: "upcoming" },
+        banner: false,
+      };
+      list = { ...list, reminders: [...list.reminders, reminder] };
+      return reminder;
+    });
+    ipc.answer("reminders.cancel", ({ id }) => {
+      list = { ...list, reminders: list.reminders.filter((each) => each.id !== id) };
+      return null;
+    });
+  }
+  const pressed = (label: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>('[role="region"] button')]
+      .find((button) => button.textContent?.trim() === label)
+      ?.getAttribute("aria-pressed");
+
+  it("offers Remind me for a programme still to come, which then reads Reminder set and cancels", async () => {
+    const page = await gridPage([channel("1", "One")], "grid", null, () => remindersOf());
+    await ready(() => expect(page.cell(titleAt("1", Date.now())!)).toBeDefined());
+    // On now: nothing to remind of.
+    await page.press("ArrowRight");
+    await page.press("ArrowLeft");
+    expect(page.actions()).toEqual(["Watch live"]);
+
+    await page.press("ArrowRight");
+    const next = guide.get("1")!.find((each) => each.start > Date.now())!;
+    expect(page.selected()).toBe(next.title);
+    await ready(() => expect(page.actions()).toEqual(["Watch live", "Remind me"]));
+    expect(pressed("Remind me")).toBe("false");
+    await page.click("Remind me");
+    await ready(() => expect(pressed("Reminder set")).toBe("true"));
+    expect(ipc.argsOf("reminders.set")).toEqual([
+      { channel: { subscriptionId: SUBSCRIPTION, id: "1" }, start: next.start },
+    ]);
+    // The cell reads the same list, and may draw a moment after the button.
+    await ready(() => expect(page.label(next.title)).toContain("Reminder set"));
+
+    await page.click("Reminder set");
+    await ready(() => expect(pressed("Remind me")).toBe("false"));
+    expect(ipc.argsOf("reminders.cancel")).toEqual([{ id: `r${next.start}` }]);
+    await ready(() => expect(page.label(next.title)).not.toContain("Reminder set"));
+  });
+
+  it("keeps what a press did with the programme it was pressed for", async () => {
+    const page = await gridPage([channel("1", "One")], "grid", null, () => remindersOf());
+    await ready(() => expect(page.cell(titleAt("1", Date.now())!)).toBeDefined());
+    await page.press("ArrowRight");
+    await ready(() => expect(page.actions()).toEqual(["Watch live", "Remind me"]));
+
+    // A save that fails says so, and the button stays as it was; pressing again tries again.
+    ipc.refuse("reminders.set", { kind: "unexpected", detail: "disk full" });
+    await page.click("Remind me");
+    await ready(() => expect(page.details()).toContain("Couldn't save. Try again."));
+    expect(pressed("Remind me")).toBe("false");
+
+    // Another programme starts with nothing of it, and a press held for it stays its own.
+    await page.press("ArrowRight");
+    await ready(() => expect(page.details()).not.toContain("Couldn't save"));
+    const held = ipc.hold("reminders.set");
+    await page.click("Remind me");
+    await page.press("ArrowRight");
+    const button = [...document.querySelectorAll('[role="region"] button')].find(
+      (each) => each.textContent?.trim() === "Remind me",
+    );
+    expect(button?.getAttribute("aria-busy")).toBeNull();
+    await act(async () => held.reject({ kind: "unexpected", detail: "disk full" }));
+    await ready(() => expect(page.details()).not.toContain("Couldn't save"));
+  });
 });

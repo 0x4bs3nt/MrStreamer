@@ -1256,4 +1256,36 @@ export const en = {
   },
   "No channels yet.": "No channels yet.",
   "{list}, in the order to save": "{list}, in the order to save",
+  // Programme reminders.
+  "{channel} · now": "{channel} · now",
+  "{channel} · started {time} ago": "{channel} · started {time} ago",
+  "Remind me": "Remind me",
+  "Reminder set": "Reminder set",
+  Reminders: "Reminders",
+  "Reminders, {count} to come": {
+    one: "Reminders, {count} to come",
+    other: "Reminders, {count} to come",
+  },
+  "No reminders yet.": "No reminders yet.",
+  "Set one on a programme still to come. Mr. Streamer reminds you while it's open.":
+    "Set one on a programme still to come. Mr. Streamer reminds you while it's open.",
+  "was {title}": "was {title}",
+  "Not in the guide now": "Not in the guide now",
+  Missed: "Missed",
+  "Today {time}": "Today {time}",
+  "Yesterday {time}": "Yesterday {time}",
+  "Starts now": "Starts now",
+  "Started {time} ago": "Started {time} ago",
+  Dismiss: "Dismiss",
+  "Not available now": "Not available now",
+  "Remove the reminder for {title}": "Remove the reminder for {title}",
+  "The system didn't show the last reminder. Reminders still show here while the app is open.":
+    "The system didn't show the last reminder. Reminders still show here while the app is open.",
+  "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.":
+    "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.",
+  "This programme has started.": "This programme has started.",
+  "The guide doesn't list this programme now.": "The guide doesn't list this programme now.",
+  "Couldn't read your reminders.": "Couldn't read your reminders.",
+  "Your reminders were saved by a newer version of Mr. Streamer.":
+    "Your reminders were saved by a newer version of Mr. Streamer.",
 } as const satisfies Readonly<Record<string, string | Plural>>;

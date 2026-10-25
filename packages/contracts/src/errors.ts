@@ -80,6 +80,15 @@ export type AppError =
   | { readonly kind: "output"; readonly failure: OutputFailure }
   /** A programme guide that can't be used, or a change to one that no longer applies. */
   | { readonly kind: "guide"; readonly failure: GuideFailure }
+  /**
+   * A reminder that can't be set: its programme has started (`started`), or the guide lists none
+   * starting then on that channel (`not-in-guide`). Or the reminders kept on this computer can't
+   * be read (`unreadable`), or a newer release wrote them (`newer`): nothing in them is changed.
+   */
+  | {
+      readonly kind: "reminder";
+      readonly reason: "started" | "not-in-guide" | "unreadable" | "newer";
+    }
   /** An IPC call carried input that failed validation. Indicates a UI bug. */
   | { readonly kind: "invalid-input"; readonly detail: string }
   | { readonly kind: "unexpected"; readonly detail: string };

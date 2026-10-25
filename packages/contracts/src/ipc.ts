@@ -69,6 +69,7 @@ import {
 } from "./playback.ts";
 import { LOCALES, type InterfaceLanguage } from "./language.ts";
 import { Preferences, SubscriptionPreferences } from "./preferences.ts";
+import type { Reminder, ReminderList } from "./reminders.ts";
 
 import { PlaylistMode, type PlaylistGroupPage, type PlaylistOmissionPage } from "./playlist.ts";
 import type { OwnedId, SubscriptionSummary } from "./subscription.ts";
@@ -262,6 +263,16 @@ export const ipcInputs = {
       offset: "number.integer >= 0",
       limit: "1 <= number.integer <= 200",
     }),
+  "reminders.list": none,
+  /**
+   * A reminder for the programme the guide lists on the channel at `start`, a time still to
+   * come. Main reads its title and end from the guide.
+   */
+  "reminders.set": () => type({ channel: owned(), start: "number.integer" }),
+  /** Takes a reminder out, closing its notice. One that is gone changes nothing. */
+  "reminders.cancel": () => type({ id: "string > 0" }),
+  /** Takes a reminder's notice in the window down for this run; it stays listed. */
+  "reminders.dismiss": () => type({ id: "string > 0" }),
   "ondemand.status": none,
   "ondemand.refresh": () => type({ subscriptionId: "string > 0" }),
   "ondemand.search": () => type({ query: "string" }),
@@ -641,6 +652,15 @@ export interface IpcOutputs {
   "guide.mapChannels": MapChannelPage;
   /** Guide channels by name, those `query` finds in a name or an id. No programmes among them. */
   "guide.mapOptions": GuideChannelPage;
+  /** Every reminder kept, with how each stands. Fails while they can't be read (`reminder`). */
+  "reminders.list": ReminderList;
+  /**
+   * Stored, as the guide lists its programme now. One already set for that channel at that start
+   * answers as it is. Fails with `reminder` when the programme started or isn't in the guide.
+   */
+  "reminders.set": Reminder;
+  "reminders.cancel": null;
+  "reminders.dismiss": null;
   "ondemand.status": OnDemandStatus;
   /** Fetches one subscription's movie and series lists again. */
   "ondemand.refresh": OnDemandStatus;
@@ -906,6 +926,8 @@ export interface IpcEvents {
    * mappings changed, or a download failed.
    */
   "guide.updated": null;
+  /** A reminder was set, cancelled or told, its programme changed, or its notice did. */
+  "reminders.changed": null;
   /** The movie and series lists were fetched again, or the fetch failed and kept them. */
   "ondemand.updated": OnDemandStatus;
   /**

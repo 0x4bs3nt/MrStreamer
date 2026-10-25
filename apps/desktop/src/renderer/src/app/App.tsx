@@ -5,6 +5,7 @@ import { ConnectScreen } from "../features/connect/ConnectScreen.tsx";
 import { DownloadsPage } from "../features/downloads/DownloadsPage.tsx";
 import { HomeScreen } from "../features/home/HomeScreen.tsx";
 import { GuidePage } from "../features/live/GuidePage.tsx";
+import { ReminderBanners } from "../features/reminders/ReminderBanners.tsx";
 import { SearchPalette } from "../features/search/SearchPalette.tsx";
 import { SettingsPage } from "../features/settings/SettingsPage.tsx";
 import { TitlesPage } from "../features/titles/TitlesPage.tsx";
@@ -86,7 +87,7 @@ export function App() {
  * where it was, and takes no input meanwhile. Search and settings are available everywhere.
  * Subscriptions with live TV only, unmapped playlists, have no Movies or Series: Home stands in
  * for them. While a receiver on the network is connected, its bar stands at the foot of every
- * page, and the pages end above.
+ * page, and the pages end above. A reminder that told shows its notice over all of them.
  */
 function Shell({ liveOnly }: { liveOnly: boolean }) {
   const view = useUi((state) => (liveOnly && !withoutTitles(state.view) ? "home" : state.view));
@@ -168,6 +169,7 @@ function Shell({ liveOnly }: { liveOnly: boolean }) {
       {!covered && <ReceiverBar />}
       {watching && <WatchScreen />}
       {playingTitle && <TitleWatch />}
+      <ReminderBanners />
       <SearchPalette />
       <SettingsPage />
     </>

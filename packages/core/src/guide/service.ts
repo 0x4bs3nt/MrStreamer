@@ -131,12 +131,14 @@ import {
   searchChannelsAt,
   SEARCH_LIMIT,
   slicer,
+  startingAt,
   unresolvedMappings,
   type CatalogueChannels,
   type GuideMapping,
   type GuidePart,
   type Guides,
   type MappedChannels,
+  type ProgrammeAt,
   type Slice,
 } from "./programmes.ts";
 
@@ -540,6 +542,14 @@ export class Guide extends Context.Service<
      * when the channel doesn't name that guide channel, or the guide has none starting then.
      */
     programme(channel: OwnedId, guide: string, start: number): Effect.Effect<Programme | null>;
+    /**
+     * The channel's programme that starts at `start`, from the guide that supplies the channel
+     * now, as listings pick it: `found`, or `none` when that guide lists nothing starting then or
+     * no guide supplies the channel. `unknown` while that can't be told: the subscription isn't
+     * saved, its catalogue or every guide it reads is still to come, or the lists don't show the
+     * channel. A reminder asks this, so a guide not read yet never counts as one without it.
+     */
+    startingAt(channel: OwnedId, start: number): Effect.Effect<ProgrammeAt>;
     /** Programmes on now or later whose title matches, in any guide, on now first. */
     search(query: string): Effect.Effect<readonly ProgrammeMatch[], Failed>;
     /**
@@ -2475,6 +2485,18 @@ function make() {
               ),
             ));
           return found ?? null;
+        }),
+      startingAt: (channel: OwnedId, start: number) =>
+        Effect.gen(function* () {
+          const subscription = yield* savedAs(channel.subscriptionId);
+          const found =
+            subscription &&
+            (yield* withContext(subscription, (context) =>
+              Effect.sync(() =>
+                startingAt(context.guides, context.channels, channel.id, start, context.at),
+              ),
+            ));
+          return found ?? ({ kind: "unknown" } as const);
         }),
       search: (query: string) =>
         Effect.gen(function* () {

@@ -294,6 +294,31 @@ export function programmeAt(
 }
 
 /**
+ * What the guide says of the channel's programme that starts at `start`, from the guide channel
+ * that supplies the channel at `at`, the time now, as every other read picks it: `found`, or
+ * `none` when no guide supplies the channel or the one that does lists nothing starting then. A
+ * channel the lists don't show can't be told of, and is `unknown`.
+ */
+export function startingAt(
+  guides: Guides,
+  channels: MappedChannels,
+  channelId: string,
+  start: number,
+  at: number,
+): ProgrammeAt {
+  if (!channels.channel(channelId)) return { kind: "unknown" };
+  const shown = shownChannel(guides, channels, channelId, at);
+  const programme = shown?.part.index.programme(shown.channel, start) ?? null;
+  return programme ? { kind: "found", programme } : { kind: "none" };
+}
+
+/** What `startingAt` answers, here and as `Guide.startingAt`. */
+export type ProgrammeAt =
+  | { readonly kind: "unknown" }
+  | { readonly kind: "none" }
+  | { readonly kind: "found"; readonly programme: Programme };
+
+/**
  * Programmes on now or later whose title has every word of `query`, on the first channel in the
  * catalogue that shows them, from every guide. On now comes first, then by start time. `search`
  * reads each guide's file away from the main process, one after another; the caller keeps the

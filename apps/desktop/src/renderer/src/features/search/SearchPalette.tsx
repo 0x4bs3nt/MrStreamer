@@ -1,7 +1,7 @@
 import { useSearchUsage } from "../../app/analytics.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Search, Star } from "lucide-react";
+import { Bell, ChevronDown, Search, Star } from "lucide-react";
 import {
   useEffect,
   useLayoutEffect,
@@ -35,15 +35,18 @@ import {
   useSubscriptions,
   useToggleFavourite,
 } from "../../lib/queries.ts";
+import { reminderAt, useReminders } from "../../lib/reminders.ts";
 import { useDebounced } from "../../lib/use-debounced.ts";
 import { searchQualities } from "../live/search-rows.ts";
 import { cn } from "../../lib/utils.ts";
 import { titlePlayer } from "../../player/title-player.ts";
 import { watchChannel } from "../live/GuidePage.tsx";
+import { ReminderButton } from "../reminders/ReminderButton.tsx";
 
 /**
  * Searches channel names across every category, then movies and series, then programmes on now
  * and later today. Opens with ⌘K or Ctrl K, on what Movies or Series searched for, if anything.
+ * A programme to come opens to its description and Remind me; one with a reminder shows a bell.
  */
 export function SearchPalette() {
   const open = useUi((state) => state.searchOpen);
@@ -138,6 +141,7 @@ function Palette() {
   const now = useNow();
   const favourites = useFavouriteKeys();
   const subscriptions = useSubscriptions();
+  const reminders = useReminders().data;
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const groups = useMemo(
     () => searchResultGroups(channels.data ?? []).slice(0, CHANNEL_RESULTS),
@@ -340,39 +344,60 @@ function Palette() {
               const { channel, programme } = result.match;
               const source = sourceOf(channel);
               const shows = source ? `${channel.title} · ${source}` : channel.title;
-              const detail =
-                programme.start <= now
-                  ? `${t("On now")} · ${shows} · ${timeLeft(programme, now)}`
-                  : `${clockTime(programme.start, now)} · ${shows}`;
+              const later = programme.start > now;
+              const detail = later
+                ? `${clockTime(programme.start, now)} · ${shows}`
+                : `${t("On now")} · ${shows} · ${timeLeft(programme, now)}`;
+              const reminded = reminderAt(reminders, channel, programme.start) !== undefined;
               return (
-                <button
+                <div
                   key={result.key}
                   id={`${resultsId}-${index}`}
                   role="treeitem"
                   aria-level={1}
                   aria-selected={index === active}
+                  aria-expanded={later ? open === result.key : undefined}
                   data-index={index}
                   onFocus={() => setActive(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => choose(index)}
                   className={cn(
-                    "flex w-full items-center gap-3.5 rounded-2xl px-3 py-2.5 text-left hover:bg-white/6",
+                    "rounded-2xl hover:bg-white/6",
                     index === active && "bg-white/10 hover:bg-white/10",
                   )}
                 >
-                  <ChannelLogo channel={channel} className="h-8 w-12 self-start" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[0.9375rem] text-white">
-                      {programme.title}
-                    </span>
-                    <span className="block truncate text-xs text-muted-foreground">{detail}</span>
-                    {open === result.key && programme.description && (
-                      <span className="mt-1.5 block text-[0.8125rem] leading-relaxed text-muted-foreground">
-                        {programme.description}
+                  <button
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => choose(index)}
+                    className="flex w-full items-center gap-3.5 px-3 py-2.5 text-left"
+                  >
+                    <ChannelLogo channel={channel} className="h-8 w-12 self-start" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[0.9375rem] text-white">
+                        {programme.title}
                       </span>
+                      <span className="block truncate text-xs text-muted-foreground">{detail}</span>
+                      {open === result.key && programme.description && (
+                        <span className="mt-1.5 block text-[0.8125rem] leading-relaxed text-muted-foreground">
+                          {programme.description}
+                        </span>
+                      )}
+                    </span>
+                    {reminded && (
+                      <Bell
+                        role="img"
+                        aria-label={t("Reminder set")}
+                        className="size-3.5 flex-none self-start text-muted-foreground"
+                      />
                     )}
-                  </span>
-                </button>
+                  </button>
+                  {open === result.key && later && (
+                    <ReminderButton
+                      key={result.key}
+                      channel={channel}
+                      start={programme.start}
+                      className="pb-3 pl-[4.875rem]"
+                    />
+                  )}
+                </div>
               );
             }
             const { channel, group, copy } = result;

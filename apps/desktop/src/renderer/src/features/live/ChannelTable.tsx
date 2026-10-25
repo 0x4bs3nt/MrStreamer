@@ -1,7 +1,9 @@
 // The guide's channel list: a row per channel with its number, logo and name, the qualities of a
 // channel with several streams, what's on now with progress and time left, and what's next. The chevron opens the rest of the day under the row,
 // after today's programmes so far that the provider's catch-up keeps, which play from their start.
-// Rows ask the guide for programmes only as they come into view.
+// A later programme opens to its description and Remind me, and one with a reminder set shows a
+// bell at the end of its line (../reminders/). Rows ask the guide for programmes only as they
+// come into view.
 //   A search shows the same rows for the channels it found, with what matched underlined: the
 // name, the programme on now, or a later one, which then stands where what's next does, in white
 // and at every width. The rest of the day opens on that programme.
@@ -13,7 +15,7 @@
 // the channel. A list's channels its subscription no longer lists follow the others, dimmed.
 import { useQuery } from "@tanstack/react-query";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowUp, ChevronDown, Star } from "lucide-react";
+import { ArrowDown, ArrowUp, Bell, ChevronDown, Star } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -43,8 +45,10 @@ import { clockTime, endOfDay, pastTime, progressOf, timeLeft } from "../../lib/f
 import { useOutput } from "../../player/output.ts";
 import { qualitiesLine } from "../../lib/quality.ts";
 import { queries, useSearchSubscriptionNames, useSourceOf } from "../../lib/queries.ts";
+import { reminderAt, useReminders } from "../../lib/reminders.ts";
 import { useRem } from "../../lib/use-rem.ts";
 import { cn } from "../../lib/utils.ts";
+import { ReminderButton } from "../reminders/ReminderButton.tsx";
 import { useVisibleListings } from "./lists.ts";
 import { rowPlays, searchQualities, type SearchChannelRow } from "./search-rows.ts";
 import type { RowPart } from "./reorder.ts";
@@ -703,6 +707,7 @@ function Schedule({
   const midnight = endOfDay(now);
   const schedule = useQuery(queries.schedule(channel, today, midnight));
   const remote = useOutput((state) => state.status.output.kind !== "local");
+  const reminders = useReminders().data;
   const found = match?.later?.start ?? null;
   const [open, setOpen] = useState(found);
   const programmes = useMemo(() => {
@@ -728,8 +733,10 @@ function Schedule({
       {programmes.map((programme) => (
         <ScheduleLine
           key={programme.start}
+          channel={channel}
           programme={programme}
           now={now}
+          reminded={reminderAt(reminders, channel, programme.start) !== undefined}
           open={open === programme.start}
           found={programme.start === found}
           words={
@@ -752,15 +759,20 @@ function Schedule({
 }
 
 function ScheduleLine({
+  channel,
   programme,
   now,
+  reminded,
   open,
   found,
   words,
   onClick,
 }: {
+  channel: LiveChannel;
   programme: Programme;
   now: number;
+  /** A reminder is set for it. */
+  reminded: boolean;
   open: boolean;
   /** The later programme a search found, which the day opens on. */
   found: boolean;
@@ -776,35 +788,51 @@ function ScheduleLine({
     if (found || onNow) line.current?.scrollIntoView({ block: "nearest" });
     // Only when it opens, not as the programme on now changes.
   }, [found]);
+  const later = !aired && !onNow;
   return (
-    <button
-      ref={line}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={onClick}
-      className={cn(
-        "flex w-full gap-4 rounded-lg px-2 py-1.5 text-left hover:bg-white/8",
-        found && "bg-white/6",
-      )}
-    >
-      <span className="w-[6.5rem] flex-none text-sm text-muted-foreground tabular-nums">
-        {aired
-          ? pastTime(programme.start, now)
-          : onNow
-            ? timeLeft(programme, now)
-            : clockTime(programme.start, now)}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className={cn("block text-sm", onNow && "font-medium text-white")}>
-          <Marked text={programme.title} words={words} />
+    <div className={cn("rounded-lg", (found || (open && later)) && "bg-white/6")}>
+      <button
+        ref={line}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onClick}
+        aria-expanded={later ? open : undefined}
+        className="flex w-full gap-4 rounded-lg px-2 py-1.5 text-left hover:bg-white/8"
+      >
+        <span className="w-[6.5rem] flex-none text-sm text-muted-foreground tabular-nums">
+          {aired
+            ? pastTime(programme.start, now)
+            : onNow
+              ? timeLeft(programme, now)
+              : clockTime(programme.start, now)}
         </span>
-        {onNow && <Progress value={progressOf(programme, now)} className="mt-1 w-40" />}
-        {(open || onNow) && programme.description && (
-          <span className="mt-1 block text-[0.8125rem] leading-relaxed text-muted-foreground select-text">
-            {programme.description}
+        <span className="min-w-0 flex-1">
+          <span className={cn("block text-sm", onNow && "font-medium text-white")}>
+            <Marked text={programme.title} words={words} />
           </span>
+          {onNow && <Progress value={progressOf(programme, now)} className="mt-1 w-40" />}
+          {(open || onNow) && programme.description && (
+            <span className="mt-1 block text-[0.8125rem] leading-relaxed text-muted-foreground select-text">
+              {programme.description}
+            </span>
+          )}
+        </span>
+        {reminded && (
+          <Bell
+            role="img"
+            aria-label={t("Reminder set")}
+            className="mt-0.5 size-3.5 flex-none text-muted-foreground"
+          />
         )}
-      </span>
-    </button>
+      </button>
+      {open && later && (
+        <ReminderButton
+          key={`${ownedKey(channel)}:${programme.start}`}
+          channel={channel}
+          start={programme.start}
+          className="pb-2 pl-[8rem]"
+        />
+      )}
+    </div>
   );
 }
 

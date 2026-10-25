@@ -1292,4 +1292,36 @@ export const de: Translation = {
   },
   "No channels yet.": "Noch keine Sender.",
   "{list}, in the order to save": "{list} in der zu speichernden Reihenfolge",
+  // Programme reminders.
+  "{channel} · now": "{channel} · jetzt",
+  "{channel} · started {time} ago": "{channel} · vor {time} begonnen",
+  "Remind me": "Erinnern",
+  "Reminder set": "Erinnerung gesetzt",
+  Reminders: "Erinnerungen",
+  "Reminders, {count} to come": {
+    one: "Erinnerungen, {count} steht an",
+    other: "Erinnerungen, {count} stehen an",
+  },
+  "No reminders yet.": "Noch keine Erinnerungen.",
+  "Set one on a programme still to come. Mr. Streamer reminds you while it's open.":
+    "Setze eine bei einer Sendung, die noch kommt. Mr. Streamer erinnert dich, solange die App geöffnet ist.",
+  "was {title}": "vorher {title}",
+  "Not in the guide now": "Gerade nicht im Programm",
+  Missed: "Verpasst",
+  "Today {time}": "Heute {time}",
+  "Yesterday {time}": "Gestern {time}",
+  "Starts now": "Beginnt jetzt",
+  "Started {time} ago": "Vor {time} begonnen",
+  Dismiss: "Schließen",
+  "Not available now": "Gerade nicht verfügbar",
+  "Remove the reminder for {title}": "Erinnerung für {title} entfernen",
+  "The system didn't show the last reminder. Reminders still show here while the app is open.":
+    "Das System hat die letzte Erinnerung nicht angezeigt. Erinnerungen erscheinen hier, solange die App geöffnet ist.",
+  "This system doesn't show notifications from Mr. Streamer. Reminders still show here while the app is open.":
+    "Dieses System zeigt keine Mitteilungen von Mr. Streamer. Erinnerungen erscheinen hier, solange die App geöffnet ist.",
+  "This programme has started.": "Diese Sendung hat schon begonnen.",
+  "The guide doesn't list this programme now.": "Das Programm führt diese Sendung gerade nicht.",
+  "Couldn't read your reminders.": "Deine Erinnerungen konnten nicht gelesen werden.",
+  "Your reminders were saved by a newer version of Mr. Streamer.":
+    "Deine Erinnerungen wurden von einer neueren Version von Mr. Streamer gespeichert.",
 };
