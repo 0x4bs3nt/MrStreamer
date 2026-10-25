@@ -42,8 +42,13 @@ export const PACKAGE_ROUTES: PackageRoutes = {
     architecture: "x86_64",
     url: "https://aur.archlinux.org/packages/mrstreamer-bin",
     install:
-      "git clone https://aur.archlinux.org/mrstreamer-bin.git\ncd mrstreamer-bin\nmakepkg -si",
-    updates: "Arch Linux, x86_64. Install and update mrstreamer-bin with makepkg or an AUR helper.",
-    publication: { state: "unpublished", lastVerifiedVersion: null },
+      "sudo pacman -Syu --needed base-devel git\ngit clone https://aur.archlinux.org/mrstreamer-bin.git\ncd mrstreamer-bin\nmakepkg -si",
+    updates:
+      "Review the recipe before building. Run makepkg as your regular user. Quit the app before updating with makepkg or an AUR helper.",
+    publication: {
+      state: "published",
+      lastVerifiedVersion: "0.0.19",
+      receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1?pane=issue&itemId=262338894",
+    },
   },
 };

@@ -1,6 +1,6 @@
 # Updates and channels
 
-Mr. Streamer looks for updates on its own, a little after it starts and then every four hours, unless [the Microsoft Store installed it](#installed-from-the-microsoft-store). It never downloads or restarts without you: you download an update, and then choose when to restart into it. Your login, preferences, favourites and history stay through every update.
+Mr. Streamer looks for updates on its own, a little after it starts and then every four hours, unless you installed it through [the AUR](#installed-through-the-aur) or [the Microsoft Store](#installed-from-the-microsoft-store). It never downloads or restarts without you: you download an update, and then choose when to restart into it. Your login, preferences, favourites and history stay through every update.
 
 ## When an update is available
 
@@ -36,6 +36,28 @@ An explicitly named upgrade, `--greedy` or `brew reinstall` can replace a newer 
 
 Homebrew replaces the app bundle. Your profile and downloaded copies live outside it, and Homebrew uninstall leaves them in place. If a direct install already occupies the destination, quit it and move only its app bundle aside before installing through Homebrew. Leave the profile and downloads alone.
 
+## Installed through the AUR
+
+On Arch Linux, x86_64, [mrstreamer-bin](https://aur.archlinux.org/packages/mrstreamer-bin) packages the stable release with its bundled player and media tools. With yay installed, run `yay -S mrstreamer-bin`; with paru, run `paru -S mrstreamer-bin`.
+
+Without an AUR helper, install the build tools and fetch the recipe:
+
+```sh
+sudo pacman -Syu --needed base-devel git
+git clone https://aur.archlinux.org/mrstreamer-bin.git
+cd mrstreamer-bin
+```
+
+Review `PKGBUILD`, then run `makepkg -si` as your regular user. It packages the prebuilt app and asks for your password to install it. Open **Mr. Streamer** from the application menu, or run `mrstreamer`.
+
+Quit Mr. Streamer before an upgrade, reinstall or uninstall. To update, run `yay -Syu` or `paru -Syu`; these update your other packages too. For a manual update, run `sudo pacman -Syu`, then `git pull --ff-only` in the recipe directory, review the changes and run `makepkg -si` again. See Arch's [AUR guide](https://wiki.archlinux.org/title/Arch_User_Repository#Installing_and_upgrading_packages) for the build steps.
+
+The AUR copy leaves updates to your package manager. It never downloads an app update or replaces its own files. Settings > **Updates** points you to an AUR helper or makepkg, with no Stable or Nightly channel to choose. `pacman -Syu` alone does not fetch AUR updates.
+
+Your login, preferences, favourites, watchlist, playback progress, downloaded copies and saved subtitles stay through an upgrade. A direct AppImage and the AUR copy use the same Linux profile and desktop keyring: quit the AppImage before switching, and leave the profile and downloads in place.
+
+To uninstall, run `sudo pacman -R mrstreamer-bin`. This removes the app and keeps your profile, downloaded copies and keyring credentials. Installing it again reuses them.
+
 ## Installed from the Microsoft Store
 
 The Microsoft Store updates a copy you installed from it, so Mr. Streamer never looks for updates or downloads them, and shows no update notice. Settings > **Updates** shows your version, updated by the Microsoft Store, and **Open Store** opens Mr. Streamer's page there. The Store only carries stable releases, so there's no channel to choose.
@@ -47,6 +69,8 @@ From 0.0.8, the Store and the Start menu call it "Mr. Streamer: IPTV Player". It
 The Store copy and a copy installed from the setup file are separate. Each keeps its own login, preferences, favourites and history, and neither reads or changes the other's. Moving from the setup file to the Store copy starts fresh: you sign in again, and your favourites, history and progress stay with the other copy. Store updates keep its data. Uninstalling it removes its data, as Windows does for every Store app.
 
 ## Stable and Nightly
+
+These channels apply to direct downloads and Homebrew. The AUR and Microsoft Store carry stable releases and manage updates separately.
 
 - **Stable** gets tested releases only.
 - **Nightly** gets new builds first, up to four a day when there are changes. It never offers a stable release: each stable release is a tested nightly, so the nightlies carry its changes. Nightly builds can have rough edges.

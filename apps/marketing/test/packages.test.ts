@@ -107,37 +107,41 @@ describe("independently published download routes", () => {
     expect(document.querySelector("[data-package], pre")).toBeNull();
   });
 
-  it.each([home, faq])(
-    "keeps availability copy in sync with publication and withdrawal",
-    (html) => {
-      for (const state of ["published", "withdrawn", "unpublished"] as const) {
-        const routes = published("homebrew");
-        const template = document.createElement("template");
-        template.innerHTML = writePackages(html, {
-          ...routes,
-          homebrew: {
-            ...routes.homebrew,
-            publication:
-              state === "unpublished"
-                ? { state, lastVerifiedVersion: null }
-                : {
-                    state,
-                    lastVerifiedVersion: "0.0.18",
-                    receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1",
-                  },
-          },
-        });
-        const link = template.content.querySelector<HTMLAnchorElement>("[data-package]");
-        if (state === "published") {
-          expect(link?.href).toBe(PACKAGE_ROUTES.homebrew.url);
-          expect(link?.parentElement?.textContent).toBe("Also on Homebrew · macOS, Apple silicon.");
-        } else {
-          expect(link).toBeNull();
-          expect(template.content.textContent).not.toContain("Also on");
-        }
-        expect(template.content.querySelector('a[href="/download"]')).not.toBeNull();
-        expect(template.content.querySelector('[data-package="aur"]')).toBeNull();
+  it.each(
+    [home, faq].flatMap((html) => (["homebrew", "aur"] as const).map((name) => ({ html, name }))),
+  )("keeps availability copy in sync with publication and withdrawal", ({ html, name }) => {
+    for (const state of ["published", "withdrawn", "unpublished"] as const) {
+      const routes = published(name);
+      const template = document.createElement("template");
+      template.innerHTML = writePackages(html, {
+        ...routes,
+        [name]: {
+          ...routes[name],
+          publication:
+            state === "unpublished"
+              ? { state, lastVerifiedVersion: null }
+              : {
+                  state,
+                  lastVerifiedVersion: "0.0.18",
+                  receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1",
+                },
+        },
+      });
+      const link = template.content.querySelector<HTMLAnchorElement>("[data-package]");
+      if (state === "published") {
+        expect(link?.href).toBe(PACKAGE_ROUTES[name].url);
+        const route = PACKAGE_ROUTES[name];
+        expect(link?.parentElement?.textContent).toBe(
+          `Also on ${route.name} · ${route.platform}, ${route.architecture}.`,
+        );
+      } else {
+        expect(link).toBeNull();
+        expect(template.content.textContent).not.toContain("Also on");
       }
-    },
-  );
+      expect(template.content.querySelector('a[href="/download"]')).not.toBeNull();
+      expect(
+        template.content.querySelector(`[data-package="${name === "aur" ? "homebrew" : "aur"}"]`),
+      ).toBeNull();
+    }
+  });
 });
