@@ -342,10 +342,10 @@ function confirmDemo(action: "reset" | "exit") {
     if (result.kind === "incomplete")
       Alert.alert(
         "Demo removal incomplete",
-        "Some demo data couldn't be removed. Try again, or reopen the app to retry.",
+        "Some demo data couldn't be removed. Reopen the app to retry cleanup.",
       );
     else if (result.kind === "refused")
-      Alert.alert("Demo isn't available", "The operation couldn't continue. Try again.");
+      Alert.alert("Demo isn't available", "The operation couldn't continue.");
   };
   Alert.alert(
     `${label}?`,

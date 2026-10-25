@@ -5,8 +5,9 @@ React Native on Hermes (Expo SDK 58), building toward the desktop app's features
 own native adapters: the Keychain, app storage and one native player so far. Nothing of it is in
 the desktop's install, build or packages.
 
-Try demo on Connect opens a labelled Demo provider beside any personal providers. It needs no
-login or Keychain item. Its original generated movie and two episodes use the ordinary catalogue,
+Try demo on the empty-roster Connect screen opens a labelled Demo provider. Personal providers can
+be added alongside it afterwards. Demo needs no login or Keychain item. Its original generated movie
+and two episodes use the ordinary catalogue,
 player and download owners, with measured durations and no invented metadata. Files and artwork
 come from the commit pinned in `src/demo.ts`; network failures are shown normally. The asset commit
 must remain an ancestor of main at delivery. Live stays off pending broadcaster permission, and
@@ -47,9 +48,12 @@ match one listed version; opening a filtered tile asks for that version over a r
 A later manual version choice in details still wins. Choices stay per kind and collection for
 the app session, including Back, and Reset restores that collection's default sort. Refreshes
 update counts and options without clearing the choices. An empty filtered result keeps Reset;
-an initial collection load failure keeps the controls and Try again. Known audio/subtitle
-filters are unavailable until iOS has validated exact-file track facts. Filtering never probes
-media or treats provider labels as verified tracks.
+an initial collection load failure keeps the controls and Try again. Known audio/subtitle choices
+appear when current exact-file facts are available. Counts require one eligible file to match the
+other filters too. Any known track clears only its own choice; Reset clears the collection choices.
+Unknown track language stays Unknown, and an unnamed canonical language code stays distinct from it.
+Unread files establish no absence. Filtering reads local facts without asking the provider or probing
+media. Original-AVPlayer observation forwarding and native acceptance remain pending.
 A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
 4K tile or Continue watching asks for its own version over it. While a provider needs its
 password, the version remembered from it and how far its versions got are left out of the
@@ -82,9 +86,10 @@ or the provider's removal; what was queued stays. An addition already asked sett
 a missing copy's new addition is only written while the run still stands
 (`src/series-download.ts`, `src/series-download-row.tsx`). Play and Resume always stream; a
 copy plays offline from Downloads,
-its menu and an episode's check. A download under way goes on in the background, but the next in
-the queue starts only once the app is open again: not yet the desktop's queue. What the desktop
-does and iOS doesn't yet is tracked in the parity report on the iOS card.
+its menu and an episode's check. The native owner schedules the queue and hands the next background
+task to iOS before answering a background wake. iOS can defer starts, and force quit ends transfers.
+Actual background and physical-device acceptance remain separate from source and compilation checks.
+What the desktop does and iOS doesn't yet is tracked in the parity report on the iOS card.
 
 ## Its own install
 
@@ -187,10 +192,12 @@ navigation, replacement or a new revision. Initial native selection stays unchan
 
 Producer R54 compiled the player and passed five actual-player XCTest cases. R59 established HLS
 playback, exact-record audio/subtitle selection and readback, stable consecutive revisions, Off,
-item/revision fences, local MP4 and allowlisted failure payloads. Its original public probe still
-fails a literal display-label fixture assertion. Loader/main attachment holds, held stale events,
-same-item late/reordered groups and exposed unplayable options remain unproven. These are prior
-producer results, not consumer Release/UI acceptance. Scoped producer fixtures remain in
+item/revision fences, local MP4 and allowlisted failure payloads. R145's corrected six-row HLS probe
+passed against a direct native oracle. Its instrumented loader boundary, held real group result and
+both actual stale callback orders passed, with one sensitive stale-error control. These disposable
+seams do not prove unmodified production timing equivalence. Same-item late/reordered groups and an
+actual unplayable option remain capability-blocked. These are producer results, not consumer
+Release/UI acceptance. Scoped producer fixtures remain in
 `test/native-player-r24`; `managed-playback.test.ts` and the existing caller suites exercise the
 app through native-port stand-ins. Actual consumer Release/UI verification remains required.
 

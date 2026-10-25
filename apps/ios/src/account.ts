@@ -126,7 +126,7 @@ export type Loadable<A> =
       readonly since: number;
     };
 
-/** A saved subscription as the screens see it: no login. */
+/** A provider in the roster, personal or Demo, as the screens see it: no login. */
 export interface Member {
   readonly entry: SubscriptionEntry | DemoEntry;
   /** What lists call it: its name, else its server's host, numbered where two read the same. */
@@ -223,7 +223,7 @@ const loads = new Map<string, AbortController>();
 let revisions = 0;
 /** By id: the revision when its saved lists were last deleted; no list of an older login is saved. */
 const dropped = new Map<string, number>();
-/** Told after each change to `dropped` (`onSavable`). */
+/** Told after each change to `dropped` and as Demo starts erasing (`onSavable`). */
 const fences = new Set<() => void>();
 /** A saved list younger than this shows as loaded at launch, and isn't asked for again. */
 const FRESH_FOR = 12 * 60 * 60 * 1000;
@@ -412,9 +412,9 @@ export const savable = (id: string, source: Source) =>
 
 /**
  * Calls `listener` whenever `savable` may answer otherwise for a login that stays the current
- * one: as its saved lists start to be deleted, and when a failed deletion lets them be saved
- * again. A login signed in or dropped is told by sources.ts, and a removal by the roster. For
- * titles.ts, whose file facts count only while `savable` holds. Answers how to stop.
+ * one: as its saved lists start to be deleted, when a failed deletion lets them be saved again,
+ * and as Demo starts erasing. A login signed in or dropped is told by sources.ts, and a removal
+ * by the roster. For titles.ts, whose file facts count only while `savable` holds. Answers how to stop.
  */
 export function onSavable(listener: () => void): () => void {
   fences.add(listener);
@@ -1133,8 +1133,8 @@ export async function update(
 /**
  * Removes a subscription: what plays from it stops, and its login and lists go. What plays from
  * another, or a downloaded copy, plays on. Its favourites, watchlist, history and progress stay
- * for when the account is added again, unless `keepHistory` is false. Removing the last returns to
- * Connect.
+ * for when the account is added again, unless `keepHistory` is false. Removing the last personal
+ * provider returns to Connect only when Demo is not listed either.
  *
  * Its downloads are fenced first, then the registry is written, with the history to delete when
  * it goes too; a refused fence or write rejects with nothing changed, and the subscription stays

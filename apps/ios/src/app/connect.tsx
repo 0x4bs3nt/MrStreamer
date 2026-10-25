@@ -24,11 +24,11 @@ export default function Connect() {
         setTrying(false);
         if (result.kind === "incomplete")
           setNote("Earlier demo data couldn't all be removed. Try again.");
-        else if (result.kind === "refused") setNote("Demo isn't available right now. Try again.");
+        else if (result.kind === "refused") setNote("Demo couldn't start.");
       })
       .catch(() => {
         setTrying(false);
-        setNote("Demo isn't available right now. Try again.");
+        setNote("Demo couldn't start. Try again.");
       });
   };
   return (

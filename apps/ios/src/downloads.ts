@@ -1479,6 +1479,7 @@ async function again(record: Stored, stands: Stands = always): Promise<Retried> 
  * failed one is queued again. Rejects while its subscription isn't signed in, when its provider
  * doesn't list it, or when the subscription was removed or signed in anew meanwhile; while the
  * lists are made again with its subscription's in them, as after another's removal, it waits.
+ * Final admission also refuses once Demo starts erasing, even while its old Source stays current.
  */
 export async function addDownload(ref: TitleRef): Promise<Download> {
   startDownloads();
