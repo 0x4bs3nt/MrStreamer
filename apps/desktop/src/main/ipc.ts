@@ -16,13 +16,14 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
 /**
- * One handler per IPC method. `frame` associates observations with the current main frame only;
- * it is derived by main, never supplied by the renderer or captured. `Failed` answers a typed error.
+ * One handler per IPC method. `frame` identifies the authorized current main frame for
+ * observations; it is derived by main, never supplied by the renderer or captured.
+ * `Failed` answers a typed error.
  */
 export type IpcHandlers = {
   readonly [M in IpcMethod]: (
     input: IpcInput<M>,
-    frame: string | null,
+    frame: string,
   ) => Effect.Effect<IpcOutput<M>, Failed>;
 };
 
@@ -36,7 +37,8 @@ type DomainOf<M> = M extends `${infer D}.${string}` ? D : never;
 type IpcDomain = DomainOf<IpcMethod>;
 
 /**
- * Registers every IPC method. Input is validated against its schema before the handler runs on
+ * Registers every IPC method. Calls require a non-null current main frame and a window accepted
+ * by `isTrusted`, before schema validation or handler execution. Input is validated before running on
  * `run`, the main runtime, and any failure resolves to a typed error instead of a rejected promise.
  * Failed calls go to the diagnostics.
  */
@@ -89,16 +91,15 @@ export function registerIpc(
     const schema: () => (data: unknown) => unknown = ipcInputs[method];
     const handler = handlers[method] as (
       input: unknown,
-      frame: string | null,
+      frame: string,
     ) => Effect.Effect<unknown, Failed>;
     // Built on the method's first call, not while the app starts.
     let validate: ((data: unknown) => unknown) | null = null;
 
     ipcMain.handle(method, async (event, raw: unknown): Promise<Result<unknown>> => {
-      if (
-        !isTrusted(event.sender) ||
-        (method.startsWith("analytics.") && event.senderFrame !== event.sender.mainFrame)
-      ) {
+      // Electron gives no frame once the one that sent the call has navigated or gone.
+      const from = event.senderFrame;
+      if (!isTrusted(event.sender) || !from || from !== event.sender.mainFrame) {
         return {
           ok: false,
           error: { kind: "unexpected", detail: "IPC call from an unknown window." },
@@ -117,16 +118,8 @@ export function registerIpc(
           },
         };
       }
-      const frame =
-        event.senderFrame && event.senderFrame === event.sender.mainFrame
-          ? `${event.senderFrame.processId}:${event.senderFrame.routingId}`
-          : null;
+      const frame = `${from.processId}:${from.routingId}`;
       if (method === "guide.cancelSearch") {
-        if (!frame)
-          return {
-            ok: false,
-            error: { kind: "invalid-input", detail: "Search needs the main frame." },
-          };
         const request = ipcInputs["guide.cancelSearch"]()(input);
         if (!(request instanceof type.errors))
           pending.get(event.sender)?.get(requestKey(frame, request))?.abort();
@@ -141,7 +134,7 @@ export function registerIpc(
         input.request !== undefined
       ) {
         const request = ipcInputs["guide.cancelSearch"]()(input.request);
-        if (!frame || request instanceof type.errors)
+        if (request instanceof type.errors)
           return {
             ok: false,
             error: { kind: "invalid-input", detail: "Search needs the main frame." },

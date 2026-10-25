@@ -145,4 +145,21 @@ describe("owned guide-search IPC", () => {
     });
     expect(a.listenerCount("destroyed")).toBe(0);
   });
+
+  it("limits active searches and releases a slot after cancellation", async () => {
+    start();
+    const a = sender(1);
+    const pending = Array.from({ length: 256 }, (_, i) => search(a, request("palette", `${i}`)));
+    expect(await search(a, request("palette", "overflow"))).toMatchObject({
+      ok: false,
+      error: { kind: "invalid-input" },
+    });
+    await cancel(a, request("palette", "0"));
+    await pending[0];
+    const replacement = search(a, request("palette", "replacement"));
+    a.emit("render-process-gone");
+    expect(await replacement).toMatchObject({ ok: false, error: { detail: "Closing." } });
+    await Promise.all(pending);
+    expect(a.listenerCount("destroyed")).toBe(0);
+  });
 });
