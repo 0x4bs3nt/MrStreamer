@@ -66,6 +66,8 @@ export interface LiveSource {
 /** One subscription's channels and categories, without those for adults: its part of a library. */
 export interface Part {
   readonly subscriptionId: string;
+  /** Ordered trusted spellings, by canonical channel ID. Adult channels have no entry. */
+  readonly guideIds: ReadonlyMap<string, readonly string[]>;
   /** In the provider's order. */
   readonly channels: readonly Channel[];
   /** By the provider's channel id and the id of each of its streams. */
@@ -95,11 +97,14 @@ export function* partSteps({
   );
   const byId = new Map<string, Channel>();
   const channels: Channel[] = [];
-  for (const listed of (yield* liveChannelSteps(streams)).channels) {
+  const normalized = yield* liveChannelSteps(streams);
+  const guideIds = new Map<string, readonly string[]>();
+  for (const listed of normalized.channels) {
     if (due()) yield;
     if (listed.variants.some((variant) => adultStreams.has(variant.id))) continue;
     const channel = { ...listed, subscriptionId, key: ownedKey({ subscriptionId, id: listed.id }) };
     channels.push(channel);
+    guideIds.set(channel.id, normalized.guideIds.get(channel.id) ?? []);
     byId.set(channel.id, channel);
     // A channel can have thousands of streams.
     for (const variant of channel.variants) {
@@ -125,6 +130,7 @@ export function* partSteps({
   }
   return {
     subscriptionId,
+    guideIds,
     channels,
     byId,
     categories: categories.flatMap((category) => {
@@ -299,9 +305,20 @@ export async function inTasks<A>(steps: Steps<A>, wanted: () => boolean): Promis
 
 /** Channels whose names hold every word of `query`, in the catalogue's order. */
 export function searchChannels(library: Library, query: string): readonly Channel[] {
+  return finish(searchChannelsSteps(library, query));
+}
+
+/** The same full channel matches, in catalogue order, yielding between slices for input. */
+export function* searchChannelsSteps(library: Library, query: string): Steps<readonly Channel[]> {
   const words = searchWords(query);
   if (words.length === 0) return [];
-  return library.channels.filter((channel) => matchRanges(channel.title, words).length > 0);
+  const found: Channel[] = [];
+  const due = pacer();
+  for (const channel of library.channels) {
+    if (due()) yield;
+    if (matchRanges(channel.title, words).length > 0) found.push(channel);
+  }
+  return found;
 }
 
 /** A country or a category Live's discovery found: a country opens in Live, a category whole. */

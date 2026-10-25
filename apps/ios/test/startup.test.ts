@@ -1,3 +1,4 @@
+import { nativePlayer } from "./native-player.ts";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,21 +18,25 @@ const memory = vi.hoisted(() => ({
   held: [] as Array<() => void>,
   holdLogins: false,
   holdLists: false,
+  holdPasswords: new Set<string>(),
+  heldPasswords: [] as Array<{ key: string; release: () => void }>,
+  refusedPasswords: new Set<string>(),
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
-vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async () => undefined,
-    play: () => undefined,
-    pause: () => undefined,
-  }),
-}));
+vi.mock("expo-video", () => ({ createVideoPlayer: () => nativePlayer() }));
+
 vi.mock("expo-secure-store", () => ({
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY: 0,
-  getItemAsync: async (key: string) => memory.keychain.get(key) ?? null,
+  getItemAsync: async (key: string) => {
+    const password = memory.keychain.get(key) ?? null;
+    if (memory.holdPasswords.has(key)) {
+      await new Promise<void>((release) => memory.heldPasswords.push({ key, release }));
+    }
+    if (memory.refusedPasswords.has(key)) throw new Error("Keychain refused");
+    return password;
+  },
   setItemAsync: async (key: string, value: string) => {
     memory.keychain.set(key, value);
   },
@@ -103,6 +108,13 @@ const release = () => {
   for (const go of memory.held.splice(0)) go();
 };
 
+/** Lets one pending native password answer, preserving the other held reads. */
+function releasePassword(id: string) {
+  const at = memory.heldPasswords.findIndex((held) => held.key === `s.${id}`);
+  if (at < 0) throw new Error("No held password for the subscription");
+  memory.heldPasswords.splice(at, 1)[0]!.release();
+}
+
 async function until(ready: () => boolean, what = "the condition") {
   for (let waited = 0; !ready(); waited += 10) {
     if (waited > 8_000) throw new Error(`Timed out waiting for ${what}`);
@@ -126,10 +138,11 @@ async function launch() {
   const titles = await import("../src/titles.ts");
   const startup = await import("../src/startup.ts");
   const { kindOf } = await import("@mrstreamer/core/ondemand/catalogue");
-  const seen = { opened: null as Opened | null, listsShown: 0 };
-  titles.onTitleLists(() => {
-    if (titles.titleLists().kind === "ready") seen.listsShown++;
-  });
+  const seen = {
+    opened: null as Opened | null,
+    listsShown: 0,
+    published: [] as ReadonlySet<string>[],
+  };
   /** The subscriptions whose movies and series the published lists hold. */
   const titlesFrom = () => {
     const lists = titles.titleLists();
@@ -143,6 +156,11 @@ async function launch() {
         : [],
     );
   };
+  titles.onTitleLists(() => {
+    if (titles.titleLists().kind !== "ready") return;
+    seen.listsShown++;
+    seen.published.push(titlesFrom());
+  });
   startup.onStartup(() => {
     const catalogue = account.currentCatalogue();
     seen.opened = {
@@ -187,6 +205,8 @@ beforeEach(async () => {
   native.undeletable = null;
   native.sizeOf = null;
   memory.keychain.clear();
+  memory.holdPasswords.clear();
+  memory.refusedPasswords.clear();
   memory.requests.length = 0;
   memory.holdLogins = false;
   memory.holdLists = false;
@@ -202,6 +222,8 @@ afterEach(() => {
   memory.holdLogins = false;
   memory.holdLists = false;
   release();
+  memory.holdPasswords.clear();
+  for (const held of memory.heldPasswords.splice(0)) held.release();
   native.gate = null;
   vi.useRealTimers();
 });
@@ -266,6 +288,107 @@ describe("opening after a launch", () => {
     await until(() => app.currentStartup().kind === "open", "the app to open");
     expect(app.seen.opened).toMatchObject({ titlesFrom: new Set([a, b]), listsShown: 1 });
   });
+
+  it("publishes one combined saved title library when launch passwords answer at different times", async () => {
+    const { a, b } = await savedBoth();
+    for (const id of [a, b]) memory.holdPasswords.add(`s.${id}`);
+    memory.holdLogins = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(memory.heldPasswords).toHaveLength(2);
+    releasePassword(a);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(member(app, a).titles).toMatchObject({ kind: "ready", from: "cache" });
+    expect(member(app, a).live).toMatchObject({ kind: "ready", from: "cache" });
+    expect(app.currentStartup().kind).toBe("opening");
+    expect(app.seen.published).toEqual([]);
+    const sources = await import("../src/sources.ts");
+    expect(sources.currentSource(b)).toBeUndefined();
+
+    releasePassword(b);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(app.currentStartup().kind).toBe("open");
+    expect(app.seen.published).toEqual([new Set([a, b])]);
+    expect(app.seen.opened?.titlesFrom).toEqual(new Set([a, b]));
+  });
+
+  it("flushes known saved titles at the deadline with a held password and admits its later library after opening", async () => {
+    const { a, b } = await savedBoth();
+    for (const id of [a, b]) memory.holdPasswords.add(`s.${id}`);
+    memory.holdLogins = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(100);
+    releasePassword(a);
+    await vi.advanceTimersByTimeAsync(7_400);
+    expect(member(app, a).titles).toMatchObject({ kind: "ready", from: "cache" });
+    expect(app.currentStartup().kind).toBe("opening");
+    expect(app.seen.published).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(app.currentStartup().kind).toBe("open");
+    expect(app.seen.published).toEqual([new Set([a])]);
+    expect(app.collectionsOf("movie")).not.toBeNull();
+    expect(app.collectionsOf("series")).not.toBeNull();
+
+    releasePassword(b);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(app.seen.published).toEqual([new Set([a]), new Set([a, b])]);
+    expect(app.currentStartup().kind).toBe("open");
+  });
+
+  it.each(["missing", "refused"])(
+    "ends the launch title batch when a held password is %s",
+    async (answer) => {
+      const { a, b } = await savedBoth();
+      if (answer === "missing") memory.keychain.delete(`s.${b}`);
+      else memory.refusedPasswords.add(`s.${b}`);
+      memory.holdPasswords.add(`s.${b}`);
+      memory.holdLogins = true;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const app = await launch();
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(member(app, a).titles).toMatchObject({ kind: "ready", from: "cache" });
+      expect(app.seen.published).toEqual([]);
+      releasePassword(b);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(app.currentStartup().kind).toBe("open");
+      expect(app.seen.published).toEqual([new Set([a])]);
+      expect(member(app, b).needsSecret).toBe(true);
+      expect(app.shownOf(member(app, b).titles)).toBeNull();
+      const sources = await import("../src/sources.ts");
+      expect(sources.currentSource(b)).toBeUndefined();
+    },
+  );
+
+  it.each(["removal", "password replacement"])(
+    "ends the launch title batch after %s supersedes a held password",
+    async (change) => {
+      const { a, b } = await savedBoth();
+      memory.holdPasswords.add(`s.${b}`);
+      const app = await launch();
+      await until(
+        () => memory.heldPasswords.length === 1 && member(app, a).titles.kind === "ready",
+        "one saved list and one pending password",
+      );
+      if (change === "removal") await app.remove(b, { keepHistory: false });
+      else await app.update(b, { password: TWO.password });
+      await until(
+        () => app.currentStartup().kind === "open",
+        "opening without an obsolete password read",
+      );
+      expect(memory.heldPasswords).toHaveLength(1);
+      const sources = await import("../src/sources.ts");
+      const authoritative = sources.currentSource(b);
+      expect(app.titlesFrom().has(a)).toBe(true);
+      if (change === "removal") expect(app.titlesFrom()).toEqual(new Set([a]));
+      else expect(authoritative).toBeDefined();
+      releasePassword(b);
+      await app.startUp();
+      await settle();
+      expect(sources.currentSource(b)).toBe(authoritative);
+    },
+  );
 
   it("opens with older lists while they load again quietly, and keeps them when that fails", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -356,6 +479,102 @@ describe("opening after a launch", () => {
     expect(app.titleLists()).toEqual({ kind: "ready", index });
     await until(() => app.currentStartup().kind === "open", "the app to open");
     expect(app.seen.opened?.titlesFrom.has(b)).toBe(true);
+  });
+
+  it("opens the real saved roster at the deadline while Keychain hasn't answered, without authorizing a source", async () => {
+    const { a, b } = await savedBoth();
+    for (const id of [a, b]) memory.holdPasswords.add(`s.${id}`);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(memory.heldPasswords).toHaveLength(2);
+    expect(app.currentStartup().kind).toBe("open");
+    // Root mounts the actual App only for a ready roster, and chooses Connect only for zero members.
+    expect(app.currentRoster()).toMatchObject({ kind: "ready" });
+    expect(app.members().map((each) => each.entry.id)).toEqual([a, b]);
+    const sources = await import("../src/sources.ts");
+    expect(sources.signedIn()).toEqual([]);
+    expect(app.seen.opened?.channelsFrom.size).toBe(0);
+    expect(app.seen.opened?.titlesFrom.size).toBe(0);
+    expect(app.members().every((each) => !each.needsSecret && each.live.kind === "idle")).toBe(
+      true,
+    );
+
+    memory.holdPasswords.clear();
+    for (const held of memory.heldPasswords.splice(0)) held.release();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(app.titlesFrom()).toEqual(new Set([a, b]));
+    expect(app.currentStartup().kind).toBe("open");
+  });
+
+  it("shows a healthy provider's retained library while another password is pending, then asks for a missing password", async () => {
+    const { a, b } = await savedBoth();
+    memory.keychain.delete(`s.${b}`);
+    memory.holdPasswords.add(`s.${b}`);
+    memory.holdLogins = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const app = await launch();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(app.currentStartup().kind).toBe("open");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+    expect(member(app, a).live).toMatchObject({ kind: "ready", from: "cache" });
+    expect(member(app, b)).toMatchObject({ needsSecret: false, live: { kind: "idle" } });
+    // Refresh remains usable for the healthy source while the other Keychain read is pending.
+    vi.useRealTimers();
+    app.reloadChannels(a);
+    await until(() => member(app, a).live.kind === "ready", "the healthy refresh");
+    expect(member(app, a).live).toMatchObject({ kind: "ready", from: "provider" });
+    for (const held of memory.heldPasswords.splice(0)) held.release();
+    await until(() => member(app, b).needsSecret, "the missing password");
+    expect(member(app, b)).toMatchObject({ needsSecret: true, live: { kind: "idle" } });
+    const sources = await import("../src/sources.ts");
+    expect(sources.currentSource(b)).toBeUndefined();
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+  });
+
+  it("can remove a subscription with a held password and never restores its late credentials or cache", async () => {
+    const { a, b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    await app.remove(b, { keepHistory: false });
+    expect(app.members().map((each) => each.entry.id)).toEqual([a]);
+    for (const held of memory.heldPasswords.splice(0)) held.release();
+    await app.startUp();
+    await until(() => app.currentStartup().kind === "open", "the app to open");
+    const sources = await import("../src/sources.ts");
+    expect(sources.currentSource(b)).toBeUndefined();
+    expect(app.titlesFrom()).toEqual(new Set([a]));
+    expect(app.seen.opened?.channelsFrom).toEqual(new Set([a]));
+  });
+
+  it("keeps a name edit while a password is pending and accepts the unchanged account's late answer", async () => {
+    const { b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    await app.update(b, { name: "Renamed" });
+    for (const held of memory.heldPasswords.splice(0)) held.release();
+    await app.startUp();
+    await until(() => app.currentStartup().kind === "open", "the app to open");
+    expect(member(app, b).label).toBe("Renamed");
+    expect(member(app, b).live).toMatchObject({ kind: "ready", from: "cache" });
+  });
+
+  it("doesn't replace an explicit password edit with an older Keychain answer", async () => {
+    const { b } = await savedBoth();
+    memory.holdPasswords.add(`s.${b}`);
+    const app = await launch();
+    await until(() => memory.heldPasswords.length === 1, "the held password");
+    // Re-entering even the same password creates a new authorized Source and discards old cache.
+    await app.update(b, { password: TWO.password });
+    const sources = await import("../src/sources.ts");
+    const edited = sources.sourceOf(b);
+    for (const held of memory.heldPasswords.splice(0)) held.release();
+    await app.startUp();
+    expect(sources.sourceOf(b)).toBe(edited);
+    expect(member(app, b).needsSecret).toBe(false);
   });
 
   it("opens at once with no subscription saved", async () => {

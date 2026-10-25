@@ -44,6 +44,7 @@ vi.mock("react-native", async () => {
   };
 });
 vi.mock("expo-router", () => ({
+  useIsFocused: () => true,
   router: { push: (href: string) => scenario.did.push(`push ${href}`) },
 }));
 vi.mock("expo-video", () => ({ VideoView: () => null }));
@@ -62,6 +63,7 @@ vi.mock("../src/titles.ts", () => ({
   titlesWorkedOut: () => true,
   useMetadataVersion: () => 0,
   useCollections: () => null,
+  useHasTitles: () => false,
   named: (title: Title) => title,
 }));
 vi.mock("../src/resume.ts", () => ({

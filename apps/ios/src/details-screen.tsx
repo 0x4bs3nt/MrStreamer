@@ -11,12 +11,7 @@ import { formatBytes } from "@mrstreamer/core/i18n";
 import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import type { EpisodeMark, SeriesViewing, TitleProgress } from "@mrstreamer/contracts/viewing";
 import { versionOptions } from "@mrstreamer/core/ondemand/version-options";
-import {
-  automaticVersion,
-  resumePoint,
-  runtime,
-  timeLeftOf,
-} from "@mrstreamer/core/viewing/continue";
+import { automaticVersion, runtime, timeLeftOf } from "@mrstreamer/core/viewing/continue";
 import { continuation, episodeStates } from "@mrstreamer/core/viewing/episodes";
 import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { SymbolView, type SFSymbol } from "expo-symbols";
@@ -40,12 +35,21 @@ import {
 } from "./download-controls.tsx";
 import { useDownloadOf } from "./downloads.ts";
 import { Glass } from "./glass.tsx";
-import { failureOf, playEpisode, playMovie, useFailure, type Failure } from "./play-title.ts";
+import {
+  failureOf,
+  resumeEpisode,
+  resumeMovie,
+  resumeSeries,
+  useFailure,
+  type Failure,
+} from "./play-title.ts";
+import { request, type Request } from "./playback.ts";
 import { useRead, type Loaded } from "./read.ts";
 import { members, retryTitles, useRoster } from "./account.ts";
 import { describeError } from "./errors.ts";
 import { Docked, loadingStatus, PlaceholderLines, Placeholders, Shape } from "./loading.tsx";
 import { openDetails, versionOf } from "./resume.ts";
+import { SeriesDownloadRow } from "./series-download-row.tsx";
 import { pickedVersion, pickVersion, useSavedState } from "./storage.ts";
 import {
   detailsOf,
@@ -63,7 +67,8 @@ import { removeTitle, saveTitle, savedEntry, useWatchlist } from "./watchlist.ts
 // A movie's or series' details, pushed on the Movies or Series tab: the backdrop with one glass
 // capsule over it (Play or Resume, Save, and for a movie Download), the facts, the version menu,
 // and for a series its seasons as text tabs over episode rows with stills, how far each got and
-// each one's download button. Long-press marks an episode watched or unwatched, with the
+// each one's download button, with the season's and the whole series' bulk downloads
+// (series-download-row.tsx). Long-press marks an episode watched or unwatched, with the
 // desktop's Undo line, and offers its download's actions. Play and Resume always stream; a
 // download plays offline from its own menu, from an episode's check, and from Downloads. Closing
 // Watch comes back here, as it lies over the navigation.
@@ -128,11 +133,34 @@ export function DetailsScreen({
 /** The version menu's choice of Automatic: progress and the title's own choice decide. */
 const AUTOMATIC = "automatic";
 
+/**
+ * The word of a Resume pressed here, for play-title to check before it plays: it stands while
+ * this screen still shows the version it was pressed for, `key`. The screen showing another
+ * version, or going, ends it for good, so a Resume still waiting for earlier saves or the record
+ * never plays a version no longer shown. Drawing the same version again keeps it.
+ */
+function usePressed(key: string): () => Request {
+  const shown = useRef(0);
+  useEffect(
+    () => () => {
+      shown.current++;
+    },
+    [key],
+  );
+  return () => {
+    const at = shown.current;
+    return { stands: () => shown.current === at };
+  };
+}
+
 function Details({ title, opened, asked }: { title: Title; opened: OwnedId; asked: boolean }) {
   const viewing = useViewing();
   const watchlist = useWatchlist();
   const state = useSavedState();
   const [picked, setPicked] = useState<OwnedId | typeof AUTOMATIC | null>(null);
+  // Rises as the menu accepts a version, Automatic or the one shown included, at once: a bulk
+  // download confirmed before goes no further (series-download-row.tsx).
+  const accepted = useRef(0);
   // The title as listed now, for a version menu answered after the lists changed; none once these
   // details are gone, as when the lists no longer have the title, though the sheet stays open.
   const listedNow = useRef<Title | null>(null);
@@ -197,6 +225,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
     [chosen.subscriptionId, chosen.id],
   );
   const shownTitle = useMemo(() => ({ ...title, ...version }), [title, version]);
+  const pressed = usePressed(`${title.key}|${ownedKey(version)}`);
   // Details answer only the version they were read for: another version shows loading at once.
   // Try again reads the same version anew; until that answers, its facts show as loading.
   const [again, setAgain] = useState(0);
@@ -250,13 +279,18 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
         // only with a version still listed: otherwise it changes nothing, the pick saved included.
         const now = listedNow.current;
         if (!now || now.key !== title.key) return;
+        // A choice is the viewer's newest ask: a Resume still waiting plays nothing (`request`).
         if (index === 0) {
+          request();
+          accepted.current++;
           setPicked(AUTOMATIC);
           pickVersion(now, null);
           return;
         }
         const choice = choices[index - 1];
         if (!choice || !now.versions.some((each) => sameOwned(each, choice.version))) return;
+        request();
+        accepted.current++;
         setPicked(choice.version);
         pickVersion(now, choice.version);
       },
@@ -297,7 +331,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
               label={movieProgress && !movieProgress.finished ? "Resume" : "Play"}
               onPress={() =>
                 // After a failure, Watch closes onto this page and its version menu opens.
-                playMovie(shownTitle, version, resumePoint(movieProgress), chooseVersion)
+                resumeMovie(shownTitle, version, movieProgress, chooseVersion, pressed())
               }
               testID="details-play"
             />
@@ -388,6 +422,7 @@ function Details({ title, opened, asked }: { title: Title; opened: OwnedId; aske
           title={shownTitle}
           version={version}
           sequence={sequence}
+          accepted={accepted}
           onVersions={chooseVersion}
         />
       ) : null}
@@ -438,6 +473,7 @@ function SeriesPlay({
   onVersions: () => void;
 }) {
   const viewing = useViewing();
+  const pressed = usePressed(ownedKey(version));
   const standing = useRead(
     ownedKey(version),
     useCallback(() => seriesViewing(version), [version]),
@@ -458,9 +494,7 @@ function SeriesPlay({
       label={label}
       disabled={!details || !goesOn}
       onPress={() =>
-        details &&
-        goesOn &&
-        playEpisode(details, goesOn.episode, resumePoint(goesOn.resume), onVersions)
+        details && goesOn && resumeSeries(details, version, goesOn, onVersions, pressed())
       }
       testID="details-play"
     />
@@ -473,14 +507,25 @@ function Seasons({
   title,
   version,
   sequence,
+  accepted,
   onVersions,
 }: {
   details: SeriesDetails;
   title: Title;
   version: OwnedId;
   sequence: number;
+  /** How many versions the menu accepted so far. */
+  accepted: { readonly current: number };
   onVersions: () => void;
 }) {
+  const pressed = usePressed(ownedKey(version));
+  // The bulk downloads' word: the Resume word, also ended by a version accepted in the menu since,
+  // even the same one. Playing or stopping anything else leaves it standing.
+  const bulk = () => {
+    const word = pressed();
+    const at = accepted.current;
+    return { stands: () => accepted.current === at && word.stands() };
+  };
   const standing = useRead(
     ownedKey(version),
     useCallback(() => seriesViewing(version), [version]),
@@ -546,6 +591,14 @@ function Seasons({
       ) : (
         <Text style={styles.seasonName}>{shown.name}</Text>
       )}
+      <SeriesDownloadRow
+        details={details}
+        version={version}
+        scope={{ kind: "season", season: shown.number }}
+        label={shown.name}
+        action="Download remaining"
+        stands={bulk}
+      />
       {undoable ? (
         <View style={styles.undo} accessibilityLiveRegion="polite">
           <Text style={styles.undoText}>{undoable.label}</Text>
@@ -572,11 +625,21 @@ function Seasons({
             name={title.title}
             watched={state.kind === "watched"}
             progress={progress}
-            onPlay={() => playEpisode(details, episode, resumePoint(progress), onVersions)}
+            onPlay={() => resumeEpisode(details, episode, progress, onVersions, pressed())}
             onMark={(watched) => mark(episode, watched)}
           />
         );
       })}
+      {details.seasons.length > 1 ? (
+        <SeriesDownloadRow
+          details={details}
+          version={version}
+          scope={{ kind: "series" }}
+          label={title.title}
+          action="Review series download"
+          stands={bulk}
+        />
+      ) : null}
     </View>
   );
 }

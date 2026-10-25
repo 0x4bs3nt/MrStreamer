@@ -1,4 +1,6 @@
+import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
+import type { DownloadList } from "@mrstreamer/contracts/downloads";
 import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue } from "../src/account.ts";
@@ -34,6 +36,7 @@ interface NativeView {
 type Answer = { view: number; request: number; restored: boolean };
 
 const native = vi.hoisted(() => ({
+  downloads: { items: [], series: {}, bytes: 0, free: null, ended: 0 } as DownloadList,
   made: 0,
   /** The VideoViews on screen, newest last. */
   views: [] as NativeView[],
@@ -46,7 +49,7 @@ const native = vi.hoisted(() => ({
   /** Whether Watch answered while its restore handler still ran. */
   answeredInHandler: false,
   /** The player's listeners, to fail what plays. */
-  listeners: new Map<string, (event: object) => void>(),
+  port: null as ReturnType<typeof nativePlayer> | null,
   /** Whether the iPhone has Picture in Picture, and whether asking for it starts it. */
   pictureInPicture: { supported: false, starts: true },
   /** Set, the native answer to starting Picture in Picture waits until the test calls it. */
@@ -60,8 +63,17 @@ const native = vi.hoisted(() => ({
   pathname: "/live",
   /** The channels Live shows. */
   catalogue: { kind: "loading" } as Catalogue,
+  /** The system alerts shown, by title and message. */
+  alerts: [] as string[][],
+  sheets: [] as Array<{
+    options: readonly string[];
+    message?: string;
+    pick: (index: number) => void;
+  }>,
 }));
 
+vi.mock("../src/downloads.ts", () => ({ useDownloads: () => native.downloads }));
+vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("expo-video", async () => {
   const { Component } = await import("react");
   type Props = {
@@ -122,17 +134,20 @@ vi.mock("expo-video", async () => {
     VideoView,
     VideoAirPlayButton: () => null,
     isPictureInPictureSupported: () => native.pictureInPicture.supported,
-    createVideoPlayer: () => ({
-      muted: true,
-      timeUpdateEventInterval: 0,
-      currentTime: 0,
-      duration: 0,
-      addListener: (name: string, listener: (event: object) => void) =>
-        native.listeners.set(name, listener),
-      replaceAsync: async () => void native.player.push("replace"),
-      play: () => void native.player.push("play"),
-      pause: () => void native.player.push("pause"),
-    }),
+    createVideoPlayer: () => {
+      const port = nativePlayer(() => {
+        native.player.push("replace");
+      });
+      port.duration = 0;
+      port.play.mockImplementation(() => {
+        native.player.push("play");
+      });
+      port.pause.mockImplementation(() => {
+        native.player.push("pause");
+      });
+      native.port = port;
+      return port;
+    },
   };
 });
 vi.mock("react-native", async () => {
@@ -150,7 +165,15 @@ vi.mock("react-native", async () => {
     StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {} },
     Keyboard: { dismiss: () => undefined },
     PanResponder: { create: () => ({ panHandlers: {} }) },
-    ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
+    ActionSheetIOS: {
+      showActionSheetWithOptions: (
+        options: { options: readonly string[]; message?: string },
+        pick: (index: number) => void,
+      ) => {
+        native.sheets.push({ ...options, pick });
+      },
+    },
+    Alert: { alert: (title: string, message: string) => void native.alerts.push([title, message]) },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
   };
 });
@@ -189,7 +212,7 @@ vi.mock("../src/account.ts", () => ({
   members: () => [{ entry: { id: "a" } }],
 }));
 
-const { closeWatch, openWatch, play, playbackState, retry, stop, togglePause } =
+const { closeWatch, openWatch, play, playbackState, player, retry, stop, togglePause } =
   await import("../src/playback.ts");
 const { WatchLayer } = await import("../src/watch.tsx");
 
@@ -207,7 +230,7 @@ const inWatch = { watch: true, login: [] } as const;
 const { act } = React;
 
 /** The player fails, as AVPlayer reports. */
-const failure = () => native.listeners.get("statusChange")?.({ status: "error" });
+const failure = () => native.port?.failure();
 /** Watch's answers reach the native view, in the order Watch sent them. */
 function deliver() {
   while (native.calls.length) native.calls.shift()?.();
@@ -230,6 +253,7 @@ const offline = { index: 1, routes: [{ name: "connect" }, { name: "offline" }] }
 let unmount = () => {};
 beforeEach(() => {
   stop();
+  if (native.port) native.port.tracks = null;
   Object.assign(native, {
     views: [],
     calls: [],
@@ -242,6 +266,9 @@ beforeEach(() => {
     pushed: [],
     root: onLive,
     pathname: "/live",
+    alerts: [],
+    sheets: [],
+    downloads: { items: [], series: {}, bytes: 0, free: null, ended: 0 },
   });
 });
 afterEach(() => unmount());
@@ -251,7 +278,15 @@ async function inPictureInPicture(item: Playing) {
   const root = createRoot(window.document.createElement("div"));
   act(() => root.render(React.createElement(WatchLayer)));
   unmount = () => act(() => root.unmount());
-  await act(() => play(item, open, inWatch));
+  await act(() =>
+    play(
+      item,
+      item.live
+        ? { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false }
+        : { kind: "file", originalLanguage: null, open: open },
+      inWatch,
+    ),
+  );
   const view = shown();
   act(() => view.start());
   expect(playbackState.get()).toMatchObject({ watch: false, pip: true });
@@ -280,7 +315,7 @@ describe("returning from Picture in Picture", () => {
     // Another title plays before Watch answers the first return, so it answers no to that one.
     act(() => {
       first = view.restore();
-      void play(movie("2"), open, inWatch);
+      void play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
     });
     // AVKit asks again before that answer arrives; Watch shows the new title and answers yes.
     act(() => {
@@ -316,7 +351,7 @@ describe("returning from Picture in Picture", () => {
     act(() => {
       request = view.restore();
       stop();
-      void play(movie("1"), open, inWatch);
+      void play(movie("1"), { kind: "file", originalLanguage: null, open: open }, inWatch);
     });
     deliver();
     expect(native.sent).toEqual([{ view: view.id, request, restored: false }]);
@@ -366,7 +401,15 @@ async function watching(item: Playing, opens = open, { playing = true } = {}) {
   const root = createRoot(container);
   act(() => root.render(React.createElement(WatchLayer)));
   unmount = () => act(() => root.unmount());
-  await act(() => play(item, opens, inWatch));
+  await act(() =>
+    play(
+      item,
+      item.live
+        ? { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false }
+        : { kind: "file", originalLanguage: null, open: opens },
+      inWatch,
+    ),
+  );
   if (playing) started();
   return {
     /** Draws Watch again, as navigation's state changing does. */
@@ -382,8 +425,7 @@ async function watching(item: Playing, opens = open, { playing = true } = {}) {
   };
 }
 /** The player reports it plays, or stopped playing. */
-const started = (isPlaying = true) =>
-  act(() => native.listeners.get("playingChange")?.({ isPlaying }));
+const started = (isPlaying = true) => act(() => native.port?.state(isPlaying));
 const channel = (id: string): Playing => ({ ...movie(id), title: "A channel", live: true });
 
 describe("Downloads and Settings from Watch", () => {
@@ -460,7 +502,7 @@ describe("Downloads and Settings from Watch", () => {
       const closed = await watching(movie("1"));
       await closed.press("watch-settings");
       await act(async () => undefined);
-      act(() => closeWatch());
+      act(() => void closeWatch());
       act(() => vi.advanceTimersByTime(1000));
       expect(playbackState.get()).toMatchObject({ watch: false, aside: false });
       unmount();
@@ -468,7 +510,9 @@ describe("Downloads and Settings from Watch", () => {
       const replaced = await watching(movie("2"));
       await replaced.press("watch-settings");
       await act(async () => undefined);
-      await act(() => play(movie("3"), open, inWatch));
+      await act(() =>
+        play(movie("3"), { kind: "file", originalLanguage: null, open: open }, inWatch),
+      );
       act(() => vi.advanceTimersByTime(1000));
       expect(playbackState.get()).toMatchObject({ watch: true, aside: false });
     } finally {
@@ -530,6 +574,57 @@ describe("Downloads and Settings from Watch", () => {
     expect(playbackState.get()).toMatchObject({ phase: { kind: "failed" }, aside: true });
     act(() => openWatch());
     expect(playbackState.get()).toMatchObject({ phase: { kind: "failed" }, watch: true });
+  });
+});
+
+describe("Close", () => {
+  it("says when the position it saved was refused, with Watch gone and after Stop", async () => {
+    const refused = { cause: new Error("/private/var/mobile/viewing.json: disk full") };
+    let refuse = true;
+    const progress = async () => {
+      if (refuse) throw refused.cause;
+    };
+    const root = createRoot(window.document.createElement("div"));
+    act(() => root.render(React.createElement(WatchLayer)));
+    unmount = () => act(() => root.unmount());
+    await act(() =>
+      play(
+        movie("1"),
+        { kind: "file", originalLanguage: null, open: open },
+        { ...inWatch, progress },
+      ),
+    );
+    started();
+    Object.assign(player(), { currentTime: 100, duration: 600 });
+    await act(async () => void (await closeWatch()));
+    const told = ["Couldn't save progress", "Your latest position could not be saved."];
+    expect(playbackState.get()).toMatchObject({ watch: false });
+    expect(native.alerts).toEqual([told]);
+    // The player reports the pause, whose save is refused too: told once for both.
+    started(false);
+    await act(async () => undefined);
+    expect(native.alerts).toEqual([told]);
+    // Kept once, then refused at Stop: told again, with nothing playing.
+    refuse = false;
+    act(() => togglePause());
+    started();
+    started(false);
+    await act(async () => undefined);
+    refuse = true;
+    await act(async () => void (await stop()));
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "idle" } });
+    expect(native.alerts).toEqual([told, told]);
+    Object.assign(player(), { currentTime: 0, duration: 0 });
+  });
+
+  it("pauses what plays and shows the screen under Watch", async () => {
+    const watch = await watching(movie("1"));
+    native.player.length = 0;
+    await watch.press("watch-close");
+    expect(native.player).toEqual(["pause"]);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "playing" }, watch: false });
+    started(false);
+    expect(playbackState.get()).toMatchObject({ phase: { kind: "paused" }, aside: false });
   });
 });
 
@@ -693,6 +788,7 @@ describe("Watch set aside when the tabs go", () => {
     const watch = await watching(copy());
     await watch.press("watch-settings");
     started(false);
+    act(() => togglePause());
     started();
     native.player.length = 0;
     providersGone();
@@ -704,7 +800,7 @@ describe("Watch set aside when the tabs go", () => {
   it("brings back nothing the removed provider streamed, which its removal stopped", async () => {
     const watch = await watching(movie("1"));
     await watch.press("watch-settings");
-    act(() => stop());
+    act(() => void stop());
     providersGone();
     watch.rerender();
     expect(playbackState.get()).toMatchObject({ phase: { kind: "idle" }, watch: false });
@@ -794,4 +890,109 @@ describe("the star of the channel playing", () => {
     const gone = await watching(live);
     expect(() => gone.press("watch-favourite")).toThrow("No watch-favourite");
   });
+});
+
+describe("Watch's asynchronous track menus", () => {
+  it("queries native facts on opening and hands back the exact record", async () => {
+    const watch = await watching(movie("1"));
+    const port = native.port!;
+    const track = {
+      ...port.identity(),
+      id: "0",
+      revision: 1,
+      group: "audio" as const,
+      isPlayable: true,
+      isDefault: true,
+      label: "Native display name",
+    };
+    port.tracks = {
+      ...port.identity(),
+      revision: 1,
+      audio: { state: "ready", options: [track] },
+      subtitles: { state: "ready", options: [] },
+      subtitleOffAllowed: true,
+      selectedAudioId: "0",
+      selectedSubtitleId: null,
+    };
+    port.getObservedTracksAsync.mockClear();
+    port.selectObservedTrackAsync.mockClear();
+    await watch.press("watch-audio");
+    await act(async () => undefined);
+    expect(port.getObservedTracksAsync).toHaveBeenCalledOnce();
+    expect(native.sheets[0]?.options).toEqual(["✓ Native display name", "Cancel"]);
+    native.sheets[0]?.pick(0);
+    await act(async () => undefined);
+    expect(port.selectObservedTrackAsync.mock.calls[0]?.[2].track).toBe(track);
+  });
+
+  it.each(["close", "navigation", "replacement"] as const)(
+    "does not show an asynchronously opened sheet after %s",
+    async (change) => {
+      const watch = await watching(movie("1"));
+      const port = native.port!;
+      let resolve!: (snapshot: { kind: "stale" }) => void;
+      port.getObservedTracksAsync.mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      );
+      await watch.press("watch-audio");
+      await act(async () => undefined);
+      await act(async () => {
+        if (change === "close") {
+          await closeWatch();
+          openWatch();
+        } else if (change === "navigation")
+          (await import("../src/playback.ts")).onScreen("/settings");
+        else await play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
+        resolve({ kind: "stale" });
+      });
+      expect(native.sheets).toEqual([]);
+    },
+  );
+
+  it("refuses a held sheet choice after Close and another item", async () => {
+    const watch = await watching(movie("1"));
+    const port = native.port!;
+    port.selectObservedTrackAsync.mockClear();
+    await watch.press("watch-subtitles");
+    await act(async () => undefined);
+    expect(native.sheets[0]?.options).toEqual(["✓ Off", "Cancel"]);
+    await act(async () => {
+      await closeWatch();
+      await play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
+    });
+    native.sheets[0]?.pick(0);
+    await act(async () => undefined);
+    expect(port.selectObservedTrackAsync).not.toHaveBeenCalled();
+  });
+});
+
+it("does not describe a real lone subtitle as missing when Off is forbidden", async () => {
+  const watch = await watching(movie("subtitle"));
+  const port = native.port!;
+  const track = {
+    ...port.identity(),
+    id: "0",
+    revision: 1,
+    group: "subtitles" as const,
+    isPlayable: true,
+    isDefault: true,
+    forcedOnly: false,
+    label: "Off",
+  };
+  port.tracks = {
+    ...port.identity(),
+    revision: 1,
+    audio: { state: "ready", options: [] },
+    subtitles: { state: "ready", options: [track] },
+    subtitleOffAllowed: false,
+    selectedAudioId: null,
+    selectedSubtitleId: "0",
+  };
+  await watch.press("watch-subtitles");
+  await act(async () => undefined);
+  expect(native.sheets[0]?.options).toEqual(["✓ Off", "Cancel"]);
+  expect(native.sheets[0]?.message).toBeUndefined();
 });

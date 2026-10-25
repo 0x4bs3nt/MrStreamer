@@ -1,6 +1,7 @@
 import * as React from "react";
 import { AppFailure } from "@mrstreamer/contracts/errors";
 import { Window, type HTMLInputElement } from "happy-dom";
+import type { DemoStart } from "../src/account.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The Connect form after a failed sign-in: its button says Try again only for the details that
@@ -24,8 +25,13 @@ vi.stubGlobal("__DEV__", false);
 
 /** Sign-ins waiting for an answer, oldest first. */
 const signIns: Array<{ server: string; fail: () => void; succeed: () => void }> = [];
+const demo = vi.hoisted(() => ({ result: { kind: "started" } as DemoStart, calls: 0 }));
 
 vi.mock("../src/account.ts", () => ({
+  startDemo: async () => {
+    demo.calls++;
+    return demo.result;
+  },
   add: (input: { server: string }) =>
     new Promise<void>((resolve, reject) => {
       signIns.push({
@@ -83,6 +89,7 @@ let unmount = () => {};
 afterEach(() => {
   unmount();
   signIns.length = 0;
+  demo.calls = 0;
 });
 
 function mount() {
@@ -94,6 +101,7 @@ function mount() {
     container.querySelector(`[data-testid="connect-${name}"]`) as HTMLInputElement;
   const button = () => container.querySelector("button")!;
   return {
+    container,
     type(name: "server" | "username" | "password", value: string) {
       React.act(() => {
         // React tracks the value it last rendered; setting it through the prototype lets the
@@ -161,4 +169,20 @@ describe("Connect after a failed sign-in", () => {
     await form.answer(signIns[0]!.succeed);
     expect(form.label()).toBe("Connecting");
   });
+});
+
+it("opens Demo from the real Connect control and reports incomplete removal honestly", async () => {
+  demo.result = { kind: "incomplete", pending: ["downloads"] };
+  const form = mount();
+  const button = [...form.container.querySelectorAll("button")].find(
+    (each) => each.textContent === "Try demo",
+  )!;
+  await React.act(async () => button.dispatchEvent(new Event("click", { bubbles: true })));
+  expect(demo.calls).toBe(1);
+  expect(signIns).toEqual([]);
+  expect(form.container.textContent).toContain("Earlier demo data couldn't all be removed");
+  demo.result = { kind: "started" };
+  await React.act(async () => button.dispatchEvent(new Event("click", { bubbles: true })));
+  expect(demo.calls).toBe(2);
+  expect(form.container.textContent).not.toContain("Earlier demo data");
 });

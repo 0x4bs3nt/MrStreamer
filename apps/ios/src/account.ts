@@ -1,13 +1,18 @@
 import { AppFailure, type AppError } from "@mrstreamer/contracts/errors";
 import type { LoginInput } from "@mrstreamer/contracts/ipc";
 import type { AccountStatus } from "@mrstreamer/contracts/subscription";
-import { streamsToPlay } from "@mrstreamer/core/catalogue/variants";
+import type { Quality } from "@mrstreamer/contracts/library";
+import { chosenVariant, streamsToPlay } from "@mrstreamer/core/catalogue/variants";
 import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/core/provider";
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
 import { dropLists, pruneLists, readList, writeList, type Saved } from "./catalogue-cache.ts";
 import { dropTitles, pruneDetails } from "./details-cache.ts";
+import { DEMO_ID, demoEntry, demoProvider, type DemoEntry } from "./demo.ts";
+import { transfers } from "./download-task.ts";
+import type { Erased } from "./downloads.ts";
 import { appError, hostOf } from "./errors.ts";
+import { guide } from "./guide.ts";
 import {
   combine,
   combineSteps,
@@ -19,9 +24,31 @@ import {
   type LiveSource,
   type Part,
 } from "./library.ts";
-import { play, playbackState, request, stop } from "./playback.ts";
+import {
+  liveStream,
+  play,
+  playbackState,
+  progressSettled,
+  request,
+  stop,
+  type Plan,
+} from "./playback.ts";
+import {
+  channelPicks,
+  forgetChannelPicks,
+  getMediaPreferences,
+  updateChannelPick,
+} from "./media-preferences.ts";
 import { keychainSecrets } from "./secrets.ts";
-import { currentSource, dropSource, loginOf, setSource, sourceOf, type Source } from "./sources.ts";
+import {
+  currentSource,
+  dropSource,
+  loginOf,
+  setSource,
+  signedIn,
+  sourceOf,
+  type Source,
+} from "./sources.ts";
 import {
   firstLaunch,
   migrateRecentChannels,
@@ -34,6 +61,7 @@ import {
 import { store, useStore } from "./store.ts";
 import {
   EMPTY_REGISTRY,
+  demoConflict,
   migrated,
   newSubscriptionId,
   readRegistry,
@@ -43,10 +71,17 @@ import {
   withPending,
   writeRegistry,
   type Registry,
+  type RegistryFile,
   type SubscriptionEntry,
 } from "./subscriptions.ts";
 import { noteAction } from "./telemetry/index.ts";
-import { eraseViewing, setViewingChannels, setViewingOwners } from "./viewing.ts";
+import {
+  eraseViewing,
+  setViewingChannels,
+  setViewingOwners,
+  viewingChangesSettled,
+  viewingHolds,
+} from "./viewing.ts";
 import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 
 // The saved subscriptions, each signed in on its own, and their lists. Everything from all of them
@@ -75,6 +110,14 @@ import { eraseWatchlist, setWatchlistOwners } from "./watchlist.ts";
 // opened from it (details-cache.ts, which titles.ts saves while `savable` holds) go with its lists.
 // Which saved lists a launch is still reading is kept apart from the lists (`readingSaved`): a list
 // stays idle while its copy is read, and after it when there is none, until its provider is asked.
+//
+// Each login's download authority is a native generation (download-task.ts) bound to its exact
+// Source here, never on the Source itself: binding changes no Source, revision or sign-in
+// notification, so lists, Live and artwork never wait on it, and a failed binding holds back
+// downloads alone. downloads.ts asks for each binding once launch's password reads settled
+// (`launchSignIns`). Before a password changes or a subscription goes, its downloads are fenced
+// durably (`fenceDownloads`); when they can't be, the change is refused and nothing of the login
+// is touched. Every native command awaited in a change refuses within five seconds.
 
 /** A list one subscription loads; a failed or repeated load keeps the last one it had. */
 export type Loadable<A> =
@@ -98,9 +141,9 @@ export type Loadable<A> =
       readonly since: number;
     };
 
-/** A saved subscription as the screens see it: no login. */
+/** A provider in the roster, personal or Demo, as the screens see it: no login. */
 export interface Member {
-  readonly entry: SubscriptionEntry;
+  readonly entry: SubscriptionEntry | DemoEntry;
   /** What lists call it: its name, else its server's host, numbered where two read the same. */
   readonly label: string;
   /** What the provider said at the last sign-in, null while it is asked, or why it couldn't say. */
@@ -111,7 +154,7 @@ export interface Member {
   readonly titles: Loadable<OnDemandCatalogue>;
 }
 
-/** Ready with none: Connect shows. */
+/** Registry known, independently of Keychain readiness. Ready with none: Connect shows. */
 export type Roster =
   { readonly kind: "restoring" } | { readonly kind: "ready"; readonly members: readonly Member[] };
 
@@ -130,11 +173,12 @@ export type Catalogue =
 const roster = store<Roster>({ kind: "restoring" });
 const catalogue = store<Catalogue>({ kind: "loading" });
 /**
- * The saved lists a launch is still reading, by `kind|id`, each with the login it reads them for.
- * One goes once its read has shown its list or found none, once its login is replaced, and at once
- * when its subscription is removed: a read the disk never answers holds nothing else up.
+ * Saved lists a launch is still establishing, by `kind|id`: null reserves a possible read while
+ * its password is pending; a Source means that login's saved list is being read. All reservations
+ * are registered before any password can publish. One ends when its list shows or is absent,
+ * its password is missing/refused, its login is replaced, or its subscription is removed.
  */
-const reading = store<ReadonlyMap<string, Source>>(new Map());
+const reading = store<ReadonlyMap<string, Source | null>>(new Map());
 
 export const useRoster = () => useStore(roster);
 export const useCatalogue = () => useStore(catalogue);
@@ -142,13 +186,13 @@ export const useCatalogue = () => useStore(catalogue);
 export const currentCatalogue = () => catalogue.get();
 /** Calls `listener` whenever every subscription's channels change. */
 export const onCatalogue = (listener: () => void) => catalogue.subscribe(listener);
-/** Whether a launch still reads a saved list from the phone: of `kind` and `id`, when given. */
+/** Whether launch still establishes a saved list, including its password: by `kind`/`id` if given. */
 export const readingSaved = (kind?: Kind, id?: string) =>
   [...reading.get().keys()].some((key) => {
     const at = key.indexOf("|");
     return (!kind || key.slice(0, at) === kind) && (!id || key.slice(at + 1) === id);
   });
-/** Calls `listener` whenever a saved list's read at launch starts or ends. */
+/** Calls `listener` when launch password/list reservations or reads change. */
 export const onReadingSaved = (listener: () => void) => reading.subscribe(listener);
 /** The saved subscriptions as they stand, for owners outside React. */
 export const members = (): readonly Member[] => {
@@ -179,16 +223,35 @@ const providerFor = (account: XtreamAccount): Provider =>
 
 /** The registry as last written. */
 let registry: Registry = EMPTY_REGISTRY;
+let file: RegistryFile = { registry, demo: { kind: "absent" }, opaque: {} };
+/** Personal cleanup must not turn a launch-time reserved id into demo authority mid-launch. */
+let demoReservedAtLaunch = false;
+const demoReserved = () => demoReservedAtLaunch || demoConflict(registry);
+
+/** The personal entries and, when enabled and unreserved, the labelled demo. */
+const entriesOf = () => [
+  ...registry.subscriptions,
+  ...(file.demo.kind === "active" && !demoReserved() ? [demoEntry] : []),
+];
 /** Loads under way, by `kind|id`. */
 const loads = new Map<string, AbortController>();
 let revisions = 0;
 /** By id: the revision when its saved lists were last deleted; no list of an older login is saved. */
 const dropped = new Map<string, number>();
+/** Told after each change to `dropped` and as Demo starts erasing (`onSavable`). */
+const fences = new Set<() => void>();
 /** A saved list younger than this shows as loaded at launch, and isn't asked for again. */
 const FRESH_FOR = 12 * 60 * 60 * 1000;
 
 /** The last change to the registry or the Keychain, settled or not; a failed one counts as done. */
 let changing: Promise<unknown> = Promise.resolve();
+
+/** Each exact signed-in Source's download generation, once bound. */
+const bindings = new WeakMap<Source, string>();
+/** Rises whenever bindings are invalidated: a binding begun before writes nothing. */
+let bindingEpoch = 0;
+let launchSettled = () => {};
+const launched = new Promise<void>((resolve) => (launchSettled = resolve));
 
 /** Runs `change` once every change begun before it has finished. */
 function serially<A>(change: () => Promise<A>): Promise<A> {
@@ -204,13 +267,81 @@ function serially<A>(change: () => Promise<A>): Promise<A> {
  */
 export const accountChanges = (): Promise<void> => changing.then(() => undefined);
 
+/**
+ * Resolves once launch's password reads settled or were superseded (`restore`), failed or not:
+ * not provider sign-in, saved lists or the catalogue.
+ */
+export const launchSignIns = (): Promise<void> => launched;
+
+/** The download generation bound to exactly `source`, or null until it is. */
+export const downloadGeneration = (source: Source): string | null => bindings.get(source) ?? null;
+
+/**
+ * Binds `captured`, `id`'s login when asked, to its native download generation: the one it has
+ * when enabled, else a fresh one. Runs as one account change, each native command refused within
+ * five seconds, and writes only while `captured` is still the login and no invalidation came
+ * since. A failure leaves it unbound, which holds back its downloads and nothing else.
+ */
+export function bindDownloadSource(id: string, captured: Source): Promise<void> {
+  const epoch = bindingEpoch;
+  const current = () => currentSource(id) === captured && bindingEpoch === epoch;
+  return serially(async () => {
+    if (!current() || bindings.has(captured) || !transfers.available()) return;
+    try {
+      const observed = await transfers.sourceState(id);
+      if (!current()) return;
+      const generation =
+        observed.state === "enabled" && observed.generation !== null
+          ? observed.generation
+          : await transfers.enableSource(id, observed);
+      if (current()) bindings.set(captured, generation);
+    } catch {
+      if (current()) bindings.delete(captured);
+    }
+  });
+}
+
+/**
+ * Forgets the download bindings of `source`, or of every login after a queue reset: each is
+ * bound again when asked, and a binding begun before writes nothing.
+ */
+export function unbindDownloads(source?: Source): void {
+  bindingEpoch++;
+  for (const each of source ? [source] : signedIn()) bindings.delete(each);
+}
+
+/**
+ * Fences `id`'s downloads before its login changes or goes: its native generation is revoked
+ * durably, without waiting for a transfer to end. Throws, so the change is refused with nothing
+ * of the login touched, when no durable fence could be made.
+ */
+async function fenceDownloads(id: string): Promise<void> {
+  // A build without the native owner holds no download authority to fence.
+  if (!transfers.available()) return;
+  try {
+    const observed = await transfers.sourceState(id);
+    if (observed.state === "missing" || observed.state === "revoked") return;
+    await transfers.revokeSource(id, observed);
+  } catch {
+    throw new AppFailure({
+      kind: "unexpected",
+      detail: "Downloads couldn't let go of this subscription yet. Try again.",
+    });
+  }
+}
+
 function commit(next: Registry) {
+  commitFile({ ...file, registry: next });
+}
+
+function commitFile(next: RegistryFile) {
   writeRegistry(next);
-  registry = next;
+  file = next;
+  registry = next.registry;
 }
 
 /** Names by id: a subscription's own, else its host; two that read the same are numbered. */
-function labelsOf(entries: readonly SubscriptionEntry[]): ReadonlyMap<string, string> {
+function labelsOf(entries: readonly Member["entry"][]): ReadonlyMap<string, string> {
   const seen = new Map<string, number>();
   return new Map(
     entries.map((entry) => {
@@ -226,9 +357,10 @@ const IDLE = { kind: "idle" } as const;
 
 /** The roster in the registry's order, each member keeping its standing and lists. */
 function syncRoster() {
-  const labels = labelsOf(registry.subscriptions);
+  const entries = entriesOf();
+  const labels = labelsOf(entries);
   const known = new Map(members().map((member) => [member.entry.id, member]));
-  const next = registry.subscriptions.map((entry): Member => {
+  const next = entries.map((entry): Member => {
     const label = labels.get(entry.id) ?? entry.server;
     const member = known.get(entry.id);
     if (!member) {
@@ -249,13 +381,13 @@ function syncRoster() {
 
 /**
  * Ends the reads at launch of `id`'s saved lists: with `kind` and `source`, that one alone, while
- * it is still read for that login.
+ * it is still read for that login; null ends only a pending password reservation.
  */
-function stopReading(id: string, kind?: Kind, source?: Source) {
+function stopReading(id: string, kind?: Kind, source?: Source | null) {
   const now = reading.get();
   const keys = (kind ? [kind] : (["live", "titles"] as const))
     .map((each) => `${each}|${id}`)
-    .filter((key) => now.has(key) && (!source || now.get(key) === source));
+    .filter((key) => now.has(key) && (source === undefined || now.get(key) === source));
   if (keys.length === 0) return;
   const next = new Map(now);
   for (const key of keys) next.delete(key);
@@ -291,7 +423,22 @@ type Kind = Saved["kind"];
 export const savable = (id: string, source: Source) =>
   currentSource(id) === source &&
   source.revision > (dropped.get(id) ?? 0) &&
-  registry.subscriptions.some((entry) => entry.id === id);
+  entriesOf().some((entry) => entry.id === id);
+
+/**
+ * Calls `listener` whenever `savable` may answer otherwise for a login that stays the current
+ * one: as its saved lists start to be deleted, when a failed deletion lets them be saved again,
+ * and as Demo starts erasing. A login signed in or dropped is told by sources.ts, and a removal
+ * by the roster. For titles.ts, whose file facts count only while `savable` holds. Answers how to stop.
+ */
+export function onSavable(listener: () => void): () => void {
+  fences.add(listener);
+  return () => void fences.delete(listener);
+}
+
+const savableChanged = () => {
+  for (const listener of fences) listener();
+};
 
 /** Saves a list `source` gave, in a later task: a write that fails leaves the list as it shows. */
 function save(id: string, source: Source, saved: Saved) {
@@ -302,9 +449,10 @@ function save(id: string, source: Source, saved: Saved) {
  * Deletes `id`'s saved lists and details once what reads or writes them has finished; from now on
  * none of a login signed in before is saved again. Answers whether they are all gone.
  */
-async function dropSaved(id: string): Promise<boolean> {
+async function dropSaved(id: string, guideGone = guide.forget(id)): Promise<boolean> {
   dropped.set(id, revisions);
-  const gone = await Promise.all([dropLists(id), dropTitles(id)]);
+  savableChanged();
+  const gone = await Promise.all([guideGone, dropLists(id), dropTitles(id)]);
   return gone.every(Boolean);
 }
 
@@ -318,6 +466,7 @@ async function clearSaved(id: string): Promise<void> {
   if (await dropSaved(id)) return;
   if (before === undefined) dropped.delete(id);
   else dropped.set(id, before);
+  savableChanged();
   throw new AppFailure({
     kind: "unexpected",
     detail: "The lists this iPhone saved couldn't be deleted. Try again.",
@@ -425,7 +574,7 @@ export function reloadChannels(id: string) {
     (provider, signal) => provider.liveCatalogue(signal),
     (change) => setMember(id, (member) => ({ ...member, live: change(member.live) })),
     (catalogue, source, fetchedAt) => {
-      noteAction("playlist_refreshed");
+      if (id !== DEMO_ID || demoReserved()) noteAction("playlist_refreshed");
       save(id, source, { kind: "live", catalogue, fetchedAt });
     },
   );
@@ -493,15 +642,34 @@ function signIn(
   password: string,
   checked: AccountStatus | null | "again",
 ) {
-  const { id } = entry;
   const source: Source = {
     revision: ++revisions,
     provider: providerFor({ server: entry.server, username: entry.username, password }),
     login: [entry.username, password],
   };
+  signedSource(entry, source, checked);
+}
+
+/** Every demo incarnation has its own Source, with no Keychain item or login values. */
+function signInDemo(checked: null | "again") {
+  signedSource(demoEntry, { revision: ++revisions, provider: demoProvider(), login: [] }, checked);
+}
+
+function signedSource(
+  entry: Member["entry"],
+  source: Source,
+  checked: AccountStatus | null | "again",
+) {
+  const { id } = entry;
   setSource(id, source);
-  // A read at launch for the login before ends: this one's lists come from its provider.
-  stopReading(id);
+  void guide.attach(id);
+  if (checked === null) {
+    // Replace password reservations without briefly releasing the titles' launch batch.
+    reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
+  } else {
+    // A replaced login's launch reads end: this one's lists come from its provider.
+    stopReading(id);
+  }
   setMember(id, (member) => ({
     ...member,
     needsSecret: false,
@@ -517,7 +685,6 @@ function signIn(
     reloadTitles(id);
     return;
   }
-  reading.set((now) => new Map([...now, [`live|${id}`, source], [`titles|${id}`, source]]));
   void fromSaved(id, "live", source).then((load) => {
     if (load && currentSource(id) === source) reloadChannels(id);
   });
@@ -542,40 +709,279 @@ async function settleSecret(id: string) {
 }
 
 /**
- * At launch: the saved subscriptions, each signed in again with its password from the Keychain.
- * A first launch since installing first removes what an earlier install left in the Keychain.
- * The first launch since private beta 2 makes the registry from its state.json, keeping its
- * subscription's id; a launch after that finds the registry and migrates nothing again.
+ * Reads one launch password without holding up mutations or another subscription. A late answer
+ * only signs in the same account, if no removal or password change has superseded this read.
+ * A name-only edit still takes effect. Until the answer, no Source or saved list is authorized.
+ */
+async function restorePassword(entry: SubscriptionEntry): Promise<void> {
+  const { id } = entry;
+  const before = currentSource(id);
+  const deleted = dropped.get(id);
+  const password = await keychainSecrets.read(id).catch(() => null);
+  await serially(async () => {
+    const now = registry.subscriptions.find((each) => each.id === id);
+    if (
+      !now ||
+      !sameAccount(now, entry) ||
+      currentSource(id) !== before ||
+      dropped.get(id) !== deleted
+    ) {
+      stopReading(id, undefined, null);
+      return;
+    }
+    if (password) signIn(now, password, null);
+    else {
+      setMember(id, (member) => ({ ...member, needsSecret: true }));
+      stopReading(id, undefined, null);
+    }
+  });
+}
+
+/**
+ * At launch: publishes the saved registry before waiting on Keychain or cleanup, then restores
+ * each password independently. Resolves once those reads finish or are superseded, not provider
+ * authentication or saved lists. The first launch clears secrets from an earlier install before
+ * accepting new ones; beta 2's state migrates once, keeping its subscription id. Cleanup stays
+ * serialized with edits.
  */
 export function restore(): Promise<void> {
-  return serially(async () => {
+  const restored = serially(async () => {
     const saved = readRegistry();
+    file = saved ?? { registry: migrated(readState()), demo: { kind: "absent" }, opaque: {} };
+    registry = file.registry;
+    demoReservedAtLaunch ||= demoConflict(registry);
+    reading.set(
+      new Map(
+        entriesOf().flatMap(({ id }) => [
+          [`live|${id}`, null],
+          [`titles|${id}`, null],
+        ]),
+      ),
+    );
+    // Registry readiness chooses the real routes. It never grants credentials or cache access.
+    syncRoster();
     if (!saved && firstLaunch()) {
       await keychainSecrets.clear().catch(() => undefined);
       writeState((state) => state);
     }
-    registry = saved ?? migrated(readState());
     // A write that fails leaves the old files as they were, and the next launch tries again.
     try {
-      if (!saved) writeRegistry(registry);
+      if (!saved) writeRegistry(file);
       migrateRecentChannels();
     } catch {
       // Shown from memory for now.
     }
     for (const id of registry.pendingSecrets) await settleSecret(id).catch(() => undefined);
     for (const id of registry.erasing) await eraseHistory(id).catch(() => undefined);
-    const passwords = await Promise.all(
-      registry.subscriptions.map((entry) => keychainSecrets.read(entry.id).catch(() => null)),
-    );
-    syncRoster();
-    const ids = registry.subscriptions.map((entry) => entry.id);
+    const ids = entriesOf().map((entry) => entry.id);
+    await guide.restore(ids);
     pruneLists(ids);
     pruneDetails(ids);
-    registry.subscriptions.forEach((entry, at) => {
-      const password = passwords[at];
-      if (password) signIn(entry, password, null);
-      else setMember(entry.id, (member) => ({ ...member, needsSecret: true }));
-    });
+    if (entriesOf().some((entry) => entry.kind === "demo")) signInDemo(null);
+    return registry.subscriptions;
+  }).then(
+    (entries) =>
+      new Promise<void>((resolve, reject) => {
+        // A superseded Keychain request may never answer. Its reservation, not that obsolete
+        // promise, decides whether launch is still waiting for a password.
+        const settle = () => {
+          if ([...reading.get().values()].some((source) => source === null)) return;
+          stop();
+          resolve();
+        };
+        const stop = reading.subscribe(settle);
+        void Promise.all(entries.map(restorePassword)).then(settle, (cause: unknown) => {
+          stop();
+          reject(cause);
+        });
+        settle();
+      }),
+  );
+  void restored.then(launchSettled, launchSettled);
+  void restored.then(retryDemoAfterLaunch, () => undefined);
+  return restored;
+}
+
+export type DemoPending = "downloads" | "history" | "saved-data" | "registry";
+export type DemoRefusal =
+  | "reserved-id"
+  | "unreadable-demo"
+  | "registry-refused"
+  | "marker-not-absent"
+  | "downloads-refused";
+export type DemoErase =
+  | { readonly kind: "erased"; readonly files: "deleted" | "deferred" }
+  | { readonly kind: "incomplete"; readonly pending: readonly DemoPending[] }
+  | { readonly kind: "refused"; readonly reason: DemoRefusal };
+export type DemoStart =
+  { readonly kind: "started" } | Exclude<DemoErase, { readonly kind: "erased" }>;
+
+interface DemoDownloads {
+  readonly erase: (id: string, reason: "demo-reset") => Promise<Erased>;
+  readonly ready: Promise<void>;
+}
+let demoDownloads: DemoDownloads | undefined;
+let connectedDownloads = (_port: DemoDownloads) => {};
+const downloadsConnected = new Promise<DemoDownloads>((resolve) => (connectedDownloads = resolve));
+
+/** Downloads registers once after loading its document. An absent owner is never trusted empty. */
+export function connectDemoDownloads(port: DemoDownloads): void {
+  if (demoDownloads) return;
+  demoDownloads = port;
+  connectedDownloads(port);
+}
+
+/** Whole demo operations are ordered; personal account changes can still run between stages. */
+let demoChain: Promise<unknown> = Promise.resolve();
+function demoOperation<A>(run: () => Promise<A>): Promise<A> {
+  const next = demoChain.then(run);
+  demoChain = next.catch(() => undefined);
+  return next;
+}
+
+export const startDemo = (): Promise<DemoStart> =>
+  demoOperation(async () => {
+    if (!demoReserved() && file.demo.kind === "active") return { kind: "started" };
+    const erased = await eraseDemo();
+    return erased.kind === "erased" ? activateDemo() : erased;
+  });
+
+/** Exit removes demo data. Deferred file cleanup remains owned by Downloads. */
+export const endDemo = (): Promise<DemoErase> => demoOperation(eraseDemo);
+
+/** Reset is one chain entry, including activation, so an older erase cannot clear a new demo. */
+export const resetDemo = (): Promise<DemoStart> =>
+  demoOperation(async () => {
+    const erased = await eraseDemo();
+    return erased.kind === "erased" ? activateDemo() : erased;
+  });
+
+function activateDemo(): Promise<DemoStart> {
+  return serially(async () => {
+    if (demoReserved()) return { kind: "refused", reason: "reserved-id" };
+    if (file.demo.kind !== "absent") return { kind: "refused", reason: "marker-not-absent" };
+    try {
+      commitFile({ ...file, demo: { kind: "active" } });
+    } catch {
+      return { kind: "refused", reason: "registry-refused" };
+    }
+    syncRoster();
+    signInDemo("again");
+    return { kind: "started" };
+  });
+}
+
+let launchRetryAsked = false;
+function retryDemoAfterLaunch() {
+  if (launchRetryAsked || file.demo.kind !== "erasing" || demoReserved()) return;
+  launchRetryAsked = true;
+  const retry = () =>
+    demoOperation(() =>
+      file.demo.kind === "erasing" && !demoReserved() ? eraseDemo() : Promise.resolve(null),
+    );
+  void retry()
+    .then((result) => {
+      if (result?.kind !== "incomplete" || !result.pending.includes("downloads")) return;
+      void downloadsConnected
+        .then((port) => port.ready)
+        .then(retry)
+        .catch(() => undefined);
+    })
+    .catch(() => undefined);
+}
+
+/** A deadline only refuses settlement. Late work cannot erase history or clear the marker. */
+async function demoSettlement(run: () => Promise<boolean>): Promise<boolean | "unsettled"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run().catch(() => "unsettled" as const),
+      new Promise<"unsettled">((resolve) => {
+        timer = setTimeout(() => resolve("unsettled"), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function eraseDemo(): Promise<DemoErase> {
+  const staged = await serially(async () => {
+    if (demoReserved()) return { kind: "refused", reason: "reserved-id" } as const;
+    if (file.demo.kind === "unreadable")
+      return { kind: "refused", reason: "unreadable-demo" } as const;
+    const leaving = file.demo.kind === "active";
+    // Source revocation is finite, distinct from each record's explicit removal fence below.
+    try {
+      await fenceDownloads(DEMO_ID);
+    } catch {
+      return { kind: "refused", reason: "downloads-refused" } as const;
+    }
+    if (file.demo.kind !== "erasing") {
+      try {
+        commitFile({ ...file, demo: { kind: "erasing" } });
+      } catch {
+        return { kind: "refused", reason: "registry-refused" } as const;
+      }
+      savableChanged();
+    }
+    // Intents and their finite domain removals precede Source/roster changes, even on refusal.
+    const removal = await demoDownloads?.erase(DEMO_ID, "demo-reset").catch(() => undefined);
+    let filesDeleted = false;
+    void removal?.cleanup.then(
+      (result) => {
+        filesDeleted = result === "closed";
+      },
+      () => undefined,
+    );
+    // Observe an early save failure while the remaining serial work runs.
+    const saved =
+      removal?.saved.then(
+        () => true,
+        () => false,
+      ) ?? Promise.resolve(true);
+    for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${DEMO_ID}`)?.abort();
+    dropSource(DEMO_ID);
+    const savedGone = dropSaved(DEMO_ID).catch(() => false);
+    if (leaving) {
+      const { phase } = playbackState.get();
+      const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
+      if (from === DEMO_ID || (entriesOf().length === 0 && from !== null)) void stop();
+      else request();
+    }
+    syncRoster();
+    return { kind: "staged", removal, saved, savedGone, filesDeleted: () => filesDeleted } as const;
+  });
+  if (staged.kind !== "staged") return staged;
+
+  // Never hold the account writer while waiting for progress, viewing or cache work.
+  const settled = await demoSettlement(async () => {
+    if (!(await staged.saved)) throw new Error("Demo progress did not settle");
+    await progressSettled();
+    await viewingChangesSettled();
+    return staged.savedGone;
+  });
+  return serially(async () => {
+    const pending: DemoPending[] = [];
+    if (!staged.removal?.trusted || staged.removal.kept !== 0) pending.push("downloads");
+    if (settled === "unsettled") pending.push("history");
+    else if (!settled) pending.push("saved-data");
+    if (pending.length === 0) {
+      try {
+        writeState((state) => forgotten(state, DEMO_ID, true));
+        eraseWatchlist(DEMO_ID);
+        if (viewingHolds(DEMO_ID)) await eraseViewing(DEMO_ID);
+      } catch {
+        pending.push("history");
+      }
+    }
+    if (pending.length > 0) return { kind: "incomplete", pending };
+    try {
+      commitFile({ ...file, demo: { kind: "absent" } });
+    } catch {
+      return { kind: "incomplete", pending: ["registry"] };
+    }
+    return { kind: "erased", files: staged.filesDeleted() ? "deleted" : "deferred" };
   });
 }
 
@@ -614,6 +1020,7 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     const known = registry.subscriptions.find((entry) => sameAccount(entry, account));
     if (known) {
       const before = currentSource(known.id);
+      await fenceDownloads(known.id);
       await clearSaved(known.id);
       try {
         await keychainSecrets.write(known.id, account.password);
@@ -647,7 +1054,8 @@ export async function add(input: LoginInput, signal?: AbortSignal): Promise<stri
     };
     const first = registry.subscriptions.length === 0;
     try {
-      // A retired id's lists went with its removal, unless the disk refused it then.
+      // A retired id's lists and downloads went with its removal, unless refused then.
+      await fenceDownloads(id);
       await clearSaved(id);
       await keychainSecrets.write(id, account.password);
       // Left while the password was written: it goes again, and nothing is saved.
@@ -714,7 +1122,10 @@ export async function update(
     const now = registry.subscriptions.find((each) => each.id === id);
     if (!now) throw new AppFailure({ kind: "no-subscription" });
     const before = currentSource(id);
-    if (password) await clearSaved(id);
+    if (password) {
+      await fenceDownloads(id);
+      await clearSaved(id);
+    }
     try {
       if (password) await keychainSecrets.write(id, password);
       const name = nameOf(change.name);
@@ -737,12 +1148,12 @@ export async function update(
 /**
  * Removes a subscription: what plays from it stops, and its login and lists go. What plays from
  * another, or a downloaded copy, plays on. Its favourites, watchlist, history and progress stay
- * for when the account is added again, unless `keepHistory` is false. Removing the last returns to
- * Connect.
+ * for when the account is added again, unless `keepHistory` is false. Removing the last personal
+ * provider returns to Connect only when Demo is not listed either.
  *
- * The registry is written first, with the history to delete when it goes too; a refused write
- * rejects with nothing changed, and the subscription stays in the roster. From then on the
- * removal stands, whatever fails after. A history not all deleted rejects the promise, and each
+ * Its downloads are fenced first, then the registry is written, with the history to delete when
+ * it goes too; a refused fence or write rejects with nothing changed, and the subscription stays
+ * in the roster. From then on the removal stands, whatever fails after. A history not all deleted rejects the promise, and each
  * launch deletes the rest until it is gone. A password the Keychain didn't remove is removed at
  * the next launch.
  */
@@ -750,21 +1161,25 @@ export function remove(id: string, { keepHistory }: { keepHistory: boolean }): P
   return serially(async () => {
     const entry = registry.subscriptions.find((each) => each.id === id);
     if (!entry) return;
+    await fenceDownloads(id);
     commit(withoutSubscription(registry, entry, keepHistory));
     for (const kind of ["live", "titles"] as const) loads.get(`${kind}|${id}`)?.abort();
     dropSource(id);
     // After any write of them under way. What the disk refuses goes at the next launch, or before
     // the account added again takes the id back.
-    void dropSaved(id);
+    const forgetting = guide.forget(id);
+    void dropSaved(id, forgetting);
     // A request waiting to play, such as a series' resume, lapses; with none left, so does Watch,
     // unless it shows a downloaded copy, which needs no subscription.
     const { phase } = playbackState.get();
     const from = phase.kind === "idle" ? undefined : phase.item.subscriptionId;
-    if (from === id || (registry.subscriptions.length === 0 && from !== null)) stop();
+    if (from === id || (entriesOf().length === 0 && from !== null)) stop();
     else request();
     // The roster without it ends its unfinished downloads (downloads.ts); finished copies stay.
     syncRoster();
     noteAction("playlist_removed");
+    // The committed removal stands on failure. Re-add cannot reuse its cache until erase works.
+    await forgetting;
     await keychainSecrets
       .remove(id)
       .then(() =>
@@ -799,8 +1214,8 @@ function forgotten(state: SavedState, id: string, erase: boolean): SavedState {
 }
 
 /**
- * Deletes the history of a subscription removed with it: its recent channels, watchlist and
- * viewing record, each whatever another fails, then drops it from the registry's `erasing`.
+ * Deletes the history of a subscription removed with it: its recent channels, watchlist,
+ * viewing record and quality picks, each whatever another fails, then clears `erasing`.
  * Rejects when one isn't deleted, leaving it there for the next launch to try again.
  */
 async function eraseHistory(id: string): Promise<void> {
@@ -808,6 +1223,9 @@ async function eraseHistory(id: string): Promise<void> {
     Promise.resolve().then(() => writeState((state) => forgotten(state, id, true))),
     Promise.resolve().then(() => eraseWatchlist(id)),
     eraseViewing(id),
+    Promise.resolve().then(() => {
+      if (!forgetChannelPicks(id)) throw new Error("Channel picks kept.");
+    }),
   ]);
   const failed = erased.find((each) => each.status === "rejected");
   if (failed) throw failed.reason;
@@ -817,23 +1235,43 @@ async function eraseHistory(id: string): Promise<void> {
 /** The last channel chosen to watch while a channel played: another one changes the channel. */
 let chosen: string | null = null;
 
-/**
- * Plays a channel's first stream in Auto's order (the desktop's `streamsToPlay`, at its default
- * quality), from its own subscription, in Watch or in Home's preview. Trying the next stream when
- * one fails comes later.
- */
-export function playChannel(channel: Channel, place: string, options: { watch: boolean }) {
-  const [variant] = streamsToPlay(channel, {});
-  if (!variant) return;
+/** Core chooses up to three streams for Automatic, or only the explicit or accepted pick. */
+function livePlan(channel: Channel, asked?: string): Plan | null {
+  const picks = channelPicks(channel.subscriptionId);
+  const { liveQuality } = getMediaPreferences();
+  const [first, ...rest] = streamsToPlay(
+    channel,
+    { liveQuality, channelVariants: picks },
+    asked,
+  ).map((variant) => ({
+    variantId: variant.id,
+    open: async (signal: AbortSignal) => {
+      const stream = await sourceOf(channel.subscriptionId).provider.liveStream(variant.id, signal);
+      return {
+        url: stream.url,
+        container: stream.format === "hls" ? "m3u8" : "ts",
+        ...(stream.headers ? { headers: stream.headers } : {}),
+      };
+    },
+  }));
+  return first
+    ? {
+        kind: "live",
+        candidates: [first, ...rest],
+        explicit: asked !== undefined || chosenVariant(channel, picks) !== null,
+      }
+    : null;
+}
+
+/** Plays one channel from its own provider, using the accepted global quality and channel pick. */
+export function playChannel(
+  channel: Channel,
+  place: string,
+  options: { watch: boolean; variantId?: string },
+) {
+  const plan = livePlan(channel, options.variantId);
+  if (!plan) return;
   const { subscriptionId } = channel;
-  const open = async (signal: AbortSignal) => {
-    const stream = await sourceOf(subscriptionId).provider.liveStream(variant.id, signal);
-    return {
-      url: stream.url,
-      container: stream.format === "hls" ? "m3u8" : "ts",
-      ...(stream.headers ? { headers: stream.headers } : {}),
-    };
-  };
   if (options.watch) {
     const { phase } = playbackState.get();
     const watching = phase.kind !== "idle" && phase.item.live;
@@ -851,9 +1289,45 @@ export function playChannel(channel: Channel, place: string, options: { watch: b
       next: false,
       versions: false,
     },
-    open,
+    plan,
     { ...options, login: loginOf(subscriptionId) },
   );
+}
+
+export interface QualityChoice {
+  readonly variantId: string | null;
+  readonly quality: Quality | null;
+  readonly name: string;
+  readonly saved: boolean;
+  readonly playing: boolean;
+}
+
+/** A menu snapshot: accepted checkmark and actually playing row are separate facts. */
+export function channelQuality(channel: Channel): readonly QualityChoice[] {
+  const picked = chosenVariant(channel, channelPicks(channel.subscriptionId));
+  const live = liveStream();
+  const playing = live?.channel === channel.key ? live.playing : null;
+  return [
+    { variantId: null, quality: null, name: "Automatic", saved: picked === null, playing: false },
+    ...channel.variants.map((variant) => ({
+      variantId: variant.id,
+      quality: variant.quality,
+      name: variant.name,
+      saved: picked?.id === variant.id,
+      playing: playing === variant.id,
+    })),
+  ];
+}
+
+/** Save first. A refused proposal leaves both the accepted pick and the current Choice alone. */
+export function chooseChannelQuality(
+  channel: Channel,
+  place: string,
+  variantId: string | null,
+): boolean {
+  if (!updateChannelPick(channel, variantId)) return false;
+  playChannel(channel, place, { watch: true });
+  return true;
 }
 
 // Every subscription's channels together. Each subscription's part (library.ts) is kept, with the
@@ -964,6 +1438,7 @@ async function work() {
       // Checked again: an answer may have changed the roster since the last slice.
       if (!library || !wanted()) continue;
       parts.set(source.subscriptionId, { catalogue: source.catalogue, part });
+      guide.setPart(part);
       // Shown as joined unless the roster changed meanwhile; `libraryOf` joins it again then.
       joined = { parts: shown, library };
       publish();

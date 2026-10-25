@@ -13,6 +13,8 @@ export default function HomeLayout() {
       <Stack.Screen name="index" options={{ title: "", headerTransparent: true }} />
       <Stack.Screen name="watchlist" options={{ title: "Watchlist" }} />
       <Stack.Screen name="favourites" options={{ title: "Favourites" }} />
+      <Stack.Screen name="schedule" options={{ title: "Schedule" }} />
+      <Stack.Screen name="programme" options={{ title: "Programme" }} />
       <Stack.Screen name="downloads" options={{ title: "Downloads" }} />
       <Stack.Screen name="settings" options={{ title: "Settings" }} />
       <Stack.Screen name="provider" options={{ title: "" }} />

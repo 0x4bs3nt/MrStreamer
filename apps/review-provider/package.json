@@ -1,0 +1,19 @@
+{
+  "name": "@mrstreamer/review-provider",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "description": "Original samples through a private, read-only Xtream review login.",
+  "scripts": {
+    "prepare-media": "node scripts/prepare-media.ts",
+    "build": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=.local/worker.mjs",
+    "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.tools.json",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261025.1",
+    "@mrstreamer/core": "workspace:*",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0"
+  }
+}

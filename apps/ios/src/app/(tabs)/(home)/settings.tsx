@@ -1,10 +1,12 @@
 import type { AnalyticsSettings } from "@mrstreamer/contracts/analytics";
+import { QUALITIES, type Quality } from "@mrstreamer/contracts/library";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import type { AccountStatus } from "@mrstreamer/contracts/subscription";
 import { formatDate } from "@mrstreamer/core/i18n";
+import { TITLE_LANGUAGES } from "@mrstreamer/core/ondemand/languages";
+import { languageName } from "@mrstreamer/core/ondemand/tracks";
 import Constants from "expo-constants";
 import { router } from "expo-router";
-import { isPictureInPictureSupported } from "expo-video";
 import { SymbolView } from "expo-symbols";
 import {
   ActionSheetIOS,
@@ -20,17 +22,26 @@ import {
 } from "react-native";
 import {
   members,
+  endDemo,
+  resetDemo,
   reloadChannels,
   reloadTitles,
   remove,
   retry,
   useRoster,
   type Member,
+  type DemoErase,
+  type DemoStart,
 } from "../../../account.ts";
 import { DownloadsLink } from "../../../downloads-screen.tsx";
 import { failureOf } from "../../../errors.ts";
 import { tabHref, useTabs, type Tab } from "../../../header.tsx";
 import { licences } from "../../../licences.ts";
+import {
+  getMediaPreferences,
+  updateMediaPreferences,
+  useMediaPreferences,
+} from "../../../media-preferences.ts";
 import { openLink } from "../../../open-link.ts";
 import { setStatistics, useStatistics } from "../../../telemetry/index.ts";
 import { hasTmdb, useMetadataStatus, useTitleTimings } from "../../../titles.ts";
@@ -40,7 +51,7 @@ const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
 
 /**
  * Settings as one list: the providers first, each a row with Add provider under them, then
- * Downloads, a row with what they take that opens them, Playback, Privacy with the privacy policy
+ * Downloads, a row with what they take that opens them, Media policies, Privacy with its policy
  * in the browser, and About with Licences. M3U playlists and guide sources come here as they come
  * to iOS, and until then nothing here offers them. TMDB's terms ask for its logo and notice, as
  * the desktop's Settings show them. It opens on whichever tab's top bar asked for it, and what it
@@ -49,6 +60,7 @@ const PRIVACY_POLICY = "https://mrstreamer.app/privacy";
 export default function Settings() {
   const roster = useRoster();
   const statistics = useStatistics();
+  const media = useMediaPreferences();
   const tab = useTabs()?.tab ?? "(home)";
   if (roster.kind !== "ready") return null;
   return (
@@ -70,10 +82,73 @@ export default function Settings() {
       <Section name="Downloads" />
       <DownloadsLink onPress={() => router.push(tabHref(tab, "downloads"))} />
 
-      <Section name="Playback" />
-      <Line
-        label="Picture in Picture"
-        value={isPictureInPictureSupported() ? "Supported" : "Not on this iPhone"}
+      <Section name="Media" />
+      <Opens
+        label="Titles language"
+        value={
+          media.titleLanguage === null ? systemLanguage : mediaLanguageName(media.titleLanguage)
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("titleLanguage", "Titles language", [
+            { label: systemLanguage, value: null },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({ label: name, value: code })),
+          ])
+        }
+        testID="settings-title-language"
+      />
+      <Opens
+        label="Audio"
+        value={
+          media.audio.kind === "language"
+            ? mediaLanguageName(media.audio.language)
+            : audioNames[media.audio.kind]
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("audio", "Audio", [
+            { label: audioNames["follow-title"], value: { kind: "follow-title" } },
+            { label: audioNames.original, value: { kind: "original" } },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({
+              label: name,
+              value: { kind: "language" as const, language: code },
+            })),
+          ])
+        }
+        testID="settings-audio"
+      />
+      <Opens
+        label="Subtitles"
+        value={
+          media.subtitles.kind === "language"
+            ? mediaLanguageName(media.subtitles.language)
+            : subtitleNames[media.subtitles.kind]
+        }
+        role="button"
+        onPress={() =>
+          chooseMedia("subtitles", "Subtitles", [
+            { label: subtitleNames["forced-only"], value: { kind: "forced-only" } },
+            { label: subtitleNames.off, value: { kind: "off" } },
+            ...TITLE_LANGUAGES.map(({ code, name }) => ({
+              label: name,
+              value: { kind: "language" as const, language: code },
+            })),
+          ])
+        }
+        testID="settings-subtitles"
+      />
+      <Opens
+        label="Live quality"
+        value={qualityNames[media.liveQuality]}
+        role="button"
+        onPress={() =>
+          chooseMedia(
+            "liveQuality",
+            "Live quality",
+            QUALITIES.map((quality) => ({ label: qualityNames[quality], value: quality })),
+          )
+        }
+        testID="settings-live-quality"
       />
 
       <Section name="Privacy" />
@@ -142,6 +217,41 @@ export default function Settings() {
   );
 }
 
+const mediaLanguageName = (code: string) =>
+  TITLE_LANGUAGES.find((language) => language.code === code)?.name ?? languageName(code) ?? code;
+const deviceLanguage = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale).language;
+const systemLanguage = `System default (${mediaLanguageName(deviceLanguage)})`;
+const audioNames = { "follow-title": "Follow title language", original: "Original language" };
+const subtitleNames = { "forced-only": "Only when forced", off: "Off" };
+const qualityNames: Record<Quality, string> = { uhd: "4K", fhd: "Full HD", hd: "HD", sd: "SD" };
+
+/** A system sheet commits only a picked value; Cancel has no action. */
+function chooseMedia<K extends keyof ReturnType<typeof getMediaPreferences>>(
+  field: K,
+  title: string,
+  choices: readonly {
+    readonly label: string;
+    readonly value: ReturnType<typeof getMediaPreferences>[K];
+  }[],
+) {
+  ActionSheetIOS.showActionSheetWithOptions(
+    {
+      title,
+      options: [...choices.map(({ label }) => label), "Cancel"],
+      cancelButtonIndex: choices.length,
+    },
+    (index) => {
+      const choice = choices[index];
+      if (choice && !updateMediaPreferences(field, choice.value)) {
+        Alert.alert(
+          "Couldn't save media preference",
+          "Your previous choice is still saved. Try again.",
+        );
+      }
+    },
+  );
+}
+
 /**
  * A provider as one row: its name and how it stands, in a line. Pressing it offers what can be
  * done with it, as a system sheet: Retry when it didn't answer, the reloads, Edit and Remove.
@@ -151,21 +261,29 @@ function Provider({ member, tab }: { member: Member; tab: Tab }) {
   const line = standing(member);
   const edit = () => router.push({ pathname: tabHref(tab, "provider"), params: { id: entry.id } });
   const open = () => {
-    const actions = [
-      ...(member.needsSecret
-        ? [{ label: "Enter password", run: edit }]
-        : failed(member)
-          ? [{ label: "Retry", run: () => retry(entry.id) }]
-          : []),
-      ...(member.needsSecret
-        ? []
-        : [
+    const actions =
+      entry.kind === "demo"
+        ? [
             { label: "Reload channels", run: () => reloadChannels(entry.id) },
             { label: "Reload movies and series", run: () => reloadTitles(entry.id) },
-          ]),
-      { label: "Edit", run: edit },
-      { label: "Remove", run: () => confirmRemove(member) },
-    ];
+            { label: "Reset demo data", run: () => confirmDemo("reset") },
+            { label: "Exit demo", run: () => confirmDemo("exit") },
+          ]
+        : [
+            ...(member.needsSecret
+              ? [{ label: "Enter password", run: edit }]
+              : failed(member)
+                ? [{ label: "Retry", run: () => retry(entry.id) }]
+                : []),
+            ...(member.needsSecret
+              ? []
+              : [
+                  { label: "Reload channels", run: () => reloadChannels(entry.id) },
+                  { label: "Reload movies and series", run: () => reloadTitles(entry.id) },
+                ]),
+            { label: "Edit", run: edit },
+            { label: "Remove", run: () => confirmRemove(member) },
+          ];
     ActionSheetIOS.showActionSheetWithOptions(
       {
         title: label,
@@ -211,9 +329,43 @@ function standing({ entry, account, needsSecret, live, titles }: Member): string
   if (titles.kind === "failed") {
     return `Movies and series: ${failureOf(titles.error, entry.server).headline}`;
   }
+  if (entry.kind === "demo") return "Sample content";
   const loading =
     live.kind === "loading" ? "Loading channels" : titles.kind === "loading" ? "Loading" : null;
   return [accountLine(account, entry.server), loading].filter(Boolean).join(" · ");
+}
+
+/** Both demo actions are ephemeral and name the data removed before the viewer confirms. */
+function confirmDemo(action: "reset" | "exit") {
+  const label = action === "reset" ? "Reset demo data" : "Exit demo";
+  const report = (result: DemoErase | DemoStart) => {
+    if (result.kind === "incomplete")
+      Alert.alert(
+        "Demo removal incomplete",
+        "Some demo data couldn't be removed. Reopen the app to retry cleanup.",
+      );
+    else if (result.kind === "refused")
+      Alert.alert("Demo isn't available", "The operation couldn't continue.");
+  };
+  Alert.alert(
+    `${label}?`,
+    "Demo downloads, favourites, watchlist, history and progress will be removed.",
+    [
+      {
+        text: label,
+        style: "destructive",
+        onPress: () => {
+          const operation = action === "reset" ? resetDemo() : endDemo();
+          void operation
+            .then(report)
+            .catch(() =>
+              Alert.alert("Demo isn't available", "The operation couldn't continue. Try again."),
+            );
+        },
+      },
+      { text: "Cancel", style: "cancel" },
+    ],
+  );
 }
 
 /**

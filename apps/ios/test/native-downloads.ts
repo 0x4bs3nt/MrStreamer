@@ -1,30 +1,53 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Outcome, Progress, Receipt, Running, StartRequest } from "../src/download-task.ts";
+import type { AuthorizationView, OutcomeV2, ReceiptV2 } from "../src/download-task.ts";
 import { native } from "./native-files.ts";
 
-// A stand-in for modules/background-downloads, the app's native owner of a background URLSession,
-// for tests run on Linux: `requireNativeModule("BackgroundDownloads")` answers it, as `expo` does
-// on iOS. It keeps its contract over real requests and real files: an attempt is authorized
-// before its request goes out, a duplicate start answers as the first did, and another is refused
-// while one may still have a request open; a pause or a cancel answers once the request ended;
-// every ending is a receipt, kept until acknowledged, and only an authorized attempt that wasn't
-// revoked moves its file into `Documents/downloads/<id>/media.<ext>`, and only into a folder that
-// is there. Resume data stays here, by download, for the address it was made for: a pause keeps
-// it, as does a request that broke, when the server named the file and takes ranges.
+// A stand-in for modules/background-downloads, the app's native scheduler of one background
+// URLSession, for tests run on Linux. Importing it installs it where Expo installs native
+// modules, as the app finds them. It keeps the contract over real requests and real files:
 //
-// Requests go on when the app's process ends (`die`): a relaunch hears nothing of them until it
-// reconciles. A user's force quit (`forceQuit`) ends them with no resume data, as iOS does. What
-// only iOS can show (URLSession's own resume data, a suspended app's wakes, the system's handler,
-// locked files) is not proved here.
+// - One pump claims the slot before anything else, for the oldest runnable authorization whose
+//   source is enabled under its generation, has its anchor and request item, isn't held by a
+//   stream lease and isn't fenced; the task occupies the slot through its earliest-begin wait, a
+//   second after its source's last request ended (or launch, or an unknown request's end), until
+//   it ended and its receipt is written. Then the next goes, whether the app's JavaScript runs or
+//   not: the background handoff.
+// - Every ending is a receipt under the next sequence, kept until acknowledged. A pause keeps the
+//   same authorization runnable; a removal ends it cancelled; a revoke ends its source's with a
+//   refresh; a resume the server refuses starts once more from nothing, with no receipt, after
+//   its resume data is deleted. At most 32 unfinished authorizations and 128 with receipts.
+// - A removal or revoke is fenced by its ledger write, or when the ledger refuses (`faults`), by
+//   deleting its request items; neither waits for its task to end.
+// - A stream's lease pauses its source's task, cancels it after five seconds, and is refused
+//   after five more; then the provider's second of grace passes. Memory only.
+// - The first foreground reconcile of a process installs the barrier; until it is finished, no
+//   new task is admitted.
+//
+// The app's process ends with `die`: what it held in memory goes, its tasks go on as a background
+// session's do and still end in receipts. A user's force quit (`forceQuit`) ends them with no
+// resume data. What only iOS can show (URLSession's own resume data, the system's wakes and
+// handler, earliestBeginDate scheduling, locked files, the Keychain itself) is not proved here.
+
+interface Grant {
+  readonly id: string;
+  readonly ext: string;
+  readonly sourceId: string;
+  readonly sourceGeneration: string;
+  readonly order: number;
+  state: AuthorizationView["state"];
+  restarted: boolean;
+  fresh: 0 | 1;
+  lastSequence: number;
+  attempt: string | null;
+}
+
+interface Request {
+  readonly sourceId: string;
+  readonly sourceGeneration: string;
+  readonly url: string;
+  readonly headers: Readonly<Record<string, string>>;
+}
 
 /** URLSession's resume data, as this stand-in makes it: the request after redirects and the part. */
 interface ResumeData {
@@ -34,120 +57,235 @@ interface ResumeData {
   readonly part: string;
 }
 
-interface Attempt {
-  readonly id: string;
-  readonly ext: string;
-  readonly resumed: boolean;
-  revoked: boolean;
-  task: Task;
+interface Resume extends Request {
+  readonly authorization: string;
+  readonly data: string;
 }
 
 interface Task {
+  readonly authorization: string;
+  readonly attempt: string;
+  readonly sourceId: string;
   readonly controller: AbortController;
-  /** Settles once its request ended and its ending is written down. */
+  /** Settles once its request ended and its receipt, if any, is written. */
   readonly ended: Promise<void>;
-  pausing: boolean;
+  readonly settle: () => void;
+  /** Its earliest-begin wait, until the request goes out. */
+  waiting: ReturnType<typeof setTimeout> | null;
+  stop: null | "pause" | "disk";
   /** Ended by iOS, as a user's force quit does. */
   quit: boolean;
+  received: number;
+  expected: number | null;
+  resumed: boolean;
+  restarted: boolean;
 }
 
-interface State {
-  readonly attempts: Map<string, Attempt>;
-  readonly receipts: Receipt[];
-  /** Resume data by download, with the address it was made for. */
-  readonly secrets: Map<string, { readonly url: string; readonly data: string }>;
-  /** Requests no attempt accounts for, as a task with no readable description is. */
-  readonly strays: Set<AbortController>;
-  /** When the last of those requests ended. */
-  strayEndedAt: number;
-  readonly listeners: Map<string, Set<(body: never) => void>>;
-  /** While true, `reconcile` and `start` are refused, as before the first unlock. */
-  unavailable: boolean;
-  receiptsMade: number;
+interface Lease {
+  readonly sourceId: string;
+  state: "acquiring" | "granted" | "refused";
 }
+
+const refused = (code: string, message = "The downloads refused the command.") =>
+  Object.assign(new Error(message), { code });
+
+const fresh = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 12)}`;
+
+/**
+ * Injected refusals: ledger writes; Keychain deletions; Keychain reads that don't answer, as
+ * before the first unlock; Keychain writes.
+ */
+const NO_FAULTS = {
+  ledger: false,
+  keychainDelete: false,
+  keychainUnavailable: false,
+  keychainWrite: false,
+};
+
+function initial() {
+  return {
+    // Durable: the queue file.
+    install: fresh("q"),
+    sequence: 0,
+    nextOrder: 0,
+    sources: new Map<string, { generation: string; state: "enabled" | "revoked" }>(),
+    grants: new Map<string, Grant>(),
+    receipts: [] as ReceiptV2[],
+    /** Build 14's receipts copied into the queue, taken in with build 14's meanings. */
+    legacyReceipts: [] as {
+      receipt: string;
+      attempt: string;
+      id: string;
+      outcome: { kind: "complete"; size: number; expected: number | null } | { kind: "cancelled" };
+    }[],
+    // Durable: the Keychain.
+    anchors: new Map<string, { epoch: string; generation: string }>(),
+    requests: new Map<string, Request>(),
+    /** Resume data by download, with the request it was made for and its owner. */
+    resume: new Map<string, Resume>(),
+    /** Build 14's resume data by download, with the address it was made for. */
+    legacy: new Map<string, { url: string; data: string }>(),
+    // The session: the one task, and requests no authorization accounts for.
+    task: null as Task | null,
+    strays: new Set<AbortController>(),
+    /** When the last of those requests ended. */
+    strayEndedAt: 0,
+    // Process memory, gone with the app's process.
+    listeners: new Map<string, Set<(body: never) => void>>(),
+    barrier: { kind: "none" } as
+      { kind: "none" } | { kind: "installed"; token: string } | { kind: "finished"; token: string },
+    leases: new Map<string, Lease>(),
+    retired: new Set<string>(),
+    removed: new Set<string>(),
+    /** Sources whose request items went for want of a ledger write. */
+    fenced: new Set<string>(),
+    closes: new Map<string, number>(),
+    unknownClose: 0,
+    launchedAt: Date.now(),
+    /** The slot claimed by an admission whose task isn't made yet. */
+    admitting: null as string | null,
+    /** Launch recovery still to run: strays are cancelled first. */
+    recovering: false,
+    /** Force quit: nothing runs until the app is opened again. */
+    down: false,
+    /** While true, the queue can't be read, as before the first unlock. */
+    unavailable: false,
+    /** While true, the queue's authority is damaged. */
+    corrupt: false,
+    /** Injected refusals: ledger writes, and Keychain deletions. */
+    faults: { ...NO_FAULTS },
+    /** A reset's final write waits for this, when set: a disk or Keychain that hasn't answered. */
+    resetHold: null as Promise<void> | null,
+    /** How long a reset may take before it is refused, its I/O left to settle. */
+    resetDeadlineMs: 15_000,
+    /** A reset's I/O still unresolved: admission and another reset wait for it. */
+    resetting: false,
+    /** A finished file whose publication the Keychain deferred, in its part file still. */
+    deferred: null as null | {
+      readonly id: string;
+      readonly task: Task;
+      readonly part: string;
+      readonly whole: number | null;
+    },
+    /** What the native side did, in order: `start:<id>`, `end:<id>`, `receipt:<id>:<kind>`. */
+    events: [] as string[],
+
+    /** The app's process ends: its memory goes, its tasks go on as a background session's do. */
+    die() {
+      background.listeners.clear();
+      background.barrier = { kind: "none" };
+      background.leases.clear();
+      background.retired.clear();
+      background.removed.clear();
+      background.fenced.clear();
+      background.closes.clear();
+      background.launchedAt = Date.now();
+      background.recovering = true;
+      background.admitting = null;
+    },
+    /** A user's force quit: iOS ends every request, giving no resume data, and nothing runs. */
+    async forceQuit() {
+      background.die();
+      background.down = true;
+      const task = background.task;
+      if (task) {
+        task.quit = true;
+        if (task.waiting) {
+          clearTimeout(task.waiting);
+          task.waiting = null;
+          settleUnstarted(task);
+        } else task.controller.abort();
+        await task.ended;
+      }
+      for (const stray of background.strays) stray.abort();
+      while (background.strays.size > 0) await new Promise((done) => setTimeout(done, 5));
+    },
+    /** Pauses the task under way, keeping resume data, as a stream's lease does. */
+    async pauseAll() {
+      const task = background.task;
+      if (!task) return;
+      task.stop = "pause";
+      if (task.waiting) {
+        clearTimeout(task.waiting);
+        task.waiting = null;
+        settleUnstarted(task);
+      } else task.controller.abort();
+      await task.ended;
+    },
+    /** The connection of the request under way breaks, as a provider or a network does. */
+    async breakConnection() {
+      const task = background.task;
+      if (!task) return;
+      task.controller.abort();
+      await task.ended;
+    },
+    /** A request the session has that no authorization accounts for, holding a connection. */
+    stray(url: string) {
+      const controller = new AbortController();
+      background.strays.add(controller);
+      native.open++;
+      void fetch(url, { signal: controller.signal })
+        .then(async (response) => {
+          for await (const _ of response.body ?? []);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          native.open--;
+          background.strays.delete(controller);
+          background.strayEndedAt = Date.now();
+          background.unknownClose = Date.now();
+          pump();
+        });
+    },
+    /** Starts over, for a fresh install. */
+    reset() {
+      // A deferred file's slot goes with the install it belonged to.
+      if (background.deferred) background.task = null;
+      Object.assign(background, {
+        install: fresh("q"),
+        sequence: 0,
+        nextOrder: 0,
+        unavailable: false,
+        corrupt: false,
+        down: false,
+        faults: { ...NO_FAULTS },
+        resetHold: null,
+        resetDeadlineMs: 15_000,
+        resetting: false,
+        deferred: null,
+      });
+      for (const each of [
+        background.sources,
+        background.grants,
+        background.anchors,
+        background.requests,
+        background.resume,
+        background.legacy,
+      ]) {
+        each.clear();
+      }
+      background.receipts.length = 0;
+      background.legacyReceipts.length = 0;
+      background.events.length = 0;
+      background.die();
+      background.recovering = false;
+    },
+    /** Unfinished authorizations of download `id`. */
+    open(id: string): Grant[] {
+      return [...background.grants.values()].filter(
+        (grant) => grant.id === id && grant.state !== "terminal",
+      );
+    },
+  };
+}
+type Background = ReturnType<typeof initial>;
 
 /** What a test controls and reads of the stand-in; one for the test process, across launches. */
-export const background: State & {
-  /** The app's process ends: its listeners go, its requests go on. */
-  die(): void;
-  /** A user's force quit: iOS ends every request, giving no resume data. */
-  forceQuit(): Promise<void>;
-  /** Pauses every request, keeping resume data, as a stream's reclaim does. */
-  pauseAll(): Promise<void>;
-  /** The connection of the request under way breaks, as a provider or a network does. */
-  breakConnection(): Promise<void>;
-  /** A request the session has that no attempt accounts for, holding a provider's connection. */
-  stray(url: string): void;
-  /** Starts over, for a fresh install. */
-  reset(): void;
-} = ((globalThis as { mrstreamerBackground?: typeof background }).mrstreamerBackground ??= {
-  attempts: new Map(),
-  receipts: [],
-  secrets: new Map(),
-  strays: new Set(),
-  strayEndedAt: 0,
-  listeners: new Map(),
-  unavailable: false,
-  receiptsMade: 0,
-  die() {
-    this.listeners.clear();
-  },
-  async forceQuit() {
-    // The process is gone first: the next launch hears how its requests ended.
-    this.listeners.clear();
-    const ending = [...this.attempts.values()].map((attempt) => {
-      attempt.task.quit = true;
-      attempt.task.controller.abort();
-      return attempt.task.ended;
-    });
-    for (const stray of this.strays) stray.abort();
-    await Promise.all(ending);
-    while (this.strays.size > 0) await new Promise((done) => setTimeout(done, 5));
-  },
-  async pauseAll() {
-    const ending = [...this.attempts.values()].map((attempt) => {
-      attempt.task.pausing = true;
-      attempt.task.controller.abort();
-      return attempt.task.ended;
-    });
-    await Promise.all(ending);
-  },
-  async breakConnection() {
-    const ending = [...this.attempts.values()].map((attempt) => {
-      attempt.task.controller.abort();
-      return attempt.task.ended;
-    });
-    await Promise.all(ending);
-  },
-  stray(url) {
-    const controller = new AbortController();
-    this.strays.add(controller);
-    native.open++;
-    void fetch(url, { signal: controller.signal })
-      .then(async (response) => {
-        for await (const _ of response.body ?? []);
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        native.open--;
-        this.strays.delete(controller);
-        this.strayEndedAt = Date.now();
-      });
-  },
-  reset() {
-    this.attempts.clear();
-    this.receipts.length = 0;
-    this.secrets.clear();
-    this.listeners.clear();
-    this.unavailable = false;
-  },
-});
+export const background: Background = ((
+  globalThis as { mrstreamerBackground?: Background }
+).mrstreamerBackground ??= initial());
 
-const refused = (code: string, message: string) => Object.assign(new Error(message), { code });
-
-function emit(event: "progress", body: Progress): void;
-function emit(event: "receipt", body: Receipt): void;
-function emit(event: string, body: Progress | Receipt) {
+function emit(event: "progress" | "receipt", body: object) {
   for (const listener of background.listeners.get(event) ?? []) listener(body as never);
 }
 
@@ -157,38 +295,265 @@ function end(ending: () => void) {
   else ending();
 }
 
-function close(key: string, outcome: Outcome) {
-  const attempt = background.attempts.get(key);
-  if (!attempt) return;
-  background.attempts.delete(key);
-  if (outcome.kind === "complete" || outcome.kind === "cancelled") {
-    background.secrets.delete(attempt.id);
-  }
-  const receipt: Receipt = {
-    receipt: `r-${++background.receiptsMade}`,
-    attempt: key,
-    id: attempt.id,
+/** A ledger write: refused while a test says so. */
+function write(): boolean {
+  return !background.faults.ledger && !background.corrupt && !background.unavailable;
+}
+
+function record(id: string, grant: Grant, outcome: OutcomeV2, task: Task | null): ReceiptV2 {
+  background.sequence++;
+  grant.lastSequence = background.sequence;
+  const receipt: ReceiptV2 = {
+    version: 2,
+    receipt: fresh("r"),
+    authorization: id,
+    attempt: task?.attempt ?? grant.attempt,
+    id: grant.id,
+    sequence: background.sequence,
+    received: task?.received ?? null,
+    expected: task?.expected ?? null,
+    restarted: grant.restarted,
     outcome,
   };
   background.receipts.push(receipt);
+  background.events.push(`receipt:${grant.id}:${outcome.kind}`);
   emit("receipt", receipt);
+  return receipt;
 }
 
-const folderOf = (id: string) => join(native.root, "documents", "downloads", id);
+const load = () => {
+  const grants = [...background.grants.values()];
+  return {
+    open: grants.filter((grant) => grant.state !== "terminal").length,
+    receipts: background.receipts.length,
+  };
+};
+
+/**
+ * Whether `id`'s authority still stands: enabled ledger generation, anchor and request item. A
+ * Keychain that doesn't answer is `unavailable`, never missing.
+ */
+function authorized(
+  id: string,
+  grant: Grant,
+): "valid" | "source" | "request" | "gone" | "unavailable" {
+  if (grant.state === "terminal" || background.removed.has(id)) return "gone";
+  if (background.fenced.has(grant.sourceId)) return "gone";
+  const source = background.sources.get(grant.sourceId);
+  if (source?.state !== "enabled" || source.generation !== grant.sourceGeneration) return "gone";
+  if (background.faults.keychainUnavailable) return "unavailable";
+  const anchor = background.anchors.get(grant.sourceId);
+  if (anchor?.epoch !== background.install || anchor.generation !== grant.sourceGeneration) {
+    return "source";
+  }
+  const request = background.requests.get(id);
+  if (request?.sourceGeneration !== grant.sourceGeneration) return "request";
+  return "valid";
+}
+
+const held = (sourceId: string) =>
+  [...background.leases.values()].some((lease) => lease.sourceId === sourceId);
+
+/** When a request of `sourceId` may go out: a second after the last one of ours ended. */
+function earliest(sourceId: string) {
+  return (
+    Math.max(background.closes.get(sourceId) ?? background.launchedAt, background.unknownClose) +
+    1000
+  );
+}
+
+/** Launch recovery, run before anything else after `die`: every stray is cancelled and waited for. */
+function recover() {
+  background.down = false;
+  if (!background.recovering) return;
+  background.recovering = false;
+  for (const stray of background.strays) stray.abort();
+  // An attempt no task runs any more: cleared, and its authorization queued again.
+  for (const [id, grant] of background.grants) {
+    if (grant.state === "active" && background.task?.authorization !== id) {
+      grant.attempt = null;
+      grant.state = "queued";
+    }
+  }
+}
+
+/** The one pump: claims the slot for the oldest runnable authorization, before anything else. */
+function pump() {
+  const b = background;
+  if (b.down) return;
+  recover();
+  if (b.deferred) return retryDeferred();
+  if (b.task || b.admitting || b.strays.size > 0 || b.corrupt || b.unavailable || b.resetting) {
+    return;
+  }
+  if (b.barrier.kind === "installed") return;
+  const { open, receipts } = load();
+  if (open + receipts >= 128) return;
+  const next = [...b.grants]
+    .filter(
+      ([id, grant]) =>
+        (grant.state === "queued" || grant.state === "paused") &&
+        b.sources.get(grant.sourceId)?.state === "enabled" &&
+        b.sources.get(grant.sourceId)?.generation === grant.sourceGeneration &&
+        !b.removed.has(id) &&
+        !b.fenced.has(grant.sourceId) &&
+        !held(grant.sourceId),
+    )
+    .toSorted(([, a], [, z]) => a.order - z.order)[0];
+  if (!next) return;
+  const [id, grant] = next;
+  b.admitting = id;
+  queueMicrotask(() => admit(id, grant));
+}
+
+function admit(id: string, grant: Grant) {
+  const b = background;
+  if (b.admitting !== id) return;
+  const verdict = authorized(id, grant);
+  // Unreadable: no request, fresh or resumed, until a later legitimate trigger.
+  if (verdict === "unavailable") {
+    b.admitting = null;
+    return;
+  }
+  if (verdict !== "valid") {
+    b.admitting = null;
+    if (verdict === "request") {
+      grant.state = "terminal";
+      record(id, grant, { kind: "refresh", reason: "secret-missing" }, null);
+    } else if (verdict === "source") b.fenced.add(grant.sourceId);
+    return pump();
+  }
+  const request = b.requests.get(id)!;
+  const kept = b.resume.get(grant.id);
+  const legacy = b.legacy.get(grant.id);
+  const resumeData =
+    kept &&
+    kept.sourceGeneration === grant.sourceGeneration &&
+    kept.url === request.url &&
+    JSON.stringify(kept.headers) === JSON.stringify(request.headers)
+      ? kept.data
+      : legacy?.url === request.url
+        ? legacy.data
+        : null;
+  if (resumeData) {
+    // Made this authorization's own first; a Keychain that won't take it defers admission.
+    if (b.faults.keychainWrite) {
+      b.admitting = null;
+      return;
+    }
+    b.resume.set(grant.id, { ...request, authorization: id, data: resumeData });
+    b.legacy.delete(grant.id);
+  }
+  const attempt = fresh("a");
+  grant.state = "active";
+  grant.attempt = attempt;
+  const ended = Promise.withResolvers<void>();
+  const task: Task = {
+    authorization: id,
+    attempt,
+    sourceId: grant.sourceId,
+    controller: new AbortController(),
+    ended: ended.promise,
+    settle: ended.resolve,
+    waiting: null,
+    stop: null,
+    quit: false,
+    received: 0,
+    expected: null,
+    resumed: resumeData !== null,
+    restarted: grant.restarted,
+  };
+  b.admitting = null;
+  b.task = task;
+  b.events.push(`start:${grant.id}`);
+  // A lower bound, as earliestBeginDate is: never a moment before it, whatever the timer does.
+  const begin = earliest(grant.sourceId);
+  const go = () => {
+    const wait = begin - Date.now();
+    if (wait > 0) {
+      task.waiting = setTimeout(go, wait);
+      return;
+    }
+    task.waiting = null;
+    transfer(id, grant, task, request, resumeData ? decode(resumeData) : null);
+  };
+  task.waiting = setTimeout(go, Math.max(0, begin - Date.now()));
+}
+
 const encode = (resume: ResumeData) => Buffer.from(JSON.stringify(resume)).toString("base64");
 const decode = (data: string) => JSON.parse(Buffer.from(data, "base64").toString()) as ResumeData;
 let parts = 0;
+const folderOf = (id: string) => join(native.root, "documents", "downloads", id);
 
-/** The request of an attempt, over HTTP, into a part file; its ending is the attempt's receipt. */
-function transfer(key: string, request: StartRequest, resume: ResumeData | null): Task {
-  const controller = new AbortController();
-  let settle = () => {};
-  const task: Task = {
-    controller,
-    ended: new Promise<void>((done) => (settle = done)),
-    pausing: false,
-    quit: false,
-  };
+/** A task stopped before its request went out: nothing loaded, its resume data as it was. */
+function settleUnstarted(task: Task) {
+  const grant = background.grants.get(task.authorization) ?? null;
+  const kept =
+    grant !== null && background.resume.get(grant.id)?.authorization === task.authorization;
+  finish(
+    task,
+    grant,
+    task.quit
+      ? { kind: "network", code: -999, resumable: false }
+      : task.stop === "pause"
+        ? { kind: "paused", resumable: kept }
+        : null,
+  );
+}
+
+/** The slot's task ended: its receipt, unless a removal, revoke or reset already ended it. */
+function finish(task: Task, grant: Grant | null, outcome: OutcomeV2 | null) {
+  const b = background;
+  const id = task.authorization;
+  if (!write()) {
+    // Its terminal write refused: the authorization stays active with its attempt, for launch
+    // recovery to clear and queue again with no receipt.
+  } else if (grant && grant.state === "active" && grant.attempt === task.attempt && outcome) {
+    grant.attempt = null;
+    grant.restarted ||= task.restarted;
+    const refusedResume =
+      task.resumed &&
+      grant.fresh === 1 &&
+      ((outcome.kind === "refused" && (outcome.status === 412 || outcome.status === 416)) ||
+        (outcome.kind === "network" && outcome.code === -3001));
+    const owned = b.resume.get(grant.id)?.authorization === id || !b.resume.has(grant.id);
+    if (refusedResume && (b.faults.keychainDelete || !owned)) {
+      // The refused bytes can't go: ended, for an explicit Retry, never started again on them.
+      grant.state = "terminal";
+      record(id, grant, { kind: "refresh", reason: "resume-unusable" }, task);
+      b.requests.delete(id);
+    } else if (refusedResume) {
+      // Its refused resume data goes first, then the same authorization starts from nothing.
+      b.resume.delete(grant.id);
+      grant.restarted = true;
+      grant.fresh = 0;
+      grant.state = "queued";
+    } else {
+      grant.state = outcome.kind === "paused" ? "paused" : "terminal";
+      record(id, grant, outcome, task);
+      if (grant.state === "terminal") {
+        b.requests.delete(id);
+        if (outcome.kind === "complete" && b.resume.get(grant.id)?.authorization === id) {
+          b.resume.delete(grant.id);
+        }
+      }
+    }
+  } else if (grant?.attempt === task.attempt) grant.attempt = null;
+  b.closes.set(task.sourceId, Date.now());
+  if (b.task === task) b.task = null;
+  b.events.push(`end:${grant?.id ?? "?"}`);
+  task.settle();
+  pump();
+}
+
+/** The task's request, over HTTP, into a part file; its end is the authorization's receipt. */
+function transfer(
+  id: string,
+  grant: Grant,
+  task: Task,
+  request: Request,
+  resume: ResumeData | null,
+) {
   void (async () => {
     const part = resume?.part ?? join(native.root, `background-part-${++parts}`);
     let written = 0;
@@ -203,10 +568,12 @@ function transfer(key: string, request: StartRequest, resume: ResumeData | null)
     }
     native.requests.push({ url, range: headers["Range"] ?? null, at: Date.now() });
     native.open++;
-    let outcome: Outcome;
+    let outcome: OutcomeV2 | null;
     try {
-      if (resume && !existsSync(resume.part)) throw new Error("The file couldn't be opened.");
-      const response = await fetch(url, { headers, signal: controller.signal });
+      if (resume && !existsSync(resume.part)) {
+        throw Object.assign(new Error("The file couldn't be opened."), { code: -3001 });
+      }
+      const response = await fetch(url, { headers, signal: task.controller.signal });
       url = response.url;
       if (!response.ok) {
         await response.body?.cancel();
@@ -225,130 +592,555 @@ function transfer(key: string, request: StartRequest, resume: ResumeData | null)
               ? length
               : null;
         if (response.status === 206 && resume) written = resume.written;
-        else writeFileSync(part, "");
+        else {
+          writeFileSync(part, "");
+          // The server sent the whole file again, as a changed one does: it starts from zero.
+          if (resume) task.restarted = true;
+        }
+        task.expected = whole;
+        let checked = false;
         for await (const piece of response.body ?? []) {
+          if (!checked && whole !== null) {
+            checked = true;
+            if (native.free < whole - written) {
+              task.stop = "disk";
+              task.controller.abort();
+              throw new Error("The disk is full.");
+            }
+          }
           appendFileSync(part, piece);
           written += piece.length;
-          emit("progress", { attempt: key, received: written, expected: whole });
+          task.received = written;
+          emit("progress", {
+            version: 2,
+            authorization: id,
+            attempt: task.attempt,
+            id: grant.id,
+            received: written,
+            expected: whole,
+            restarted: task.restarted,
+            resumed: task.resumed,
+          });
         }
         if (whole !== null && written !== whole) throw new Error("The connection was lost.");
-        const attempt = background.attempts.get(key);
-        const folder = folderOf(request.id);
-        if (!attempt || attempt.revoked) {
-          outcome = { kind: "cancelled" };
-        } else if (!existsSync(folder) || !statSync(folder).isDirectory()) {
-          outcome = { kind: "folder" };
-        } else {
-          const size = statSync(part).size;
-          renameSync(part, join(folder, `media.${request.ext}`));
-          outcome = { kind: "complete", size, expected: whole };
+        const published = publishPart(id, grant, part, whole);
+        if (published === "later") {
+          // The Keychain didn't answer: every byte stays, the slot with it, for a later trigger.
+          // Its request did end: what waits for that closure goes on.
+          native.open--;
+          background.deferred = { id, task, part, whole };
+          task.settle();
+          return;
         }
+        outcome = published;
       }
-    } catch {
-      const attempt = background.attempts.get(key);
-      const kept = validator !== null && ranges && written > 0 && !task.quit;
-      if (kept && attempt && !attempt.revoked) {
-        background.secrets.set(request.id, {
-          url: request.url,
+    } catch (cause) {
+      const kept =
+        validator !== null && ranges && written > 0 && !task.quit && task.stop !== "disk";
+      if (kept && authorized(id, grant) === "valid") {
+        background.resume.set(grant.id, {
+          ...request,
+          authorization: id,
           data: encode({ url, validator: validator!, written, part }),
         });
       } else {
         rmSync(part, { force: true });
       }
+      const code = (cause as { code?: unknown }).code === -3001 ? -3001 : task.quit ? -999 : -1005;
       outcome =
-        !attempt || attempt.revoked
-          ? { kind: "cancelled" }
-          : task.pausing
+        task.stop === "disk"
+          ? { kind: "disk-full", needed: task.expected === null ? null : task.expected - written }
+          : task.stop === "pause"
             ? { kind: "paused", resumable: kept }
-            : { kind: "network", code: task.quit ? -999 : -1005, resumable: kept };
+            : { kind: "network", code, resumable: kept };
     }
     native.open--;
-    close(key, outcome);
-    settle();
+    finish(task, background.grants.get(id) ?? null, outcome);
   })();
-  return task;
 }
 
-const module = {
-  async reconcile(): Promise<{ running: Running[]; receipts: Receipt[]; closed: number }> {
-    if (background.unavailable) {
-      throw refused("ERR_DOWNLOADS_UNAVAILABLE", "The downloads can't be read.");
-    }
-    const strays = [...background.strays];
-    for (const stray of strays) stray.abort();
-    while (background.strays.size > 0) await new Promise((done) => setTimeout(done, 5));
-    for (const attempt of background.attempts.values()) {
-      if (attempt.revoked) await attempt.task.ended;
-    }
+/**
+ * Publishes a finished part file under authority read now: in place and complete; refused when
+ * that authority is positively gone; `later` while the Keychain doesn't answer.
+ */
+function publishPart(
+  id: string,
+  grant: Grant,
+  part: string,
+  whole: number | null,
+): OutcomeV2 | "later" {
+  const folder = folderOf(grant.id);
+  const media = join(folder, `media.${grant.ext}`);
+  const verdict = authorized(id, grant);
+  if (verdict === "unavailable") return "later";
+  if (verdict !== "valid") {
+    rmSync(part, { force: true });
+    return { kind: "refresh", reason: verdict === "source" ? "source" : "secret-missing" };
+  }
+  if (!existsSync(folder) || !statSync(folder).isDirectory() || existsSync(media)) {
+    return { kind: "folder" };
+  }
+  const size = statSync(part).size;
+  renameSync(part, media);
+  return { kind: "complete", size, expected: whole };
+}
+
+/** A deferred publication, tried again on a later trigger. */
+function retryDeferred() {
+  const deferred = background.deferred;
+  if (!deferred) return;
+  const grant = background.grants.get(deferred.id) ?? null;
+  const published = grant ? publishPart(deferred.id, grant, deferred.part, deferred.whole) : null;
+  if (published === "later") return;
+  background.deferred = null;
+  finish(deferred.task, grant, published);
+}
+
+/** Stops the slot's task of `sourceId`, or every task: a pause or a cancel, honoring held endings. */
+function stopTask(task: Task, why: "pause" | "cancel") {
+  if (why === "pause") task.stop ??= "pause";
+  if (task.waiting) {
+    // Still waiting for its earliest begin: no request went out.
+    clearTimeout(task.waiting);
+    task.waiting = null;
+    end(() => settleUnstarted(task));
+    return;
+  }
+  end(() =>
+    why === "pause"
+      ? setTimeout(() => task.controller.abort(), native.pauseMs)
+      : task.controller.abort(),
+  );
+}
+
+async function within(promise: Promise<void>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const ended = await Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>((done) => (timer = setTimeout(() => done(false), ms))),
+  ]);
+  clearTimeout(timer);
+  return ended;
+}
+
+function observe(sourceId: string) {
+  const b = background;
+  const epoch = b.corrupt || b.unavailable ? "q-process" : b.install;
+  if (b.corrupt || b.unavailable) {
+    const token = `o-blocked-${sourceId}`;
     return {
-      running: [...background.attempts].map(([attempt, { id }]) => ({
-        attempt,
-        id,
-        received: null,
-        expected: null,
-      })),
-      receipts: [...background.receipts],
-      closed: strays.length,
+      state: "blocked",
+      generation: token,
+      expected: { queueEpoch: epoch, expected: token },
     };
+  }
+  const source = b.sources.get(sourceId);
+  const anchor = b.anchors.get(sourceId);
+  const anchored = anchor?.epoch === b.install && anchor.generation === source?.generation;
+  const token = `o-fenced-${source?.generation ?? "none"}-${anchor?.generation ?? "none"}-${b.fenced.has(sourceId)}`;
+  if (!source) {
+    return !anchor && !b.fenced.has(sourceId)
+      ? { state: "missing", generation: null, expected: { queueEpoch: epoch, expected: "missing" } }
+      : { state: "fenced", generation: token, expected: { queueEpoch: epoch, expected: token } };
+  }
+  if (source.state === "revoked") {
+    return {
+      state: "revoked",
+      generation: source.generation,
+      expected: { queueEpoch: epoch, expected: source.generation },
+    };
+  }
+  return anchored && !b.fenced.has(sourceId)
+    ? {
+        state: "enabled",
+        generation: source.generation,
+        expected: { queueEpoch: epoch, expected: source.generation },
+      }
+    : { state: "fenced", generation: token, expected: { queueEpoch: epoch, expected: token } };
+}
+
+/** Deletes a source's whole Keychain service: its anchor, request items and resume data. */
+function clearService(sourceId: string) {
+  background.anchors.delete(sourceId);
+  for (const [id, request] of background.requests) {
+    if (request.sourceId === sourceId) background.requests.delete(id);
+  }
+  for (const [download, resume] of background.resume) {
+    if (resume.sourceId === sourceId) background.resume.delete(download);
+  }
+}
+
+/** Ends `sourceId`'s unfinished authorizations of another generation than `keeping`. */
+function endSource(sourceId: string, keeping: string | null) {
+  for (const [id, grant] of background.grants) {
+    if (grant.sourceId !== sourceId || grant.state === "terminal") continue;
+    if (grant.sourceGeneration === keeping) continue;
+    if (grant.state === "reserved") {
+      background.grants.delete(id);
+      continue;
+    }
+    grant.attempt = null;
+    grant.state = "terminal";
+    record(id, grant, { kind: "refresh", reason: "source" }, null);
+  }
+}
+
+function fenceOf(durable: string, authorization?: string) {
+  return {
+    durable,
+    receipts: background.receipts.filter(
+      (each) => authorization === undefined || each.authorization === authorization,
+    ),
+    legacy: [...background.legacyReceipts],
+  };
+}
+
+function snapshot() {
+  const b = background;
+  const blocked = b.unavailable ? "locked" : b.corrupt ? "corrupt" : "none";
+  const token = b.barrier.kind === "none" ? null : b.barrier.token;
+  return {
+    version: 2,
+    queueEpoch: b.corrupt || b.unavailable ? "q-process" : b.install,
+    sequence: b.sequence,
+    foregroundToken: token,
+    blocked,
+    sources: [...b.sources.keys()],
+    authorizations: b.unavailable
+      ? []
+      : [...b.grants].map(([authorization, grant]) => ({
+          authorization,
+          id: grant.id,
+          sourceId: grant.sourceId,
+          sourceGeneration: grant.sourceGeneration,
+          state: grant.state,
+          sequence: grant.lastSequence,
+          attempt: grant.attempt,
+          received: b.task?.authorization === authorization ? b.task.received : null,
+          expected: b.task?.authorization === authorization ? b.task.expected : null,
+          restarted: grant.restarted,
+          resumed: b.task?.authorization === authorization ? b.task.resumed : false,
+        })),
+    receipts: b.unavailable ? [] : [...b.receipts],
+    legacy: { receipts: b.unavailable ? [] : [...b.legacyReceipts] },
+  };
+}
+
+const gate = () => {
+  if (background.unavailable) throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+  if (background.corrupt) throw refused("ERR_DOWNLOADS_CORRUPT");
+};
+
+const module = {
+  async sourceState(sourceId: string) {
+    recover();
+    return observe(sourceId);
   },
 
-  async start(request: StartRequest): Promise<boolean> {
-    if (background.unavailable) {
-      throw refused("ERR_DOWNLOADS_UNAVAILABLE", "The downloads can't be read.");
+  async enableSource(command: { sourceId: string; queueEpoch: string; expected: string }) {
+    gate();
+    const seen = observe(command.sourceId);
+    if (seen.state === "blocked") throw refused("ERR_DOWNLOADS_KEYCHAIN");
+    if (
+      command.queueEpoch !== seen.expected.queueEpoch ||
+      command.expected !== seen.expected.expected
+    ) {
+      throw refused("ERR_DOWNLOADS_OBSOLETE");
     }
-    const known = background.attempts.get(request.attempt);
-    if (known) return known.resumed;
-    if (background.attempts.size > 0) {
-      throw refused("ERR_DOWNLOADS_BUSY", "Another download's request is still open.");
+    if (seen.state === "enabled") return { generation: seen.generation };
+    const generation = fresh("g");
+    // Not enabled: everything in its service is an older generation's, and goes first.
+    if (background.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+    clearService(command.sourceId);
+    background.anchors.set(command.sourceId, { epoch: background.install, generation });
+    if (!write()) throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+    background.sources.set(command.sourceId, { generation, state: "enabled" });
+    endSource(command.sourceId, generation);
+    background.fenced.delete(command.sourceId);
+    pump();
+    return { generation };
+  },
+
+  async revokeSource(command: { sourceId: string; queueEpoch: string; expected: string }) {
+    recover();
+    const seen = observe(command.sourceId);
+    if (
+      command.queueEpoch !== seen.expected.queueEpoch ||
+      command.expected !== seen.expected.expected
+    ) {
+      throw refused("ERR_DOWNLOADS_OBSOLETE");
     }
-    if (!existsSync(folderOf(request.id))) {
-      throw refused("ERR_DOWNLOADS_FOLDER", "The download's folder is gone.");
+    const source = command.sourceId;
+    const cancel = () => {
+      const task = background.task;
+      if (task?.sourceId === source) stopTask(task, "cancel");
+    };
+    if (seen.state === "revoked") return { ...fenceOf("already-terminal"), source: seen };
+    if (write()) {
+      background.sources.set(source, { generation: fresh("g"), state: "revoked" });
+      endSource(source, null);
+      cancel();
+      // The fence is durable; the revoked source's whole service goes after it.
+      if (!background.faults.keychainDelete) clearService(source);
+      return { ...fenceOf("ledger"), source: observe(source) };
     }
-    const secret = background.secrets.get(request.id);
-    const resume = secret && secret.url === request.url ? decode(secret.data) : null;
-    if (secret && !resume) background.secrets.delete(request.id);
-    const attempt: Attempt = {
+    if (background.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+    clearService(source);
+    background.fenced.add(source);
+    cancel();
+    return { ...fenceOf("secrets"), source: observe(source) };
+  },
+
+  async reserve(request: { id: string; ext: string; sourceId: string; sourceGeneration: string }) {
+    gate();
+    const source = background.sources.get(request.sourceId);
+    if (
+      source?.state !== "enabled" ||
+      source.generation !== request.sourceGeneration ||
+      background.fenced.has(request.sourceId)
+    ) {
+      throw refused("ERR_DOWNLOADS_OBSOLETE");
+    }
+    const { open, receipts } = load();
+    if (open >= 32 || open + receipts + 1 > 128) throw refused("ERR_DOWNLOADS_CAPACITY");
+    if (!write()) throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+    const authorization = fresh("z");
+    background.grants.set(authorization, {
       id: request.id,
       ext: request.ext,
-      resumed: resume !== null,
-      revoked: false,
-      task: undefined as unknown as Task,
-    };
-    background.attempts.set(request.attempt, attempt);
-    attempt.task = transfer(request.attempt, request, resume);
-    return resume !== null;
+      sourceId: request.sourceId,
+      sourceGeneration: request.sourceGeneration,
+      order: background.nextOrder++,
+      state: "reserved",
+      restarted: false,
+      fresh: 1,
+      lastSequence: background.sequence,
+      attempt: null,
+    });
+    return { authorization };
   },
 
-  async pause(key: string): Promise<void> {
-    const attempt = background.attempts.get(key);
-    if (!attempt || attempt.revoked) return;
-    const { task } = attempt;
-    task.pausing = true;
-    end(() => setTimeout(() => task.controller.abort(), native.pauseMs));
-    await task.ended;
+  async authorize(request: {
+    authorization: string;
+    url: string;
+    headers: Record<string, string>;
+  }) {
+    gate();
+    const grant = background.grants.get(request.authorization);
+    if (!grant || grant.state === "terminal") throw refused("ERR_DOWNLOADS_OBSOLETE");
+    if (grant.state !== "reserved") return;
+    if (!existsSync(folderOf(grant.id))) throw refused("ERR_DOWNLOADS_FOLDER");
+    const anchor = background.anchors.get(grant.sourceId);
+    if (anchor?.generation !== grant.sourceGeneration) throw refused("ERR_DOWNLOADS_OBSOLETE");
+    background.requests.set(request.authorization, {
+      sourceId: grant.sourceId,
+      sourceGeneration: grant.sourceGeneration,
+      url: request.url,
+      headers: { ...request.headers },
+    });
+    if (!write()) {
+      // Never armed: the request item just written goes with it.
+      background.requests.delete(request.authorization);
+      throw refused("ERR_DOWNLOADS_UNAVAILABLE");
+    }
+    grant.state = "queued";
+    pump();
   },
 
-  async cancel(key: string): Promise<void> {
-    const attempt = background.attempts.get(key);
-    if (!attempt) return;
-    attempt.revoked = true;
-    background.secrets.delete(attempt.id);
-    const { task } = attempt;
-    end(() => task.controller.abort());
-    await task.ended;
+  async cancelAuthorization(authorization: string, reason: "remove" | "abandon") {
+    gate();
+    const grant = background.grants.get(authorization);
+    if (!grant) return fenceOf("already-terminal", authorization);
+    if (reason === "abandon") {
+      if (grant.state !== "reserved") throw refused("ERR_DOWNLOADS_INVALID");
+      background.grants.delete(authorization);
+      background.requests.delete(authorization);
+      return { durable: "ledger" };
+    }
+    if (grant.state === "terminal") return fenceOf("already-terminal", authorization);
+    background.removed.add(authorization);
+    if (background.admitting === authorization) background.admitting = null;
+    const task = background.task?.authorization === authorization ? background.task : null;
+    if (write()) {
+      grant.state = "terminal";
+      grant.attempt = null;
+      record(authorization, grant, { kind: "cancelled" }, task);
+      background.requests.delete(authorization);
+      if (background.resume.get(grant.id)?.authorization === authorization) {
+        background.resume.delete(grant.id);
+      }
+      if (task) stopTask(task, "cancel");
+      return fenceOf("ledger", authorization);
+    }
+    if (background.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+    background.requests.delete(authorization);
+    if (background.resume.get(grant.id)?.authorization === authorization) {
+      background.resume.delete(grant.id);
+    }
+    if (task) stopTask(task, "cancel");
+    return { durable: "secrets", receipts: [], legacy: [] };
   },
 
-  async acknowledge(receipts: readonly string[]): Promise<void> {
-    const kept = background.receipts.filter((each) => !receipts.includes(each.receipt));
+  async drainDownload(id: string) {
+    const task = background.task;
+    if (task && background.grants.get(task.authorization)?.id === id) {
+      if (!(await within(task.ended, 10_000))) throw refused("ERR_DOWNLOADS_BUSY");
+    }
+  },
+
+  async acquirePlayback(request: { sourceId: string; lease: string }) {
+    const { sourceId, lease } = request;
+    if (background.retired.has(lease)) throw refused("ERR_DOWNLOADS_OBSOLETE");
+    const known = background.leases.get(lease);
+    if (known && known.sourceId !== sourceId) throw refused("ERR_DOWNLOADS_INVALID");
+    if (known?.state === "granted") return { lease, providerDisconnect: "unobservable" };
+    background.leases.set(lease, { sourceId, state: "acquiring" });
+    if (
+      background.admitting &&
+      background.grants.get(background.admitting)?.sourceId === sourceId
+    ) {
+      background.admitting = null;
+    }
+    for (const stray of background.strays) stray.abort();
+    const task = background.task?.sourceId === sourceId ? background.task : null;
+    if (task) {
+      stopTask(task, "pause");
+      if (!(await within(task.ended, 5_000))) {
+        stopTask(task, "cancel");
+        if (!(await within(task.ended, 5_000))) {
+          const now = background.leases.get(lease);
+          if (now) now.state = "refused";
+          throw refused("ERR_DOWNLOADS_UNKNOWN_CLOSURE", "A download's request may still be open.");
+        }
+      }
+    }
+    while (background.strays.size > 0) await new Promise((done) => setTimeout(done, 5));
+    const begin = earliest(sourceId);
+    while (Date.now() < begin) {
+      await new Promise((done) => setTimeout(done, begin - Date.now()));
+    }
+    const now = background.leases.get(lease);
+    if (!now || background.retired.has(lease)) throw refused("ERR_DOWNLOADS_OBSOLETE");
+    now.state = "granted";
+    return { lease, providerDisconnect: "unobservable" };
+  },
+
+  async releasePlayback(lease: string) {
+    background.retired.add(lease);
+    const known = background.leases.get(lease);
+    background.leases.delete(lease);
+    if (known?.state === "granted") background.closes.set(known.sourceId, Date.now());
+    pump();
+  },
+
+  async reconcile(context: "first-foreground" | "background" | "ordinary") {
+    recover();
+    if (context === "first-foreground" && background.barrier.kind === "none") {
+      background.barrier = { kind: "installed", token: fresh("f") };
+    }
+    while (background.strays.size > 0) await new Promise((done) => setTimeout(done, 5));
+    pump();
+    return snapshot();
+  },
+
+  async finishForegroundReconcile(token: string) {
+    const { barrier } = background;
+    if (barrier.kind === "installed" && barrier.token === token) {
+      background.barrier = { kind: "finished", token };
+      pump();
+      return;
+    }
+    if (barrier.kind === "finished" && barrier.token === token) return;
+    throw refused("ERR_DOWNLOADS_OBSOLETE");
+  },
+
+  /**
+   * Corrupt only. One operation: its deadline covers the drain and the final write, refusing the
+   * caller while either is pending; a write already started keeps the reset gate until it settles,
+   * then applies late without a second reset.
+   */
+  async resetQueue(scope: { queueEpoch: string; knownSourceIds: string[] }) {
+    const b = background;
+    b.events.push("reset-attempt");
+    if (b.resetting) throw refused("ERR_DOWNLOADS_BUSY");
+    if (!b.corrupt) throw refused("ERR_DOWNLOADS_OBSOLETE");
+    if (scope.queueEpoch !== "q-process") throw refused("ERR_DOWNLOADS_OBSOLETE");
+    b.resetting = true;
+    let answered = false;
+    const operation = (async () => {
+      const task = b.task;
+      if (task) {
+        stopTask(task, "cancel");
+        if (!(await within(task.ended, 10_000))) throw refused("ERR_DOWNLOADS_UNKNOWN_CLOSURE");
+      }
+      if (answered) return null;
+      await b.resetHold;
+      if (b.faults.keychainDelete) throw refused("ERR_DOWNLOADS_KEYCHAIN");
+      for (const source of scope.knownSourceIds) clearService(source);
+      b.legacy.clear();
+      b.install = fresh("q");
+      b.grants.clear();
+      b.sources.clear();
+      for (const source of scope.knownSourceIds) {
+        b.sources.set(source, { generation: fresh("g"), state: "revoked" });
+      }
+      b.corrupt = false;
+      b.removed.clear();
+      b.fenced.clear();
+      b.events.push(answered ? "reset-late" : "reset");
+      return {
+        kind: "reset",
+        queueEpoch: b.install,
+        preservedReceipts: [...b.receipts],
+        legacy: [...b.legacyReceipts],
+        unreadableFacts: false,
+        legacyCleanup: "complete",
+        cleanupScope: "known-sources-only",
+      };
+    })().finally(() => {
+      b.resetting = false;
+      pump();
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(refused("ERR_DOWNLOADS_BUSY")), b.resetDeadlineMs);
+    });
+    try {
+      const result = await Promise.race([operation, deadline]);
+      if (!result) throw refused("ERR_DOWNLOADS_BUSY");
+      return result;
+    } finally {
+      answered = true;
+      clearTimeout(timer);
+      void operation.catch(() => undefined);
+    }
+  },
+
+  async acknowledge(receipts: readonly string[]) {
+    if (background.corrupt) throw refused("ERR_DOWNLOADS_CORRUPT");
+    const gone = new Set(receipts);
+    const kept = background.receipts.filter((each) => !gone.has(each.receipt));
     background.receipts.splice(0, background.receipts.length, ...kept);
+    const legacy = background.legacyReceipts.filter((each) => !gone.has(each.receipt));
+    background.legacyReceipts.splice(0, background.legacyReceipts.length, ...legacy);
+    const owed = new Set(kept.map((each) => each.authorization));
+    for (const [id, grant] of background.grants) {
+      if (grant.state === "terminal" && !owed.has(id) && background.task?.authorization !== id) {
+        background.grants.delete(id);
+      }
+    }
+    pump();
   },
 
-  async forgetResume(id: string): Promise<void> {
-    background.secrets.delete(id);
+  async forgetResume(id: string) {
+    background.legacy.delete(id);
+    const task = background.task;
+    if (task && background.grants.get(task.authorization)?.id === id) return;
+    background.resume.delete(id);
   },
 
-  async importResume(id: string, url: string, data: string): Promise<void> {
-    if (!background.secrets.has(id)) background.secrets.set(id, { url, data });
+  async importResume(id: string, url: string, data: string) {
+    if (!background.legacy.has(id)) background.legacy.set(id, { url, data });
   },
 
   addListener(event: string, listener: (body: never) => void) {
@@ -359,9 +1151,7 @@ const module = {
   },
 };
 
-export function requireNativeModule(name: string) {
-  if (name !== "BackgroundDownloads") throw new Error(`No native module ${name}`);
-  return module;
-}
-
-mkdirSync(join(native.root, "documents"), { recursive: true });
+const host: { expo?: { modules?: Record<string, unknown> } } = globalThis;
+host.expo ??= {};
+host.expo.modules ??= {};
+host.expo.modules["BackgroundDownloads"] = module;

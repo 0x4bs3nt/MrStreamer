@@ -1,3 +1,5 @@
+import { nativePlayer } from "./native-player.ts";
+import "./native-guide.ts";
 import type { Episode } from "@mrstreamer/contracts/ondemand";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
@@ -23,15 +25,12 @@ const memory = vi.hoisted(() => ({
 vi.mock("react-native", () => ({ Alert: { alert: () => undefined } }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.1.0" } } }));
 vi.mock("expo-video", () => ({
-  createVideoPlayer: () => ({
-    addListener: () => undefined,
-    replaceAsync: async (source: { uri: string } | null) => {
-      if (source) memory.played.push(source.uri);
-    },
-    play: () => undefined,
-    pause: () => undefined,
-  }),
+  createVideoPlayer: () =>
+    nativePlayer((source) => {
+      memory.played.push(source.uri);
+    }),
 }));
+
 vi.mock("expo-file-system", () => {
   const pathOf = (parent: string | { readonly path: string }, name: string) =>
     `${typeof parent === "string" ? parent : parent.path}/${name}`;

@@ -23,7 +23,7 @@ import {
   byIds,
   indexSteps,
   kindOf,
-  searchPage,
+  searchPageSteps,
   type IndexedCatalogue,
 } from "@mrstreamer/core/ondemand/catalogue";
 import {
@@ -33,8 +33,9 @@ import {
   type CollectionSource,
 } from "@mrstreamer/core/ondemand/collections";
 import { movieDetails, seasonEpisodes, seriesDetails } from "@mrstreamer/core/ondemand/details";
+import type { FilterFile, FilterFiles } from "@mrstreamer/core/ondemand/filters";
 import type { OnDemandCatalogue, ProviderDetails, ProviderFile } from "@mrstreamer/core/provider";
-import type { Steps } from "@mrstreamer/core/steps";
+import { finish, pacer, type Steps } from "@mrstreamer/core/steps";
 import { File, Paths } from "expo-file-system";
 import { useEffect, useSyncExternalStore } from "react";
 import {
@@ -42,6 +43,7 @@ import {
   members,
   onReadingSaved,
   onRoster,
+  onSavable,
   readingSaved,
   savable,
   shownOf,
@@ -49,14 +51,19 @@ import {
 } from "./account.ts";
 import {
   readAbout,
+  readFiles,
   readSeason,
   readTitle,
   writeAbout,
+  writeFiles,
   writeSeason,
   writeTitle,
   type Saved,
+  type SavedFile,
 } from "./details-cache.ts";
 import { inTasks } from "./library.ts";
+import type { ObservedFileTracks } from "./media-policy.ts";
+import { effectiveTitleLanguage, onMediaPreferences } from "./media-preferences.ts";
 import { currentSource, sourceOf, type Source } from "./sources.ts";
 import { store, useStore } from "./store.ts";
 import { serveViewing } from "./viewing.ts";
@@ -87,6 +94,14 @@ import { alignWatchlist } from "./watchlist.ts";
 // a kind's made again for the lists that show, those before showing meanwhile. A subscription
 // that no longer lists any titles, as once it is removed, takes the view with it at once: what
 // the others list shows again once it is indexed without it.
+//
+// It alone keeps what playback found in a file: the languages of its tracks (`titleFile`'s
+// `observed`), saved per subscription beside the details (details-cache.ts). Browse's filters
+// read them (`filterFilesOf`) only while the file is still the row the lists show: a movie's
+// listed name and file type, an episode's in this run's answer for its series, asked under the
+// lists that show now, and only while its login may keep them (`savable`): from the moment a new
+// password starts deleting them, until a deletion that fails gives them back. Anything else is
+// unknown, never absent.
 
 export type TitleLists =
   | { readonly kind: "idle" }
@@ -106,6 +121,7 @@ interface Made {
   readonly index: IndexedCatalogue;
   readonly version: number;
   readonly collections: Collections;
+  readonly epoch: number;
 }
 
 /**
@@ -193,7 +209,17 @@ export const useTitleTimings = () => useStore(timings);
 
 const locale = new Intl.Locale(Intl.DateTimeFormat().resolvedOptions().locale);
 /** The viewer's language, which version of a title shows first and which names TMDB gives. */
-export const language = locale.language;
+export let language: string = effectiveTitleLanguage();
+/** A-B-A is three distinct runs, even when the language string agrees again. */
+let languageEpoch = 0;
+interface ReadingLanguage {
+  readonly language: string;
+  readonly epoch: number;
+}
+const readingLanguage = (): ReadingLanguage => ({ language, epoch: languageEpoch });
+const currentLanguage = (reading: ReadingLanguage) => reading.epoch === languageEpoch;
+/** Internal handback to detailsOf's latest-language loop, including underLogin retries. */
+const retiredLanguage = Symbol("retired title language");
 const region = locale.region ?? "US";
 
 const TMDB_KEY = process.env.EXPO_PUBLIC_TMDB_KEY ?? "";
@@ -230,6 +256,7 @@ const metadata = metadataStore({
 
 /** The lists the index was made of, or is being made of. */
 let indexed: readonly Listed[] = [];
+let indexedEpoch = -1;
 let indexing: AbortController | null = null;
 /**
  * Whether saved titles a launch reads wait for each other to be indexed together (`relist`): until
@@ -287,7 +314,10 @@ const listedOf = (all: readonly Member[]): Listed[] =>
 export function titlesWorkedOut(): boolean {
   const listed = listedOf(members());
   const now = shown.get();
-  return listed.length === 0 || (now.made !== null && sameLists(now.listed, listed));
+  return (
+    listed.length === 0 ||
+    (now.made !== null && now.made.movie.epoch === languageEpoch && sameLists(now.listed, listed))
+  );
 }
 
 /**
@@ -295,8 +325,8 @@ export function titlesWorkedOut(): boolean {
  * failed or load again keep what they had. Until one has lists, the state says whether any is
  * still loading or why they failed, after every change of the subscriptions. A subscription the
  * lists that show were made of and that lists none now takes them with it at once. While a launch
- * still reads saved titles (`readingSaved`), until the app opens (`batching`), nothing is indexed,
- * so they are indexed once.
+ * still establishes saved titles, including pending launch passwords (`readingSaved`), until
+ * the app opens (`batching`), nothing is indexed, so they are indexed once.
  */
 function relist() {
   const all = members();
@@ -320,9 +350,9 @@ function relist() {
     return;
   }
   if (gone) shown.set({ lists: { kind: "loading" }, made: null });
-  else if (sameLists(listed, indexed)) return;
-  // While a launch still reads saved titles, those already read wait for them: all are indexed
-  // together once, not again as each subscription's arrive.
+  else if (indexedEpoch === languageEpoch && sameLists(listed, indexed)) return;
+  // Pending launch passwords reserve their possible title reads too. Those already read wait
+  // for them until the app opens, including its deadline; late answers join normally after that.
   if (batching && readingSaved("titles")) {
     indexed = [];
     indexing?.abort();
@@ -330,25 +360,26 @@ function relist() {
     return;
   }
   indexed = listed;
+  indexedEpoch = languageEpoch;
   indexing?.abort();
   const controller = new AbortController();
   indexing = controller;
-  void index(listed, controller.signal);
+  void index(listed, controller.signal, readingLanguage());
 }
 
-async function index(listed: readonly Listed[], signal: AbortSignal) {
+async function index(listed: readonly Listed[], signal: AbortSignal, reading: ReadingLanguage) {
   // Indexing 25,000 movies held the JS thread for a third of a second or more in a Release build
   // on the iOS simulator, so both kinds are worked out a few slices per task, starting after the
   // answer that brought the lists, and only a finished index shows, with its collections: what
   // showed before stays meanwhile, and screens never index a kind while they draw.
-  const wanted = () => !signal.aborted;
+  const wanted = () => !signal.aborted && currentLanguage(reading);
   const started = Date.now();
-  const index = await inTasks(indexSteps(listed, language), wanted);
+  const index = await inTasks(indexSteps(listed, reading.language), wanted);
   if (!index) return;
   const took = Date.now() - started;
   const version = metadataVersion.get();
-  const movie = await make("movie", index, version, wanted);
-  const series = movie && (await make("series", index, version, wanted));
+  const movie = await make("movie", index, version, wanted, reading);
+  const series = movie && (await make("series", index, version, wanted, reading));
   if (!movie || !series || !wanted()) return;
   const fetched = Math.max(
     0,
@@ -362,7 +393,7 @@ async function index(listed: readonly Listed[], signal: AbortSignal) {
   alignWatchlist(index);
   // TMDB's metadata for what is listed, the newest first, once the lists show.
   setTimeout(() => {
-    if (!signal.aborted) metadata.want(wantedOf(index), language);
+    if (wanted()) metadata.want(wantedOf(index), reading.language);
   }, 0);
 }
 
@@ -395,6 +426,41 @@ export function useCollections(
 }
 
 /**
+ * A tile may open only while its rendered collections, source login and provider lists still
+ * stand. A refresh awaiting indexing cancels the old tap, even before React renders again.
+ */
+export function collectionSelection(kind: TitleKind, collections: Collections) {
+  const snapshot = shown.get();
+  const sources = new Map(
+    snapshot.made
+      ? snapshot.listed.map(({ subscriptionId }) => [subscriptionId, currentSource(subscriptionId)])
+      : [],
+  );
+  return (title: Title): boolean => {
+    const source = sources.get(title.subscriptionId);
+    const now = shown.get();
+    const listed = snapshot.made
+      ? kindOf(snapshot.lists.index, kind).byId.get(ownedKey(title))
+      : null;
+    return (
+      now.made?.[kind].collections === collections &&
+      snapshot.made !== null &&
+      sameLists(snapshot.listed, listedOf(members())) &&
+      source !== undefined &&
+      currentSource(title.subscriptionId) === source &&
+      listed?.key === title.key
+    );
+  };
+}
+
+/** Whether the published collections have usable titles, without requesting new collections. */
+export function useHasTitles(...kinds: readonly TitleKind[]): boolean {
+  return useSyncExternalStore(shown.subscribe, () =>
+    kinds.some((kind) => (shown.get().made?.[kind].collections.size("all") ?? 0) > 0),
+  );
+}
+
+/**
  * Has `kind`'s collections made again if time has moved past what they hold (`collect`), as the
  * screen opens and whenever one of `reads` changes: what it reads them by, such as the title For
  * you is led by or the collection it shows. The last made show meanwhile. `reads` keeps its
@@ -420,7 +486,7 @@ export function collectionsOf(kind: TitleKind): Collections | null {
  */
 function collect(kind: TitleKind) {
   const now = shown.get();
-  if (!now.made) return;
+  if (!now.made || now.made[kind].epoch !== languageEpoch) return;
   const { index } = now.lists;
   const kept = now.made[kind];
   const current = kept.version === metadataVersion.get() && kept.collections.validAt(Date.now());
@@ -431,15 +497,16 @@ function collect(kind: TitleKind) {
 
 /** Makes `kind`'s collections of `index` again, to show in place of those before while it shows. */
 async function remake(kind: TitleKind, index: IndexedCatalogue) {
+  const reading = readingLanguage();
   const shows = () => {
     const now = shown.get();
-    return now.made !== null && now.lists.index === index;
+    return currentLanguage(reading) && now.made !== null && now.lists.index === index;
   };
-  const made = await make(kind, index, metadataVersion.get(), shows).finally(() => {
+  const made = await make(kind, index, metadataVersion.get(), shows, reading).finally(() => {
     if (making.get(kind) === index) making.delete(kind);
   });
   const now = shown.get();
-  if (!made || !now.made || now.lists.index !== index) return;
+  if (!made || !now.made || !shows()) return;
   const both = kind === "movie" ? { ...now.made, movie: made } : { ...now.made, series: made };
   shown.set({ ...now, made: both });
   collect(kind);
@@ -454,6 +521,7 @@ async function make(
   index: IndexedCatalogue,
   version: number,
   wanted: () => boolean,
+  reading: ReadingLanguage,
 ): Promise<Made | null> {
   // Ranking 25,000 movies and their series with TMDB's metadata, then sorting their lists, held
   // the JS thread for 60 to 95 ms at once in a Release build on the iOS simulator, each time the
@@ -463,16 +531,16 @@ async function make(
     madeSteps({
       kind,
       titles: kindOf(index, kind).titles,
-      language,
+      language: reading.language,
       metadata: (id) => metadata.get(tk, id),
-      names: (id) => metadata.name(tk, id, language),
+      names: (id) => metadata.name(tk, id, reading.language),
       services: metadata.services(tk),
       expiresAt: (id) => metadata.expiresAt(tk, id),
       now: Date.now(),
     }),
     wanted,
   );
-  return collections && { index, version, collections };
+  return collections && { index, version, collections, epoch: reading.epoch };
 }
 
 /**
@@ -530,14 +598,25 @@ export function searchTitles(
   query: string,
   limit: number,
 ) {
+  return finish(searchTitlesSteps(index, kind, query, limit));
+}
+
+/** The same names and ranking as `searchTitles`, in slices that Search can cancel. */
+export function* searchTitlesSteps(
+  index: IndexedCatalogue,
+  kind: TitleKind,
+  query: string,
+  limit: number,
+): Steps<{ readonly titles: Title[]; readonly total: number }> {
+  const viewerLanguage = language;
   const tk = tmdbKind(kind);
-  const page = searchPage(
+  const page = yield* searchPageSteps(
     index,
     kind,
     query,
     (title) => {
       if (!title.tmdbId) return "";
-      const shown = metadata.name(tk, title.tmdbId, language);
+      const shown = metadata.name(tk, title.tmdbId, viewerLanguage);
       return {
         ...(shown ? { title: shown.name, original: shown.original } : {}),
         names: metadata.searchAliases(tk, title.tmdbId),
@@ -545,13 +624,23 @@ export function searchTitles(
     },
     limit,
   );
-  return { ...page, titles: page.titles.map(named) };
+  const titles: Title[] = [];
+  const due = pacer();
+  for (const title of page.titles) {
+    if (due()) yield;
+    titles.push(namedIn(title, viewerLanguage));
+  }
+  return { ...page, titles };
 }
 
 /** A title with TMDB's name for the viewer, once known, as collections show it. */
 export function named(title: Title): Title {
+  return namedIn(title, language);
+}
+
+function namedIn(title: Title, viewerLanguage: string): Title {
   if (!title.tmdbId) return title;
-  const found = metadata.name(tmdbKind(title.kind), title.tmdbId, language);
+  const found = metadata.name(tmdbKind(title.kind), title.tmdbId, viewerLanguage);
   return found ? { ...title, title: found.name, originalTitle: found.original } : title;
 }
 
@@ -593,7 +682,17 @@ function used<V>(map: Map<string, V>, key: string): V | undefined {
 interface Asked {
   readonly subscriptionId: string;
   readonly source: Source;
+  readonly kind: TitleKind;
+  /** The version asked about. */
+  readonly id: string;
   readonly read: Promise<ProviderDetails>;
+  /**
+   * The subscription's lists that showed when it was asked: an answer counts for file facts only
+   * while those are the lists that show. Never changed when the answer is used again.
+   */
+  readonly listing: OnDemandCatalogue | null;
+  /** The answer, once it came. */
+  value?: ProviderDetails;
 }
 
 /**
@@ -627,15 +726,28 @@ function askUnder(title: Title, source: Source): Promise<ProviderDetails> {
     title.kind === "movie"
       ? source.provider.movieDetails(title.id, signal)
       : source.provider.seriesDetails(title.id, signal);
-  const asking: Asked = { subscriptionId: id, source, read };
+  const listing = listedOf(members()).find((each) => each.subscriptionId === id)?.catalogue;
+  const asking: Asked = {
+    subscriptionId: id,
+    source,
+    kind: title.kind,
+    id: title.id,
+    read,
+    listing: listing ?? null,
+  };
   keep(asked, key, asking);
+  factsChanged();
   read.then(
     (value) => {
+      asking.value = value;
+      if (asked.get(key) === asking) factsChanged();
       const saved = { at: Date.now(), listedAt: listed, value };
       void writeTitle(id, title.kind, title.id, saved, source.login, () => savable(id, source));
     },
     () => {
-      if (asked.get(key) === asking) asked.delete(key);
+      if (asked.get(key) !== asking) return;
+      asked.delete(key);
+      factsChanged();
     },
   );
   return read;
@@ -678,19 +790,24 @@ async function detailsUnder(
   title: Title,
   source: Source,
   show: ((details: TitleDetails) => void) | undefined,
+  reading: ReadingLanguage,
 ): Promise<TitleDetails> {
+  if (!currentLanguage(reading)) throw retiredLanguage;
   const id = title.subscriptionId;
   const stands = () => savable(id, source);
-  const about = aboutOf(title);
+  const saved = await readTitle(id, title.kind, title.id, stands);
+  // Provider records belong to the source, not the presentation language. A retired
+  // attempt must return before it can launch work or rejoin the current metadata map.
+  if (!currentLanguage(reading) || !stands()) throw retiredLanguage;
+  const about = aboutOf(title, reading);
   const shown = (raw: ProviderDetails, known: TitleAbout | null) =>
     title.kind === "movie"
       ? movieDetails(title, raw, known)
-      : seriesDetails(title, raw, known, language);
+      : seriesDetails(title, raw, known, reading.language);
   const early = async (raw: ProviderDetails) => {
     const known = about ? await about.now : null;
-    if (show && stands()) show(shown(raw, known));
+    if (show && stands() && currentLanguage(reading)) show(shown(raw, known));
   };
-  const saved = await readTitle(id, title.kind, title.id, stands);
   const fresh = saved && Date.now() - saved.at < PROVIDER_FRESH && saved.listedAt === listedAt(id);
   const refresh =
     used(asked, askedKey(title, source))?.read ?? (fresh ? null : askUnder(title, source));
@@ -714,11 +831,23 @@ async function detailsUnder(
  * before the result: saved ones while the provider and TMDB are asked. Nothing of a login replaced
  * or removed since is shown or answered.
  */
-export function detailsOf(
+export async function detailsOf(
   title: Title,
   show?: (details: TitleDetails) => void,
 ): Promise<TitleDetails> {
-  return underLogin(title.subscriptionId, (source) => detailsUnder(title, source, show));
+  // A replaced language never answers through the old callback. A caller still waiting is
+  // read again in the latest language, while login replacement keeps its existing authority.
+  for (;;) {
+    const reading = readingLanguage();
+    try {
+      const value = await underLogin(title.subscriptionId, (source) =>
+        detailsUnder(title, source, show, reading),
+      );
+      if (currentLanguage(reading)) return value;
+    } catch (cause) {
+      if (currentLanguage(reading)) throw cause;
+    }
+  }
 }
 
 /**
@@ -784,15 +913,20 @@ function tmdbAnswer<A>(
 /** What TMDB says of a title for the viewer, by kind, TMDB id and language. */
 const abouts = new Map<string, Answer<TitleAbout>>();
 
-function aboutOf(title: Title): Answer<TitleAbout> | null {
+function aboutOf(title: Title, reading: ReadingLanguage): Answer<TitleAbout> | null {
+  const { language } = reading;
   const { kind, tmdbId } = title;
   if (!client || !tmdbId || title.adult) return null;
   return tmdbAnswer(
     abouts,
     `${kind}|${tmdbId}|${language}`,
     () => readAbout(kind, tmdbId, language),
-    (signal) => client.about(tmdbKind(kind), tmdbId, language, signal),
-    (saved) => writeAbout(kind, tmdbId, language, saved),
+    (signal) => {
+      if (!currentLanguage(reading)) throw retiredLanguage;
+      return client.about(tmdbKind(kind), tmdbId, language, signal);
+    },
+    (saved) =>
+      currentLanguage(reading) ? writeAbout(kind, tmdbId, language, saved) : Promise.resolve(),
   );
 }
 
@@ -813,6 +947,8 @@ export async function episodesOf(
   season: Season,
   show?: (episodes: readonly EpisodeDetails[]) => void,
 ): Promise<readonly EpisodeDetails[]> {
+  const reading = readingLanguage();
+  const { language } = reading;
   const { tmdbId } = title;
   if (!client || !tmdbId || title.adult) return seasonEpisodes(season, []);
   const id = title.subscriptionId;
@@ -824,8 +960,12 @@ export async function episodesOf(
       seasons,
       `${tmdbId}|${number}|${asked}`,
       () => readSeason(tmdbId, number, asked),
-      (signal) => client.season(tmdbId, number, asked, signal),
-      (saved) => writeSeason(tmdbId, number, asked, saved),
+      (signal) => {
+        if (!currentLanguage(reading)) throw retiredLanguage;
+        return client.season(tmdbId, number, asked, signal);
+      },
+      (saved) =>
+        currentLanguage(reading) ? writeSeason(tmdbId, number, asked, saved) : Promise.resolve(),
     ),
   );
   const worked = (told: readonly (readonly EpisodeAbout[] | null)[]) =>
@@ -835,24 +975,39 @@ export async function episodesOf(
     );
   if (show) {
     const now = await Promise.all(answers.map((answer) => answer.now));
-    if (stands()) show(worked(now));
+    if (stands() && currentLanguage(reading)) show(worked(now));
   }
   const told = await Promise.all(answers.map((answer) => answer.final));
   if (!stands()) throw new AppFailure({ kind: "no-subscription" });
+  if (!currentLanguage(reading)) return episodesOf(title, season, show);
   return worked(told);
 }
+
+/** The listed row a file was looked up by: what its facts are checked against. No address. */
+type FileRow = Pick<SavedFile, "kind" | "id" | "seriesId" | "name" | "container">;
+
+/**
+ * A movie's or an episode's file: where it streams from and, when the row it was looked up by
+ * can be checked again later, where playback tells the languages of the tracks it could play in
+ * it (`observed`). That is for a provider file AVPlayer opens as it is, never a format session,
+ * a downloaded copy or a channel; telling unknown tracks is telling nothing.
+ */
+export type TitleFile = ProviderFile & {
+  readonly observed?: (tracks: ObservedFileTracks) => void;
+};
 
 /**
  * Where a movie or an episode streams from, by the file type its provider lists: a movie's in the
  * lists or this run's answer for its details, an episode's in this run's answer for its series'.
  * Asks the subscription that lists it, under its current login, which the address carries; never
  * a saved record. While the lists are made again with its subscription's in them, it waits for
- * them (`listedIndex`).
+ * them (`listedIndex`). A movie listed with its name and file type, and an episode, come with
+ * `observed`, kept under the login that looked them up.
  */
-export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<ProviderFile> {
+export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<TitleFile> {
   const index = await listedIndex(ref.subscriptionId, signal);
   // The login that stands now, whichever was signed in while the lists were made again.
-  const reading = sourceOf(ref.subscriptionId).provider;
+  const reading = sourceOf(ref.subscriptionId);
   const missing = new AppFailure({ kind: "title-not-found", titleId: ref.id });
   const answered = (title: Title) =>
     underLogin(ref.subscriptionId, async (source) => ({
@@ -862,8 +1017,15 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
   if (ref.kind === "movie") {
     const title = titleOf(index, "movie", ref);
     if (!title) throw missing;
-    const listed = title.versions.find((version) => sameOwned(version, ref))?.container;
-    if (listed) return reading.titleFile("movie", ref.id, listed, signal);
+    const version = title.versions.find((each) => sameOwned(each, ref));
+    if (version?.container) {
+      const container = version.container;
+      const name = version.name;
+      const file = await reading.provider.titleFile("movie", ref.id, container, signal);
+      if (name === undefined) return file;
+      const row: FileRow = { kind: "movie", id: ref.id, name, container };
+      return { ...file, observed: observing(ref.subscriptionId, reading, row) };
+    }
     const { raw, source } = await answered({ ...title, ...ownedId(ref) });
     return source.provider.titleFile("movie", ref.id, raw.container ?? "mp4", signal);
   }
@@ -873,17 +1035,261 @@ export async function titleFile(ref: TitleRef, signal: AbortSignal): Promise<Pro
   const { raw, source } = await answered({ ...title, ...series });
   const episode = raw.episodes.find((each) => each.id === ref.id);
   if (!episode) throw missing;
-  return source.provider.titleFile("episode", ref.id, episode.container, signal);
+  const file = await source.provider.titleFile("episode", ref.id, episode.container, signal);
+  const row: FileRow = {
+    kind: "episode",
+    id: episode.id,
+    seriesId: ref.seriesId,
+    name: episode.name,
+    container: episode.container,
+  };
+  return { ...file, observed: observing(ref.subscriptionId, source, row) };
 }
 
-/** Drops this run's answers of logins replaced or removed since. */
-function forgetLogins() {
-  for (const [key, each] of asked) {
-    if (currentSource(each.subscriptionId) !== each.source) asked.delete(key);
-  }
+/** One subscription's file facts under one login: those saved, with what playback found since. */
+interface Facts {
+  readonly source: Source;
+  /** By kind, series and file id (`fileKey`). */
+  readonly files: Map<string, SavedFile>;
+  /** Settles once the saved facts were read and taken in, or found missing. */
+  readonly ready: Promise<void>;
 }
+
+/** File facts by subscription, each under the login it was read for. */
+const facts = new Map<string, Facts>();
+/**
+ * Rises whenever file facts, this run's answers they are checked against, or whether their login
+ * may keep them, change.
+ */
+const factsRevision = store(0);
+const factsChanged = () => factsRevision.set((revision) => revision + 1);
+/** The most files whose facts one subscription keeps in memory, as on disk. */
+const FACT_FILES = 2048;
+
+/** One key per file, whatever a provider's opaque ids hold: they may hold any separator. */
+const fileKey = (file: Pick<SavedFile, "kind" | "id" | "seriesId">) =>
+  JSON.stringify([file.kind, file.seriesId ?? null, file.id]);
+
+/**
+ * `id`'s file facts under `source`, its saved facts read once, in the subscription's turn on the
+ * disk. A read that finishes once `source` no longer stands, or after these were replaced, takes
+ * nothing in; should `source` stand again, as when a deletion fails, they are read again.
+ */
+function factsOf(id: string, source: Source): Facts {
+  const known = facts.get(id);
+  if (known?.source === source) return known;
+  const files = new Map<string, SavedFile>();
+  const stands = () => savable(id, source) && facts.get(id) === held;
+  const held: Facts = {
+    source,
+    files,
+    ready: readFiles(id, source.login, stands).then((saved) => {
+      if (!stands()) {
+        // Nothing is in them yet: `remember` waits for this.
+        if (facts.get(id) === held) facts.delete(id);
+        return;
+      }
+      if (!saved || saved.length === 0) return;
+      // Oldest first, as `remember` keeps them, so the oldest go first past FACT_FILES.
+      for (const file of saved.toSorted((a, b) => a.at - b.at)) files.set(fileKey(file), file);
+      factsChanged();
+    }),
+  };
+  facts.set(id, held);
+  return held;
+}
+
+/** The login `id` is signed in with, while it may keep file facts (`savable`). */
+function standingSource(id: string): Source | undefined {
+  const source = currentSource(id);
+  return source && savable(id, source) ? source : undefined;
+}
+
+/** `id`'s file facts under the login that stands now, if it may keep any. */
+function standingFacts(id: string): Facts | undefined {
+  const source = standingSource(id);
+  return source && factsOf(id, source);
+}
+
+const sameTracks = (a: readonly (string | null)[], b: readonly (string | null)[]) =>
+  a.length === b.length && a.every((language, at) => language === b[at]);
+
+/**
+ * Keeps what playback found in `row`'s file under `source`: once the saved facts were taken in,
+ * so they never replace it, and only when it changes them. Nothing once `source` no longer stands.
+ */
+async function remember(id: string, source: Source, row: FileRow, tracks: ObservedFileTracks) {
+  if (!savable(id, source)) return;
+  const held = factsOf(id, source);
+  await held.ready;
+  if (!savable(id, source) || facts.get(id) !== held) return;
+  const key = fileKey(row);
+  const known = held.files.get(key);
+  if (
+    known &&
+    known.name === row.name &&
+    known.container === row.container &&
+    sameTracks(known.audio, tracks.audio) &&
+    sameTracks(known.subtitles, tracks.subtitles)
+  ) {
+    return;
+  }
+  held.files.delete(key);
+  held.files.set(key, {
+    ...row,
+    audio: [...tracks.audio],
+    subtitles: [...tracks.subtitles],
+    at: Date.now(),
+  });
+  // The files found longest ago go first, as they do on disk.
+  for (const oldest of held.files.keys()) {
+    if (held.files.size <= FACT_FILES) break;
+    held.files.delete(oldest);
+  }
+  factsChanged();
+  void writeFiles(id, [...held.files.values()], source.login, () => {
+    return savable(id, source) && facts.get(id) === held;
+  });
+}
+
+/** `remember`, for one file looked up under `source`. */
+const observing = (id: string, source: Source, row: FileRow) => (tracks: ObservedFileTracks) =>
+  void remember(id, source, row, tracks);
+
+type Showing = Exclude<Shown, { readonly made: null }>;
+
+/** Each listed movie whose file facts are of the row the lists show now. */
+function movieFiles(now: Showing): FilterFiles {
+  const files = new Map<string, readonly FilterFile[]>();
+  const { byId } = kindOf(now.lists.index, "movie");
+  for (const { subscriptionId } of now.listed) {
+    const held = standingFacts(subscriptionId);
+    for (const file of held?.files.values() ?? []) {
+      if (file.kind !== "movie") continue;
+      const key = ownedKey({ subscriptionId, id: file.id });
+      const version = byId.get(key)?.versions.find((each) => ownedKey(each) === key);
+      if (!version || version.name !== file.name || version.container !== file.container) continue;
+      files.set(key, [
+        { tags: version.tags, tracks: { audio: file.audio, subtitles: file.subtitles } },
+      ]);
+    }
+  }
+  return files;
+}
+
+/**
+ * Each series version this run has an answer for, asked under the login that stands and the
+ * lists that show now: every episode it lists, with the facts of those whose row they are of. A
+ * series with no episodes keeps its declared row. Nothing is asked for this.
+ */
+function seriesFiles(now: Showing): FilterFiles {
+  const files = new Map<string, readonly FilterFile[]>();
+  const { byId } = kindOf(now.lists.index, "series");
+  for (const asking of asked.values()) {
+    const details = asking.value;
+    const { subscriptionId } = asking;
+    const lists = now.listed.find((each) => each.subscriptionId === subscriptionId);
+    if (
+      asking.kind !== "series" ||
+      !details ||
+      !lists ||
+      asking.listing !== lists.catalogue ||
+      currentSource(subscriptionId) !== asking.source ||
+      !savable(subscriptionId, asking.source)
+    ) {
+      continue;
+    }
+    const key = ownedKey({ subscriptionId, id: asking.id });
+    const version = byId.get(key)?.versions.find((each) => ownedKey(each) === key);
+    if (!version) continue;
+    const held = standingFacts(subscriptionId);
+    const episodes = details.episodes.map((episode): FilterFile => {
+      const found = held?.files.get(
+        fileKey({ kind: "episode", seriesId: asking.id, id: episode.id }),
+      );
+      return found && found.name === episode.name && found.container === episode.container
+        ? { tags: version.tags, tracks: { audio: found.audio, subtitles: found.subtitles } }
+        : { tags: version.tags };
+    });
+    files.set(key, episodes.length > 0 ? episodes : [{ tags: version.tags }]);
+  }
+  return files;
+}
+
+const NO_FILES: FilterFiles = new Map();
+/**
+ * What `filterFilesOf` last answered for each kind, and for which lists, facts and logins: the
+ * standing login of each listed subscription, in the lists' order.
+ */
+const filesMade = new Map<
+  TitleKind,
+  {
+    readonly shown: Shown;
+    readonly revision: number;
+    readonly standing: readonly (Source | undefined)[];
+    readonly files: FilterFiles;
+  }
+>();
+
+/**
+ * The file facts of `kind` Browse's filters count, by version, for the lists that show: core's
+ * FilterFiles, which fall back to each version's declared tags where a version has none here.
+ * Reads saved facts from the phone the first time; never asks a provider.
+ */
+export function filterFilesOf(kind: TitleKind): FilterFiles {
+  const now = shown.get();
+  if (!now.made) return NO_FILES;
+  // Read now, told or not: never a login's facts once it stopped standing, nor none once it stands.
+  const standing = now.listed.map(({ subscriptionId }) => standingSource(subscriptionId));
+  const kept = filesMade.get(kind);
+  if (
+    kept?.shown === now &&
+    kept.revision === factsRevision.get() &&
+    kept.standing.every((source, at) => source === standing[at])
+  ) {
+    return kept.files;
+  }
+  const files = kind === "movie" ? movieFiles(now) : seriesFiles(now);
+  filesMade.set(kind, { shown: now, revision: factsRevision.get(), standing, files });
+  return files;
+}
+
+/** Rises whenever what `filterFilesOf` answers may have changed, for screens to read it again. */
+export const useFileFacts = () => useStore(factsRevision);
+
+/** Drops this run's answers, and file facts, of logins replaced or removed since. */
+function forgetLogins() {
+  let changed = false;
+  for (const [key, each] of asked) {
+    if (currentSource(each.subscriptionId) === each.source) continue;
+    asked.delete(key);
+    changed = true;
+  }
+  for (const [id, held] of facts) {
+    if (currentSource(id) === held.source) continue;
+    facts.delete(id);
+    changed = true;
+  }
+  if (changed) factsChanged();
+}
+
+onMediaPreferences(() => {
+  const next = effectiveTitleLanguage();
+  if (next === language) return;
+  language = next;
+  languageEpoch++;
+  // Abort old metadata demand immediately, before the replacement index is ready. Cached
+  // answers remain owned by the shared metadata store and keyed by their actual language.
+  metadata.want([], language);
+  abouts.clear();
+  seasons.clear();
+  relist();
+});
 
 onRoster(forgetLogins);
+// A login still signed in that may no longer keep its facts, or may again after a failed deletion:
+// they stay held, and screens read them again.
+onSavable(factsChanged);
 onRoster(relist);
 onReadingSaved(relist);
 relist();

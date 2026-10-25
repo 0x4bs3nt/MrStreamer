@@ -1,6 +1,11 @@
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { describe, expect, it } from "vitest";
-import { indexCatalogue, searchPage } from "../src/ondemand/catalogue.ts";
+import {
+  indexCatalogue,
+  searchPage as synchronous,
+  searchPageSteps,
+} from "../src/ondemand/catalogue.ts";
+import { finish } from "../src/steps.ts";
 import type { FilterFiles } from "../src/ondemand/filters.ts";
 import type { OnDemandCatalogue, ProviderTitle } from "../src/provider.ts";
 
@@ -29,7 +34,13 @@ const source = (movies: readonly ProviderTitle[], subscriptionId = "one") => ({
 const ids = (titles: readonly Title[]) =>
   titles.map((title) => `${title.subscriptionId}/${title.id}`);
 
-describe("the search relevance corpus", () => {
+describe.each([
+  { mode: "synchronous", searchPage: synchronous },
+  {
+    mode: "sliced",
+    searchPage: (...args: Parameters<typeof synchronous>) => finish(searchPageSteps(...args)),
+  },
+])("the $mode search relevance corpus", ({ searchPage }) => {
   it("uses current alias values after warming, in-place edits, missing answers and language changes", () => {
     const index = indexCatalogue([source([movie("film", "Provider")])], "en");
     const names = ["Ancien"];
@@ -352,5 +363,24 @@ describe("the search relevance corpus", () => {
       Array.from({ length: 6 }, (_, n) => `one/${n}`),
     );
     expect(searchPage(index, "movie", "story", undefined, 6).total).toBe(31);
+  });
+});
+
+describe("interrupted search preparation", () => {
+  it("lets a replacement finish cold names while an earlier query is suspended", () => {
+    const rows = Array.from({ length: 401 }, (_, at) => movie(String(at), `Story ${at}`));
+    const index = indexCatalogue([source(rows)], "en");
+    const obsolete = searchPageSteps(index, "movie", "story", undefined, 20);
+    expect(obsolete.next().done).toBe(false);
+    // Cancellation may abandon this generator here. Another caller must still see every name.
+    const replacement = synchronous(index, "movie", "story 400", undefined, 20);
+    expect(ids(replacement.titles)).toEqual(["one/400"]);
+    expect(replacement.total).toBe(1);
+    // A suspended caller resuming after synchronous preparation must not duplicate spellings,
+    // skip titles or disturb the original stable ranking.
+    const resumed = finish(obsolete);
+    expect(ids(resumed.titles)).toEqual(rows.slice(0, 20).map((row) => `one/${row.id}`));
+    expect(resumed.total).toBe(401);
+    expect(synchronous(index, "movie", "story", undefined, Infinity).titles).toHaveLength(401);
   });
 });
