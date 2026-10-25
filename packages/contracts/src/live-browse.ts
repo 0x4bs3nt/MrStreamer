@@ -18,11 +18,17 @@ export type BrowseTopic = (typeof BROWSE_TOPICS)[number];
 const owned = () => type({ subscriptionId: "string > 0", id: "string" });
 const topic = () => type.enumerated(...BROWSE_TOPICS);
 
+/**
+ * What Live TV, Watch and Home browse: every channel, a topic, a provider's category, or one of
+ * the viewer's own lists by its id (`CustomList`). Releases before custom lists read a remembered
+ * custom one as unknown and fall back to their own choice.
+ */
 export const LiveDiscovery = lazy(() =>
   type.or(
     { kind: "'all'" },
     { kind: "'topic'", topic: topic() },
     { kind: "'category'", category: owned() },
+    { kind: "'custom'", id: "string > 0" },
   ),
 );
 export type LiveDiscovery = Infer<typeof LiveDiscovery>;

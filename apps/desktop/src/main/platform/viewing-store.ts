@@ -22,6 +22,9 @@ import type { UsageObservers } from "../analytics/observers.ts";
 //
 // Older builds read this file too, as when someone goes back to an earlier nightly: they skip
 // event types they don't know, leave the titles table alone, and insert events without a payload.
+// One such type is the list anchor the viewer's channel lists bind each account's channels to
+// (custom-lists-store.ts): this record reads nothing into it, and erasing an account deletes it
+// with the account's channels of every list.
 // Builds with movies and series before `removed_at`, Stable 0.0.3 among them, write title rows
 // without it, and read `hidden` as this one writes it. Builds from before marks write title rows
 // without `since`, which then read as a play begun when the row was saved, and never look at the
@@ -88,6 +91,7 @@ import {
   SUBTITLE_RESULTS_TABLE,
 } from "./saved-subtitles.ts";
 import { WATCHLIST_TABLES } from "./watchlist-store.ts";
+import { CUSTOM_LIST_MEMBERS_TABLE, prepareCustomLists } from "./custom-lists-store.ts";
 import { lazy } from "@mrstreamer/contracts/lazy";
 
 const SCHEMA = `
@@ -297,6 +301,8 @@ function prepare(db: DatabaseSync): void {
   prepareVerifiedFiles(db);
   prepareDetailCache(db);
   prepareSavedSubtitles(db);
+  // With the events its anchors are among: the channels of an account an older build erased go.
+  prepareCustomLists(db);
   // Records from before movies and series lack the payload column, and later ones the time a
   // title left Continue watching. Checked and added under the write lock, since two copies of the
   // app can start at once.
@@ -763,8 +769,8 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
         return imported;
       }),
     // The events go too, so no rebuild, here or in an older build, brings anything back, and so
-    // does what the account saved to its watchlist, which the same file keeps. The account's key
-    // and titles don't linger in the file either.
+    // does what the account saved to its watchlist and put in the viewer's channel lists, which
+    // the same file keeps. The account's key and titles don't linger in the file either.
     erase: (account) =>
       attempt(() => {
         places.delete(account);
@@ -776,6 +782,7 @@ function storeOn(db: DatabaseSync, usage?: UsageObservers): ViewingStore["Servic
             "titles",
             ...MARK_TABLES,
             ...WATCHLIST_TABLES,
+            CUSTOM_LIST_MEMBERS_TABLE,
             VERIFIED_FILES_TABLE,
             DETAIL_CACHE_TABLE,
             SAVED_SUBTITLES_TABLE,

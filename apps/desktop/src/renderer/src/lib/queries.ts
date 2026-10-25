@@ -172,6 +172,16 @@ export const queries = {
       queryFn: () => call("library.categories"),
       staleTime: Infinity,
     }),
+  /**
+   * The viewer's channel lists, as the catalogues and Settings show them: read again with the
+   * library's lists, and by `syncCustomLists` once a list changes.
+   */
+  customLists: () =>
+    queryOptions({
+      queryKey: ["library", "customLists"],
+      queryFn: () => call("customLists.get"),
+      staleTime: Infinity,
+    }),
   channel: (channel: OwnedId) =>
     queryOptions({
       queryKey: ["library", "channel", ownedKey(channel)],
@@ -794,6 +804,13 @@ export function syncViewing(client: QueryClient): () => void {
       },
       () => {},
     );
+  });
+}
+
+/** Reads the channel lists again once one was made, renamed, moved, deleted or changed. */
+export function syncCustomLists(client: QueryClient): () => void {
+  return listen("customLists.changed", () => {
+    void client.invalidateQueries({ queryKey: queries.customLists().queryKey });
   });
 }
 

@@ -31,6 +31,8 @@ import {
 import { languageScenario } from "./language.ts";
 import { settingsScenario } from "./settings.ts";
 import { controlsScenario } from "./controls.ts";
+import { backupChannel, customListSourcesScenario, customListsScenario } from "./custom-lists.ts";
+import { customListRoundTripScenario } from "./custom-lists-round-trip.ts";
 import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
 import { nextEpisodeScenario } from "./next-episode.ts";
@@ -44,7 +46,10 @@ import {
   stop,
 } from "./session.ts";
 import { connect, type Page } from "../../../../apps/desktop/test/e2e/app.ts";
-import { startFakeProvider } from "../../../../apps/desktop/test/fake-provider.ts";
+import {
+  QUALITY_STREAM_IDS,
+  startFakeProvider,
+} from "../../../../apps/desktop/test/fake-provider.ts";
 import { startFakeTmdb } from "../../../../apps/desktop/test/fake-tmdb.ts";
 import { isLocale } from "../../../../packages/contracts/src/language.ts";
 
@@ -78,6 +83,9 @@ const scenarios = [
   "preferences",
   "settings",
   "controls",
+  "custom-lists",
+  "custom-lists-sources",
+  "custom-lists-round-trip",
 ] as const;
 type Scenario = (typeof scenarios)[number];
 const [command, selected] = process.argv.slice(2);
@@ -86,6 +94,7 @@ if (command === "--help" || !command) {
        pnpm verify:desktop downloads <locale>, as fr-FR: Downloads in another interface language
        pnpm verify:desktop downloads-queue [--previous <executable>]: pause and order the queue,
          with an earlier build's executable (0.0.19's unpacked AppImage) started between
+       pnpm verify:desktop custom-lists-round-trip <executable>: with a prior release's app on the same profile
 Run from the repo root, after pnpm install --frozen-lockfile and pnpm build.
 On headless Linux: xvfb-run -a pnpm verify:desktop <scenario>
 Each scenario owns a fresh app/profile/ports and retains proof in .local/verification/.`);
@@ -103,7 +112,13 @@ Each scenario owns a fresh app/profile/ports and retains proof in .local/verific
   if (!build.display)
     throw new Error("No display. Use xvfb-run -a pnpm verify:desktop downloads-queue.");
   await runDownloadsQueue(build, selected ? process.argv[4] : undefined);
-} else if (scenarios.some((scenario) => scenario === command) && selected === undefined) {
+} else if (command === "custom-lists-round-trip" && selected !== undefined) {
+  await run(command, selected);
+} else if (
+  scenarios.some((scenario) => scenario === command) &&
+  command !== "custom-lists-round-trip" &&
+  selected === undefined
+) {
   await run(command as Scenario);
 } else {
   throw new Error("Unknown command. Run pnpm verify:desktop --help.");
@@ -146,7 +161,12 @@ async function until(check: () => Promise<boolean>, signal: AbortSignal, timeout
   throw new Error(`Timed out waiting for ${check.toString()}`);
 }
 
-async function run(scenario: Scenario) {
+/**
+ * Runs `scenario` on a fresh owned profile. `prior` is the executable of an earlier release's
+ * packaged app, such as an extracted AppImage's, which the scenario can start on the same profile
+ * between runs of this build.
+ */
+async function run(scenario: Scenario, prior?: string) {
   const build = await preflight();
   if (!build.display)
     throw new Error("No display. Use xvfb-run -a pnpm verify:desktop <scenario>.");
@@ -222,6 +242,7 @@ async function run(scenario: Scenario) {
       ...(scenario === "guides"
         ? { guideIdOf: (channel) => sourcedGuideId(channel.name) ?? channel.guideId }
         : {}),
+      ...(scenario === "custom-lists-sources" ? { adultChannels: true } : {}),
       ...(scenario === "guide-labels"
         ? { guideIdOf: (channel) => labelledGuideId(channel.name) ?? channel.guideId }
         : {}),
@@ -238,6 +259,19 @@ async function run(scenario: Scenario) {
     }
     if (scenario === "live-categories")
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
+    if (
+      scenario === "custom-lists" ||
+      scenario === "custom-lists-sources" ||
+      scenario === "custom-lists-round-trip"
+    )
+      other = await startFakeProvider({
+        channels: 60,
+        titles: 10,
+        live: true,
+        second: true,
+        channelOf: backupChannel,
+        adultChannels: scenario === "custom-lists-sources",
+      });
     if (scenario === "live-categories")
       provider.serveCategories((all) =>
         browseFixtureLanguages(all).map((category) =>
@@ -266,12 +300,33 @@ async function run(scenario: Scenario) {
     const ownedProfile = profile;
     const ownedTmdb = tmdb;
     let port = 0;
+    /** The app the window belongs to: this checkout's build, or `prior`'s packaged one. */
+    let running = {
+      executable: build.executable,
+      app: desktop as string | null,
+      renderer: pathToFileURL(join(desktop, "out/renderer/")).href,
+    };
     /**
      * Starts the app on this run's profile, with the system's language `system` as Linux reads
      * it from the environment (English unless a scenario says otherwise), and waits for its
-     * window. Scenarios that restart call it again after `quit`.
+     * window. Scenarios that restart call it again after `quit`. With `which` "prior", it starts
+     * the earlier release's app instead, on the same profile.
      */
-    const launch = async (system = "en_US") => {
+    const launch = async (system = "en_US", which: "candidate" | "prior" = "candidate") => {
+      if (which === "prior" && !prior) throw new Error("No prior release's app was given.");
+      running =
+        which === "prior" && prior
+          ? {
+              executable: prior,
+              app: null,
+              renderer: pathToFileURL(join(dirname(prior), "resources/app.asar/out/renderer/"))
+                .href,
+            }
+          : {
+              executable: build.executable,
+              app: desktop,
+              renderer: pathToFileURL(join(desktop, "out/renderer/")).href,
+            };
       port = await freePort();
       const args = [
         `--remote-debugging-port=${port}`,
@@ -280,7 +335,7 @@ async function run(scenario: Scenario) {
         "--enable-automation",
         "--use-mock-keychain",
         ...(process.platform === "linux" ? ["--no-sandbox"] : []),
-        desktop,
+        ...(running.app ? [running.app] : []),
       ];
       // Discard ambient test overrides; this run's external services are its own loopback fixtures.
       const env = Object.fromEntries(
@@ -291,7 +346,7 @@ async function run(scenario: Scenario) {
             !/^(LANGUAGE|LANG|LC_ALL|LC_MESSAGES)$/.test(name),
         ),
       );
-      const started = spawn(build.executable, args, {
+      const started = spawn(running.executable, args, {
         cwd: root,
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
@@ -323,9 +378,7 @@ async function run(scenario: Scenario) {
       // The CDP target can answer before the renderer's initial navigation finishes.
       await until(
         () =>
-          live().evaluate<boolean>(
-            `location.href.startsWith(${JSON.stringify(pathToFileURL(join(desktop, "out/renderer/")).href)})`,
-          ),
+          live().evaluate<boolean>(`location.href.startsWith(${JSON.stringify(running.renderer)})`),
         abort.signal,
       );
       await doctor();
@@ -357,15 +410,17 @@ async function run(scenario: Scenario) {
       for (const expected of [
         `--user-data-dir=${profile}`,
         `--remote-debugging-port=${port}`,
-        desktop,
+        ...(running.app ? [running.app] : []),
       ]) {
         if (!reply["arguments"].includes(expected))
           throw new Error("CDP belongs to a different app instance.");
       }
+      if (!running.app && reply["arguments"][0] !== running.executable)
+        throw new Error("CDP belongs to another app than the prior release's.");
       const url = await live().evaluate<string>("location.href");
-      if (!url.startsWith(pathToFileURL(join(desktop, "out/renderer/")).href))
-        throw new Error(`Wrong renderer: ${url}`);
-      observed["doctor"] = {
+      if (!url.startsWith(running.renderer)) throw new Error(`Wrong renderer: ${url}`);
+      observed[running.app ? "doctor" : "priorDoctor"] = {
+        executable: running.executable,
         pid: app?.pid,
         port,
         profile,
@@ -381,7 +436,8 @@ async function run(scenario: Scenario) {
           ...(labelHost ? [Number(new URL(labelHost.origin).port)] : []),
         ],
         url,
-        ...build,
+        // A prior release's app is identified by its executable, not by this checkout's build.
+        ...(running.app ? build : {}),
       };
     };
     await launch();
@@ -735,6 +791,79 @@ async function run(scenario: Scenario) {
           quit,
         },
         labelHost!,
+      );
+    } else if (scenario === "custom-lists") {
+      await customListsScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          otherUrl: other!.url,
+          streams: () => ({
+            requests: provider!.streamRequests() + other!.streamRequests(),
+            active: provider!.activeStreams() + other!.activeStreams(),
+          }),
+        },
+      );
+    } else if (scenario === "custom-lists-round-trip") {
+      await customListRoundTripScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        { otherUrl: other!.url, otherOrigin: new URL(other!.url).origin },
+      );
+    } else if (scenario === "custom-lists-sources") {
+      const ownedProvider = provider;
+      await customListSourcesScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        {
+          otherUrl: other!.url,
+          // The Full HD stream of BE | KWALITEIT 1, TEST | HEVC + AAC and LATE SHOW go.
+          drop: () =>
+            ownedProvider.serveChannels((all) =>
+              all.filter(
+                (channel) =>
+                  channel.streamId !== QUALITY_STREAM_IDS &&
+                  channel.name !== "TEST | HEVC + AAC" &&
+                  channel.name !== "LATE SHOW",
+              ),
+            ),
+        },
       );
     } else if (scenario === "live-categories") {
       await liveCategoriesScenario(

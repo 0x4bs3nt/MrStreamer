@@ -279,6 +279,12 @@ export class Subscriptions extends Context.Service<
     sourceOf(subscriptionId: string): Effect.Effect<Source, Failed>;
     /** Whether `subscription` is still saved, with the login or link it had. */
     stands(subscription: SavedSubscription): Effect.Effect<boolean>;
+    /**
+     * The same, at once, for a check made in the synchronous transaction of the write it allows,
+     * once the roster was read. A removal is in force from before it erases until it gives way,
+     * so a write it allows lands before that erase, and none lands after it.
+     */
+    standsNow(subscription: SavedSubscription): boolean;
   }
 >()("mrstreamer/Subscriptions") {
   static readonly layer = (deps: SubscriptionDeps) => Layer.effect(Subscriptions, make(deps));
@@ -290,6 +296,13 @@ function make(deps: SubscriptionDeps) {
     const registryPath = join(deps.dataDir, "subscriptions.json");
     const addedDir = join(deps.dataDir, "subscriptions");
     let current: Promise<readonly Saved[]> | null = null;
+    /** What `current` holds once read, changed with it: the roster `standsNow` answers from. */
+    let latest: readonly Saved[] = [];
+    /** Makes `roster` the subscriptions services see, from now on. */
+    const use = (roster: readonly Saved[]) => {
+      latest = roster;
+      current = Promise.resolve(roster);
+    };
     /**
      * The added folders `settle` found holding an account another subscription holds too, by
      * that account: kept as they are and not shown, and removed with the one that is.
@@ -436,7 +449,7 @@ function make(deps: SubscriptionDeps) {
       return roster;
     };
 
-    const load = Effect.promise(() => (current ??= settle()));
+    const load = Effect.promise(() => (current ??= settle().then((roster) => (latest = roster))));
 
     /**
      * Sets or replaces a subscription's entry in the registry, or drops it with null. Every other
@@ -473,9 +486,7 @@ function make(deps: SubscriptionDeps) {
         if (next.stored !== previous?.stored) await writeJsonFile(loginPath(next), next.stored);
         if (!previous || previous.name !== next.name) await writeEntry(next, next);
         const roster = await (current ?? []);
-        current = Promise.resolve(
-          previous ? roster.map((each) => (each === previous ? next : each)) : [...roster, next],
-        );
+        use(previous ? roster.map((each) => (each === previous ? next : each)) : [...roster, next]);
         return summary(next);
       });
 
@@ -678,7 +689,7 @@ function make(deps: SubscriptionDeps) {
               Effect.gen(function* () {
                 const key = keyOf(subscription.stored);
                 const spares = spare.get(key) ?? [];
-                current = Promise.resolve(roster.filter((each) => each !== subscription));
+                use(roster.filter((each) => each !== subscription));
                 yield* Effect.onError(
                   Effect.gen(function* () {
                     // Only this reversible phase can be interrupted. No cache owner was torn
@@ -695,10 +706,7 @@ function make(deps: SubscriptionDeps) {
                       catch: failedWith,
                     });
                   }),
-                  () =>
-                    Effect.sync(() => {
-                      current = Promise.resolve(roster);
-                    }),
+                  () => Effect.sync(() => use(roster)),
                 );
                 spare.delete(key);
                 // Past the commit, cancellation cannot abandon native writers or deletion.
@@ -837,11 +845,9 @@ function make(deps: SubscriptionDeps) {
         }),
 
       stands: (subscription: SavedSubscription) =>
-        Effect.map(load, (roster) =>
-          roster.some(
-            (each) => each.id === subscription.id && each.revision === subscription.revision,
-          ),
-        ),
+        Effect.map(load, (roster) => standsIn(roster, subscription)),
+
+      standsNow: (subscription: SavedSubscription) => standsIn(latest, subscription),
     };
   });
 }
@@ -851,6 +857,13 @@ const logged = (effect: Effect.Effect<void>) =>
   effect.pipe(
     Effect.catchCause((cause) => Effect.logWarning("[storage] removal cleanup failed", cause)),
   );
+
+/** Whether `subscription` is among `roster`, with the login or link it had. */
+function standsIn(roster: readonly Saved[], subscription: SavedSubscription): boolean {
+  return roster.some(
+    (each) => each.id === subscription.id && each.revision === subscription.revision,
+  );
+}
 
 function summary({ id, name, stored, provider }: Saved): SubscriptionSummary {
   return {

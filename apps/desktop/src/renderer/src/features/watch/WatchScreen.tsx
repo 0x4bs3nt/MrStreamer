@@ -189,7 +189,7 @@ export function WatchScreen() {
   };
   const pick = (picked: ListEntry | undefined) => {
     if (picked?.kind === "group") toggle(picked.group);
-    else if (picked) choose(picked.list);
+    else if (picked?.kind === "list") choose(picked.list);
   };
 
   // The key handler reads the latest render through a ref. Registering it again on every render

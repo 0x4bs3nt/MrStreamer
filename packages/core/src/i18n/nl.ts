@@ -463,8 +463,8 @@ export const nl: Translation = {
   "It's your only subscription, so Mr. Streamer returns to Connect.":
     "Het is je enige abonnement, dus Mr. Streamer gaat terug naar Verbinden.",
   "{names} stay.": { one: "{names} blijft.", other: "{names} blijven." },
-  "Also delete favourites, watchlist, history and progress":
-    "Ook favorieten, kijklijst, geschiedenis en voortgang verwijderen",
+  "Also delete favourites, watchlist, history, progress and channels in lists":
+    "Ook favorieten, kijklijst, geschiedenis, voortgang en zenders in lijsten verwijderen",
   Keep: "Houden",
   Active: "Actief",
   Expired: "Verlopen",
@@ -1260,4 +1260,26 @@ export const nl: Translation = {
     one: "{count} aflevering in wachtrij. {complete} al gedownload, {queued} al in wachtrij.",
     other: "{count} afleveringen in wachtrij. {complete} al gedownload, {queued} al in wachtrij.",
   },
+  "This list is no longer there.": "Deze lijst bestaat niet meer.",
+  "Another list has this name.": "Een andere lijst heeft deze naam.",
+  "This list changed.": "Deze lijst is gewijzigd.",
+  "New list": "Nieuwe lijst",
+  "List name": "Naam van de lijst",
+  "Couldn't save.": "Bewaren mislukt.",
+  "Options for {list}": "Opties voor {list}",
+  Rename: "Hernoemen",
+  "Move up": "Omhoog",
+  "Move down": "Omlaag",
+  "Delete list": "Lijst verwijderen",
+  "Delete {name}?": "{name} verwijderen?",
+  Lists: "Lijsten",
+  "Lists for {name}": "Lijsten voor {name}",
+  "Not listed now": "Nu niet vermeld",
+  "Not listed by {name} now": "Nu niet vermeld door {name}",
+  "{count} channels are from a subscription that isn't saved.": {
+    one: "{count} zender komt van een abonnement dat niet bewaard is.",
+    other: "{count} zenders komen van abonnementen die niet bewaard zijn.",
+  },
+  "No channels yet.": "Nog geen zenders.",
+  "{list}, in the order to save": "{list}, in de te bewaren volgorde",
 };

@@ -555,6 +555,29 @@ describe("remembered Live TV discovery", () => {
     },
   );
 
+  it("remembers a list of the viewer's as a topic: whichever subscriptions stay, not a category", async () => {
+    const { dataDir, settings, subscriptions, id, login } = await connected();
+    const provider = await fakeProvider();
+    const second = await subscriptions.add({ ...login, server: provider.url });
+    await settings.updateSubscription(id, { lastCategoryId: "news" });
+    const list = { kind: "custom", id: "4bd5e3a0-list" } as const;
+    await settings.rememberLiveBrowse(list);
+    expect(await (await settingsIn(dataDir)).liveBrowse()).toEqual(list);
+    // The category each subscription opens on, which older releases restore, stays as it was.
+    expect((await (await settingsIn(dataDir)).ofSubscription(id)).lastCategoryId).toBe("news");
+    const removed = await savedAs(subscriptions, second.id);
+    const forgetSettings = await settings.prepareForget(removed);
+    await subscriptions.remove(second.id);
+    await Effect.runPromise(forgetSettings);
+    expect(await (await settingsIn(dataDir)).liveBrowse()).toEqual(list);
+    // With no subscription left, nothing is remembered.
+    const last = await savedAs(subscriptions, id);
+    const forgetLast = await settings.prepareForget(last);
+    await subscriptions.remove(id);
+    await Effect.runPromise(forgetLast);
+    expect(await stored(dataDir)).not.toHaveProperty("rememberedLiveBrowse");
+  });
+
   it.each([true, false])(
     "preserves an unknown raw leaf through saves and removal for original=%s",
     async (original) => {

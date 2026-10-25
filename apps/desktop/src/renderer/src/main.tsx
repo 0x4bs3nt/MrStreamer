@@ -6,6 +6,7 @@ import { syncDownloads } from "./lib/downloads.ts";
 import { loadLanguage, useLocale } from "./app/language.ts";
 import { TooltipProvider } from "./components/ui/tooltip.tsx";
 import {
+  syncCustomLists,
   syncGuideUpdates,
   syncLibraryUpdates,
   syncOnDemand,
@@ -33,6 +34,7 @@ syncOnDemand(client);
 syncGuideUpdates(client);
 syncViewing(client);
 syncWatchlist(client);
+syncCustomLists(client);
 syncUpdates(client);
 syncDownloads(client);
 

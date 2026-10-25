@@ -19,8 +19,17 @@ import { useSearchUsage } from "../../app/analytics.ts";
 // programmes on now and later today, and shows the channels it finds in the list's order. / goes
 // to it; Down or Enter there hands the keys to the channels found. Escape clears a search before
 // it goes Home, and so does another list. ⌘K searches everything for the same.
-//   Reorder, beside the field of Favourites, or R, puts the favourites in another order: see
-// ./reorder.ts for its keys, which replace these until the order is saved or cancelled.
+//   Reorder, beside the field of Favourites or of one of the viewer's lists, or R, puts it in
+// another order: see ./reorder.ts for its keys, which replace these until the order is saved or
+// cancelled.
+//   The viewer's lists are made with New list at the end of them in the lists, and a channel goes
+// in one, or out, from its row's lists menu, whose New list opens that field from wherever the
+// lists were, for a list with the channel. A list's header menu renames, moves and deletes it,
+// each in its place: the name turns into a field, and Delete asks once. An answer that comes
+// after the viewer moved on leaves the list and field they moved to as they are. A channel a
+// list keeps that its saved subscription no longer lists shows at the end, by its name, with
+// Remove; one of a subscription that isn't saved is counted under the filters. A change that
+// fails says so with Retry.
 //   The lists hold every saved subscription's channels. One that can't be reached keeps the
 // channels it loaded, and a line under the title says so, with Retry.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -38,10 +47,10 @@ import { EMPTY_LIVE_FILTERS } from "@mrstreamer/contracts/live-browse";
 import { automaticSearchCopy } from "@mrstreamer/core/catalogue/search";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { LiveView } from "@mrstreamer/contracts/preferences";
-import { ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
+import { ownedId, ownedKey, sameOwned, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { t } from "@mrstreamer/core/i18n";
 import { hasModifier, isMac, isTyping } from "../../app/platform.ts";
-import { openView, openWatch, useUi } from "../../app/ui-store.ts";
+import { openView, openWatch, sameList, useUi } from "../../app/ui-store.ts";
 import { CatalogueNotice, catalogueState } from "../../components/CatalogueNotice.tsx";
 import { ChannelLogo } from "../../components/ChannelLogo.tsx";
 import { Progress } from "../../components/Progress.tsx";
@@ -80,7 +89,16 @@ import {
   useListSearch,
   useShowList,
 } from "./lists.ts";
-import { orderKey, useFavouriteOrder, waits } from "./reorder.ts";
+import { orderKey, useListOrder, waits } from "./reorder.ts";
+import { deletedHere, useListChanges, useNewList } from "./custom-lists.ts";
+import {
+  AwayNote,
+  ChangeNotice,
+  DeleteList,
+  ListOptions,
+  RenameList,
+  type UnlistedChannel,
+} from "./CustomListControls.tsx";
 
 const PAGE_ROWS = 10;
 const NO_CHANNELS: readonly LiveChannel[] = [];
@@ -126,8 +144,23 @@ export function GuidePage({ active }: { active: boolean }) {
   const toggleFavourite = useToggleFavourite();
   const showList = useShowList();
   const keyboard = useKeyboardMode();
+  const client = useQueryClient();
+  const customLists = useQuery(queries.customLists());
+  const customList =
+    list.kind === "custom" ? customLists.data?.find((each) => each.id === list.id) : undefined;
+  /** Changes made from rows and menus, and the last of them that failed, for Retry. */
+  const listChange = useListChanges();
+  /** What a list's header shows in its place: a field to rename it, or Delete's question. */
+  const [editing, setEditing] = useState<{ id: string; kind: "rename" | "delete" } | null>(null);
+  if (editing && editing.id !== customList?.id) setEditing(null);
+  /**
+   * Ends `which` if it is still the one open. A rename or delete can be answered after the viewer
+   * chose another list, or opened another field, even for the same list: that one stays.
+   */
+  const finish = (which: typeof editing) =>
+    setEditing((current) => (current === which ? null : current));
 
-  const picker = useListPicker(list);
+  const picker = useListPicker(list, { create: true });
   const { entries, entry, setEntry, openGroup: toggle } = picker;
   const [focus, setFocus] = useState<"lists" | "channels">("channels");
   /** The channel whose schedule is open, by its `ownedKey`. */
@@ -142,25 +175,40 @@ export function GuidePage({ active }: { active: boolean }) {
 
   const lastCategoryTitle = useRef<string>("");
   if (list.kind === "category" && categoryMap.has(ownedKey(list.category)))
-    lastCategoryTitle.current = listTitle(list, categoryMap);
+    lastCategoryTitle.current = listTitle(list, categoryMap, customLists.data);
+  if (customList) lastCategoryTitle.current = customList.name;
   const [removedCategory, setRemovedCategory] = useState<string | null>(null);
 
   // A remembered category can disappear after a refresh or with its subscription. One that
-  // shows with another subscription's under one name is the list that holds them both.
+  // shows with another subscription's under one name is the list that holds them both. A list
+  // of the viewer's goes when it is deleted.
   useEffect(() => {
-    if (list.kind !== "category" || !categories.data) {
+    const known = list.kind === "category" ? categories.data : customLists.data;
+    if ((list.kind !== "category" && list.kind !== "custom") || !known) {
       if (list.kind !== "all") setRemovedCategory(null);
       return;
     }
-    const resolved = resolveDiscovery(list, categories.data);
-    if (resolved.kind !== "category") {
-      setRemovedCategory(lastCategoryTitle.current || t("Current category"));
+    const resolved = resolveDiscovery(list, categories.data, customLists.data);
+    if (resolved.kind === "all") {
+      const quietly = list.kind === "custom" && deletedHere(client, list.id);
+      setRemovedCategory(quietly ? null : lastCategoryTitle.current || t("Current category"));
       showList({ kind: "all" });
     } else {
-      if (!sameOwned(resolved.category, list.category)) useUi.setState({ list: resolved });
+      if (
+        resolved.kind === "category" &&
+        list.kind === "category" &&
+        !sameOwned(resolved.category, list.category)
+      )
+        useUi.setState({ list: resolved });
       setRemovedCategory(null);
     }
-  }, [list, categories.data, categoryMap, showList]);
+  }, [list, categories.data, customLists.data, categoryMap, showList, client]);
+
+  // New list, from the lists or from a row's lists menu, selects the list it made.
+  const creating = useNewList((id) => {
+    setRemovedCategory(null);
+    showList({ kind: "custom", id });
+  });
 
   // What the field holds belongs to the list it was typed in: another list starts without a
   // search, unless the search itself moved there.
@@ -180,8 +228,8 @@ export function GuidePage({ active }: { active: boolean }) {
   useSearchUsage("live", search.query, active);
   const field = useRef<HTMLInputElement>(null);
 
-  const ordered = list.kind === "favourites";
-  const order = useFavouriteOrder(active && ordered, ordered ? listed : undefined);
+  const ordered = list.kind === "favourites" || list.kind === "custom";
+  const order = useListOrder(list, active && ordered, ordered ? listed : undefined);
   const { draft } = order;
   // The rows are the list's, or what a search found of them, or the favourites as arranged.
   const [searchFocus, setSearchFocus] = useState(0);
@@ -384,6 +432,7 @@ export function GuidePage({ active }: { active: boolean }) {
     playRow,
     liveView,
     toggleView,
+    creating,
   });
   state.current = {
     picker,
@@ -407,6 +456,7 @@ export function GuidePage({ active }: { active: boolean }) {
     playRow,
     liveView,
     toggleView,
+    creating,
   };
 
   useEffect(() => {
@@ -501,6 +551,7 @@ export function GuidePage({ active }: { active: boolean }) {
           } else {
             const picked = now.entries[now.entry];
             if (picked?.kind === "group") toggle(picked.group);
+            else if (picked?.kind === "new") now.creating.start();
             else if (picked) {
               showList(picked.list);
               setFocus("channels");
@@ -588,10 +639,42 @@ export function GuidePage({ active }: { active: boolean }) {
   }, [active]);
 
   const notice = catalogueState({ data: categories.data, error: categories.error ?? error });
-  const title = listTitle(list, categoryMap);
+  const title = listTitle(list, categoryMap, customLists.data);
   const waiting = waits(draft);
-  /** The order was refused: its favourites changed, and are read again when the viewer says so. */
+  /** The order was refused: its list changed, and is read again when the viewer says so. */
   const changed = draft?.status === "changed" || draft?.status === "reading";
+  const subscriptionNames = new Map(subscriptions.map((each) => [each.id, subscriptionName(each)]));
+  const filters = list.filters ?? EMPTY_LIVE_FILTERS;
+  // What a list keeps that its subscription no longer lists has no country or language to
+  // filter by, and nothing to search: it shows with the list as it is, or by subscription.
+  const unlisted: readonly UnlistedChannel[] =
+    customList && !searching && filters.countries.length === 0 && filters.languages.length === 0
+      ? customList.members.flatMap((member) =>
+          member.kind === "unlisted" &&
+          (filters.subscriptions.length === 0 ||
+            filters.subscriptions.includes(member.subscriptionId))
+            ? [
+                {
+                  member: member.member,
+                  name: member.name,
+                  source: subscriptionNames.get(member.subscriptionId) ?? "",
+                },
+              ]
+            : [],
+        )
+      : [];
+  const lists = customLists.data ?? [];
+  const position = customList ? lists.indexOf(customList) : -1;
+  /** Moves the list one place among the viewer's lists. */
+  const moveList = (by: -1 | 1) => {
+    const ids = lists.map((each) => each.id);
+    const to = position + by;
+    const [here, there] = [ids[position], ids[to]];
+    if (position < 0 || here === undefined || there === undefined) return;
+    ids[position] = there;
+    ids[to] = here;
+    void listChange.run(() => call("customLists.order", { order: ids }));
+  };
   const viewSwitch = (
     <Button
       title={liveView === "grid" ? t("List (G)") : t("Guide (G)")}
@@ -618,6 +701,7 @@ export function GuidePage({ active }: { active: boolean }) {
         <div className="flex min-h-0 flex-1">
           <ListPicker
             picker={picker}
+            creating={creating}
             notice={
               removedCategory
                 ? t("{name} is no longer listed. Showing all channels.", { name: removedCategory })
@@ -638,7 +722,10 @@ export function GuidePage({ active }: { active: boolean }) {
             {/* The switch sits beside Watch, or at the end of the title while nothing plays. */}
             <NowStrip active={active} viewSwitch={viewSwitch} />
             <div className="flex h-14 flex-none items-center gap-3 px-9 pt-2 pb-3">
-              <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{title}</h1>
+              {/* Rename puts the name's field in its place. */}
+              {!(customList && editing?.kind === "rename" && !draft) && (
+                <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{title}</h1>
+              )}
               {draft ? (
                 <>
                   <span
@@ -652,7 +739,9 @@ export function GuidePage({ active }: { active: boolean }) {
                     {draft.status === "failed"
                       ? t("Couldn't save the order.")
                       : changed
-                        ? t("Your favourites changed.")
+                        ? list.kind === "custom"
+                          ? t("This list changed.")
+                          : t("Your favourites changed.")
                         : isMac
                           ? t("Option with Up or Down moves the selected row")
                           : t("Alt with Up or Down moves the selected row")}
@@ -669,6 +758,8 @@ export function GuidePage({ active }: { active: boolean }) {
                     {draft.said}
                   </span>
                 </>
+              ) : customList && editing?.kind === "rename" ? (
+                <RenameList list={customList} onDone={() => finish(editing)} />
               ) : (
                 <>
                   {searching && listed && (
@@ -692,6 +783,16 @@ export function GuidePage({ active }: { active: boolean }) {
                         {t("Reorder")}
                       </Button>
                     )}
+                    {customList && (
+                      <ListOptions
+                        list={customList}
+                        first={position === 0}
+                        last={position === lists.length - 1}
+                        onRename={() => setEditing({ id: customList.id, kind: "rename" })}
+                        onMove={moveList}
+                        onDelete={() => setEditing({ id: customList.id, kind: "delete" })}
+                      />
+                    )}
                     {(channels.length > 0 || searching) && (
                       <ListSearch
                         field={field}
@@ -709,7 +810,25 @@ export function GuidePage({ active }: { active: boolean }) {
                 </>
               )}
             </div>
+            {customList && editing?.kind === "delete" && (
+              <DeleteList
+                list={customList}
+                onDone={() => finish(editing)}
+                onDeleted={() => {
+                  finish(editing);
+                  // Only the list still on screen gives way to All channels.
+                  const gone = { kind: "custom", id: customList.id } as const;
+                  if (sameList(useUi.getState().list, gone)) showList({ kind: "all" });
+                }}
+              />
+            )}
             <BrowseFilters list={list} result={browse} />
+            {customList && <AwayNote count={customList.away} />}
+            <ChangeNotice
+              state={listChange.state}
+              onRetry={listChange.retry}
+              onDismiss={listChange.dismiss}
+            />
             <SourceNotices />
             {refused && (
               <p className="px-9 pb-2.5 text-sm text-muted-foreground">
@@ -742,9 +861,13 @@ export function GuidePage({ active }: { active: boolean }) {
                 event.stopPropagation();
               }}
             >
-              {listed && listed.length === 0 ? (
+              {listed && listed.length === 0 && (unlisted.length === 0 || liveView === "grid") ? (
                 <p className="px-9 text-sm text-muted-foreground">
-                  {list.kind === "favourites" ? t("No favourites yet.") : t("No channels.")}
+                  {list.kind === "favourites"
+                    ? t("No favourites yet.")
+                    : customList?.members.length === 0
+                      ? t("No channels yet.")
+                      : t("No channels.")}
                 </p>
               ) : listed && searching && rows.length === 0 ? (
                 search.pending || search.failed ? null : (
@@ -803,6 +926,10 @@ export function GuidePage({ active }: { active: boolean }) {
                   matches={search.matches}
                   order={
                     draft && {
+                      label:
+                        list.kind === "custom"
+                          ? t("{list}, in the order to save", { list: title })
+                          : t("Favourites, in the order to save"),
                       saved: draft.listed,
                       focus: draft.focus,
                       locked: waiting || changed,
@@ -811,6 +938,35 @@ export function GuidePage({ active }: { active: boolean }) {
                       onMove: order.move,
                     }
                   }
+                  lists={
+                    draft
+                      ? null
+                      : {
+                          lists,
+                          onSet: (to, channel, member) =>
+                            void listChange.run(() =>
+                              call("customLists.setMember", {
+                                list: to.id,
+                                channel: ownedId(channel),
+                                member,
+                              }),
+                            ),
+                          // The rail goes back to New list for its field, out of a Find or a
+                          // provider's categories; the list on screen stays.
+                          onNew: (channel) => {
+                            picker.showNew();
+                            setFocus("lists");
+                            creating.start(ownedId(channel));
+                          },
+                        }
+                  }
+                  unlisted={draft ? [] : unlisted}
+                  onRemoveUnlisted={(member) => {
+                    if (customList)
+                      void listChange.run(() =>
+                        call("customLists.removeMember", { list: customList.id, member }),
+                      );
+                  }}
                   onWatch={(channel, index) => {
                     setChosen({ index, channel, searchKey: searchRows?.[index]?.key });
                     playRow(index);

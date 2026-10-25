@@ -68,6 +68,12 @@ export function describeError(error: AppError): string {
       return t("Your favourites changed.");
     case "mark-changed":
       return t("This can no longer be undone.");
+    case "no-list":
+      return t("This list is no longer there.");
+    case "list-name-taken":
+      return t("Another list has this name.");
+    case "list-changed":
+      return t("This list changed.");
     case "incomplete-catalogue":
       if (error.list === "movies")
         return t("The provider sent no movies, so the previous list stays.");

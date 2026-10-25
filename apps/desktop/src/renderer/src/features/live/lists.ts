@@ -1,5 +1,7 @@
 // Shared semantic selections for Live TV, Watch and Home. Topics lead discovery; the provider
-// hierarchy stays available behind Provider lists. Library owns membership and facet policy.
+// hierarchy stays available behind Provider lists, and the viewer's own lists sit between All
+// channels and the topics. Library owns membership and facet policy; the main process says which
+// channels each of the viewer's lists shows.
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -11,6 +13,7 @@ import {
   type LiveDiscovery,
 } from "@mrstreamer/contracts/live-browse";
 import type { Viewing } from "@mrstreamer/contracts/viewing";
+import type { CustomList } from "@mrstreamer/contracts/custom-lists";
 import type { Preferences } from "@mrstreamer/contracts/preferences";
 import { call } from "../../lib/ipc.ts";
 import type { Listing, ListingMatch } from "@mrstreamer/contracts/guide";
@@ -42,12 +45,23 @@ const SEARCH_DELAY_MS = 120;
 const NO_WORDS: readonly string[] = [];
 const NO_MATCHES: Readonly<Record<string, ListingMatch>> = {};
 
+/** The channels a list of the viewer's shows that their subscriptions list, in its order. */
+function listedIn(customLists: readonly CustomList[] | undefined, id: string): readonly OwnedId[] {
+  return (
+    customLists
+      ?.find((each) => each.id === id)
+      ?.members.flatMap((member) => (member.kind === "listed" ? [ownedId(member.channel)] : [])) ??
+    NO_IDS
+  );
+}
+
 /** The single renderer adapter from semantic discovery/personal choices to exact IPC scopes. */
 export function browseQuery(
   list: ChannelList,
   viewing: Viewing | undefined,
   visibility: "viewer" | "ordinary",
   preferences: Preferences | undefined,
+  customLists: readonly CustomList[] | undefined,
 ): LiveBrowseQuery {
   const filters = list.filters ?? EMPTY_LIVE_FILTERS;
   return {
@@ -61,7 +75,9 @@ export function browseQuery(
                 viewing?.[list.kind === "favourites" ? "favourites" : "recent"] ?? NO_IDS
               ).map(ownedId),
             }
-          : { kind: "all" },
+          : list.kind === "custom"
+            ? { kind: "channels", channels: [...listedIn(customLists, list.id)] }
+            : { kind: "all" },
     filters: {
       browseTopics: list.kind === "topic" ? [list.topic] : [],
       countries: [...filters.countries],
@@ -78,25 +94,43 @@ export function browseQuery(
 /** Membership and facets always belong to the current descriptor, including personal order. */
 export function useListChannels(list: ChannelList, visibility: "viewer" | "ordinary" = "viewer") {
   const viewing = useQuery(queries.viewing());
+  const customLists = useQuery(queries.customLists());
   const preferences = useQuery(queries.preferences());
-  const personal = list.kind === "favourites" || list.kind === "recent";
-  const request = browseQuery(list, viewing.data, visibility, preferences.data);
+  // Favourites and Recently watched are the record's, a list of the viewer's is its own: what
+  // the list holds is read before the channels it shows.
+  const holder =
+    list.kind === "favourites" || list.kind === "recent"
+      ? viewing
+      : list.kind === "custom"
+        ? customLists
+        : null;
+  const unknown = holder && !holder.isSuccess ? holder : null;
+  const request = browseQuery(list, viewing.data, visibility, preferences.data, customLists.data);
   const empty = request.scope.kind === "channels" && request.scope.channels.length === 0;
   const result = useQuery({
     ...queries.browse(request),
-    enabled: !empty && (!personal || viewing.isSuccess),
+    enabled: !empty && !unknown,
   });
-  const data = empty && viewing.isSuccess ? EMPTY_BROWSE : result.data;
+  const data = empty && !unknown ? EMPTY_BROWSE : result.data;
   return {
-    channels: personal && !viewing.isSuccess ? undefined : data?.channels,
+    channels: unknown ? undefined : data?.channels,
     data,
-    error: personal && !viewing.isSuccess ? viewing.error : result.error,
+    error: unknown ? unknown.error : result.error,
   };
 }
 
-/** Resolve native aliases and missing categories identically for discovery consumers. */
-export function resolveDiscovery(list: ChannelList, categories: readonly Category[]): ChannelList {
-  if (list.kind !== "category") return list;
+/**
+ * Resolve native aliases, missing categories and deleted lists of the viewer's identically for
+ * discovery consumers. What isn't read yet stays as it is.
+ */
+export function resolveDiscovery(
+  list: ChannelList,
+  categories: readonly Category[] | undefined,
+  customLists: readonly CustomList[] | undefined,
+): ChannelList {
+  if (list.kind === "custom")
+    return !customLists || customLists.some((each) => each.id === list.id) ? list : { kind: "all" };
+  if (list.kind !== "category" || !categories) return list;
   const category = categories.find((each) =>
     each.members.some((member) => sameOwned(member, list.category)),
   );
@@ -108,11 +142,12 @@ export function useHomeDiscovery(): ChannelList {
   const list = useUi((state) => state.list);
   const remembered = useQuery(queries.rememberedLiveBrowse());
   const categories = useQuery(queries.categories());
+  const customLists = useQuery(queries.customLists());
   const discovery =
     list.kind === "favourites" || list.kind === "recent"
       ? (remembered.data ?? { kind: "all" as const })
       : list;
-  return categories.data ? resolveDiscovery(discovery, categories.data) : discovery;
+  return resolveDiscovery(discovery, categories.data, customLists.data);
 }
 
 /**
@@ -244,8 +279,12 @@ function searchNames(channels: readonly LiveChannel[]): readonly SearchNames[] {
   return names;
 }
 
-/** The list's name: "Favourites", or the category's own. */
-export function listTitle(list: ChannelList, categories: ReadonlyMap<string, Category>): string {
+/** The list's name: "Favourites", the category's own, or what the viewer called theirs. */
+export function listTitle(
+  list: ChannelList,
+  categories: ReadonlyMap<string, Category>,
+  customLists: readonly CustomList[] | undefined,
+): string {
   switch (list.kind) {
     case "favourites":
       return t("Favourites");
@@ -257,6 +296,8 @@ export function listTitle(list: ChannelList, categories: ReadonlyMap<string, Cat
       return topicTitle(list.topic);
     case "category":
       return categories.get(ownedKey(list.category))?.title ?? t("Channels");
+    case "custom":
+      return customLists?.find((each) => each.id === list.id)?.name ?? t("Channels");
   }
 }
 
@@ -292,7 +333,9 @@ export function useShowList(): (list: ChannelList) => void {
           ? { kind: "topic", topic: list.topic }
           : list.kind === "category"
             ? { kind: "category", category: ownedId(list.category) }
-            : { kind: "all" };
+            : list.kind === "custom"
+              ? { kind: "custom", id: list.id }
+              : { kind: "all" };
       const turn = ++rememberTurn;
       const account = useUi.getState().account;
       void client.cancelQueries({ queryKey: queries.rememberedLiveBrowse().queryKey });
@@ -316,7 +359,7 @@ export function useShowList(): (list: ChannelList) => void {
   );
 }
 
-export type ListEntry =
+export type ListEntry = (
   | {
       readonly kind: "list";
       readonly list: ChannelList;
@@ -329,11 +372,22 @@ export type ListEntry =
       readonly kind: "group";
       readonly group: string;
       readonly count: number;
-    };
+    }
+  /** New list, at the end of the viewer's lists: it opens a field that names one. */
+  | { readonly kind: "new" }
+) & {
+  /** It starts a group of its own, a little apart from the entries before it. */
+  readonly apart?: true;
+};
 
-/** Fixed topics first; Provider lists keeps native countries/categories and catalogue-wide Find. */
-export function useListPicker(selected: ChannelList) {
+/**
+ * Fixed topics first; Provider lists keeps native countries/categories and catalogue-wide Find.
+ * The viewer's lists come after All channels, with New list after them where `create` says so,
+ * as in Live TV.
+ */
+export function useListPicker(selected: ChannelList, { create = false } = {}) {
   const categories = useQuery(queries.categories()).data;
+  const customLists = useQuery(queries.customLists()).data;
   const catalogue = useListChannels({ kind: "all" });
   const favourites = useListChannels({ kind: "favourites" });
   const recent = useListChannels({ kind: "recent" });
@@ -344,7 +398,9 @@ export function useListPicker(selected: ChannelList) {
       ? ownedKey(selected.category)
       : selected.kind === "topic"
         ? selected.topic
-        : selected.kind;
+        : selected.kind === "custom"
+          ? `custom:${selected.id}`
+          : selected.kind;
   const selectedGroup =
     selected.kind === "category"
       ? (categories?.find((category) =>
@@ -426,12 +482,23 @@ export function useListPicker(selected: ChannelList) {
       const counts = new Map(
         catalogue.data?.facets.browseTopics.map((each) => [each.value, each.count]),
       );
+      const own: ListEntry[] = [
+        ...(customLists ?? []).map((list): ListEntry => ({
+          kind: "list",
+          list: { kind: "custom", id: list.id },
+          title: list.name,
+          count: list.members.length,
+        })),
+        ...(create ? [{ kind: "new" } as const] : []),
+      ];
       result.push(
-        ...BROWSE_TOPICS.map((topic): ListEntry => ({
+        ...own.map((entry, at) => (at === 0 ? { ...entry, apart: true as const } : entry)),
+        ...BROWSE_TOPICS.map((topic, at): ListEntry => ({
           kind: "list",
           list: { kind: "topic", topic },
           title: topicTitle(topic),
           count: counts.get(topic) ?? 0,
+          ...(at === 0 ? { apart: true as const } : {}),
         })),
         { kind: "group", group: PROVIDER_LISTS, count: catalogue.data?.total ?? 0 },
       );
@@ -457,6 +524,8 @@ export function useListPicker(selected: ChannelList) {
     return result;
   }, [
     categories,
+    customLists,
+    create,
     catalogue.data,
     favourites.channels,
     recent.channels,
@@ -476,6 +545,16 @@ export function useListPicker(selected: ChannelList) {
     search(query);
     setEntry(0);
   };
+  /**
+   * Back at the root, out of a Find, a country and Provider lists, on New list: where a list
+   * made from a channel row's lists menu is named.
+   */
+  const showNew = () => {
+    search("");
+    setGroup(null);
+    setProviders(false);
+    setEntry(3 + (customLists?.length ?? 0));
+  };
   const back = () => {
     if (query.trim() !== "") {
       setQuery("");
@@ -484,7 +563,8 @@ export function useListPicker(selected: ChannelList) {
     if (group === null) {
       if (!providers) return false;
       setProviders(false);
-      setEntry(12);
+      // Back on Provider lists, after the three personal entries, the viewer's lists and topics.
+      setEntry(3 + (customLists?.length ?? 0) + (create ? 1 : 0) + BROWSE_TOPICS.length);
       return true;
     }
     // Restore the country's position in the provider-ordered root, including ungrouped rows.
@@ -516,6 +596,7 @@ export function useListPicker(selected: ChannelList) {
     query,
     setQuery,
     openGroup,
+    showNew,
     back,
     entry: Math.min(entry, Math.max(entries.length - 1, 0)),
     setEntry,

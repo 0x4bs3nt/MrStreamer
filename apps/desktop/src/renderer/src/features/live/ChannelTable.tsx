@@ -5,10 +5,12 @@
 //   A search shows the same rows for the channels it found, with what matched underlined: the
 // name, the programme on now, or a later one, which then stands where what's next does, in white
 // and at every width. The rest of the day opens on that programme.
-//   While the favourites are being put in another order, the same rows stand in the order being
-// made. Each has an Up and a Down button where its star and its arrow were, and plays nothing.
-// One row holds the focus, the one the keys move, and keeps it wherever it goes: its row stays
-// in the page while the list draws only the rows in view.
+//   While the favourites, or a list of the viewer's, are being put in another order, the same rows
+// stand in the order being made. Each has an Up and a Down button where its star and its arrows
+// were, and plays nothing. One row holds the focus, the one the keys move, and keeps it wherever
+// it goes: its row stays in the page while the list draws only the rows in view.
+//   Beside its star, a row's lists button opens the viewer's lists, each ticked where it holds
+// the channel. A list's channels its subscription no longer lists follow the others, dimmed.
 import { useQuery } from "@tanstack/react-query";
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, ChevronDown, Star } from "lucide-react";
@@ -28,6 +30,7 @@ import {
   type ListingMatch,
   type Programme,
 } from "@mrstreamer/contracts/guide";
+import type { CustomList } from "@mrstreamer/contracts/custom-lists";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
 import { ownedKey, type OwnedId } from "@mrstreamer/contracts/subscription";
 import { archiveHolds } from "@mrstreamer/core/catchup";
@@ -45,12 +48,16 @@ import { cn } from "../../lib/utils.ts";
 import { useVisibleListings } from "./lists.ts";
 import { rowPlays, searchQualities, type SearchChannelRow } from "./search-rows.ts";
 import type { RowPart } from "./reorder.ts";
+import { holds } from "./custom-lists.ts";
+import { ListMenu, UnlistedRows, type UnlistedChannel } from "./CustomListControls.tsx";
 
 const ROW_REM = 3.75;
 const NONE: readonly string[] = [];
 
 /** The list while its channels are being put in another order. */
 export interface TableOrder {
+  /** What the list is called for assistive technology: "Favourites, in the order to save". */
+  readonly label: string;
   /** The channels in their saved order, which programmes are asked for by: moving a row asks none. */
   readonly saved: readonly LiveChannel[];
   /** The part of the selected row that holds the focus, and how often the viewer chose it. */
@@ -63,6 +70,15 @@ export interface TableOrder {
   onFocused(channel: OwnedId, part: RowPart): void;
   /** Moves a channel `by` places, keeping the focus on `part` of its row. */
   onMove(channel: OwnedId, by: number, part: RowPart): void;
+}
+
+/** The viewer's lists, for each row's lists menu. */
+export interface TableLists {
+  readonly lists: readonly CustomList[];
+  /** Puts a channel in a list, or takes it out. */
+  onSet(list: CustomList, channel: LiveChannel, member: boolean): void;
+  /** New list, from a row's menu: the list made holds that row's channel. */
+  onNew(channel: LiveChannel): void;
 }
 
 /**
@@ -85,6 +101,9 @@ export function ChannelTable({
   words,
   matches,
   order = null,
+  lists = null,
+  unlisted = [],
+  onRemoveUnlisted,
   onWatch,
   onWatchArchive,
   onToggleSchedule,
@@ -112,8 +131,13 @@ export function ChannelTable({
   words: readonly string[];
   /** What that search found in each channel's programmes, by the channel's `ownedKey`. */
   matches: Readonly<Record<string, ListingMatch>>;
-  /** Set while `channels` are the favourites in an order being made. */
+  /** Set while `channels` are the favourites, or a list of the viewer's, in an order being made. */
   order?: TableOrder | null;
+  /** The viewer's lists for the rows' lists menus; none while an order is being made. */
+  lists?: TableLists | null;
+  /** A list's channels its saved subscription no longer lists, after the others. */
+  unlisted?: readonly UnlistedChannel[];
+  onRemoveUnlisted?: (member: string) => void;
   onWatch: (channel: LiveChannel, index: number) => void;
   /** A programme of the channel's schedule that aired, to play from its catch-up archive. */
   onWatchArchive: (channel: LiveChannel, index: number, programme: Programme) => void;
@@ -220,7 +244,7 @@ export function ChannelTable({
       <div
         className="relative"
         style={{ height: virtualizer.getTotalSize() }}
-        {...(order ? { role: "list", "aria-label": t("Favourites, in the order to save") } : {})}
+        {...(order ? { role: "list", "aria-label": order.label } : {})}
       >
         {items.map((item) => {
           const channel = channels[item.index];
@@ -282,6 +306,7 @@ export function ChannelTable({
                     onMove: (by, part) => order.onMove(channel, by, part),
                   }
                 }
+                lists={lists}
                 onWatch={() => onWatch(channel, item.index)}
                 onWatchArchive={(programme) => onWatchArchive(channel, item.index, programme)}
                 onToggleSchedule={() => onToggleSchedule(key)}
@@ -291,6 +316,7 @@ export function ChannelTable({
           );
         })}
       </div>
+      <UnlistedRows channels={unlisted} onRemove={(member) => onRemoveUnlisted?.(member)} />
     </div>
   );
 }
@@ -313,6 +339,7 @@ function ChannelRow({
   words,
   match,
   order,
+  lists,
   onWatch,
   onWatchArchive,
   onToggleSchedule,
@@ -337,6 +364,7 @@ function ChannelRow({
   match: ListingMatch | null;
   /** Set while the list is being put in another order: the row moves, and plays nothing. */
   order: RowOrder | null;
+  lists: TableLists | null;
   onWatch: () => void;
   onWatchArchive: (programme: Programme) => void;
   onToggleSchedule: () => void;
@@ -509,7 +537,7 @@ function ChannelRow({
             ""
           )}
         </span>
-        <span className="flex w-[4.5rem] flex-none items-center justify-end gap-1">
+        <span className="flex w-[6.75rem] flex-none items-center justify-end gap-1">
           {order ? (
             <>
               <MoveButton by={-1} channel={channel} order={order} />
@@ -525,6 +553,15 @@ function ChannelRow({
                 >
                   <Star className={cn("size-4", favourite && "fill-current")} />
                 </IconButton>
+              )}
+              {!grouped && lists && (
+                <ListMenu
+                  channel={channel}
+                  lists={lists.lists}
+                  shown={selected || lists.lists.some((list) => holds(list, channel))}
+                  onSet={(list, member) => lists.onSet(list, channel, member)}
+                  onNew={() => lists.onNew(channel)}
+                />
               )}
               {grouped ? (
                 <IconButton

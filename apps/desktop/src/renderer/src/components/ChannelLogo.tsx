@@ -54,7 +54,8 @@ export function ChannelLogo({
   );
 }
 
-function initials(title: string): string {
+/** Two letters for a channel without a logo: its first two words', or its first word's two. */
+export function initials(title: string): string {
   const words = title.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   const [first = title, second] = words;
   return (second ? `${first[0] ?? ""}${second[0] ?? ""}` : first.slice(0, 2)).toUpperCase();

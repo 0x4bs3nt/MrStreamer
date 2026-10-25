@@ -66,6 +66,16 @@ export type AppError =
    * of Continue watching since. Nothing was changed.
    */
   | { readonly kind: "mark-changed" }
+  /** A channel list that is no longer there: the viewer deleted it. Nothing was changed. */
+  | { readonly kind: "no-list" }
+  /** Another channel list has that name, apart from case and accents. Nothing was changed. */
+  | { readonly kind: "list-name-taken" }
+  /**
+   * An order made from lists, or from a list's channels, that no longer hold: a list or a channel
+   * was added or removed since, or a channel shown then no longer shows. Nothing was saved; the
+   * UI reads the lists again.
+   */
+  | { readonly kind: "list-changed" }
   /** A receiver on the network didn't take what it was sent, or can't be reached. */
   | { readonly kind: "output"; readonly failure: OutputFailure }
   /** A programme guide that can't be used, or a change to one that no longer applies. */

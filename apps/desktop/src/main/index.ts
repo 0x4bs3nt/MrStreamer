@@ -41,6 +41,7 @@ import { playbackHandlers } from "./handlers/playback.ts";
 import { subtitleHandlers } from "./handlers/subtitles.ts";
 import { outputHandlers } from "./handlers/output.ts";
 import { viewingHandlers } from "./handlers/viewing.ts";
+import { customListHandlers } from "./handlers/custom-lists.ts";
 import { downloadHandlers } from "./handlers/downloads.ts";
 import { analyticsHandlers } from "./handlers/analytics.ts";
 import { preferenceHandlers } from "./handlers/preferences.ts";
@@ -80,6 +81,7 @@ import { Roster } from "./services/roster.ts";
 import { Subscriptions } from "./services/subscription.ts";
 import { DEFAULT_SCHEDULE, Updates, type UpdatesConfig } from "./services/updates.ts";
 import { Watchlist } from "./services/watchlist.ts";
+import { CustomLists } from "./services/custom-lists.ts";
 
 // Matches `appId` in electron-builder.yml: Windows groups taskbar entries and notifications by it.
 const APP_ID = "app.mrstreamer.player";
@@ -515,6 +517,7 @@ async function start(): Promise<void> {
     guide,
     viewing,
     watchlist,
+    customLists,
     diagnostics,
     licences,
     downloads,
@@ -533,6 +536,7 @@ async function start(): Promise<void> {
       guide: Guide,
       viewing: ViewingRecord,
       watchlist: Watchlist,
+      customLists: CustomLists,
       diagnostics: Diagnostics,
       licences: Licences,
       downloads: Downloads,
@@ -641,6 +645,7 @@ async function start(): Promise<void> {
   forward(guide.changes, "guide.updated", () => null);
   forward(viewing.changes, "viewing.changed", (sequence) => ({ sequence }));
   forward(watchlist.changes, "watchlist.changed", () => null);
+  forward(customLists.changes, "customLists.changed", () => null);
   forward(updates.changes, "updates.changed", (status) => {
     analytics.setUpdateChannel(updatesInApp(status.distribution) ? status.channel : "none");
     return status;
@@ -724,6 +729,7 @@ async function start(): Promise<void> {
       ...subtitleHandlers({ onlineSubtitles }),
       ...outputHandlers({ output, coordination, library, onDemand, settings, analytics, pickList }),
       ...viewingHandlers({ viewing, settings }),
+      ...customListHandlers({ customLists }),
       ...downloadHandlers({ downloads }),
       ...analyticsHandlers({ analytics, playback }),
       ...preferenceHandlers({ preferences }),

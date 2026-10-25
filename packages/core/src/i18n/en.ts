@@ -456,8 +456,8 @@ export const en = {
   "It's your only subscription, so Mr. Streamer returns to Connect.":
     "It's your only subscription, so Mr. Streamer returns to Connect.",
   "{names} stay.": { one: "{names} stays.", other: "{names} stay." },
-  "Also delete favourites, watchlist, history and progress":
-    "Also delete favourites, watchlist, history and progress",
+  "Also delete favourites, watchlist, history, progress and channels in lists":
+    "Also delete favourites, watchlist, history, progress and channels in lists",
   Keep: "Keep",
   Active: "Active",
   Expired: "Expired",
@@ -1234,4 +1234,26 @@ export const en = {
     one: "Queued {count} episode. {complete} already downloaded, {queued} already queued.",
     other: "Queued {count} episodes. {complete} already downloaded, {queued} already queued.",
   },
+  "This list is no longer there.": "This list is no longer there.",
+  "Another list has this name.": "Another list has this name.",
+  "This list changed.": "This list changed.",
+  "New list": "New list",
+  "List name": "List name",
+  "Couldn't save.": "Couldn't save.",
+  "Options for {list}": "Options for {list}",
+  Rename: "Rename",
+  "Move up": "Move up",
+  "Move down": "Move down",
+  "Delete list": "Delete list",
+  "Delete {name}?": "Delete {name}?",
+  Lists: "Lists",
+  "Lists for {name}": "Lists for {name}",
+  "Not listed now": "Not listed now",
+  "Not listed by {name} now": "Not listed by {name} now",
+  "{count} channels are from a subscription that isn't saved.": {
+    one: "{count} channel is from a subscription that isn't saved.",
+    other: "{count} channels are from subscriptions that aren't saved.",
+  },
+  "No channels yet.": "No channels yet.",
+  "{list}, in the order to save": "{list}, in the order to save",
 } as const satisfies Readonly<Record<string, string | Plural>>;

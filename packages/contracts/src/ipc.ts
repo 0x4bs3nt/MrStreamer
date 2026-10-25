@@ -74,6 +74,7 @@ import { PlaylistMode, type PlaylistGroupPage, type PlaylistOmissionPage } from 
 import type { OwnedId, SubscriptionSummary } from "./subscription.ts";
 import type { UpdateStatus } from "./updates.ts";
 import type { EpisodeMark, SeriesViewing, TitleProgress, Viewing } from "./viewing.ts";
+import type { CustomList } from "./custom-lists.ts";
 import { WATCHLIST_SORTS, type WatchlistPage } from "./watchlist.ts";
 
 /** Publication metadata is never stored in Preferences or shared with the iOS file schema. */
@@ -89,6 +90,8 @@ const titleKind = () => type.enumerated(...TITLE_KINDS);
 const decoders = () => type.enumerated(...CODECS).array();
 /** An `OwnedId`: what a provider lists, with the subscription that lists it. */
 const owned = () => type({ subscriptionId: "string > 0", id: "string" });
+/** A list's or a list channel's id, as the window or the main process made it up. */
+const listId = () => type("string").atLeastLength(1).atMostLength(64);
 /** Movies, and series whose every episode counts, by the ids of their versions: a `TitleFilter`. */
 const titleFilter = () => type({ "movies?": owned().array(), "series?": owned().array() });
 
@@ -140,8 +143,8 @@ export const ipcInputs = {
     type({ subscriptionId: "string > 0", "name?": "string | null", "secret?": "string > 0" }),
   /**
    * Forgets the subscription's login and what was loaded with it. `eraseViewing` also deletes
-   * the account's favourites, watchlist, watch history and progress, which otherwise stay for
-   * when it is added again.
+   * the account's favourites, watchlist, watch history, progress and channels in the viewer's
+   * lists, which otherwise stay for when it is added again.
    */
   "subscription.remove": () => type({ subscriptionId: "string > 0", "eraseViewing?": "boolean" }),
   /** Asks the provider for the account's status now: expiry and connections in use. */
@@ -493,6 +496,26 @@ export const ipcInputs = {
   "watchlist.save": () => type({ kind: titleKind(), version: owned() }),
   /** A saved entry by its own id, as `WatchlistEntry` names it. */
   "watchlist.remove": () => type({ entry: owned() }),
+  "customLists.get": none,
+  /**
+   * A new list, under an id the window makes up for it: sent again, it answers the list it made.
+   * With `channel`, the list holds that channel from the start.
+   */
+  "customLists.create": () => type({ id: listId(), name: "string", "channel?": owned() }),
+  "customLists.rename": () => type({ id: listId(), name: "string" }),
+  /** Every list's id, in the order the lists are to show in. */
+  "customLists.order": () => type({ order: listId().array() }),
+  "customLists.remove": () => type({ id: listId() }),
+  /** Puts a channel, by its id or any of its streams', in a list, or takes it out. */
+  "customLists.setMember": () => type({ list: listId(), channel: owned(), member: "boolean" }),
+  /** Takes a channel out of a list by its member id, as for one its subscription no longer lists. */
+  "customLists.removeMember": () => type({ list: listId(), member: listId() }),
+  /**
+   * Puts the channels `order` names, by member id, in that order where they were in a list, as
+   * it showed at `revision`: see `CustomList`.
+   */
+  "customLists.arrange": () =>
+    type({ list: listId(), revision: "number.integer >= 0", order: listId().array() }),
   "downloads.list": none,
   /** A movie or one episode, by the exact version the viewer chose, at the end of the queue. */
   "downloads.add": () => type({ title: TitleRef() }),
@@ -782,6 +805,28 @@ export interface IpcOutputs {
    * any more. One already gone changes nothing.
    */
   "watchlist.remove": null;
+  /** The viewer's channel lists, in their order, as the viewer may see them now. */
+  "customLists.get": readonly CustomList[];
+  /**
+   * Answers the lists once the new one is stored. Fails with `list-name-taken` when another is
+   * called the same, apart from case and accents, and with `no-list` for an id whose list was
+   * deleted since it was made.
+   */
+  "customLists.create": readonly CustomList[];
+  /** Answers the lists once stored. Fails with `no-list` and `list-name-taken`. */
+  "customLists.rename": readonly CustomList[];
+  /** Fails with `list-changed`, saving nothing, unless it names every list there is, once. */
+  "customLists.order": readonly CustomList[];
+  /** Deletes a list with every channel it holds. One already gone changes nothing. */
+  "customLists.remove": readonly CustomList[];
+  /** Adding a channel a list holds, or taking out one it doesn't, changes nothing. */
+  "customLists.setMember": readonly CustomList[];
+  "customLists.removeMember": readonly CustomList[];
+  /**
+   * Fails with `list-changed`, saving nothing, when the list changed since `revision`, or
+   * doesn't show one of the channels named: the window reads the lists again.
+   */
+  "customLists.arrange": readonly CustomList[];
   "downloads.list": DownloadList;
   /**
    * Queued, with the title's details and artwork kept on this computer. One already downloaded or
@@ -877,6 +922,8 @@ export interface IpcEvents {
   "viewing.changed": { readonly sequence: number };
   /** A title was saved to the watchlist or taken out of it. */
   "watchlist.changed": null;
+  /** A channel list was made, renamed, moved or deleted, or its channels changed. */
+  "customLists.changed": null;
   /** The update moved on, for example a download's progress. */
   "updates.changed": UpdateStatus;
   /**

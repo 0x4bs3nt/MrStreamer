@@ -62,7 +62,10 @@ export class Settings extends Context.Service<
   Settings,
   {
     readonly get: Effect.Effect<Preferences>;
-    /** Discovery only. Personal lists and session filters never reach this file. */
+    /**
+     * Discovery only, which a list of the viewer's is part of. Favourites, Recently watched and
+     * session filters never reach this file.
+     */
     readonly liveBrowse: Effect.Effect<LiveDiscovery>;
     rememberLiveBrowse(selection: LiveDiscovery): Effect.Effect<LiveDiscovery, Failed>;
     update(patch: Partial<Preferences>): Effect.Effect<Preferences>;
@@ -202,7 +205,8 @@ function make(dataDir: string, usage?: UsageObservers) {
       const baseline = yield* legacy(saved);
       const raw = RememberedLiveBrowse()((yield* stored).rememberedLiveBrowse);
       if (!(raw instanceof type.errors) && sameBaseline(raw.legacy, baseline)) {
-        if (raw.selection.kind === "topic" && saved.length > 0)
+        // A topic and a list of the viewer's are anyone's, whichever subscriptions are saved.
+        if ((raw.selection.kind === "topic" || raw.selection.kind === "custom") && saved.length > 0)
           return discoverySelection(raw.selection);
         const selection = raw.selection;
         if (
@@ -236,7 +240,8 @@ function make(dataDir: string, usage?: UsageObservers) {
             if (all.length === 0 && selection.kind !== "all")
               return yield* new Failed({ error: { kind: "no-subscription" } });
             if (selection.kind === "category") yield* saved(selection.category.subscriptionId);
-            if (selection.kind !== "topic") {
+            // A topic or a list of the viewer's leaves the category each subscription opens on.
+            if (selection.kind === "category" || selection.kind === "all") {
               for (const subscription of all)
                 yield* writeLeft(
                   subscription,
@@ -302,6 +307,7 @@ function make(dataDir: string, usage?: UsageObservers) {
                   const valid =
                     remaining.length > 0 &&
                     (selection.kind === "topic" ||
+                      selection.kind === "custom" ||
                       remaining.some(
                         (each) =>
                           selection.kind === "category" &&
@@ -433,9 +439,14 @@ function sameBaseline(a: OwnedId | null, b: OwnedId | null): boolean {
 
 /** Only supported discovery fields are effective; raw future extras stay in the stored leaf. */
 function discoverySelection(selection: LiveDiscovery): LiveDiscovery {
-  return selection.kind === "topic"
-    ? { kind: "topic", topic: selection.topic }
-    : selection.kind === "category"
-      ? { kind: "category", category: ownedId(selection.category) }
-      : { kind: "all" };
+  switch (selection.kind) {
+    case "topic":
+      return { kind: "topic", topic: selection.topic };
+    case "category":
+      return { kind: "category", category: ownedId(selection.category) };
+    case "custom":
+      return { kind: "custom", id: selection.id };
+    case "all":
+      return { kind: "all" };
+  }
 }

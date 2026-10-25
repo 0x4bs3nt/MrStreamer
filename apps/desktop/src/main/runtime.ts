@@ -36,6 +36,8 @@ import { SavedSubtitles, savedSubtitlesLayer } from "./platform/saved-subtitles.
 import { viewingStoreLayer, observedViewingStoreLayer } from "./platform/viewing-store.ts";
 import { xmltvFetch } from "./providers/xmltv.ts";
 import { watchlistStoreLayer } from "./platform/watchlist-store.ts";
+import { customListStoreLayer } from "./platform/custom-lists-store.ts";
+import { CustomLists } from "./services/custom-lists.ts";
 import { Downloads, type DownloadsDeps } from "./services/downloads.ts";
 import { Library } from "./services/library.ts";
 import { OnDemand, type OnDemandDeps } from "./services/ondemand.ts";
@@ -92,6 +94,7 @@ export type MainServices =
   | Guide
   | ViewingRecord
   | Watchlist
+  | CustomLists
   | Licences
   | DetailCache
   | VerifiedFiles
@@ -257,10 +260,12 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
       ),
     ),
   );
-  // One connection for viewing, saved titles, verified tracks and downloaded subtitle cues.
+  // One connection for viewing, saved titles, channel lists, verified tracks and downloaded
+  // subtitle cues.
   const stores = Layer.mergeAll(
     config.usage ? observedViewingStoreLayer(config.usage) : viewingStoreLayer,
     watchlistStoreLayer,
+    customListStoreLayer,
   ).pipe(Layer.provide(database));
   const viewing = ViewingRecord.layer.pipe(
     Layer.provide(
@@ -304,6 +309,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
     ),
   );
   const watchlist = Watchlist.layer.pipe(Layer.provide(stores));
+  const customLists = CustomLists.layer.pipe(Layer.provide(stores));
   const downloads = Downloads.layer({
     dataDir,
     userAgent: config.userAgent,
@@ -314,7 +320,7 @@ export function mainLayer(config: MainConfig): Layer.Layer<MainServices> {
   const output = Output.layer(config.output ?? { adapters: [] }).pipe(Layer.provide(viewing));
   return Roster.layer.pipe(
     Layer.provideMerge(
-      Layer.mergeAll(guide, viewing, watchlist, output, onlineSubtitles, downloads),
+      Layer.mergeAll(guide, viewing, watchlist, customLists, output, onlineSubtitles, downloads),
     ),
     Layer.provideMerge(services),
     Layer.provideMerge(diagnosticsLogLayer(dataDir)),

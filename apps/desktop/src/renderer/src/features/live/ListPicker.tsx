@@ -1,11 +1,16 @@
-// Shared topic rail and Provider lists picker for the guide sidebar and Watch overlay.
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
-import { Fragment, useEffect, useRef } from "react";
+// Shared topic rail and Provider lists picker for the guide sidebar and Watch overlay. In Live
+// TV the viewer's lists end with New list, which turns into a field in its place: Enter makes the
+// list and selects it, Escape leaves it as it was.
+import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { CUSTOM_LIST_NAME_MAX } from "@mrstreamer/contracts/custom-lists";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { formatNumber, t } from "@mrstreamer/core/i18n";
 import { sameList, type ChannelList } from "../../app/ui-store.ts";
+import { Input } from "../../components/ui/input.tsx";
 import { SearchField } from "../../components/ui/search-field.tsx";
 import { cn } from "../../lib/utils.ts";
+import type { NewList } from "./custom-lists.ts";
 import { PROVIDER_LISTS, type ListPickerState } from "./lists.ts";
 
 export function ListPicker({
@@ -16,6 +21,7 @@ export function ListPicker({
   onChannels,
   notice,
   onFocus,
+  creating,
   className,
 }: {
   picker: ListPickerState;
@@ -27,12 +33,26 @@ export function ListPicker({
   notice?: string | null;
   /** The focus went into the picker, as with Tab or a click on its field: it has the keys. */
   onFocus?: () => void;
+  /** New list, where the picker offers it. */
+  creating?: NewList;
   className?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const restore = useRef(false);
   const { entries, group, query, setQuery, entry, setEntry, openGroup } = picker;
+  /** A list just made, whose row takes the focus once it shows. */
+  const [made, setMade] = useState<string | null>(null);
+  useEffect(() => {
+    if (made === null) return;
+    const index = entries.findIndex(
+      (each) => each.kind === "list" && each.list.kind === "custom" && each.list.id === made,
+    );
+    if (index < 0) return;
+    setMade(null);
+    setEntry(index);
+    box.current?.querySelector<HTMLElement>(`[data-entry="${index}"]`)?.focus();
+  }, [made, entries]);
   const back = () => {
     restore.current = true;
     picker.back();
@@ -51,6 +71,8 @@ export function ListPicker({
     if (picked?.kind === "group") {
       restore.current = true;
       openGroup(picked.group);
+    } else if (picked?.kind === "new") {
+      creating?.start();
     } else if (picked) {
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && box.current?.contains(focused)) focused.blur();
@@ -155,6 +177,32 @@ export function ListPicker({
           </p>
         )}
         {entries.map((item, index) => {
+          const apart = group === null && query.trim() === "" && item.apart;
+          if (item.kind === "new")
+            return creating?.open ? (
+              <NewListField
+                key="new"
+                index={index}
+                creating={creating}
+                onMade={setMade}
+                className={cn(apart && "mt-3")}
+              />
+            ) : (
+              <button
+                key="new"
+                data-entry={index}
+                onFocus={() => setEntry(index)}
+                onClick={() => pick(index)}
+                className={cn(
+                  "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-muted-foreground hover:bg-white/8 hover:text-white focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:outline-offset-[-2px]",
+                  highlight === index && "ring-2 ring-white/70 ring-inset",
+                  apart && "mt-3",
+                )}
+              >
+                <Plus className="size-3.5 flex-none" />
+                <span className="min-w-0 flex-1 truncate">{t("New list")}</span>
+              </button>
+            );
           const current = item.kind === "list" && sameList(item.list, selected);
           const title =
             item.kind === "group"
@@ -174,7 +222,7 @@ export function ListPicker({
                   "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-left text-sm text-white hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:outline-offset-[-2px]",
                   current && "bg-white/10",
                   highlight === index && "ring-2 ring-white/70 ring-inset",
-                  group === null && query.trim() === "" && index === 3 && "mt-3",
+                  apart && "mt-3",
                 )}
               >
                 <span className="min-w-0 flex-1 truncate">
@@ -213,5 +261,84 @@ export function listKey(list: ChannelList): string {
     ? `c:${ownedKey(list.category)}`
     : list.kind === "topic"
       ? `t:${list.topic}`
-      : list.kind;
+      : list.kind === "custom"
+        ? `l:${list.id}`
+        : list.kind;
+}
+
+/**
+ * New list as a field, in the row's place. Enter makes the list, and sends the same again after
+ * a failure; Escape, or leaving it empty, puts the row back. The keys it takes stay its own.
+ */
+function NewListField({
+  index,
+  creating,
+  onMade,
+  className,
+}: {
+  index: number;
+  creating: NewList;
+  onMade: (id: string) => void;
+  className?: string;
+}) {
+  const { state } = creating;
+  const failure =
+    state.status === "failed"
+      ? state.error.kind === "list-name-taken"
+        ? t("Another list has this name.")
+        : t("Couldn't save.")
+      : null;
+  const confirm = () =>
+    void creating.confirm().then((id) => {
+      if (id) onMade(id);
+    });
+  return (
+    <div className={cn("py-0.5", className)}>
+      <Input
+        compact
+        autoFocus
+        data-entry={index}
+        aria-label={t("List name")}
+        aria-invalid={failure ? true : undefined}
+        placeholder={t("New list")}
+        maxLength={CUSTOM_LIST_NAME_MAX}
+        value={creating.text}
+        // Read-only, not disabled, while it saves: the field keeps the focus, for Enter again.
+        readOnly={state.status === "saving"}
+        onChange={(event) => creating.type(event.target.value)}
+        onBlur={() => {
+          if (creating.text.trim() === "") creating.cancel();
+        }}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") confirm();
+          else if (event.key === "Escape") {
+            creating.cancel();
+            // The row it stood for takes the focus back once it shows.
+            const rail = event.currentTarget.closest('[role="navigation"]');
+            requestAnimationFrame(() =>
+              rail?.querySelector<HTMLElement>(`[data-entry="${index}"]`)?.focus(),
+            );
+          } else if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        className="h-9"
+      />
+      {failure && (
+        <p role="alert" className="flex items-baseline gap-3 px-3 pt-1 text-xs">
+          <span className="min-w-0">{failure}</span>
+          {state.status === "failed" && state.error.kind !== "list-name-taken" && (
+            <button
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={confirm}
+              className="flex-none text-white underline underline-offset-4"
+            >
+              {t("Retry")}
+            </button>
+          )}
+        </p>
+      )}
+    </div>
+  );
 }

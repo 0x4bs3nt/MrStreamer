@@ -1,5 +1,6 @@
 // Watch's channel list over the left of the picture: the current list with what's on now. Its
 // title swaps in the list picker, so another category is one click away without leaving Watch.
+import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronDown, Star, X } from "lucide-react";
 import { useEffect, useRef } from "react";
@@ -14,6 +15,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { useNow } from "../../lib/clock.ts";
 import { categoryOf, progressOf, timeLeft } from "../../lib/format.ts";
 import {
+  queries,
   useCategoryMap,
   useFavouriteKeys,
   useSourceOf,
@@ -57,6 +59,7 @@ export function ChannelOverlay({
   onClose: () => void;
 }) {
   const categories = useCategoryMap();
+  const customLists = useQuery(queries.customLists()).data;
   return (
     <div className="no-drag absolute inset-y-0 left-0 z-20 flex">
       <div className="flex h-full w-[26rem] flex-col bg-black pt-16">
@@ -66,7 +69,7 @@ export function ChannelOverlay({
             onClick={onTogglePicking}
             className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-xl font-semibold tracking-tight hover:bg-white/8"
           >
-            <span className="truncate">{listTitle(list, categories)}</span>
+            <span className="truncate">{listTitle(list, categories, customLists)}</span>
             <ChevronDown className={cn("size-4 flex-none", picking && "rotate-180")} />
           </button>
           <span className="flex-1" />

@@ -87,6 +87,7 @@ export function HomeScreen({ active }: { active: boolean }) {
   const left = useSubscriptionPreferences();
   const categories = useQuery(queries.categories());
   const categoryMap = useCategoryMap();
+  const customLists = useQuery(queries.customLists()).data;
   const viewing = useQuery(queries.viewing());
   const favourites = useListChannels({ kind: "favourites" }, "ordinary").channels ?? NO_CHANNELS;
   const recent = useListChannels({ kind: "recent" }, "ordinary").channels ?? NO_CHANNELS;
@@ -224,7 +225,7 @@ export function HomeScreen({ active }: { active: boolean }) {
       list: { kind: "recent" } as const,
     },
     category: {
-      title: listTitle(categoryList, categoryMap),
+      title: listTitle(categoryList, categoryMap, customLists),
       count: inCategory.length,
       list: categoryList,
     },

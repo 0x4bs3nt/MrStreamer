@@ -677,13 +677,14 @@ function Secret({
 /**
  * Remove, confirmed in the list. It says what stops and what stays: a stream that plays from the
  * subscription ends, the others' content stays in every list, and removing the only one returns
- * to Connect. Favourites, the watchlist, history and progress stay for when the account is added
- * again, unless the viewer ticks the box to delete them too. Once Remove is pressed its stream
- * has stopped and the box's answer is sent, so the box and Keep wait for the removal to be
- * answered. With it gone and the others' lists read again, the player holds no channel of it, so
- * the page underneath previews the channel watched last among those that stay. A sheet left open
- * under Settings for a title it had saved closes too. Its unfinished downloads end with it, which
- * the question says when it has any; its downloaded copies stay.
+ * to Connect. Favourites, the watchlist, history, progress and its channels in the viewer's lists
+ * stay for when the account is added again, unless the viewer ticks the box to delete them too;
+ * the lists themselves stay either way. Once Remove is pressed its stream has stopped and the
+ * box's answer is sent, so the box and Keep wait for the removal to be answered. With it gone and
+ * the others' lists read again, the player holds no channel of it, so the page underneath
+ * previews the channel watched last among those that stay. A sheet left open under Settings for
+ * a title it had saved closes too. Its unfinished downloads end with it, which the question says
+ * when it has any; its downloaded copies stay.
  */
 function Remove({
   subscription,
@@ -795,7 +796,7 @@ function Remove({
             <Check className="size-3 text-black" strokeWidth={3} />
           </Checkbox.Indicator>
         </Checkbox.Root>
-        {t("Also delete favourites, watchlist, history and progress")}
+        {t("Also delete favourites, watchlist, history, progress and channels in lists")}
       </label>
       <div className="flex gap-3">
         <Button

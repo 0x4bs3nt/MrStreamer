@@ -468,8 +468,8 @@ export const de: Translation = {
   "It's your only subscription, so Mr. Streamer returns to Connect.":
     "Es ist dein einziges Abonnement, daher kehrt Mr. Streamer zum Verbinden zurück.",
   "{names} stay.": { one: "{names} bleibt.", other: "{names} bleiben." },
-  "Also delete favourites, watchlist, history and progress":
-    "Auch Favoriten, Merkliste, Verlauf und Fortschritt löschen",
+  "Also delete favourites, watchlist, history, progress and channels in lists":
+    "Auch Favoriten, Merkliste, Verlauf, Fortschritt und Sender in Listen löschen",
   Keep: "Behalten",
   Active: "Aktiv",
   Expired: "Abgelaufen",
@@ -1270,4 +1270,26 @@ export const de: Translation = {
     other:
       "{count} Folgen eingereiht. {complete} bereits heruntergeladen, {queued} bereits eingereiht.",
   },
+  "This list is no longer there.": "Diese Liste gibt es nicht mehr.",
+  "Another list has this name.": "Eine andere Liste hat diesen Namen.",
+  "This list changed.": "Diese Liste hat sich geändert.",
+  "New list": "Neue Liste",
+  "List name": "Name der Liste",
+  "Couldn't save.": "Speichern fehlgeschlagen.",
+  "Options for {list}": "Optionen für {list}",
+  Rename: "Umbenennen",
+  "Move up": "Nach oben",
+  "Move down": "Nach unten",
+  "Delete list": "Liste löschen",
+  "Delete {name}?": "{name} löschen?",
+  Lists: "Listen",
+  "Lists for {name}": "Listen für {name}",
+  "Not listed now": "Derzeit nicht gelistet",
+  "Not listed by {name} now": "Derzeit nicht bei {name} gelistet",
+  "{count} channels are from a subscription that isn't saved.": {
+    one: "{count} Sender stammt aus einem Abonnement, das nicht gespeichert ist.",
+    other: "{count} Sender stammen aus Abonnements, die nicht gespeichert sind.",
+  },
+  "No channels yet.": "Noch keine Sender.",
+  "{list}, in the order to save": "{list} in der zu speichernden Reihenfolge",
 };

@@ -29,7 +29,7 @@ export interface SubscriptionTarget {
   readonly show: "details" | "edit" | "secret";
 }
 
-/** A list of channels the guide and Watch's channel list show. */
+/** A list of channels the guide and Watch's channel list show, one of the viewer's among them. */
 export type ChannelList = (
   LiveDiscovery | { readonly kind: "favourites" } | { readonly kind: "recent" }
 ) & { readonly filters?: LiveFilters };
@@ -188,6 +188,7 @@ export function sameList(a: ChannelList, b: ChannelList): boolean {
   return (
     a.kind === b.kind &&
     (a.kind !== "category" || (b.kind === "category" && sameOwned(a.category, b.category))) &&
-    (a.kind !== "topic" || (b.kind === "topic" && a.topic === b.topic))
+    (a.kind !== "topic" || (b.kind === "topic" && a.topic === b.topic)) &&
+    (a.kind !== "custom" || (b.kind === "custom" && a.id === b.id))
   );
 }

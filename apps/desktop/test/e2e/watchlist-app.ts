@@ -254,7 +254,7 @@ async function removeSubscription(page: Page, name: string, erase: boolean): Pro
   if (erase) {
     await click(
       page,
-      `${withText("label", "Also delete favourites, watchlist, history and progress")}?.querySelector('[role="checkbox"]')`,
+      `${withText("label", "Also delete favourites, watchlist, history, progress and channels in lists")}?.querySelector('[role="checkbox"]')`,
     );
   }
   await click(page, withText("button", "Remove"));

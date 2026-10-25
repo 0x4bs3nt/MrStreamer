@@ -479,8 +479,8 @@ export const fr: Translation = {
   "It's your only subscription, so Mr. Streamer returns to Connect.":
     "C'est votre seul abonnement, Mr. Streamer revient donc à l'écran de connexion.",
   "{names} stay.": { one: "{names} reste.", many: "{names} restent.", other: "{names} restent." },
-  "Also delete favourites, watchlist, history and progress":
-    "Supprimer aussi favoris, liste à voir, historique et progression",
+  "Also delete favourites, watchlist, history, progress and channels in lists":
+    "Supprimer aussi favoris, liste à voir, historique, progression et chaînes des listes",
   Keep: "Garder",
   Active: "Actif",
   Expired: "Expiré",
@@ -1322,4 +1322,27 @@ export const fr: Translation = {
     other:
       "{count} épisodes en attente. Déjà téléchargés : {complete}. Déjà en attente : {queued}.",
   },
+  "This list is no longer there.": "Cette liste n'existe plus.",
+  "Another list has this name.": "Une autre liste porte ce nom.",
+  "This list changed.": "Cette liste a changé.",
+  "New list": "Nouvelle liste",
+  "List name": "Nom de la liste",
+  "Couldn't save.": "Enregistrement impossible.",
+  "Options for {list}": "Options de {list}",
+  Rename: "Renommer",
+  "Move up": "Monter",
+  "Move down": "Descendre",
+  "Delete list": "Supprimer la liste",
+  "Delete {name}?": "Supprimer {name} ?",
+  Lists: "Listes",
+  "Lists for {name}": "Listes pour {name}",
+  "Not listed now": "Plus proposées pour l'instant",
+  "Not listed by {name} now": "Plus proposée par {name} pour l'instant",
+  "{count} channels are from a subscription that isn't saved.": {
+    one: "{count} chaîne vient d'un abonnement qui n'est pas enregistré.",
+    many: "{count} de chaînes viennent d'abonnements qui ne sont pas enregistrés.",
+    other: "{count} chaînes viennent d'abonnements qui ne sont pas enregistrés.",
+  },
+  "No channels yet.": "Pas encore de chaînes.",
+  "{list}, in the order to save": "{list}, dans l'ordre à enregistrer",
 };
