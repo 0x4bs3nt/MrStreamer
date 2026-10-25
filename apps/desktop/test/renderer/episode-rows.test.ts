@@ -107,9 +107,11 @@ it("leaves episode selection alone on other-file progress and updates its own fa
     size: 100,
     status: { kind: "transferring", received: 20, size: 100, rate: null, restarted: false },
     progress: null,
+    series: null,
   };
   const list = (items: readonly Download[]): DownloadList => ({
     items,
+    series: {},
     bytes: 0,
     free: null,
     ended: 0,

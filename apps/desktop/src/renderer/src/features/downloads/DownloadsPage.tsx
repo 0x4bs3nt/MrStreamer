@@ -8,31 +8,30 @@
 // resume or a move that can't be kept says so on its row, or under the heading, its control there
 // to press again. A button of a row keeps the keyboard wherever the list moves its row, and where
 // the row reached an end the other arrow takes it. A copy plays offline from here, with
-// how far it was watched, and says so once its subscription went. Everything here is read from
-// this computer; artwork comes from the copies' own folders.
+// how far it was watched, and says so once its subscription went. Two or more copies of one series
+// go together under its name, which folds them away, season by season in the series' order, with
+// the episodes between them that aren't on this computer (see @mrstreamer/core/downloads/series).
+// Everything here is read from this computer; artwork comes from the copies' own folders.
 //   With no subscription saved the page stands alone, opened from Connect: its bar has only
 //   Downloads, and Add subscription goes back to the form.
 import { useMutation } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Pause, Play } from "lucide-react";
-import { useLayoutEffect, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, Pause, Play } from "lucide-react";
+import { Fragment, useLayoutEffect, useMemo, useState } from "react";
 import type { Download } from "@mrstreamer/contracts/downloads";
+import { copyShelf, type ShelfSeries } from "@mrstreamer/core/downloads/series";
 import { formatBytes, formatNumber, t } from "@mrstreamer/core/i18n";
+import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { openView } from "../../app/ui-store.ts";
 import { Progress } from "../../components/Progress.tsx";
 import { Artwork } from "../../components/TitleArt.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { BarFrame, Brand, PageButton, WindowBar } from "../../components/WindowBar.tsx";
-import {
-  episodeLine,
-  statusLine,
-  transferred,
-  useDownloads,
-  watchOffline,
-} from "../../lib/downloads.ts";
+import { statusLine, transferred, useDownloads, watchOffline } from "../../lib/downloads.ts";
 import { appError, describeError } from "../../lib/errors.ts";
 import { call } from "../../lib/ipc.ts";
 import { runtime, timeLeftOf } from "../../lib/titles.ts";
 import { cn } from "../../lib/utils.ts";
+import { episodeLine } from "../../player/title-player.ts";
 import { isFinished } from "@mrstreamer/core/viewing/titles";
 
 /**
@@ -54,7 +53,7 @@ export function DownloadsPage({ standalone = false }: { standalone?: boolean }) 
   const list = useDownloads();
   const items = list.data?.items ?? [];
   const queue = items.filter((item) => !onComputer(item));
-  const copies = items.filter(onComputer);
+  const shelf = useMemo(() => (list.data ? copyShelf(list.data) : []), [list.data]);
   // Main lists the ones waiting together, after the transfer.
   const line = queue.filter(waiting);
   const pausable = queue.some(
@@ -127,7 +126,7 @@ export function DownloadsPage({ standalone = false }: { standalone?: boolean }) 
             ))}
           </section>
         )}
-        {copies.length > 0 && (
+        {shelf.length > 0 && (
           <section aria-label={t("On this computer")}>
             <h2
               className={cn(
@@ -137,9 +136,13 @@ export function DownloadsPage({ standalone = false }: { standalone?: boolean }) 
             >
               {t("On this computer")}
             </h2>
-            {copies.map((item) => (
-              <Row key={item.id} item={item} />
-            ))}
+            {shelf.map((item) =>
+              item.kind === "copy" ? (
+                <Row key={item.copy.id} item={item.copy} />
+              ) : (
+                <SeriesCopies key={item.key} series={item} />
+              ),
+            )}
           </section>
         )}
         {list.data && list.data.ended > 0 && (
@@ -181,15 +184,110 @@ function waiting(item: Download): boolean {
   );
 }
 
+/**
+ * Two or more copies of one series together: a row with its name, its subscription, how many of its
+ * episodes and seasons are on this computer and their size, then season by season each copy in the
+ * series' order, with the episodes between them that aren't here. The arrow folds the episodes
+ * away, and back, in place.
+ */
+function SeriesCopies({ series }: { series: ShelfSeries }) {
+  const [open, setOpen] = useState(true);
+  const [newest] = series.copies;
+  if (!newest) return null;
+  const seasons = new Set(
+    series.copies.flatMap(({ title }) => (title.kind === "episode" ? [title.season] : [])),
+  );
+  const size = series.copies.reduce((sum, copy) => sum + (copy.size ?? 0), 0);
+  const facts = [
+    newest.subscription?.name ?? t("Subscription removed, copy kept"),
+    t("{count} episodes", { count: series.copies.length }),
+    t("{count} seasons", { count: seasons.size }),
+    size > 0 ? formatBytes(size) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div
+      role="group"
+      aria-label={newest.name}
+      data-series={series.key}
+      className="border-b border-white/8 last:border-b-0 [&>:last-child]:border-b-0"
+    >
+      <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-4 border-b border-white/8 py-3">
+        <span className="block aspect-[2/3] overflow-hidden rounded-md">
+          <Artwork url={newest.posterUrl} name={newest.name} size="thumb" plain />
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-[0.9375rem] font-medium">{newest.name}</div>
+          <div className="truncate text-xs text-muted-foreground">{facts}</div>
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={newest.name}
+          aria-expanded={open}
+          className={cn(open && "text-foreground")}
+          onClick={() => setOpen(!open)}
+        >
+          <ChevronDown className={cn(!open && "-rotate-90")} />
+        </Button>
+      </div>
+      {open &&
+        series.seasons.map((season) => (
+          <Fragment key={season.key}>
+            <div className="mt-2.5 ml-14 text-[0.8125rem] font-semibold">
+              {season.number === 0
+                ? t("Specials")
+                : t("Season {number}", { number: String(season.number) })}
+            </div>
+            {season.entries.map((entry) =>
+              entry.kind === "copy" ? (
+                <Row key={entry.copy.id} item={entry.copy} inSeries />
+              ) : (
+                <Gap
+                  key={`gap:${entry.episodes[0]}`}
+                  season={season.number}
+                  episodes={entry.episodes}
+                />
+              ),
+            )}
+          </Fragment>
+        ))}
+    </div>
+  );
+}
+
+/** Episodes the series lists between two of its copies, none of which is on this computer. */
+function Gap({ season, episodes }: { season: number; episodes: readonly number[] }) {
+  const [first = 0] = episodes;
+  const last = episodes.at(-1) ?? first;
+  return (
+    <div className="ml-14 grid grid-cols-[1.75rem_minmax(0,1fr)] items-center gap-4 border-b border-white/8 py-1.5 text-xs text-muted-foreground last:border-b-0">
+      <span />
+      <span className="truncate">
+        {episodes.length > 1
+          ? t("{from} to {to} aren't on this computer", {
+              from: episodeLabel(season, first),
+              to: episodeLabel(season, last),
+            })
+          : t("{episode} isn't on this computer", { episode: episodeLabel(season, first) })}
+      </span>
+    </div>
+  );
+}
+
 function Row({
   item,
   first = false,
   last = false,
+  inSeries = false,
 }: {
   item: Download;
   /** Whether it is the first, or last, of the downloads waiting their turn. */
   first?: boolean;
   last?: boolean;
+  /** A copy among its series' copies, which name the series: it says its number and its name. */
+  inSeries?: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
   const remove = useMutation({ mutationFn: () => call("downloads.remove", { id: item.id }) });
@@ -213,17 +311,32 @@ function Row({
     hold.reset();
     move.mutate(by);
   };
-  const { status } = item;
+  const { status, title } = item;
   const episode = episodeLine(item);
-  const name = episode ? `${item.name} · ${episode}` : item.name;
+  const label = title.kind === "episode" ? episodeLabel(title.season, title.episode) : null;
+  const numbered = inSeries && title.kind === "episode";
+  const name =
+    numbered && label
+      ? (item.episodeName ?? label)
+      : episode
+        ? `${item.name} · ${episode}`
+        : item.name;
   const copy = onComputer(item);
-  const facts = [
-    item.title.kind === "movie" ? item.year : null,
-    copy && item.duration ? runtime(item.duration) : null,
-    !copy ? item.subscription?.name : null,
-    item.size ? formatBytes(item.size) : null,
-    copy && !item.subscription ? t("Subscription removed, copy kept") : null,
-  ]
+  const seen =
+    status.kind === "complete" &&
+    !!item.progress &&
+    isFinished(item.progress.position, item.progress.duration);
+  const facts = (
+    numbered
+      ? [item.duration ? runtime(item.duration) : null, seen ? t("Watched") : null]
+      : [
+          title.kind === "movie" ? item.year : null,
+          copy && item.duration ? runtime(item.duration) : null,
+          !copy ? item.subscription?.name : null,
+          item.size ? formatBytes(item.size) : null,
+          copy && !item.subscription ? t("Subscription removed, copy kept") : null,
+        ]
+  )
     .filter(Boolean)
     .join(" · ");
   const done = transferred(item);
@@ -240,11 +353,22 @@ function Row({
   return (
     <div
       data-download={item.id}
-      className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-4 border-b border-white/8 py-3 last:border-b-0"
+      className={cn(
+        "grid items-center gap-4 border-b border-white/8 last:border-b-0",
+        numbered
+          ? "ml-14 grid-cols-[1.75rem_minmax(0,1fr)_auto] py-1.5"
+          : "grid-cols-[2.5rem_minmax(0,1fr)_auto] py-3",
+      )}
     >
-      <span className="block aspect-[2/3] overflow-hidden rounded-md">
-        <Artwork url={item.posterUrl} name={item.name} size="thumb" plain />
-      </span>
+      {numbered && title.kind === "episode" ? (
+        <span className="text-right text-xs text-muted-foreground tabular-nums">
+          {title.episode}
+        </span>
+      ) : (
+        <span className="block aspect-[2/3] overflow-hidden rounded-md">
+          <Artwork url={item.posterUrl} name={item.name} size="thumb" plain />
+        </span>
+      )}
       <div className="min-w-0">
         <div className="truncate text-[0.9375rem] font-medium">{name}</div>
         {facts && <div className="truncate text-xs text-muted-foreground">{facts}</div>}
@@ -312,7 +436,14 @@ function Row({
           </Button>
         )}
         {status.kind === "complete" && (
-          <Button variant="primary" size="sm" onClick={() => watchOffline(item)}>
+          <Button
+            variant="primary"
+            size="sm"
+            aria-label={
+              numbered && label ? t("Watch {title} offline", { title: label }) : undefined
+            }
+            onClick={() => watchOffline(item)}
+          >
             <Play className="fill-current" />
             {t("Watch offline")}
           </Button>

@@ -7,7 +7,8 @@
 // A row this build can't read, as one a later build wrote, is left as it is, and so are its files.
 // A key a record doesn't declare is read and written back with it: what a pause and a place in
 // the queue add (`pausedAt`, `order`) are optional keys of that kind, so a build before them reads
-// such a record, ignores both and keeps them through its own writes.
+// such a record, ignores both and keeps them through its own writes. So is an episode's series
+// (`series`): a build before it keeps it and queues episodes without one.
 import type { DatabaseSync } from "node:sqlite";
 import type { DownloadFailure } from "@mrstreamer/contracts/downloads";
 import { RawTitleRef } from "@mrstreamer/contracts/ondemand";
@@ -45,6 +46,23 @@ const PartIdentity = lazy(() =>
 );
 export type PartIdentity = Infer<typeof PartIdentity>;
 
+/**
+ * What an episode's series version said as the episode was queued: its TMDB id, which tells a
+ * series the provider gave its id to apart from the one before, and its seasons in its order
+ * (`DownloadSeries`), which its copies are placed and played on by.
+ */
+const SeriesKept = lazy(() =>
+  type({
+    tmdb: "string | null",
+    seasons: type({
+      number: "number.integer >= 0",
+      episodes: "(number.integer >= 0)[]",
+    }).array(),
+    sourceOrder: "boolean",
+  }),
+);
+export type SeriesKept = Infer<typeof SeriesKept>;
+
 const Stored = lazy(() =>
   type({
     id: "string",
@@ -71,6 +89,11 @@ const Stored = lazy(() =>
      * added it.
      */
     "order?": "number",
+    /**
+     * An episode's series, as `SeriesKept` says; one this build can't read counts as none, so its
+     * copy still shows and plays, alone.
+     */
+    "series?": "object",
     /** The whole file's size, once known. */
     size: "number.integer >= 0 | null",
     /** Bytes in the partial file, or of the copy once complete. */
@@ -86,7 +109,10 @@ const Stored = lazy(() =>
 type Stored = Infer<typeof Stored>;
 
 /** A download's record as the service keeps it. */
-export type StoredDownload = Omit<Stored, "failure"> & { readonly failure?: DownloadFailure };
+export type StoredDownload = Omit<Stored, "failure" | "series"> & {
+  readonly failure?: DownloadFailure;
+  readonly series?: SeriesKept;
+};
 
 const FAILURES: ReadonlySet<string> = new Set(["disk-full", "folder", "stream", "app"]);
 
@@ -169,8 +195,13 @@ function readRecord(record: unknown): StoredDownload | null {
   try {
     const parsed = Stored()(JSON.parse(String(record)));
     if (parsed instanceof type.errors) return null;
-    const { failure, ...rest } = parsed;
-    return { ...rest, ...(failure ? { failure: failureOf(failure) } : {}) };
+    const { failure, series, ...rest } = parsed;
+    const kept = series === undefined ? null : SeriesKept()(series);
+    return {
+      ...rest,
+      ...(failure ? { failure: failureOf(failure) } : {}),
+      ...(kept && !(kept instanceof type.errors) ? { series: kept } : {}),
+    };
   } catch {
     return null;
   }

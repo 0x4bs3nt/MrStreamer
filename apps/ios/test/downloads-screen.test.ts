@@ -26,7 +26,7 @@ interface Touchable {
 }
 
 const scenario = vi.hoisted(() => ({
-  list: { items: [], bytes: 0, free: null, ended: 0 } as DownloadList,
+  list: { items: [], series: {}, bytes: 0, free: null, ended: 0 } as DownloadList,
   pressables: new Map<string, Touchable>(),
   sheet: null as null | { title?: string; options: readonly string[]; pick: (at: number) => void },
   asked: [] as string[],
@@ -136,6 +136,7 @@ const base = {
   wideUrl: null,
   size: null,
   progress: null,
+  series: null,
 } as const;
 const movie = (id: string, name: string, rest: Partial<Download>): Download => ({
   ...base,
@@ -184,7 +185,7 @@ afterEach(() => {
 });
 
 function show(items: readonly Download[], bytes = 0, free: number | null = null) {
-  scenario.list = { items, bytes, free, ended: 0 };
+  scenario.list = { items, series: {}, bytes, free, ended: 0 };
   const container = document.createElement("div");
   const root = createRoot(container);
   React.act(() => root.render(React.createElement(DownloadsScreen)));

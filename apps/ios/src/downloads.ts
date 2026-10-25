@@ -205,7 +205,7 @@ type Ending =
   | { readonly kind: "stopped" }
   | { readonly kind: "failed"; readonly failure: StoredFailure };
 
-const EMPTY: DownloadList = { items: [], bytes: 0, free: null, ended: 0 };
+const EMPTY: DownloadList = { items: [], series: {}, bytes: 0, free: null, ended: 0 };
 const list = store<DownloadList>(EMPTY);
 
 /** Every download, queue first in the order added, then the copies, newest first. */
@@ -389,6 +389,8 @@ function viewOf(
       position: record.progress.position,
       duration: record.progress.duration,
     },
+    // This app keeps no episode's series yet: each copy stands alone.
+    series: null,
   };
 }
 
@@ -401,6 +403,7 @@ function view(): DownloadList {
     .toSorted((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   return {
     items: [...queue, ...copies].map((record) => viewOf(record, names, busy)),
+    series: {},
     bytes: doc.items.reduce(
       (sum, record) =>
         sum +

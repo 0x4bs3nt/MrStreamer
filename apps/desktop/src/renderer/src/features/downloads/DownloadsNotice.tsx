@@ -75,7 +75,7 @@ export function useDownloadsStatus(): DownloadsStatus | null {
 }
 
 /** Opens Downloads over whatever is on screen; a title playing gives way first, saving its place. */
-function openDownloads(): void {
+export function openDownloads(): void {
   if (useUi.getState().playingTitle) leaveTitle();
   openView("downloads");
 }

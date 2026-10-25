@@ -87,7 +87,7 @@ async function removing(
 ) {
   ipc.reset();
   // The question reads the downloads, for whether any end with the subscription.
-  ipc.always("downloads.list", { items: downloads, bytes: 0, free: null, ended: 0 });
+  ipc.always("downloads.list", { items: downloads, series: {}, bytes: 0, free: null, ended: 0 });
   const opened = reads();
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], saved);
@@ -129,6 +129,7 @@ describe("removing a subscription", () => {
       size: null,
       status,
       progress: null,
+      series: null,
     });
     const { container } = await removing([northline, holiday], holiday, [
       of("queued", { kind: "queued" }, holiday.id),

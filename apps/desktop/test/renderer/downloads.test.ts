@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement, Profiler, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
+import type { Download, DownloadList, DownloadSeries } from "@mrstreamer/contracts/downloads";
 import type { InterfaceLanguage } from "@mrstreamer/contracts/language";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { OutputStatus } from "@mrstreamer/contracts/output";
@@ -43,6 +43,7 @@ function download(over: Partial<Download> = {}): Download {
     size: 2_300_000_000,
     status: { kind: "complete" },
     progress: null,
+    series: null,
     ...over,
   };
 }
@@ -63,6 +64,7 @@ const channel: LiveChannel = {
 
 const list = (items: readonly Download[], ended = 0): DownloadList => ({
   items,
+  series: {},
   bytes: 13_000_000_000,
   free: 212_000_000_000,
   ended,
@@ -219,6 +221,145 @@ describe("the Downloads page", () => {
     expect(button(page, "Watch offline")).toBeDefined();
     expect(page.textContent).not.toContain("Nothing downloaded yet");
   });
+});
+
+describe("a series' copies on the Downloads page", () => {
+  /** An episode of "Severance" of the test subscription, downloaded by this build. */
+  const episode = (id: string, season: number, number: number, over: Partial<Download> = {}) =>
+    download({
+      id,
+      name: "Severance",
+      title: { kind: "episode", id: `file-${id}`, seriesId: "sev", season, episode: number },
+      episodeName: `Part ${number}`,
+      year: 2022,
+      duration: 3000,
+      size: 2_000_000_000,
+      series: "severance",
+      ...over,
+    });
+
+  it("puts them together by season in the series' order, with what isn't here between them", async () => {
+    ipc.always("downloads.list", {
+      ...list([
+        episode("downloading", 2, 5, {
+          status: { kind: "transferring", received: 1, size: 2, rate: null, restarted: false },
+        }),
+        episode("s2e4", 2, 4),
+        episode("s1e9", 1, 9, { progress: { position: 3000, duration: 3000 } }),
+        download({
+          id: "older",
+          name: "Slow Horses",
+          title: { kind: "episode", id: "sh1", seriesId: "sh", season: 1, episode: 1 },
+          episodeName: "Failure's Contagious",
+          subscription: null,
+        }),
+        episode("s2e1", 2, 1),
+        episode("s2e2", 2, 2, { progress: { position: 1260, duration: 3000 } }),
+        download({ id: "arrival", name: "Arrival", year: 2016 }),
+      ]),
+      series: {
+        severance: {
+          seasons: [
+            { number: 1, episodes: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+            { number: 2, episodes: [1, 2, 3, 4, 5, 6] },
+          ],
+          sourceOrder: false,
+        },
+      },
+    });
+    const page = await show(createElement(DownloadsPage), "[data-series]");
+    const copies = page.querySelector<HTMLElement>('section[aria-label="On this computer"]')!;
+    const series = copies.querySelector<HTMLElement>('[data-series="severance"]')!;
+    const rows = (within: HTMLElement) =>
+      [...within.querySelectorAll<HTMLElement>("[data-download]")].map(
+        (row) => row.dataset.download,
+      );
+    const row = (id: string) => page.querySelector<HTMLElement>(`[data-download="${id}"]`)!;
+
+    // Where its newest copy is, before the older build's copy and the movie, in its own order.
+    expect(rows(copies)).toEqual(["s1e9", "s2e1", "s2e2", "s2e4", "older", "arrival"]);
+    expect(rows(series)).toEqual(["s1e9", "s2e1", "s2e2", "s2e4"]);
+    expect(series.getAttribute("aria-label")).toBe("Severance");
+    expect(series.textContent).toContain("Home IPTV · 4 episodes · 2 seasons · 8 GB");
+    expect(series.textContent).toContain("Season 1");
+    expect(series.textContent).toContain("Season 2");
+    expect(series.textContent).toContain("S2 E3 isn't on this computer");
+    expect(series.textContent).not.toContain("S2 E5");
+    expect(row("s1e9").textContent).toContain("Part 9");
+    expect(row("s1e9").textContent).toContain("50 min · Watched");
+    expect(row("s2e2").textContent).toContain("29 min left");
+    expect(row("older").textContent).toContain("Slow Horses · S1 E1 · Failure's Contagious");
+    expect(row("downloading").closest("section")?.getAttribute("aria-label")).toBe("Queue");
+
+    await click(labelled(series, "Watch S2 E2 offline"));
+    expect(ipc.argsOf("playback.openCopy")).toMatchObject([{ copy: "s2e2" }]);
+
+    // Its name folds the episodes away, and back, in place.
+    const fold = labelled(series, "Severance")!;
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    await click(fold);
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
+    expect(rows(series)).toEqual([]);
+    expect(series.textContent).toContain("4 episodes");
+    await click(fold);
+    expect(rows(series)).toEqual(["s1e9", "s2e1", "s2e2", "s2e4"]);
+  });
+
+  // Copies before a later copy come and go: a season before its own, or the first stretch of its
+  // season in a mapped playlist that comes back to that season after another.
+  const earlier = {
+    "a season before it": {
+      series: {
+        seasons: [
+          { number: 1, episodes: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+          { number: 2, episodes: [1, 2, 3, 4, 5, 6] },
+        ],
+        sourceOrder: false,
+      },
+      before: [episode("s1e9", 1, 9)],
+      later: [episode("s2e1", 2, 1), episode("s2e2", 2, 2)],
+    },
+    "its season's first stretch": {
+      series: {
+        seasons: [
+          { number: 1, episodes: [1, 2] },
+          { number: 2, episodes: [1] },
+          { number: 1, episodes: [3, 4] },
+        ],
+        sourceOrder: true,
+      },
+      before: [episode("s1e1", 1, 1)],
+      later: [episode("s2e1", 2, 1), episode("s1e3", 1, 3), episode("s1e4", 1, 4)],
+    },
+  } satisfies Record<string, { series: DownloadSeries; before: Download[]; later: Download[] }>;
+
+  for (const [what, { series, before, later }] of Object.entries(earlier)) {
+    for (const change of ["comes", "goes"] as const) {
+      it(`keeps a later copy's Delete pressed once, and the keyboard on it, as ${what} ${change}`, async () => {
+        const listed = (items: readonly Download[]) => ({
+          ...list(items),
+          series: { severance: series },
+        });
+        const all = [...before, ...later];
+        ipc.always("downloads.list", listed(change === "comes" ? later : all));
+        const page = await show(createElement(DownloadsPage), "[data-series]");
+        const row = () => page.querySelector<HTMLElement>(`[data-download="${later.at(-1)!.id}"]`)!;
+        const control = button(row(), "Delete")!;
+        await act(async () => control.focus());
+        await click(control);
+        expect(control.textContent).toBe("Delete copy");
+        const shown = () => page.querySelector(`[data-download="${before[0]!.id}"]`) !== null;
+        await changed(
+          listed(change === "comes" ? all : later),
+          () => shown() === (change === "comes"),
+        );
+        // The very control, still waiting for its second press, with the keyboard still on it.
+        expect(row().contains(control)).toBe(true);
+        expect(control.textContent).toBe("Delete copy");
+        expect(document.activeElement).toBe(control);
+      });
+    }
+  }
 });
 
 describe("the queue on the Downloads page", () => {

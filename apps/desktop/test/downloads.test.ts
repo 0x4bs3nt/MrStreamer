@@ -136,6 +136,15 @@ async function partial(dataDir: string, id: string): Promise<number | null> {
   return part ? (await stat(join(dataDir, "downloads", id, part))).size : null;
 }
 
+/**
+ * Waits until a download's partial file holds `bytes`. Progress counts bytes as they arrive, a
+ * moment before the disk has them, and a stop keeps what the disk has: a test that stops a
+ * transfer at a provider's hold, then counts on going on from there, waits for the disk first.
+ */
+async function written(dataDir: string, id: string, bytes: number): Promise<void> {
+  await vi.waitFor(async () => expect(await partial(dataDir, id)).toBe(bytes), { timeout: LONG });
+}
+
 /** A file's bytes as one short string, so a mismatch fails without comparing them byte by byte. */
 function digest(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
@@ -402,6 +411,7 @@ describe.skipIf(!hasTools)("downloads", () => {
       },
       { timeout: LONG },
     );
+    await written(dataDir, queued.id, 200_000);
     await quit();
     const sentBefore = provider.fileBytes();
     await vi.waitFor(() => expect(provider.activeStreams()).toBe(0));
@@ -1331,6 +1341,7 @@ describe.skipIf(!hasTools)("the queue", () => {
       async () => expect((await started.find(id))?.status).toMatchObject({ received: 200_000 }),
       { timeout: LONG },
     );
+    await written(started.dataDir, id, 200_000);
     const pausing = started.downloads.pause(id);
     await closing.promise;
     const lock = new DatabaseSync(join(started.dataDir, "mrstreamer.db"));
@@ -1358,6 +1369,7 @@ describe.skipIf(!hasTools)("the queue", () => {
         }),
       { timeout: LONG },
     );
+    await written(dataDir, queued.id, 200_000);
     const asked = provider.fileRequests();
     await downloads.pause(queued.id);
     // Answered once the request ended: nothing more is sent, and its partial file stays.
@@ -1389,7 +1401,8 @@ describe.skipIf(!hasTools)("the queue", () => {
   }, 60_000);
 
   it("keeps a pause through playback and a receiver taking the connection, then goes on in order", async () => {
-    const { provider, subscriptionId, downloads, playback, onDemand, find } = await connected();
+    const { provider, dataDir, subscriptionId, downloads, playback, onDemand, find } =
+      await connected();
     const [first, held, last, shown] = [
       "TEST | Two sound tracks and subtitles (MULTI)",
       "TEST | Old AVI",
@@ -1406,6 +1419,7 @@ describe.skipIf(!hasTools)("the queue", () => {
         expect((await find(a))?.status).toMatchObject({ kind: "transferring", received: 200_000 }),
       { timeout: LONG },
     );
+    await written(dataDir, a, 200_000);
     await downloads.pause(b);
     // Playback of the subscription takes the connection: the others wait, the paused one says so.
     const file = await onDemand.file(shown!.ref);
@@ -1500,6 +1514,7 @@ describe.skipIf(!hasTools)("the queue", () => {
     expect((await find(a))?.status).toMatchObject({ received: 200_000 });
     expect(provider.fileRequests()).toBe(asked);
 
+    await written(dataDir, a, 200_000);
     await quit();
     provider.stallMovieFile(titles[3]!.id, 30_000, 60_000);
     const again = await app(dataDir);
@@ -1710,6 +1725,7 @@ describe.skipIf(!hasTools)("the queue", () => {
       [f, "failed"],
     ]);
     // The order was kept: the next start finishes it first, then takes the other.
+    await written(dataDir, b, 30_000);
     await quit();
     const again = await app(dataDir);
     await vi.waitFor(
@@ -1898,6 +1914,137 @@ describe.skipIf(!hasTools)("the queue", () => {
     await quit();
     const again = await app(dataDir);
     expect(await standing(again.downloads)).toEqual([[last, "complete"]]);
+  }, 60_000);
+});
+
+describe.skipIf(!hasTools)("an episode's series", () => {
+  it("keeps what an episode's series lists as it is queued, from the details it reads anyway, by series version and account", async () => {
+    const { provider, dataDir, subscriptionId, downloads, subscriptions, onDemand, quit } =
+      await connected();
+    const dutch = provider.titles.series.find((each) => each.name === "TEST | Formats (NL)")!;
+    const english = provider.titles.series.find((each) => each.name === "TEST | Formats (EN)")!;
+    const ref = (
+      series: typeof dutch,
+      season: number,
+      number: number,
+      from = subscriptionId,
+    ): TitleRef => ({
+      kind: "episode",
+      subscriptionId: from,
+      id: String(series.seasons[season - 1]![number - 1]!.id),
+      seriesId: String(series.id),
+      season,
+      episode: number,
+    });
+    const asked = provider.detailRequests();
+    const first = await downloads.add(ref(dutch, 1, 2));
+    // The series' details are what queuing an episode reads already: once, then kept.
+    expect(provider.detailRequests() - asked).toBeLessThanOrEqual(1);
+    const read = provider.detailRequests();
+    const next = await downloads.add(ref(dutch, 2, 1));
+    const other = await downloads.add(ref(english, 1, 1));
+    const film = await downloads.add(
+      movie(provider, subscriptionId, "TEST | Index at the end").ref,
+    );
+    expect(provider.detailRequests() - read).toBeLessThanOrEqual(2);
+
+    // The same ids and TMDB id of another account's series stand apart.
+    const elsewhere = await fakeProvider({ maxConnections: 1, second: true });
+    const saved = await subscriptions.add({
+      server: elsewhere.url,
+      username: "demo",
+      password: "demo",
+    });
+    await onDemand.refresh(saved.id);
+    const german = elsewhere.titles.series.find((each) => each.name === "TEST | Formats (DE)")!;
+    expect(german.id).toBe(dutch.id);
+    const theirs = await downloads.add(ref(german, 1, 2, saved.id));
+
+    const keys = async (list: Awaited<ReturnType<typeof downloads.list>>) => {
+      const of = (id: string) => list.items.find((item) => item.id === id)!.series;
+      return [of(first.id), of(next.id), of(other.id), of(film.id), of(theirs.id)] as const;
+    };
+    const check = async (list: Awaited<ReturnType<typeof downloads.list>>) => {
+      const [a, b, english, movie, account] = await keys(list);
+      expect(a).toEqual(expect.any(String));
+      expect(b).toBe(a);
+      expect(english).toEqual(expect.any(String));
+      expect(english).not.toBe(a);
+      expect(account).toEqual(expect.any(String));
+      expect(account).not.toBe(a);
+      expect(movie).toBeNull();
+      expect(list.series[a!]).toEqual({
+        seasons: [
+          { number: 1, episodes: [1, 2, 3] },
+          { number: 2, episodes: [1, 2] },
+        ],
+        sourceOrder: false,
+      });
+      // Made up for the window: nothing of the account or its server in it.
+      for (const key of [a, english, account]) {
+        expect(key).not.toMatch(/demo|127\.0\.0\.1|localhost/);
+      }
+    };
+    await check(await downloads.list());
+    await quit();
+    // Kept with each record: the next start groups them alike, under keys of its own.
+    const again = await app(dataDir);
+    await check(await again.downloads.list());
+  }, 60_000);
+
+  it("keeps apart a series whose id the provider gave to another, and lets copies without a series stand alone", async () => {
+    const { provider, dataDir, subscriptionId, downloads, onDemand, find, quit } =
+      await connected();
+    const dutch = provider.titles.series.find((each) => each.name === "TEST | Formats (NL)")!;
+    const ref = (number: number): TitleRef => ({
+      kind: "episode",
+      subscriptionId,
+      id: String(dutch.seasons[0]![number - 1]!.id),
+      seriesId: String(dutch.id),
+      season: 1,
+      episode: number,
+    });
+    const before = await downloads.add(ref(2));
+    // The provider now lists another series under that id, with another TMDB id.
+    provider.serveTitles((all) => ({
+      ...all,
+      series: all.series.map((each) => (each.id === dutch.id ? { ...each, tmdb: "777" } : each)),
+    }));
+    await onDemand.refresh(subscriptionId);
+    const after = await downloads.add(ref(3));
+    await vi.waitFor(
+      async () => {
+        expect((await find(before.id))?.status.kind).toBe("complete");
+        expect((await find(after.id))?.status.kind).toBe("complete");
+      },
+      { timeout: LONG },
+    );
+    const keyOf = async (id: string) => (await find(id))?.series;
+    expect(await keyOf(before.id)).toEqual(expect.any(String));
+    expect(await keyOf(after.id)).toEqual(expect.any(String));
+    expect(await keyOf(before.id)).not.toBe(await keyOf(after.id));
+    await quit();
+
+    // A record kept before series were, and one whose series this build can't read, stand alone.
+    const db = new DatabaseSync(join(dataDir, "mrstreamer.db"));
+    const row = (id: string) =>
+      JSON.parse(
+        String(db.prepare("select record from downloads where id = ?").get(id)?.["record"]),
+      ) as Record<string, unknown>;
+    const { series: _kept, ...older } = row(before.id);
+    const update = db.prepare("update downloads set record = ? where id = ?");
+    update.run(JSON.stringify(older), before.id);
+    update.run(JSON.stringify({ ...row(after.id), series: { seasons: "later" } }), after.id);
+    db.close();
+    const again = await app(dataDir);
+    const listed = await again.downloads.list();
+    expect(listed.items.map((item) => [item.id, item.status.kind, item.series]).toSorted()).toEqual(
+      [
+        [before.id, "complete", null],
+        [after.id, "complete", null],
+      ].toSorted(),
+    );
+    expect(listed.series).toEqual({});
   }, 60_000);
 });
 

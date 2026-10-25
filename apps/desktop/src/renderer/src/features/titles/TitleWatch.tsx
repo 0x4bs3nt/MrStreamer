@@ -1,7 +1,9 @@
 // Playing a movie or an episode: the picture fills the window, with the title, a scrubber and the
 // controls along the bottom, fading when idle. Sound opens the file's sound tracks, CC everything
 // about its subtitles, and Speed plays it slower or faster; a series offers its next episode, and at an
-// episode's end counts down to it (see title-player.ts). Back returns to where the title was opened.
+// episode's end counts down to it (see title-player.ts). A downloaded episode does the same with the
+// next episode's copy on this computer, or says why it can't. Back returns to where the title was
+// opened.
 //   Space or K pauses, Left and Right skip 10 seconds, Up and Down change the volume, F is full
 //   screen, M mutes, C turns subtitles on or off, N plays the next episode, also during the
 //   countdown, G and H move subtitles earlier or later, < and > play slower or faster, P shrinks
@@ -39,6 +41,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { SliderControl } from "../../components/ui/slider.tsx";
 import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { WindowBar } from "../../components/WindowBar.tsx";
+import { statusLine } from "../../lib/downloads.ts";
 import { describeError } from "../../lib/errors.ts";
 import { clock, runtime } from "../../lib/titles.ts";
 import { cn } from "../../lib/utils.ts";
@@ -48,6 +51,8 @@ import { outputs, useOutput, where } from "../../player/output.ts";
 import { Picture } from "../../player/Picture.tsx";
 import { player } from "../../player/player.ts";
 import {
+  episodeLine,
+  offersNext,
   titlePlayer,
   useSubtitleNote,
   useTitlePlayer,
@@ -55,7 +60,7 @@ import {
   type TitleProblem,
 } from "../../player/title-player.ts";
 import { CloseMessage, pressesClose, useClosed } from "../watch/CloseMessage.tsx";
-import { pressesDownloads } from "../downloads/DownloadsNotice.tsx";
+import { openDownloads, pressesDownloads } from "../downloads/DownloadsNotice.tsx";
 import { Flash, flash, flashNote } from "../watch/Flash.tsx";
 import { useFullscreen, useWake } from "../watch/layout.ts";
 import { MINI_NEEDS_PICTURE, MiniControls, MiniPlayerButton } from "../watch/MiniPlayer.tsx";
@@ -103,6 +108,9 @@ export function TitleWatch() {
   const now = useTitlePlayer((state) => state.now);
   const phase = useTitlePlayer((state) => state.phase);
   const next = useTitlePlayer((state) => state.next);
+  // Main's list said what comes after the copy, or that nothing can.
+  const copyEnds = useTitlePlayer((state) => state.nextCopy !== undefined);
+  const hasNext = useTitlePlayer(offersNext);
   const continued = useTitlePlayer((state) => state.continued);
   const subtitleNote = useSubtitleNote();
   const failure = phase.kind === "failed" ? phase : null;
@@ -266,14 +274,14 @@ export function TitleWatch() {
   if (!now) return null;
   const controlsVisible = awake || phase.kind !== "playing" || menu !== null || remote;
   // Keep the end screen while the next episode opens, including an unheld Instant transition.
-  const nextUp =
-    now.kind === "provider" &&
-    now.series &&
-    ((phase.kind === "ended" && next !== undefined) ||
-      (continued &&
-        (phase.kind === "opening" || phase.kind === "starting" || (failure && !closed))))
-      ? now.series
-      : null;
+  const starting =
+    continued && (phase.kind === "opening" || phase.kind === "starting" || (failure && !closed));
+  const end =
+    now.kind === "provider" && now.series ? (
+      ((phase.kind === "ended" && next !== undefined) || starting) && <NextUp series={now.series} />
+    ) : now.kind === "copy" && ((phase.kind === "ended" && copyEnds) || starting) ? (
+      <CopyNextUp />
+    ) : null;
   if (mini) {
     return (
       <div
@@ -352,14 +360,12 @@ export function TitleWatch() {
           <WindowBar onBack={leaveTitle} />
         </div>
       )}
-      {nextUp ? (
-        <NextUp series={nextUp} />
-      ) : (
+      {end || (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <State />
         </div>
       )}
-      {!nextUp && (
+      {!end && (
         <div
           className={cn(
             "no-drag absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-10 pt-28 pb-7 transition-opacity duration-300",
@@ -395,7 +401,7 @@ export function TitleWatch() {
             </Tooltip>
             <div className="ml-auto flex items-center gap-2">
               <Tracks menu={menu} onMenu={setMenu} />
-              {next && (
+              {hasNext && (
                 <Button variant="media" onClick={() => titlePlayer.playNext()}>
                   <SkipForward />
                   {t("Next episode")}
@@ -562,7 +568,7 @@ function Tracks({ menu, onMenu }: { menu: TitleMenu; onMenu: (menu: TitleMenu) =
 function State() {
   const phase = useTitlePlayer((state) => state.phase);
   const now = useTitlePlayer((state) => state.now);
-  const next = useTitlePlayer((state) => state.next);
+  const hasNext = useTitlePlayer(offersNext);
   const position = useTitlePlayer((state) => state.position);
   const skipping = useTitlePlayer((state) => state.confirmed !== null);
   const remote = useTitlePlayer((state) => state.shows !== null);
@@ -673,7 +679,7 @@ function State() {
             <RotateCw />
             {t("Retry")}
           </Button>
-          {next && (
+          {hasNext && (
             <Button variant="secondary" onClick={() => titlePlayer.playNext()}>
               <SkipForward />
               {t("Next episode")}
@@ -897,6 +903,139 @@ function NextUp({ series }: { series: SeriesDetails }) {
         </Button>
       )}
       {receiver && <PlayHere size="lg" />}
+    </EndOfEpisode>
+  );
+}
+
+/**
+ * A downloaded episode's end, as NextUp is online: the countdown to the next episode's copy, that
+ * copy on offer once the countdown is cancelled or turned off, or why nothing plays next: the
+ * series' last episode, or a next episode whose copy is still downloading or isn't on this
+ * computer, which no later copy is skipped to. Downloads opens the copies; nothing here asks a
+ * provider.
+ */
+function CopyNextUp() {
+  const now = useTitlePlayer((state) => state.now);
+  const phase = useTitlePlayer((state) => state.phase);
+  const next = useTitlePlayer((state) => state.nextCopy);
+  const countdown = useTitlePlayer((state) => state.countdown);
+  if (now?.kind !== "copy") return null;
+  const downloads = (
+    <Button variant="secondary" size="lg" onClick={openDownloads}>
+      {t("Downloads")}
+    </Button>
+  );
+  if (phase.kind === "opening" || phase.kind === "starting") {
+    return (
+      <EndOfEpisode
+        artworkUrl={now.artworkUrl}
+        line={t("Next episode")}
+        title={now.detail ?? now.name}
+        detail={t("Starting")}
+      >
+        {downloads}
+      </EndOfEpisode>
+    );
+  }
+  if (phase.kind === "failed") {
+    return (
+      <EndOfEpisode
+        artworkUrl={now.artworkUrl}
+        line={now.detail}
+        title={t("Didn't start")}
+        detail={
+          phase.problem.kind === "unavailable"
+            ? t("Its file is no longer on this computer.")
+            : problemBody(phase.problem, "episode")
+        }
+        failure={phase}
+      >
+        <Button variant="primary" size="lg" onClick={() => titlePlayer.retry()}>
+          <RotateCw />
+          {t("Try again")}
+        </Button>
+        {downloads}
+      </EndOfEpisode>
+    );
+  }
+  if (!next || now.title.kind !== "episode") return null;
+  const finished = `${t("Finished {episode}", {
+    episode: episodeLabel(now.title.season, now.title.episode),
+  })} · ${t("Offline")}`;
+  if (next.kind === "copy") {
+    const { copy, season } = next;
+    const length = copy.duration ? runtime(copy.duration) : null;
+    return (
+      <EndOfEpisode
+        artworkUrl={copy.wideUrl ?? copy.posterUrl}
+        line={
+          season === now.title.season
+            ? finished
+            : `${finished} · ${t("Season {number} is next", { number: String(season) })}`
+        }
+        title={episodeLine(copy) ?? copy.name}
+        detail={
+          countdown === null ? (
+            length
+          ) : (
+            <>
+              {length && `${length} · `}
+              <span className="text-foreground">
+                {countdown === 0
+                  ? t("Next episode")
+                  : t("Plays in {seconds}", { seconds: countdown })}
+              </span>
+            </>
+          )
+        }
+      >
+        <Button variant="primary" size="lg" onClick={() => titlePlayer.playNext()}>
+          <Play className="fill-current" />
+          {countdown === null || countdown === 0 ? t("Next episode") : t("Play now")}
+        </Button>
+        {countdown === null ? (
+          downloads
+        ) : (
+          <Button variant="secondary" size="lg" onClick={() => titlePlayer.cancelNext()}>
+            {t("Cancel")}
+          </Button>
+        )}
+      </EndOfEpisode>
+    );
+  }
+  const stopped =
+    next.kind === "end"
+      ? {
+          title: t("That was the last episode"),
+          detail: t("{title} is finished for now.", { title: now.name }),
+        }
+      : next.kind === "missing"
+        ? {
+            title: t("{episode} isn't on this computer", {
+              episode: episodeLabel(next.season, next.episode),
+            }),
+            detail: t("Download it to go on."),
+          }
+        : {
+            title: t(
+              next.copy.status.kind === "failed"
+                ? "{episode} didn't download"
+                : "{episode} is still downloading",
+              { episode: episodeLabel(next.season, next.episode) },
+            ),
+            detail: statusLine(next.copy),
+          };
+  return (
+    <EndOfEpisode
+      artworkUrl={now.artworkUrl}
+      line={finished}
+      title={stopped.title}
+      detail={stopped.detail}
+    >
+      {downloads}
+      <Button variant="ghost" size="lg" onClick={leaveTitle}>
+        {t("Back")}
+      </Button>
     </EndOfEpisode>
   );
 }

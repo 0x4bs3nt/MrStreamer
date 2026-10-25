@@ -78,6 +78,27 @@ export interface Download {
   readonly status: DownloadStatus;
   /** How far the copy was watched here, kept with it. */
   readonly progress: { readonly position: number; readonly duration: number } | null;
+  /**
+   * For an episode queued from its series' details by this build or a later one: its series in
+   * the list's `series`, by a key every download of that series version of that account shares.
+   * The key is made up for the window and says nothing of the account. Null for movies, and for
+   * episodes an earlier build queued: those stand alone.
+   */
+  readonly series: string | null;
+}
+
+/** What a series version listed, which the order of its downloads and what plays next go by. */
+export interface DownloadSeries {
+  /** Its seasons in its order, specials (0) among them, each with its episodes' numbers in order. */
+  readonly seasons: readonly {
+    readonly number: number;
+    readonly episodes: readonly number[];
+  }[];
+  /**
+   * A mapped playlist's own order: its seasons may interleave, and specials go on like any other
+   * episode. Otherwise numbered seasons come first and specials lead only to specials.
+   */
+  readonly sourceOrder: boolean;
 }
 
 /**
@@ -87,6 +108,11 @@ export interface Download {
  */
 export interface DownloadList {
   readonly items: readonly Download[];
+  /**
+   * What each series the items name (`Download.series`) listed when the latest of its downloads
+   * was queued.
+   */
+  readonly series: { readonly [key: string]: DownloadSeries };
   /** Bytes the app's downloads take on this computer, partial ones included. */
   readonly bytes: number;
   /** Free bytes on the disk the downloads are kept on; null when it can't be read. */

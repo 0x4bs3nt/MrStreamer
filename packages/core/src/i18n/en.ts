@@ -1288,4 +1288,11 @@ export const en = {
   "Couldn't read your reminders.": "Couldn't read your reminders.",
   "Your reminders were saved by a newer version of Mr. Streamer.":
     "Your reminders were saved by a newer version of Mr. Streamer.",
+  // Downloaded episodes of a series, and what plays after one offline.
+  "{count} episodes": { one: "{count} episode", other: "{count} episodes" },
+  "{episode} isn't on this computer": "{episode} isn't on this computer",
+  "{from} to {to} aren't on this computer": "{from} to {to} aren't on this computer",
+  "Download it to go on.": "Download it to go on.",
+  "{episode} is still downloading": "{episode} is still downloading",
+  "{episode} didn't download": "{episode} didn't download",
 } as const satisfies Readonly<Record<string, string | Plural>>;

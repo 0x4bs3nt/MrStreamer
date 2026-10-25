@@ -46,6 +46,7 @@ pnpm verify:desktop titles
 pnpm verify:desktop watchlist
 pnpm verify:desktop downloads
 pnpm verify:desktop downloads-queue
+pnpm verify:desktop downloads-series
 pnpm verify:desktop language
 pnpm verify:desktop custom-lists
 pnpm verify:desktop custom-lists-sources

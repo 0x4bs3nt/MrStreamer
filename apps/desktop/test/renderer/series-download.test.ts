@@ -82,9 +82,11 @@ const download = (episode: Episode, status: DownloadStatus): Download => ({
   size: null,
   status,
   progress: null,
+  series: null,
 });
 const list = (items: readonly Download[]): DownloadList => ({
   items,
+  series: {},
   bytes: 0,
   free: null,
   ended: 0,

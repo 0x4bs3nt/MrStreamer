@@ -76,6 +76,7 @@ const download = (id: string): Download => ({
   size: 1000,
   status: { kind: "complete" },
   progress: null,
+  series: null,
 });
 const completed = Array.from({ length: 2000 }, (_, index) => download(`unrelated-${index}`));
 const snapshot = (received: number): DownloadList => ({
@@ -87,6 +88,7 @@ const snapshot = (received: number): DownloadList => ({
       status: { kind: "transferring", received, size: 100, rate: 1, restarted: false },
     },
   ]),
+  series: {},
   bytes: 2_000_000 + received,
   free: 1_000_000,
   ended: 0,

@@ -13,6 +13,7 @@
     "./catalogue/variants": "./src/catalogue/variants.ts",
     "./catchup": "./src/catchup.ts",
     "./diagnostics": "./src/diagnostics.ts",
+    "./downloads/series": "./src/downloads/series.ts",
     "./failure": "./src/failure.ts",
     "./guide/address": "./src/guide/address.ts",
     "./guide/document": "./src/guide/document.ts",

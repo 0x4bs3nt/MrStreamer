@@ -39,7 +39,7 @@ vi.mock("../src/account.ts", () => ({
 // Downloads open from a row of their own, which this test leaves out.
 vi.mock("../src/downloads-screen.tsx", () => ({ DownloadsLink: () => null }));
 vi.mock("../src/downloads.ts", () => ({
-  useDownloads: () => ({ items: [], bytes: 0, free: null, ended: 0 }),
+  useDownloads: () => ({ items: [], series: {}, bytes: 0, free: null, ended: 0 }),
 }));
 vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
 // ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.

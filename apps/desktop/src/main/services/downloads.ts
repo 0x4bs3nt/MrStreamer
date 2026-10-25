@@ -30,6 +30,13 @@
 // read as it was queued, how far it was watched here, and the subtitles saved for the exact file
 // it was made from (see `subtitlesOfCopy`). Removing a subscription cancels its unfinished
 // downloads; its copies stay, and play, until the viewer deletes them.
+//
+// An episode also keeps what its series version listed then, from the details its queuing read
+// anyway: its seasons in order and its TMDB id. The window hears each series version of an account
+// by a key made up in this run, so nothing of the account reaches it, with the seasons its latest
+// queued download listed; which copies go together and what plays next are worked out from those
+// (see @mrstreamer/core/downloads/series). An episode queued before this, or by an earlier build,
+// has no series and stands alone.
 import { downloadFailure, type OperationObserver } from "../analytics/operations.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -41,9 +48,11 @@ import {
   type DownloadArtwork,
   type DownloadList,
   type DownloadFailure,
+  type DownloadSeries,
 } from "@mrstreamer/contracts/downloads";
 import type { EpisodeDetails, RawTitleRef, TitleRef } from "@mrstreamer/contracts/ondemand";
 import { Failed, failedWith } from "@mrstreamer/core/failure";
+import { seriesEpisodeSeasons } from "@mrstreamer/core/ondemand/details";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -55,6 +64,7 @@ import {
   DownloadStore,
   type About,
   type PartIdentity,
+  type SeriesKept,
   type StoredDownload,
 } from "../platform/downloads-store.ts";
 import { SavedSubtitles, subtitlesOfCopy } from "../platform/saved-subtitles.ts";
@@ -275,6 +285,22 @@ function make(deps: DownloadsDeps) {
     };
     lookForMissing();
 
+    /**
+     * Each series version of an account as the window knows it: a key made up for it in this run.
+     * An Xtream account's key holds its username, so the window never sees what it is made of. Its
+     * TMDB id splits it: a provider that gives a series' id to another series gives another key.
+     */
+    const seriesKeys = new Map<string, string>();
+    const seriesKeyOf = (record: StoredDownload): string | null => {
+      if (!record.series || record.title.kind !== "episode") return null;
+      const version = JSON.stringify([record.account, record.title.seriesId, record.series.tmdb]);
+      const known = seriesKeys.get(version);
+      if (known) return known;
+      const made = randomUUID();
+      seriesKeys.set(version, made);
+      return made;
+    };
+
     /** The saved subscription of each account now, by its key, with the name it shows. */
     const accounts = Effect.gen(function* () {
       const [saved, listed] = yield* Effect.all([subscriptions.saved, subscriptions.list]);
@@ -333,7 +359,26 @@ function make(deps: DownloadsDeps) {
         position: record.progress.position,
         duration: record.progress.duration,
       },
+      series: seriesKeyOf(record),
     });
+
+    /** What each series of the downloads listed, by its key: as its latest queued one read it. */
+    const seriesOf = (all: readonly StoredDownload[]) => {
+      const latest = new Map<string, { readonly addedAt: number; readonly series: SeriesKept }>();
+      for (const record of all) {
+        const key = seriesKeyOf(record);
+        const before = key ? latest.get(key) : undefined;
+        if (key && record.series && (!before || record.addedAt >= before.addedAt)) {
+          latest.set(key, { addedAt: record.addedAt, series: record.series });
+        }
+      }
+      return Object.fromEntries(
+        [...latest].map(([key, { series }]): [string, DownloadSeries] => [
+          key,
+          { seasons: series.seasons, sourceOrder: series.sourceOrder },
+        ]),
+      );
+    };
 
     const view = Effect.gen(function* () {
       const owners = yield* accounts;
@@ -357,6 +402,7 @@ function make(deps: DownloadsDeps) {
           ...queue.filter((record) => record.state === "failed"),
           ...copies,
         ].map((record) => downloadOf(record, owners, busy)),
+        series: seriesOf(all),
         bytes: all.reduce(
           (sum, record) => sum + (active?.id === record.id ? active.received : record.received),
           0,
@@ -787,6 +833,7 @@ function make(deps: DownloadsDeps) {
             sourceStamp: source.fileRevision,
             container: file.container,
             about: { ...kept.about, poster: null, wide: null },
+            ...("series" in kept ? { series: kept.series } : {}),
             state: "queued",
             size: null,
             received: 0,
@@ -952,7 +999,8 @@ function make(deps: DownloadsDeps) {
 
     /**
      * What a download keeps of its title's details, and where its pictures are online, from the
-     * details the viewer just opened: a movie's, or an episode's with its series'.
+     * details the viewer just opened: a movie's, or an episode's with its series', and what that
+     * series lists, so its copies are placed and go on offline. Nothing more is asked for that.
      */
     function aboutOf(title: RawTitleRef, subscriptionId: string) {
       return Effect.gen(function* () {
@@ -993,6 +1041,18 @@ function make(deps: DownloadsDeps) {
             poster: series.title.posterUrl,
             wide: episode?.stillUrl ?? series.backdropUrl ?? series.title.backdropUrl,
           },
+          ...(series.kind === "series"
+            ? {
+                series: {
+                  tmdb: series.title.tmdbId,
+                  seasons: seriesEpisodeSeasons(series).map(({ number, episodes }) => ({
+                    number,
+                    episodes: episodes.map((each) => each.number),
+                  })),
+                  sourceOrder: series.episodeOrder !== undefined,
+                },
+              }
+            : {}),
         };
       });
     }

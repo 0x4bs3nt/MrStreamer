@@ -12,6 +12,7 @@ import { hlsCompatibilityScenario, hlsCompatibilityCatchupScenario } from "./hls
 import { catchupHlsScenario, catchupScenario } from "./catchup.ts";
 import { runDownloads } from "./downloads.ts";
 import { runDownloadsQueue } from "./downloads-queue.ts";
+import { runDownloadsSeries } from "./downloads-series.ts";
 import { guideLabelsScenario, labelledGuideId, serveLabelled } from "./guide-labels.ts";
 import { guidesScenario, serveGuides, sourcedGuideId } from "./guides.ts";
 import { homeStageScenario, stageChannel, stageLogo, stageStreams } from "./home-stage.ts";
@@ -92,11 +93,13 @@ const scenarios = [
 type Scenario = (typeof scenarios)[number];
 const [command, selected] = process.argv.slice(2);
 if (command === "--help" || !command) {
-  console.log(`Usage: pnpm verify:desktop doctor | ${scenarios.join(" | ")} | downloads-queue
+  console.log(`Usage: pnpm verify:desktop doctor | ${scenarios.join(" | ")} | downloads-queue | downloads-series
        pnpm verify:desktop downloads <locale>, as fr-FR: Downloads in another interface language
        pnpm verify:desktop downloads-queue [--previous <executable>]: pause and order the queue,
          with an earlier build's executable (0.0.19's unpacked AppImage) started between
        pnpm verify:desktop custom-lists-round-trip <executable>: with a prior release's app on the same profile
+       pnpm verify:desktop downloads-series [--previous <executable>]: a series' copies grouped
+         and played on offline, with an earlier build's executable started after the first start
 Run from the repo root, after pnpm install --frozen-lockfile and pnpm build.
 On headless Linux: xvfb-run -a pnpm verify:desktop <scenario>
 Each scenario owns a fresh app/profile/ports and retains proof in .local/verification/.`);
@@ -114,6 +117,14 @@ Each scenario owns a fresh app/profile/ports and retains proof in .local/verific
   if (!build.display)
     throw new Error("No display. Use xvfb-run -a pnpm verify:desktop downloads-queue.");
   await runDownloadsQueue(build, selected ? process.argv[4] : undefined);
+} else if (
+  command === "downloads-series" &&
+  (selected === undefined || (selected === "--previous" && process.argv[4]))
+) {
+  const build = await preflight();
+  if (!build.display)
+    throw new Error("No display. Use xvfb-run -a pnpm verify:desktop downloads-series.");
+  await runDownloadsSeries(build, selected ? process.argv[4] : undefined);
 } else if (command === "custom-lists-round-trip" && selected !== undefined) {
   await run(command, selected);
 } else if (

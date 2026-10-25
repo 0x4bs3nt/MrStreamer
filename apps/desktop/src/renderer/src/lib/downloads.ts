@@ -7,9 +7,8 @@ import { useCallback } from "react";
 import type { Download, DownloadFailure, DownloadList } from "@mrstreamer/contracts/downloads";
 import type { RawTitleRef } from "@mrstreamer/contracts/ondemand";
 import { formatBytes, formatPercent, t } from "@mrstreamer/core/i18n";
-import { episodeLabel } from "@mrstreamer/core/ondemand/names";
 import { useUi } from "../app/ui-store.ts";
-import { titlePlayer, type CopyNow } from "../player/title-player.ts";
+import { copyNow, titlePlayer } from "../player/title-player.ts";
 import { describeError } from "./errors.ts";
 import { call, listen } from "./ipc.ts";
 import { minutesLeft } from "./format.ts";
@@ -75,27 +74,6 @@ export function useDownloadOf(
     [subscriptionId, kind, id],
   );
   return useQuery({ ...downloadsQuery(), select }).data ?? null;
-}
-
-/** "S2 E3 · Its name", or null for a movie. */
-export function episodeLine(download: Download): string | null {
-  const { title } = download;
-  if (title.kind !== "episode") return null;
-  const label = episodeLabel(title.season, title.episode);
-  return download.episodeName ? `${label} · ${download.episodeName}` : label;
-}
-
-/** What the player shows for a copy: like its title online, with "Offline" for its subscription. */
-function copyNow(download: Download): CopyNow {
-  const episode = episodeLine(download);
-  return {
-    kind: "copy",
-    copy: download.id,
-    name: download.name,
-    detail: [episode ?? download.year, t("Offline")].filter(Boolean).join(" · "),
-    artworkUrl: download.wideUrl ?? download.posterUrl,
-    originalLanguage: download.originalLanguage,
-  };
 }
 
 /**

@@ -158,6 +158,7 @@ vi.mock("../src/downloads.ts", () => ({
   useDownloadOf: () => scenario.download,
   downloadList: () => ({
     items: scenario.download ? [scenario.download] : [],
+    series: {},
     bytes: 0,
     free: null,
     ended: 0,
@@ -445,6 +446,7 @@ const copy: Download = {
   size: 2_100_000_000,
   status: { kind: "complete" },
   progress: null,
+  series: null,
 };
 
 describe("a film's version picked", () => {

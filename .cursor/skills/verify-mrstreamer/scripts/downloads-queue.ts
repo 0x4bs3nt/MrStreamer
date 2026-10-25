@@ -759,7 +759,7 @@ export async function runDownloadsQueue(
 }
 
 /** Main's connections by where they went, with the fixtures named. */
-function summarise(path: string, fixtures: unknown) {
+export function summarise(path: string, fixtures: unknown) {
   const ports = new Set(Array.isArray(fixtures) ? fixtures : []);
   const by = new Map<string, number>();
   let lines: { kind: string; host?: string; port?: number }[] = [];
@@ -783,7 +783,7 @@ function summarise(path: string, fixtures: unknown) {
 }
 
 /** Answers every path with the same small picture, as an artwork CDN would. */
-async function pictureServer(): Promise<Server> {
+export async function pictureServer(): Promise<Server> {
   const png = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk2PH/PwAFTgKWx2D3tQAAAABJRU5ErkJggg==",
     "base64",

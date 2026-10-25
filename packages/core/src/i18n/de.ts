@@ -1324,4 +1324,10 @@ export const de: Translation = {
   "Couldn't read your reminders.": "Deine Erinnerungen konnten nicht gelesen werden.",
   "Your reminders were saved by a newer version of Mr. Streamer.":
     "Deine Erinnerungen wurden von einer neueren Version von Mr. Streamer gespeichert.",
+  "{count} episodes": { one: "{count} Folge", other: "{count} Folgen" },
+  "{episode} isn't on this computer": "{episode} ist nicht auf diesem Computer",
+  "{from} to {to} aren't on this computer": "{from} bis {to} sind nicht auf diesem Computer",
+  "Download it to go on.": "Lade sie herunter, um weiterzuschauen.",
+  "{episode} is still downloading": "{episode} wird noch heruntergeladen",
+  "{episode} didn't download": "{episode} wurde nicht heruntergeladen",
 };

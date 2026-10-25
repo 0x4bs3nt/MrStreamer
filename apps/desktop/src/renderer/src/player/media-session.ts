@@ -24,7 +24,7 @@ import { ownedKey, sameOwned } from "@mrstreamer/contracts/subscription";
 import { queries } from "../lib/queries.ts";
 import { useOutput } from "./output.ts";
 import { player, receiverState, usePlayer } from "./player.ts";
-import { titlePlayer, useTitlePlayer } from "./title-player.ts";
+import { offersNext, titlePlayer, useTitlePlayer } from "./title-player.ts";
 
 /** How far the system's back and forward buttons skip when they don't say. */
 const SKIP_S = 10;
@@ -156,13 +156,13 @@ function artwork(url: string | null): MediaImage[] {
 
 /**
  * The playing title in the system's controls. Next plays the next episode, as N does, and shows
- * only while the series has one.
+ * only while the series has one: for a copy, only while the next episode's copy is here.
  */
 export function useTitleSession(): void {
   const now = useTitlePlayer((state) => state.now);
   const phase = useTitlePlayer((state) => state.phase.kind);
   const duration = useTitlePlayer((state) => state.duration);
-  const hasNext = useTitlePlayer((state) => Boolean(state.next));
+  const hasNext = useTitlePlayer(offersNext);
   const view = useView();
 
   useEffect(() => {

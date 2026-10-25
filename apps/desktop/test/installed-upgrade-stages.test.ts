@@ -36,6 +36,8 @@ const copy = (id: string, kind: "movie" | "episode", position: number | null): D
   size: 1000,
   status: { kind: "complete" },
   progress: position === null ? null : { position, duration: 150 },
+  // Stable made these before downloads kept their series.
+  series: null,
 });
 
 /** The saved cue's interval once its offset and speed apply. */
