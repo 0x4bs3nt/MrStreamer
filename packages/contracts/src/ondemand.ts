@@ -229,6 +229,15 @@ export interface OnDemandStatus {
   readonly metadata: MetadataProgress | null;
 }
 
+/**
+ * The status `ondemand.updated` tells after a change, with `markedForAdults` once a refresh kept
+ * lists that mark for adults a title the lists before listed without that mark. What was read
+ * before may name it, so views read their lists of titles again without showing what they kept.
+ */
+export interface OnDemandUpdate extends OnDemandStatus {
+  readonly markedForAdults?: true;
+}
+
 /** TMDB's metadata for the catalogue: genres, languages, services. */
 export interface MetadataProgress {
   /** Titles TMDB answered for, of those listed with a TMDB id. */

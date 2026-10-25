@@ -1,5 +1,7 @@
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import type * as Duration from "effect/Duration";
-import { describe, expect, it } from "vitest";
+import { describe, expect, inject, it, vi } from "vitest";
 import { OnDemand } from "../src/main/services/ondemand.ts";
 import { Settings } from "../src/main/services/preferences.ts";
 import { mainLayer } from "../src/main/runtime.ts";
@@ -338,6 +340,140 @@ describe("movies and series", { timeout: 20_000 }, () => {
     await expect(late).rejects.toMatchObject({ error: { kind: "invalid-login" } });
     expect(await onDemand.status()).toEqual(before);
     expect(told).toEqual([]);
+  });
+
+  it("marks for adults only by the row the lists show for an id, the first, in either kind", async () => {
+    const app = await onDemandApp();
+    const { onDemand, provider, own } = app;
+    // Series 80001 and film 91001 each listed twice, an ordinary row and one for adults.
+    const twice = (
+      series: "ordinary first" | "adult first",
+      film: "ordinary first" | "adult first",
+    ) =>
+      provider.serveTitles((all) => {
+        const show = all.series.find((each) => each.id === 80_001)!;
+        const movie = all.movies.find((each) => each.id === 91_001)!;
+        const shows = [show, { ...show, adult: true }];
+        // A category named for adults marks a film.
+        const movies = [movie, { ...movie, categoryId: "505" }];
+        return {
+          ...all,
+          series: [
+            ...all.series.filter((each) => each !== show),
+            ...(series === "ordinary first" ? shows : shows.toReversed()),
+          ],
+          movies: [
+            ...all.movies.filter((each) => each !== movie),
+            ...(film === "ordinary first" ? movies : movies.toReversed()),
+          ],
+        };
+      });
+    const adult = async () => [
+      (await onDemand.titles("series", [own("80001")]))[0]?.adult,
+      (await onDemand.titles("movie", [own("91001")]))[0]?.adult,
+    ];
+    twice("ordinary first", "ordinary first");
+    await onDemand.refresh();
+    const told = await collect(app.runtime, onDemand.changes);
+    const marked: boolean[] = [];
+    const shown: (boolean | undefined)[][] = [];
+    const refresh = async () => {
+      await onDemand.refresh();
+      await vi.waitFor(() => expect(told).toHaveLength(marked.length + 1));
+      marked.push(told.at(-1)!.markedForAdults === true);
+      shown.push(await adult());
+    };
+    // The same lists: the rows they show stay ordinary.
+    await refresh();
+    // The series' row for adults comes first, so the series shows for adults; then unchanged.
+    twice("adult first", "ordinary first");
+    await refresh();
+    await refresh();
+    // So does the film's.
+    twice("adult first", "adult first");
+    await refresh();
+    expect(marked).toEqual([false, true, false, true]);
+    expect(shown).toEqual([
+      [false, false],
+      [true, false],
+      [true, false],
+      [true, true],
+    ]);
+  });
+
+  it("marks for adults however close the fetches, and related titles never offer them", async () => {
+    const dataDir = await tempDir();
+    const entry =
+      inject("catalogueWorker") ??
+      new URL("../src/main/ondemand/catalogue-worker.ts", import.meta.url);
+    const href = typeof entry === "string" ? pathToFileURL(entry).href : entry.href;
+    // Only the worker's wall clock stands still, as in catalogue-persistence.test.ts: both lists
+    // are fetched at the same millisecond.
+    const runtime = runtimeFor(
+      mainLayer({
+        ...testConfig(dataDir),
+        catalogueWorker: (setup) =>
+          new Worker(`Date.now = () => 1792900000000; import(${JSON.stringify(href)});`, {
+            eval: true,
+            workerData: setup,
+          }),
+      }),
+    );
+    const onDemand = await promised(runtime, OnDemand);
+    const settings = await promised(runtime, Settings);
+    const subscriptions = await promised(runtime, Subscriptions);
+    const provider = await fakeProvider();
+    const { id } = await subscriptions.add(login(provider));
+    await onDemand.refresh(id);
+    const fetchedAt = (await onDemand.status()).lists[0]?.fetchedAt;
+    const told = await collect(runtime, onDemand.changes);
+    await settings.update({ adultTitles: true });
+    // A series of the same category: related through it, while it is listed for everyone.
+    const near = async () =>
+      (await onDemand.related("series", { subscriptionId: id, id: "80003" })).titles.map(
+        ({ title }) => title.id,
+      );
+    expect(await near()).toContain("80001");
+    provider.serveTitles((all) => ({
+      ...all,
+      series: all.series.map((series) =>
+        series.id === 80_001 ? { ...series, adult: true } : series,
+      ),
+    }));
+    await onDemand.refresh(id);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    expect(told[0]).toMatchObject({ markedForAdults: true, lists: [{ fetchedAt }] });
+    expect(fetchedAt).toBe(1792900000000);
+    // Shown or not, a title for adults is never related to another.
+    expect(await near()).not.toContain("80001");
+  });
+
+  it("tells the views when refreshed lists mark for adults a title they listed before, and only then", async () => {
+    const app = await onDemandApp();
+    const { onDemand, provider } = app;
+    await onDemand.refresh();
+    const told = await collect(app.runtime, onDemand.changes);
+    // The same lists again.
+    await onDemand.refresh();
+    // A series listed for everyone, now marked for adults by the provider.
+    const marked = (series: { readonly id: number }) => series.id === 80_001;
+    provider.serveTitles((all) => ({
+      ...all,
+      series: all.series.map((series) => (marked(series) ? { ...series, adult: true } : series)),
+    }));
+    await onDemand.refresh();
+    // A series new to the lists, for adults from the start: nothing read before named it.
+    provider.serveTitles((all) => ({
+      ...all,
+      series: [
+        ...all.series.map((series) => (marked(series) ? { ...series, adult: true } : series)),
+        { ...all.series[0]!, id: 89_999, name: "Brand New (EN)", adult: true },
+      ],
+    }));
+    await onDemand.refresh();
+    await vi.waitFor(() => expect(told).toHaveLength(3));
+    expect(told.map((update) => update.markedForAdults ?? false)).toEqual([false, true, false]);
+    expect(told.every((update) => update.lists[0]?.fetchedAt !== null)).toBe(true);
   });
 
   it("forgets the last account's titles when the subscription goes", async () => {

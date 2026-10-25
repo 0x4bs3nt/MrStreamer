@@ -51,6 +51,7 @@ import {
   type CollectionTile,
   type EpisodeDetails,
   type OnDemandStatus,
+  type OnDemandUpdate,
   type RelatedTitles,
   type HomeRecommendation,
   type Title,
@@ -928,8 +929,11 @@ export interface IpcEvents {
   "guide.updated": null;
   /** A reminder was set, cancelled or told, its programme changed, or its notice did. */
   "reminders.changed": null;
-  /** The movie and series lists were fetched again, or the fetch failed and kept them. */
-  "ondemand.updated": OnDemandStatus;
+  /**
+   * The movie and series lists were fetched again, or the fetch failed and kept them. Marked when
+   * the new lists mark for adults a title they listed before (`OnDemandUpdate`).
+   */
+  "ondemand.updated": OnDemandUpdate;
   /**
    * Only TMDB's progress moved: the lists are as they were, and nothing needs reading again. It
    * carries just that part of the status, so a late one can't bring back lists a newer status

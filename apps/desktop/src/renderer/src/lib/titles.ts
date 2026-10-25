@@ -182,12 +182,12 @@ export function useContinueWatching(
   const movieVersions = versions("movie");
   const seriesVersions = [...versions("episode"), ...marks.map((mark) => mark.series)];
   const movies = useQuery({
-    ...queries.titles("movie", movieVersions),
+    ...queries.continuing("movie", movieVersions),
     enabled: visible && movieVersions.length > 0,
     placeholderData: keepPreviousData,
   });
   const series = useQuery({
-    ...queries.titles("series", seriesVersions),
+    ...queries.continuing("series", seriesVersions),
     enabled: visible && seriesVersions.length > 0,
     placeholderData: keepPreviousData,
   });

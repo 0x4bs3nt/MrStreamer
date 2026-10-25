@@ -22,4 +22,4 @@ Saved tiles share `PosterContent` with title grids and related rows. Their conta
 
 Save is a toggle, so clicking twice undoes the first action. One displayed tile does not establish keyboard removal, series saves, ordering or persistence. A removed subscription can preserve its watchlist for reconnecting; ticked deletion has different acceptance. Verify the path the task actually changed.
 
-Home uses a separate adult-free first-page query, even with adult titles enabled. The full Watchlist keeps its adult setting, sorting, removal and unavailable-entry behavior. For row controls and local recommendations, follow [Home](home.md).
+Home uses a separate adult-free first-page query, even with adult titles enabled. The full Watchlist keeps its adult setting, sorting, removal and unavailable-entry behavior. After a refresh whose lists mark a saved title for adults, Watchlist pages read again from their loading state rather than show what they kept; see [Movies and series](titles.md). For row controls and local recommendations, follow [Home](home.md).

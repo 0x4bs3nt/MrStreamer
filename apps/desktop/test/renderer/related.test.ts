@@ -4,7 +4,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
+import type {
+  MovieDetails,
+  OnDemandStatus,
+  OnDemandUpdate,
+  RelatedTitles as Related,
+  Title,
+} from "@mrstreamer/contracts/ondemand";
 import { RelatedTitles } from "../../src/renderer/src/features/titles/RelatedTitles.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { queries, syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
@@ -41,6 +47,18 @@ const details = (id: string): MovieDetails => ({
   duration: null,
   backdropUrl: null,
 });
+/** What the main process tells of the lists fetched at `fetchedAt`, and of TMDB's answers. */
+const lists = (fetchedAt: number, known = 0): OnDemandStatus => ({
+  lists: [{ subscriptionId: SUBSCRIPTION, movies: 3, series: 0, fetchedAt, failure: null }],
+  metadata: { known, wanted: 3, refused: false, fetching: known < 3 },
+});
+const picks = (...names: string[]): Related => ({
+  basis: "Drama",
+  titles: names.map((name) => ({ title: movie(name), reason: "Drama" })),
+});
+/** The picks the row offers to open. */
+const offered = (container: HTMLElement) =>
+  [...container.querySelectorAll("button")].map((button) => button.textContent);
 let cleanup = () => {};
 beforeEach(() => {
   vi.useFakeTimers();
@@ -85,7 +103,14 @@ async function mount(opened = "opened", switching = false) {
       },
       { interval: 1 },
     );
-  return { container, render, until };
+  /** Closes the details the row is part of, as Close or Settings does. */
+  const close = () => act(async () => root.render(createElement(QueryClientProvider, { client })));
+  /** Sends `ondemand.updated`, and lets the views take it in while nothing else answers. */
+  const updated = async (status: OnDemandUpdate) => {
+    await act(async () => ipc.emit("ondemand.updated", status));
+    await act(() => vi.advanceTimersByTimeAsync(50));
+  };
+  return { container, render, until, close, updated };
 }
 
 it("opens an available exact version without repeating its heading basis, then refreshes after catalogue changes", async () => {
@@ -151,4 +176,106 @@ it("distinguishes a read failure from no matches", async () => {
   const { container, until } = await mount();
   await until(() => expect(container.textContent).toContain("Related titles couldn't be read."));
   expect(container.textContent).not.toContain("Nothing like it");
+});
+
+// Only the lists say which titles are for adults, and a refresh can mark one that a row read
+// before still names. The main process leaves those out of every new answer.
+
+it("opens again without the picks of lists that were refreshed since, until their answer", async () => {
+  ipc.always("ondemand.related", picks("Later For Adults", "Neighbour"));
+  const { container, render, until, close, updated } = await mount();
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  await updated(lists(1));
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  await close();
+  // Settings refreshed the lists while the details were closed.
+  await updated(lists(2));
+  const reread = ipc.hold("ondemand.related");
+  await render("opened", false);
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  expect(container.textContent).toContain("Loading related titles…");
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  await act(async () => reread.resolve(picks("Neighbour")));
+  await until(() => expect(offered(container).join()).toContain("Neighbour"));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+});
+
+it("takes an open row's picks away as the lists change, before its new answer", async () => {
+  ipc.always("ondemand.related", picks("Later For Adults", "Neighbour"));
+  const { container, until, updated } = await mount();
+  await updated(lists(1));
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  const reread = ipc.hold("ondemand.related");
+  await updated(lists(2));
+  expect(offered(container)).toEqual([]);
+  expect(container.textContent).toContain("Loading related titles…");
+  await act(async () => reread.resolve(picks("Neighbour")));
+  await until(() => expect(offered(container).join()).toContain("Neighbour"));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+});
+
+it("keeps picks while new metadata is read, and drops them and that late answer once the lists change", async () => {
+  ipc.always("ondemand.related", picks("Later For Adults", "Neighbour"));
+  const { container, until, updated } = await mount();
+  await updated(lists(1));
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  // TMDB's answers alone: the same lists, so the row stays on screen while it is read again.
+  const late = ipc.hold("ondemand.related");
+  await updated(lists(1, 2));
+  expect(offered(container).join()).toContain("Later For Adults");
+  expect(offered(container).join()).toContain("Neighbour");
+  const current = ipc.hold("ondemand.related");
+  await updated(lists(2, 2));
+  expect(offered(container)).toEqual([]);
+  // What the earlier lists answered arrives after they changed.
+  await act(async () => late.resolve(picks("Later For Adults", "Neighbour")));
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  await act(async () => current.resolve(picks("Neighbour")));
+  await until(() => expect(offered(container).join()).toContain("Neighbour"));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  expect(ipc.argsOf("ondemand.related")).toHaveLength(4);
+});
+
+// The worker's clock can give two accepted lists the same fetch time, so only the update's own
+// word says that new lists marked a title for adults.
+
+it("takes picks away once an update says lists marked one for adults, even at the same fetch time", async () => {
+  ipc.always("ondemand.related", picks("Later For Adults", "Neighbour"));
+  const { container, until, updated } = await mount();
+  await updated(lists(1));
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  // TMDB's answers alone keep the picks while they are read again.
+  const late = ipc.hold("ondemand.related");
+  await updated(lists(1, 2));
+  expect(offered(container).join()).toContain("Later For Adults");
+  const current = ipc.hold("ondemand.related");
+  await updated({ ...lists(1, 2), markedForAdults: true });
+  expect(offered(container)).toEqual([]);
+  expect(container.textContent).toContain("Loading related titles…");
+  // What the earlier lists answered arrives after they marked it.
+  await act(async () => late.resolve(picks("Later For Adults", "Neighbour")));
+  await act(() => vi.advanceTimersByTimeAsync(50));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  await act(async () => current.resolve(picks("Neighbour")));
+  await until(() => expect(offered(container).join()).toContain("Neighbour"));
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  expect(ipc.argsOf("ondemand.related")).toHaveLength(4);
+});
+
+it("opens again without picks once an update marked one for adults at the same fetch time", async () => {
+  ipc.always("ondemand.related", picks("Later For Adults", "Neighbour"));
+  const { container, render, until, close, updated } = await mount();
+  await updated(lists(1));
+  await until(() => expect(offered(container).join()).toContain("Later For Adults"));
+  await close();
+  await updated({ ...lists(1), markedForAdults: true });
+  const reread = ipc.hold("ondemand.related");
+  await render("opened", false);
+  expect(offered(container).join()).not.toContain("Later For Adults");
+  expect(container.textContent).toContain("Loading related titles…");
+  await act(async () => reread.resolve(picks("Neighbour")));
+  await until(() => expect(offered(container).join()).toContain("Neighbour"));
+  expect(offered(container).join()).not.toContain("Later For Adults");
 });

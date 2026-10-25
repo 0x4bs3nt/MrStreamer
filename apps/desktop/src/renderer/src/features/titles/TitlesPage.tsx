@@ -112,12 +112,14 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
     !subscriptions.some((each) => each.kind === "xtream");
   const status = useQuery(queries.onDemandStatus());
   const fourK = useQuery(queries.collection(kind, "4k", undefined, 0, 1));
-  // Empty unless Settings shows titles for adults.
+  // Empty unless Settings shows titles for adults. Until it does again, Adults is gone as soon as
+  // the setting is, whatever was read before.
+  const adults = useQuery(queries.preferences()).data?.adultTitles ?? false;
   const adult = useQuery(queries.collection(kind, "adult", undefined, 0, 1));
   // 4K and Adults go when nothing is left in them, as after changing the language or the setting.
   const emptied =
     (place.tab === "4k" && fourK.data?.total === 0) ||
-    (place.tab === "adult" && adult.data?.total === 0);
+    (place.tab === "adult" && (!adults || adult.data?.total === 0));
   // Playlists have no added dates or eager metadata. Open their complete catalogue immediately.
   const tab =
     emptied || (playlistOnly && (place.tab === "for-you" || place.tab === "new"))
@@ -135,7 +137,7 @@ export function TitlesPage({ kind, active }: { kind: TitleKind; active: boolean 
     { value: "genres", label: t("Genres") },
     { value: "services", label: t("Services") },
     ...(fourK.data?.total ? [{ value: "4k" as const, label: t("4K") }] : []),
-    ...(adult.data?.total ? [{ value: "adult" as const, label: t("Adults") }] : []),
+    ...(adults && adult.data?.total ? [{ value: "adult" as const, label: t("Adults") }] : []),
     { value: "all", label: kind === "movie" ? t("All movies") : t("All series") },
   ];
 

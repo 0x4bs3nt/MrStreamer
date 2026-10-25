@@ -21,6 +21,7 @@ import type {
   EpisodeDetails,
   MetadataProgress,
   OnDemandStatus,
+  OnDemandUpdate,
   RelatedTitles,
   HomeRecommendation,
   HomeSeed,
@@ -268,8 +269,11 @@ export class OnDemand extends Context.Service<
     forget(subscription: SavedSubscription): Effect.Effect<void>;
     /** Applies a changed TMDB key from the settings: the worker starts again with it. */
     readonly reconfigure: Effect.Effect<void>;
-    /** The status after every refresh, successful or not. */
-    readonly changes: Stream.Stream<OnDemandStatus>;
+    /**
+     * The status after every refresh, successful or not, and as TMDB's metadata arrives; marked
+     * when a refresh kept lists that mark for adults a title they listed before without.
+     */
+    readonly changes: Stream.Stream<OnDemandUpdate>;
     /** TMDB's progress when only it moved, which leaves the lists as they were. */
     readonly progressChanges: Stream.Stream<OnDemandStatus["metadata"]>;
     /** A title whose details were given before TMDB's arrived, now that they have. */
@@ -307,7 +311,7 @@ function make(deps: OnDemandDeps) {
       settings.get,
       (preferences) => preferences.titleLanguage ?? DEFAULT_TITLE_LANGUAGE,
     );
-    const updates = yield* PubSub.unbounded<OnDemandStatus>();
+    const updates = yield* PubSub.unbounded<OnDemandUpdate>();
     const progress = yield* PubSub.unbounded<OnDemandStatus["metadata"]>();
     const detailed = yield* PubSub.unbounded<TitleKey>();
     const scope = yield* Effect.scope;
@@ -538,7 +542,12 @@ function make(deps: OnDemandDeps) {
         metadata: tmdbKey ? metadataProgress : null,
       } satisfies OnDemandStatus;
     });
-    const publishStatus = Effect.flatMap(status, (current) => PubSub.publish(updates, current));
+    /** Tells the UI the status; `marked` after lists that mark a title they listed for adults. */
+    const publish = (marked: boolean) =>
+      Effect.flatMap(status, (current) =>
+        PubSub.publish(updates, marked ? { ...current, markedForAdults: true } : current),
+      );
+    const publishStatus = publish(false);
     /** Tells the UI TMDB's progress alone, with no word from the worker about the lists. */
     const publishProgress = Effect.suspend(() =>
       PubSub.publish(progress, tmdbKey ? metadataProgress : null),
@@ -568,16 +577,17 @@ function make(deps: OnDemandDeps) {
               : undefined;
           yield* call("refresh", { ...owner, account, ...(catalogue ? { catalogue } : {}) });
           const keep = yield* stillSaved;
-          yield* call("finishRefresh", { ...owner, keep });
+          const finished = yield* call("finishRefresh", { ...owner, keep });
           if (!keep) return yield* switched;
+          return finished.markedForAdults === true;
         });
         yield* fetched.pipe(
           fetchOne,
           diagnosed("titles"),
-          Effect.tap(() =>
+          Effect.tap((marked) =>
             Effect.gen(function* () {
               failures.delete(source.id);
-              yield* publishStatus;
+              yield* publish(marked);
             }),
           ),
           Effect.tapError((failed) =>

@@ -235,7 +235,7 @@ it("retains Continue's data, controls and title key beyond GC while covered and 
   control.focus();
   const page = container.firstElementChild!;
   page.scrollTop = 280;
-  const key = queries.titles("movie", [film]).queryKey;
+  const key = queries.continuing("movie", [film]).queryKey;
   const query = client.getQueryCache().find({ queryKey: key });
   const data = client.getQueryData(key);
   await render(false);
@@ -287,7 +287,10 @@ it("retains the existing Continue control when a new play changes its disabled q
   await act(() => vi.advanceTimersByTimeAsync(310_000));
   expect(ipc.argsOf("ondemand.titles")).toHaveLength(titleCalls);
   expect(container.querySelector('button[title="Continuing film"]')).toBe(control);
-  const key = queries.titles("movie", [film, { subscriptionId: SUBSCRIPTION, id: "new" }]).queryKey;
+  const key = queries.continuing("movie", [
+    film,
+    { subscriptionId: SUBSCRIPTION, id: "new" },
+  ]).queryKey;
   expect(client.getQueryCache().find({ queryKey: key })).toBeDefined();
   const pending = ipc.hold("ondemand.titles");
   await render(true);
@@ -311,7 +314,7 @@ it("accepts an already pending title read while Home is covered and keeps it thr
   await act(() => vi.advanceTimersByTimeAsync(50));
   const control = container.querySelector<HTMLButtonElement>('button[title="Continuing film"]');
   expect(control).not.toBeNull();
-  const key = queries.titles("movie", [film]).queryKey;
+  const key = queries.continuing("movie", [film]).queryKey;
   await act(async () => client.invalidateQueries({ queryKey: key }));
   const calls = ipc.argsOf("ondemand.titles").length;
   await act(() => vi.advanceTimersByTimeAsync(310_000));

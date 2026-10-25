@@ -116,7 +116,8 @@ export interface WorkerCalls {
    */
   finishRefresh: {
     args: CatalogueOwner & { revision: number; keep: boolean };
-    result: WorkerStatus;
+    /** Marked when the lists kept mark for adults a title the ones before listed without. */
+    result: WorkerStatus & { readonly markedForAdults?: true };
   };
   /** Titles by any of their versions, each named with the subscription that lists it. */
   byIds: {

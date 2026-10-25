@@ -577,19 +577,21 @@ async function refresh(args: WorkerCalls["refresh"]["args"]): Promise<null> {
 
 /**
  * Ends a refresh as the main process decided: the lists set aside for it become the
- * subscription's and are saved, or are dropped. Answers the status that leaves.
+ * subscription's and are saved, or are dropped. Answers the status that leaves, and whether the
+ * lists kept mark for adults a title the ones before listed without (`marksForAdults`).
  */
 async function finishRefresh({
   revision,
   keep,
   ...owner
-}: WorkerCalls["finishRefresh"]["args"]): Promise<WorkerStatus> {
+}: WorkerCalls["finishRefresh"]["args"]): Promise<WorkerCalls["finishRefresh"]["result"]> {
   const { subscriptionId } = owner;
   const aside = fetched.get(subscriptionId);
   // Gone already when a call that shared the refresh ended it, or the subscription went.
   if (aside?.revision !== revision) return statusOf(await current(owner));
   fetched.delete(subscriptionId);
   if (!keep) return statusOf(await current(owner));
+  const before = loaded.get(subscriptionId);
   const kept = remember(
     subscriptionId,
     Date.now(),
@@ -601,7 +603,34 @@ async function finishRefresh({
   // them first; a write it cuts short all the same leaves the previous lists for the next start,
   // which refreshes them when due.
   persist(owner, kept);
-  return statusOf(kept);
+  return before && marksForAdults(before.catalogue, kept.catalogue)
+    ? { ...statusOf(kept), markedForAdults: true }
+    : statusOf(kept);
+}
+
+/**
+ * Whether `after` marks for adults, by the provider's flag or a category named for adults, a
+ * title `before` listed without that mark. Lists read before may still name it. As the index
+ * does, each kind shows the first row listed for an id; the others count for nothing.
+ */
+function marksForAdults(before: OnDemandCatalogue, after: OnDemandCatalogue): boolean {
+  const kinds = [
+    [before.movies, before.movieCategories, after.movies, after.movieCategories],
+    [before.series, before.seriesCategories, after.series, after.seriesCategories],
+  ] as const;
+  for (const [was, wasIn, now, nowIn] of kinds) {
+    const wasAdult = adultIn(wasIn);
+    const shown = new Map<string, boolean>();
+    for (const title of was) if (!shown.has(title.id)) shown.set(title.id, wasAdult(title));
+    const isAdult = adultIn(nowIn);
+    const seen = new Set<string>();
+    for (const title of now) {
+      if (seen.has(title.id)) continue;
+      seen.add(title.id);
+      if (shown.get(title.id) === false && isAdult(title)) return true;
+    }
+  }
+  return false;
 }
 
 /** TMDB's names for a title, so search finds it by its translations and its original name too. */
