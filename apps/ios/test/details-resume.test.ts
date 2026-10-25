@@ -348,11 +348,19 @@ async function closedWithSaveGoing() {
     next: false,
     versions: false,
   };
-  await playback.play(item, async () => ({ url: "file:old", container: "mp4" }), {
-    watch: true,
-    login: [],
-    progress: () => save.promise,
-  });
+  await playback.play(
+    item,
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: "file:old", container: "mp4" }),
+    },
+    {
+      watch: true,
+      login: [],
+      progress: () => save.promise,
+    },
+  );
   native.player?.state(true);
   void playback.closeWatch();
   native.player?.state(false);

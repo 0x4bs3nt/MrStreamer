@@ -11,6 +11,7 @@ import { analyticsTransport, type CaptureTransport } from "../src/telemetry/tran
 // whose events are what iOS would report.
 
 const files = new Map<string, string>();
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("../src/files.ts", () => ({
   readJson: (name: string) => {
     const text = files.get(name);
@@ -184,7 +185,11 @@ describe("before the viewer chooses", () => {
     delete process.env["EXPO_PUBLIC_MR_STREAMER_ANALYTICS_LOCAL_ENDPOINT"];
     const app = await launch();
     app.onTelemetryScreen("/");
-    await app.play(channel(), opens, { watch: true, login });
+    await app.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(5);
     app.stop();
@@ -202,7 +207,11 @@ describe("playback", () => {
     await until(() => captured.length === 2);
 
     // Home's silent preview plays: nothing counts, nothing starts.
-    await app.play(channel(), opens, { watch: false, login });
+    await app.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: false, login },
+    );
     playing(true);
     plays(10);
     app.openWatch();
@@ -245,12 +254,21 @@ describe("playback", () => {
 
     await app.play(
       channel("preview"),
-      async () => {
-        throw new app.AppFailure({
-          kind: "unreachable",
-          server: "http://panel.example",
-          detail: "",
-        });
+      {
+        kind: "live",
+        candidates: [
+          {
+            variantId: "stream",
+            open: async () => {
+              throw new app.AppFailure({
+                kind: "unreachable",
+                server: "http://panel.example",
+                detail: "",
+              });
+            },
+          },
+        ],
+        explicit: false,
       },
       { watch: false, login },
     );
@@ -258,9 +276,13 @@ describe("playback", () => {
     const title = { ...channel("m1"), live: false };
     await app.play(
       title,
-      async () => {
-        if (refuse) throw new app.AppFailure({ kind: "invalid-login" });
-        return { url: `http://panel.example/movie/${PASSWORD}/1.mp4`, container: "mp4" };
+      {
+        kind: "file",
+        originalLanguage: null,
+        open: async () => {
+          if (refuse) throw new app.AppFailure({ kind: "invalid-login" });
+          return { url: `http://panel.example/movie/${PASSWORD}/1.mp4`, container: "mp4" };
+        },
       },
       { watch: true, login },
     );
@@ -303,15 +325,24 @@ describe("playback", () => {
     let opening: "fails" | "plays" = "plays";
     await app.play(
       channel(),
-      async () => {
-        if (opening === "fails") {
-          throw new app.AppFailure({
-            kind: "unreachable",
-            server: "http://panel.example",
-            detail: "",
-          });
-        }
-        return opens();
+      {
+        kind: "live",
+        candidates: [
+          {
+            variantId: "stream",
+            open: async () => {
+              if (opening === "fails") {
+                throw new app.AppFailure({
+                  kind: "unreachable",
+                  server: "http://panel.example",
+                  detail: "",
+                });
+              }
+              return opens();
+            },
+          },
+        ],
+        explicit: false,
       },
       { watch: true, login },
     );
@@ -361,7 +392,11 @@ describe("playback", () => {
   it("sends the stop of a run iOS ended in the background at the next launch", async () => {
     const first = await launch();
     first.setStatistics(true);
-    await first.play(channel(), opens, { watch: true, login });
+    await first.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(20);
     appState("background");
@@ -387,7 +422,11 @@ describe("the viewer's choice", () => {
     expect(stored()).toMatchObject({ choice: "off", pending: [], unfinished: null });
 
     respond = "ok";
-    await first.play(channel(), opens, { watch: true, login });
+    await first.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(5);
     first.onTelemetryScreen("/live");
@@ -400,12 +439,20 @@ describe("the viewer's choice", () => {
     expect(captured).toHaveLength(1);
 
     // On again while a channel plays: that run reports nothing, the next one does.
-    await second.play(channel(), opens, { watch: true, login });
+    await second.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(5);
     second.setStatistics(true);
     plays(5);
-    await second.play(channel("c2"), opens, { watch: true, login });
+    await second.play(
+      channel("c2"),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(4);
     second.stop();
@@ -484,7 +531,11 @@ describe("what the app reports of its use", () => {
     app.setStatistics(true);
     app.onTelemetryScreen("/search");
     app.onSearchText(SEARCH);
-    await app.play(channel(), opens, { watch: true, login });
+    await app.play(
+      channel(),
+      { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false },
+      { watch: true, login },
+    );
     playing(true);
     plays(2);
     fakePlayer.failure({

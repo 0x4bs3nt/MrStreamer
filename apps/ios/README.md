@@ -53,7 +53,8 @@ appear when current exact-file facts are available. Counts require one eligible 
 other filters too. Any known track clears only its own choice; Reset clears the collection choices.
 Unknown track language stays Unknown, and an unnamed canonical language code stays distinct from it.
 Unread files establish no absence. Filtering reads local facts without asking the provider or probing
-media. Original-AVPlayer observation forwarding and native acceptance remain pending.
+media. Direct original AVPlayer reads of provider titles forward changed settled track facts;
+format-session renditions, copies and channels establish none. Native acceptance remains pending.
 A version chosen from the menu plays again whenever the title opens, until Automatic is chosen; a
 4K tile or Continue watching asks for its own version over it. While a provider needs its
 password, the version remembered from it and how far its versions got are left out of the
@@ -248,17 +249,20 @@ Each responsibility has one owner, a plain module with a store the screens read:
   accepted choices are written before rows update, and failed writes keep the previous choice.
   Titles keep the device language until changed, then rebuild the index and collections in tasks
   and read TMDB names/details/episodes in that language. Saved manual version picks still win.
-  Audio defaults to Follow title language, with original/preferred-language options. The later
-  consumer targets the effective title language and falls back to the native playable default
+  Audio defaults to Follow title language, with original/preferred-language options. Playback
+  targets the effective title language and falls back to the native playable default
   when unavailable. Subtitles default to forced-only, with Off/preferred-language options. A
   channel's pick, written through the same accepted path, names one of the streams the channel
   lists, by opaque subscription, channel and stream ids only; it replaces a pick kept under the
   channel's other stream ids, Automatic removes it, and picks in a shape this build doesn't know
-  stay read-only. `src/media-policy.ts` holds the pure decisions the player will apply: tracks from
+  stay read-only. `src/media-policy.ts` holds the pure decisions the player applies: tracks from
   observed native snapshots, holds and readback confirmation, remembered manual picks, file track
-  facts and the Live recovery table. These track policies, the Full HD default Live quality and the
-  channel picks are saved for later player/variant integration. They do not yet select native
-  tracks, apply Live quality, remember per-item tracks or restart current playback.
+  facts and the Live recovery table. Each viewer choice freezes audio/subtitle policy and actual
+  title/original language; Try again keeps these and confirmed descriptor holds. Automatic choices
+  use playable native options, and forced subtitles follow confirmed sound. Manual requests become
+  holds only after actual readback, then remember a changing pick through this same preference
+  writer. Settings changes affect the next choice. Live quality, channel-pick application and
+  automatic recovery still await their separate consumer unit.
 - `src/details-cache.ts`: title and season details opened, in Caches/details. Each provider's
   facts of a title sit under its subscription; TMDB's about of a title and of a season are shared,
   as its list metadata is. `titles.ts` decides when one shows; this module keeps the files, one
@@ -483,7 +487,9 @@ brought back to the app, which its own view never forwarded, and hold AVKit's an
 has shown the player again, so the picture returns into Watch rather than Home.
 Watch's Audio and Subtitles query observed native tracks and select the exact record with its
 item, attempt and revision. Duplicate display labels stay distinct by native ID and optional name;
-checkmarks follow actual readback. See the managed contract above for the remaining native gates.
+checkmarks follow actual readback. Requests share one queue with automatic policy; an acknowledgement
+does not confirm a hold or remember a preference. Later selection-only snapshots can confirm it.
+See the managed contract above for the remaining native gates.
 `src/glass.tsx` draws the app's own controls as Liquid Glass, and solid before iOS 26 or with
 Reduce Transparency on. `src/loading.tsx` shows how lists stand, from what `account.ts` and
 `titles.ts` hold: still shapes where content hasn't come yet, with a soft highlight crossing them

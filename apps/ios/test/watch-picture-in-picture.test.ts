@@ -278,7 +278,15 @@ async function inPictureInPicture(item: Playing) {
   const root = createRoot(window.document.createElement("div"));
   act(() => root.render(React.createElement(WatchLayer)));
   unmount = () => act(() => root.unmount());
-  await act(() => play(item, open, inWatch));
+  await act(() =>
+    play(
+      item,
+      item.live
+        ? { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false }
+        : { kind: "file", originalLanguage: null, open: open },
+      inWatch,
+    ),
+  );
   const view = shown();
   act(() => view.start());
   expect(playbackState.get()).toMatchObject({ watch: false, pip: true });
@@ -307,7 +315,7 @@ describe("returning from Picture in Picture", () => {
     // Another title plays before Watch answers the first return, so it answers no to that one.
     act(() => {
       first = view.restore();
-      void play(movie("2"), open, inWatch);
+      void play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
     });
     // AVKit asks again before that answer arrives; Watch shows the new title and answers yes.
     act(() => {
@@ -343,7 +351,7 @@ describe("returning from Picture in Picture", () => {
     act(() => {
       request = view.restore();
       stop();
-      void play(movie("1"), open, inWatch);
+      void play(movie("1"), { kind: "file", originalLanguage: null, open: open }, inWatch);
     });
     deliver();
     expect(native.sent).toEqual([{ view: view.id, request, restored: false }]);
@@ -393,7 +401,15 @@ async function watching(item: Playing, opens = open, { playing = true } = {}) {
   const root = createRoot(container);
   act(() => root.render(React.createElement(WatchLayer)));
   unmount = () => act(() => root.unmount());
-  await act(() => play(item, opens, inWatch));
+  await act(() =>
+    play(
+      item,
+      item.live
+        ? { kind: "live", candidates: [{ variantId: "stream", open: opens }], explicit: false }
+        : { kind: "file", originalLanguage: null, open: opens },
+      inWatch,
+    ),
+  );
   if (playing) started();
   return {
     /** Draws Watch again, as navigation's state changing does. */
@@ -494,7 +510,9 @@ describe("Downloads and Settings from Watch", () => {
       const replaced = await watching(movie("2"));
       await replaced.press("watch-settings");
       await act(async () => undefined);
-      await act(() => play(movie("3"), open, inWatch));
+      await act(() =>
+        play(movie("3"), { kind: "file", originalLanguage: null, open: open }, inWatch),
+      );
       act(() => vi.advanceTimersByTime(1000));
       expect(playbackState.get()).toMatchObject({ watch: true, aside: false });
     } finally {
@@ -569,7 +587,13 @@ describe("Close", () => {
     const root = createRoot(window.document.createElement("div"));
     act(() => root.render(React.createElement(WatchLayer)));
     unmount = () => act(() => root.unmount());
-    await act(() => play(movie("1"), open, { ...inWatch, progress }));
+    await act(() =>
+      play(
+        movie("1"),
+        { kind: "file", originalLanguage: null, open: open },
+        { ...inWatch, progress },
+      ),
+    );
     started();
     Object.assign(player(), { currentTime: 100, duration: 600 });
     await act(async () => void (await closeWatch()));
@@ -921,7 +945,7 @@ describe("Watch's asynchronous track menus", () => {
           openWatch();
         } else if (change === "navigation")
           (await import("../src/playback.ts")).onScreen("/settings");
-        else await play(movie("2"), open, inWatch);
+        else await play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
         resolve({ kind: "stale" });
       });
       expect(native.sheets).toEqual([]);
@@ -937,7 +961,7 @@ describe("Watch's asynchronous track menus", () => {
     expect(native.sheets[0]?.options).toEqual(["✓ Off", "Cancel"]);
     await act(async () => {
       await closeWatch();
-      await play(movie("2"), open, inWatch);
+      await play(movie("2"), { kind: "file", originalLanguage: null, open: open }, inWatch);
     });
     native.sheets[0]?.pick(0);
     await act(async () => undefined);

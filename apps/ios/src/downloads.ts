@@ -1731,14 +1731,18 @@ function playCopy(id: string, record: Stored) {
       : 0;
   void play(
     item,
-    async () => {
-      // A removal written down meanwhile, or done, closes the copy to new readers.
-      if (!playable(find(id)) || !media.exists) {
-        if (playable(find(id))) missing.add(id);
-        tell();
-        throw new AppFailure({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
-      }
-      return { url: media.uri, container: record.container };
+    {
+      kind: "file",
+      originalLanguage: record.about.originalLanguage,
+      open: async () => {
+        // A removal written down meanwhile, or done, closes the copy to new readers.
+        if (!playable(find(id)) || !media.exists) {
+          if (playable(find(id))) missing.add(id);
+          tell();
+          throw new AppFailure({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
+        }
+        return { url: media.uri, container: record.container };
+      },
     },
     {
       watch: true,

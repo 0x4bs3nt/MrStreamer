@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 const fakePlayer = nativePlayer();
 const emit = fakePlayer.emit;
 
+vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("expo-video", () => ({ createVideoPlayer: () => fakePlayer }));
 
 const {
@@ -61,7 +62,11 @@ const playing = (isPlaying = true) => fakePlayer.state(isPlaying);
 
 /** A movie playing in Watch at `position` seconds; what the player was told so far is cleared. */
 async function watching(position = 120) {
-  await play(movie("m1"), open, { watch: true, login: [], progress });
+  await play(
+    movie("m1"),
+    { kind: "file", originalLanguage: null, open: open },
+    { watch: true, login: [], progress },
+  );
   playing();
   fakePlayer.currentTime = position;
   fakePlayer.pause.mockClear();
@@ -99,7 +104,11 @@ describe("Close", () => {
 
   it("pauses a title still connecting as soon as it starts, and doesn't play it later", async () => {
     const source = deferred<{ url: string; container: string }>();
-    const starting = play(movie("m1"), () => source.promise, { watch: true, login: [], progress });
+    const starting = play(
+      movie("m1"),
+      { kind: "file", originalLanguage: null, open: () => source.promise },
+      { watch: true, login: [], progress },
+    );
     fakePlayer.pause.mockClear();
     void closeWatch();
     source.resolve({ url: "file:m1", container: "mp4" });
@@ -125,7 +134,11 @@ describe("Close", () => {
   });
 
   it("pauses a channel too, which has nothing to save", async () => {
-    await play(movie("c1", true), open, { watch: true, login: [] });
+    await play(
+      movie("c1", true),
+      { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false },
+      { watch: true, login: [] },
+    );
     playing();
     fakePlayer.pause.mockClear();
     void closeWatch();
@@ -189,11 +202,21 @@ describe("after Close", () => {
 
   it("starts a new Home preview without sound, after a title or a channel", async () => {
     for (const live of [false, true]) {
-      await play(movie(live ? "c1" : "m1", live), open, { watch: true, login: [], progress });
+      await play(
+        movie(live ? "c1" : "m1", live),
+        live
+          ? { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false }
+          : { kind: "file", originalLanguage: null, open: open },
+        { watch: true, login: [], progress },
+      );
       playing();
       void closeWatch();
       playing(false);
-      await play(movie("c2", true), open, { watch: false, login: [] });
+      await play(
+        movie("c2", true),
+        { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false },
+        { watch: false, login: [] },
+      );
       expect(fakePlayer.muted).toBe(true);
       expect(playbackState.get()).toMatchObject({ phase: { kind: "loading" }, muted: true });
     }
@@ -240,7 +263,11 @@ describe("after Close", () => {
     void closeWatch();
     playing(false);
     void stop();
-    await play(movie("c2", true), open, { watch: false, login: [] });
+    await play(
+      movie("c2", true),
+      { kind: "live", candidates: [{ variantId: "stream", open: open }], explicit: false },
+      { watch: false, login: [] },
+    );
     playing();
     playing(false);
     togglePause();
@@ -260,7 +287,11 @@ describe("after Close", () => {
   it("saves nothing of the next title for a pause the player reports after it began", async () => {
     await watching(120);
     void closeWatch();
-    await play(movie("m2"), open, { watch: true, login: [], progress: saverOf("m2") });
+    await play(
+      movie("m2"),
+      { kind: "file", originalLanguage: null, open: open },
+      { watch: true, login: [], progress: saverOf("m2") },
+    );
     fakePlayer.currentTime = 0;
     playing(false);
     for (const save of saves) save.answer.resolve();
@@ -363,7 +394,11 @@ describe("saving how far a title got", () => {
 
   it("keeps a new play's saves after the old one's last", async () => {
     await watching(120);
-    await play(movie("m2"), open, { watch: true, login: [], progress });
+    await play(
+      movie("m2"),
+      { kind: "file", originalLanguage: null, open: open },
+      { watch: true, login: [], progress },
+    );
     playing();
     fakePlayer.currentTime = 30;
     void stop();
