@@ -4,7 +4,7 @@ import * as React from "react";
 import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import type { TitleMetadata } from "@mrstreamer/core/metadata/tmdb";
-import { kindOf, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
+import { indexCatalogue, kindOf, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import {
   collectionRows,
   collections,
