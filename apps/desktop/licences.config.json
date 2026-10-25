@@ -15,6 +15,15 @@
     "lucide-react": {
       "why": "Icons derived from Feather are MIT, as its LICENSE says; the app uses some.",
       "licence": "ISC AND MIT"
+    },
+    "undici": {
+      "why": "Its fetch and the llhttp parser it carries as WebAssembly have MIT notices of their own, which its root LICENSE doesn't hold.",
+      "files": [
+        "licences/undici/undici.txt",
+        "licences/undici/LICENSE",
+        "licences/undici/fetch-LICENSE",
+        "licences/undici/llhttp-LICENSE"
+      ]
     }
   },
   "embedded": {

@@ -41,13 +41,23 @@ dgram.Socket.prototype.send = function (...args) {
   return send.apply(this, args);
 };
 
-const fetchOriginal = globalThis.fetch;
-globalThis.fetch = (input, init) => {
+// Main puts undici's fetch in place as it starts (src/main/fetch.ts), after this runs, so the
+// hook stays in front of whichever fetch is installed.
+let fetchInstalled = globalThis.fetch;
+const fetchHooked = (input, init) => {
   const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const url = URL.parse(href);
   if (images && url && IMAGE_HOSTS.has(url.hostname)) {
     write({ kind: "artwork", host: url.hostname, path: url.pathname });
-    return fetchOriginal(`${images}${url.pathname}`, init);
+    return fetchInstalled(`${images}${url.pathname}`, init);
   }
-  return fetchOriginal(input, init);
+  return fetchInstalled(input, init);
 };
+Object.defineProperty(globalThis, "fetch", {
+  configurable: true,
+  enumerable: true,
+  get: () => fetchHooked,
+  set: (fetch) => {
+    fetchInstalled = fetch;
+  },
+});
