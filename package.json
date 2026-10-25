@@ -14,7 +14,7 @@
     "dev:marketing": "pnpm --filter mrstreamer-marketing dev",
     "build:marketing": "pnpm --filter mrstreamer-marketing build",
     "preview:marketing": "pnpm --filter mrstreamer-marketing preview",
-    "typecheck": "tsc --noEmit -p packages/contracts && tsc --noEmit -p packages/core && tsc --noEmit -p apps/desktop && tsc --noEmit -p apps/desktop/src/renderer && tsc --noEmit -p apps/marketing && tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p packages/contracts && tsc --noEmit -p packages/core && tsc --noEmit -p apps/desktop && tsc --noEmit -p apps/desktop/src/renderer && tsc --noEmit -p apps/marketing && tsc --noEmit -p tsconfig.json && tsc -p apps/review-provider/tsconfig.worker.json && tsc -p apps/review-provider/tsconfig.tools.json",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings --report-unused-disable-directives",
     "knip": "knip",

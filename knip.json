@@ -20,6 +20,9 @@
     "apps/marketing": {
       "entry": ["scripts/*.ts"]
     },
+    "apps/review-provider": {
+      "entry": ["test/worker.ts"]
+    },
     "packages/*": {}
   },
   "ignoreBinaries": [
