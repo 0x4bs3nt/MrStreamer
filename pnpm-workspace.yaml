@@ -8,6 +8,7 @@ allowBuilds:
   electron-winstaller: false
   esbuild: true
   sharp: true
+  workerd: false
 
 # Reviewed patch releases; keep age exceptions specific to the selected versions.
 minimumReleaseAgeExclude:

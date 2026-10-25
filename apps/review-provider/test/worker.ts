@@ -1,4 +1,4 @@
-import { createReviewProvider, type Env } from "../src/index.ts";
+import production, { createReviewProvider, type Env } from "../src/index.ts";
 import type { Bucket } from "../src/binary.ts";
 import { fixture, FIXTURE_NOW } from "./fixture.ts";
 
@@ -8,8 +8,10 @@ export default {
   async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
     const f = await data;
     const now = Number(request.headers.get("X-Fixture-Clock") ?? FIXTURE_NOW);
-    const provider = createReviewProvider(f.media, () => now);
     const config = { ...env, REVIEW_LOGIN: request.headers.get("X-Fixture-Login") ?? f.login };
+    if (request.headers.has("X-Fixture-Production-Entry"))
+      return production.fetch(request, config, context);
+    const provider = createReviewProvider(f.media, () => now);
     if (request.headers.has("X-Fixture-No-Bucket")) {
       return provider.fetch(
         request,

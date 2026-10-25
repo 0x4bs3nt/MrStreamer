@@ -101,13 +101,37 @@ can issue HEAD internally. A Node Response header assertion is insufficient.
 
 ## Credentials and delivery
 
-`REVIEW_LOGIN` is a later encrypted binding holding URL-safe generated username,
-password SHA-256 verifier and optional retiring verifier/retirement time.
+`REVIEW_LOGIN` is an encrypted binding holding the generated username, password
+SHA-256 verifier and optional retiring verifier/retirement time. Both generated
+credential strings must be unpadded base64url using only `[A-Za-z0-9_-]`. The
+username is 1 to 128 characters. The password encodes at least 32 random bytes,
+256 bits, and must fit the 256-character route limit. Standard base64 padding or
+other punctuation can pass query authentication but fail media path parsing.
+
+The exact configuration shape below uses descriptive placeholders, not a login:
+
+```json
+{
+  "username": "<unpadded-base64url username>",
+  "passwordSha256": "<64 lowercase hex characters>",
+  "retiring": {
+    "passwordSha256": "<64 lowercase hex characters>",
+    "retireAfterUtc": null
+  }
+}
+```
+
+Hash the exact UTF-8 password string with SHA-256 and encode the digest as 64
+lowercase hexadecimal characters. Omit `retiring` until a coordinated rotation.
+It holds the previous password verifier for the same stable username;
+`retireAfterUtc` is null during overlap, or an explicitly approved UTC ISO timestamp.
+The current verifier has no expiry. ROOT owns the existing private login and vault
+handoff; do not generate another login or copy private values into this package.
+
 `PUBLIC_ORIGIN` is an explicitly approved HTTPS origin; `MEDIA` is its private R2
-binding. No actual credentials/target are included here. Generate both credential
-strings later, with at least 256 random password bits, through approved private
-handling. Nothing is embedded in the app. No expiry or automatic rotation may
-strand current private App Review notes. Verify notes/handoff before revocation.
+binding. No actual credentials/target are included here. Nothing is embedded in
+the app. No expiry or automatic rotation may strand current private App Review
+notes. Verify notes/handoff before revocation.
 
 Xtream embeds login parts in URLs. Disable invocation/tracing/URL exports before
 the first credentialed request, audit account-level logs/retention and avoid raw
@@ -127,14 +151,26 @@ After the approved dependency setup and actual media preparation, the package's
 typecheck, test and build scripts perform the local checks. Root typechecking
 includes both package configs; root test globs include these tests. The focused
 Vitest config avoids the desktop global setup. No encoder runs in CI tests.
+`workerd: false` explicitly declines its install script under pnpm's strict build
+policy. Do not use `--ignore-scripts` to claim the ordinary install was verified.
+
+The lock adds a reachable service graph while preserving the existing graph. It
+passed frozen validation, but differs from pnpm's previous nonfrozen resolution.
+A later dependency edit may reproduce that resolution's unrelated peer/snapshot
+changes. Review those changes explicitly rather than treating them as required
+service upgrades.
 
 Tests bundle the actual service with a clearly synthetic NON-MEDIA index and
 fixture R2 bytes, then drive local workerd HTTP with the real core Xtream client.
 They do not mock Provider methods/parsers/renderers. Raw local HTTP tests inspect
 full/range lengths, HEAD separately, and gzip decoded exactly once. Explicit R2
 failure ports cover missing/short/long/errored sources. Synthetic bytes are never
-M01 media certification or a production index. Production index provenance is
-checked independently at the default Worker entry.
+M01 media certification or a production index. A separate catalogue-only HTTP
+smoke invokes the default production entry with the committed measured index,
+including index parsing/provenance checks. It reads no prepared media objects and
+needs no private preparation stage. Its fixture configuration stays in the test
+entry; production has no test header or clock capability. This is not deployed
+or native media proof.
 
 Local workerd success proves local workerd only. Actual Cloudflare HTTP H01/H02,
 account/runtime budgets/logging H03/H04, native playback/downloads and physical

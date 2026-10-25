@@ -46,7 +46,7 @@ export const ARTWORK = [
   },
 ] as const;
 export type MediaId = (typeof ORIGINALS)[number]["id"];
-export type ArtworkId = (typeof ARTWORK)[number]["id"];
+type ArtworkId = (typeof ARTWORK)[number]["id"];
 export type RenditionId = "540p" | "180p";
 
 export interface ObjectFact {
@@ -55,7 +55,7 @@ export interface ObjectFact {
   readonly sha256: string;
   readonly mime: "video/mp4" | "video/mp2t" | "image/png";
 }
-export interface Rendition {
+interface Rendition {
   readonly id: RenditionId;
   readonly width: number;
   readonly height: number;

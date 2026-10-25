@@ -26,9 +26,8 @@ beforeAll(async () => {
     platform: "browser",
     target: "es2022",
     logLevel: "silent",
-    // Only the unused production entry imports measured data. Tests inject the
-    // explicit NON-MEDIA index and never need a private preparation stage.
-    external: ["../generated/media.json"],
+    // Bundle the committed measured index for the production-entry smoke. All
+    // other HTTP tests inject NON-MEDIA data; no private media stage is needed.
   });
   const script = output.outputFiles[0]?.text;
   if (!script) throw new Error("Missing local worker bundle");
@@ -59,10 +58,10 @@ function clockFetch(now = FIXTURE_NOW, extra: Readonly<Record<string, string>> =
     return fetch(input, { ...init, headers });
   };
 }
-function provider(now = FIXTURE_NOW) {
+function provider(now = FIXTURE_NOW, extra: Readonly<Record<string, string>> = {}) {
   return xtreamProvider(
     { server: origin, username: USER, password: PASSWORD },
-    { userAgent: "MrStreamer/local-service-contract", live: "hls", fetch: clockFetch(now) },
+    { userAgent: "MrStreamer/local-service-contract", live: "hls", fetch: clockFetch(now, extra) },
   );
 }
 const credentials = () => new URLSearchParams({ username: USER, password: PASSWORD });
@@ -108,6 +107,17 @@ function raw(path: string, method = "GET", headers: Readonly<Record<string, stri
 }
 
 describe("normal Xtream review contract", () => {
+  it("boots the production entry with the committed measured index through HTTP", async () => {
+    const p = provider(FIXTURE_NOW, { "X-Fixture-Production-Entry": "1" });
+    expect(await p.authenticate()).toMatchObject({ state: "active", expiresAt: null });
+    expect((await p.liveCatalogue()).channels).toMatchObject([
+      { id: CHANNEL.id, guideId: CHANNEL.guideId },
+    ]);
+    const titles = await p.onDemandCatalogue();
+    expect(titles.movies.map((movie) => movie.id)).toEqual(["movie"]);
+    expect(titles.series.map((series) => series.id)).toEqual(["series"]);
+  });
+
   it("feeds the real Provider auth, catalogue, grouping, details, files and native GuideRequest", async () => {
     const p = provider();
     expect(await p.authenticate()).toEqual({
@@ -287,17 +297,38 @@ describe("normal Xtream review contract", () => {
 describe("linear clock and Guide", () => {
   function mediaRows(text: string) {
     const rows = text.trim().split("\n");
+    const entries: { uri: string; time: number; discontinuity: boolean }[] = [];
+    let time = NaN;
+    let discontinuity = false;
+    for (const row of rows) {
+      if (row === "#EXT-X-DISCONTINUITY") discontinuity = true;
+      else if (row.startsWith("#EXT-X-PROGRAM-DATE-TIME:")) time = Date.parse(row.slice(25));
+      else if (!row.startsWith("#")) {
+        entries.push({ uri: row, time, discontinuity });
+        discontinuity = false;
+      }
+    }
     return {
       rows,
       sequence: Number(rows.find((r) => r.startsWith("#EXT-X-MEDIA-SEQUENCE:"))?.split(":")[1]),
       ds: Number(rows.find((r) => r.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:"))?.split(":")[1]),
-      segments: rows.filter((r) => !r.startsWith("#")),
-      times: rows
-        .filter((r) => r.startsWith("#EXT-X-PROGRAM-DATE-TIME:"))
-        .map((r) => Date.parse(r.slice(25))),
+      entries,
+      segments: entries.map((entry) => entry.uri),
+      times: entries.map((entry) => entry.time),
     };
   }
-  const mediaPath = (): string => live(`${CHANNEL.id}/${data.media.release}/540p.m3u8`);
+  const mediaPath = (rendition = "540p"): string =>
+    live(`${CHANNEL.id}/${data.media.release}/${rendition}.m3u8`);
+
+  async function guideRows(at: number): Promise<XmltvProgramme[]> {
+    const guide = await provider(at).liveGuide();
+    if (guide.kind !== "document") throw new Error("Expected guide");
+    const programmes: XmltvProgramme[] = [];
+    const reader = xmltvReader({ programme: (p) => programmes.push(p), channel: () => {} }, 16_384);
+    for await (const chunk of guide.body) reader.push(chunk);
+    expect(reader.end()).toBe("whole");
+    return programmes;
+  }
 
   it("serves measured master attributes and a private relative URI graph", async () => {
     const stream = await provider().liveStream(CHANNEL.id);
@@ -356,6 +387,90 @@ describe("linear clock and Guide", () => {
     expect((await get(mediaPath(), {}, EPOCH + 899_999)).status).toBe(503);
   });
 
+  it("prepends one predecessor and removes two segments at the following window step", async () => {
+    for (const rendition of ["540p", "180p"]) {
+      const first = await get(mediaPath(rendition), {}, FIXTURE_NOW + 90_000);
+      expect(first.status).toBe(200);
+      const before = mediaRows(await first.text());
+      expect(before.segments).toHaveLength(151);
+      expect(before.sequence).toBe(4_283_864);
+      expect(before.segments.at(-1)).toBe(`${rendition}/4284014.ts`);
+      expect(before.ds).toBe(233_664);
+      expect(before.entries[0]?.discontinuity).toBe(false);
+      expect(before.entries[1]?.discontinuity).toBe(true);
+
+      const next = await get(mediaPath(rendition), {}, FIXTURE_NOW + 96_000);
+      expect(next.status).toBe(200);
+      const after = mediaRows(await next.text());
+      expect(after.segments).toHaveLength(150);
+      expect(after.sequence).toBe(4_283_866);
+      expect(after.ds).toBe(233_665);
+      expect(after.sequence - before.sequence).toBe(2);
+      expect(after.ds - before.ds).toBe(1);
+      expect(after.segments[0]).toBe(before.segments[2]);
+      expect(after.entries[0]?.discontinuity).toBe(false);
+    }
+  });
+
+  it("refuses the exact 900-second epoch window and admits the next complete window", async () => {
+    for (const rendition of ["540p", "180p"]) {
+      expect((await get(mediaPath(rendition), {}, EPOCH + 900_000)).status).toBe(503);
+      const answer = await get(mediaPath(rendition), {}, EPOCH + 906_000);
+      expect(answer.status).toBe(200);
+      const window = mediaRows(await answer.text());
+      expect(window.sequence).toBe(1);
+      expect(window.ds).toBe(0);
+      expect(window.segments).toHaveLength(150);
+      expect(window.times[0]).toBe(EPOCH + 6_000);
+      expect(window.segments[0]).toBe(`${rendition}/1.ts`);
+      expect(window.entries[0]?.discontinuity).toBe(false);
+    }
+  });
+
+  it("refuses the next future segment until six more seconds complete it", async () => {
+    for (const rendition of ["540p", "180p"]) {
+      const path = mediaPath(rendition);
+      const window = mediaRows(await (await get(path, {}, FIXTURE_NOW + 90_000)).text());
+      const next = window.sequence + window.segments.length;
+      expect(window.segments.at(-1)).toBe(`${rendition}/${next - 1}.ts`);
+      const future = new NodeURL(`${rendition}/${next}.ts`, origin + path).pathname;
+      expect((await get(future, {}, FIXTURE_NOW + 90_000)).status).toBe(404);
+      const available = await get(future, {}, FIXTURE_NOW + 96_000);
+      expect(available.status).toBe(200);
+      expect(available.headers.get("content-type")).toBe("video/mp2t");
+      expect(await available.text()).toContain("NON-MEDIA HTTP fixture");
+    }
+  });
+
+  it("matches every in-window Guide start to HLS discontinuity PDT in movie and episode order", async () => {
+    const order = ["Generated sample movie", "Episode 1", "Episode 2"];
+    for (const at of [FIXTURE_NOW + 90_000, FIXTURE_NOW + 96_000]) {
+      const programmes = await guideRows(at);
+      for (const rendition of ["540p", "180p"]) {
+        const answer = await get(mediaPath(rendition), {}, at);
+        expect(answer.status).toBe(200);
+        const window = mediaRows(await answer.text());
+        const first = window.times[0]!;
+        const end = window.times.at(-1)! + 6_000;
+        const inside = programmes.filter((p) => p.start >= first && p.start < end);
+        const seams = window.entries.filter((entry) => entry.discontinuity);
+        expect(inside.length).toBeGreaterThanOrEqual(6);
+        expect(inside.map((p) => p.start)).toEqual(seams.map((entry) => entry.time));
+        const initial = order.indexOf(inside[0]!.title);
+        expect(initial).toBeGreaterThanOrEqual(0);
+        expect(inside.map((p) => p.title)).toEqual(
+          inside.map((_, i) => order[(initial + i) % order.length]),
+        );
+        for (const programme of inside) {
+          expect(programme.channel).toBe(CHANNEL.guideId);
+          expect(programme.stop! - programme.start).toBe(
+            programme.title === "Generated sample movie" ? 150_000 : 90_000,
+          );
+        }
+      }
+    }
+  });
+
   it.each([
     EPOCH + 150_000,
     EPOCH + 240_000,
@@ -363,12 +478,7 @@ describe("linear clock and Guide", () => {
     FIXTURE_NOW,
     FIXTURE_NOW + 86_400_000,
   ])("keeps exact half-open XMLTV programme intervals on the video clock", async (at) => {
-    const guide = await provider(at).liveGuide();
-    if (guide.kind !== "document") throw new Error("Expected guide");
-    const programmes: XmltvProgramme[] = [];
-    const reader = xmltvReader({ programme: (p) => programmes.push(p), channel: () => {} }, 16_384);
-    for await (const chunk of guide.body) reader.push(chunk);
-    expect(reader.end()).toBe("whole");
+    const programmes = await guideRows(at);
     const current = programmes.filter((p) => p.start <= at && (p.stop ?? 0) > at);
     expect(current).toHaveLength(1);
     for (const [i, row] of programmes.entries()) {
