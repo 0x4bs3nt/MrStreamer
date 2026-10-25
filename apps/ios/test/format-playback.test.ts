@@ -1,5 +1,5 @@
 import { nativePlayer } from "./native-player.ts";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // Titles in files AVPlayer can't open play through a format session: the native module reads the
 // file and gives the player a loopback playlist. What the viewer and the provider would see is
@@ -496,3 +496,82 @@ it.each(["session", "direct"] as const)(
     await stop();
   },
 );
+
+it("waits for both format closure and native detach before the first Live candidate and its fallback", async () => {
+  const { onAdmission } = await import("../src/playback.ts");
+  const order: string[] = [];
+  onAdmission({
+    acquire: async () => {
+      order.push("acquire");
+    },
+    release: () => {
+      order.push("release");
+    },
+  });
+  void play(
+    movie("file"),
+    {
+      kind: "file",
+      originalLanguage: null,
+      open: async () => ({ url: "http://panel/file.mkv", container: "mkv" }),
+    },
+    options,
+  );
+  await settle();
+  const format = sessions[0]!;
+  format.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/file/main.m3u8" });
+  await settle();
+  const stamp = fakePlayer.identity();
+  const drain = deferred<Awaited<ReturnType<typeof fakePlayer.detachObservedAsync>>>();
+  const receipt: Awaited<ReturnType<typeof fakePlayer.detachObservedAsync>> = {
+    kind: "detached",
+    ...stamp,
+    localItemExcluded: true,
+    appWorkDrained: true,
+    providerDisconnect: "unobservable",
+  };
+  onTestFinished(async () => {
+    drain.resolve(receipt);
+    format.closed.resolve();
+    await stop();
+    onAdmission(null);
+  });
+  fakePlayer.detachObservedAsync.mockReturnValueOnce(drain.promise);
+  const candidate = (id: string) => ({
+    variantId: id,
+    open: async () => {
+      order.push(`lookup:${id}`);
+      return { url: `http://panel/${id}.m3u8`, container: "m3u8" };
+    },
+  });
+  const live = play(
+    { ...movie("live"), live: true },
+    {
+      kind: "live",
+      explicit: false,
+      candidates: [candidate("first"), candidate("fallback")],
+    },
+    options,
+  );
+  await settle();
+  expect(order).toEqual(["acquire"]);
+  format.closed.resolve();
+  await settle();
+  expect(order).toEqual(["acquire"]);
+  drain.resolve(receipt);
+  await live;
+  expect(order).toEqual(["acquire", "release", "acquire", "lookup:first"]);
+  fakePlayer.failure({ kind: "missing", evidence: null });
+  await settle();
+  expect(order).toEqual([
+    "acquire",
+    "release",
+    "acquire",
+    "lookup:first",
+    "release",
+    "acquire",
+    "lookup:fallback",
+  ]);
+  await stop();
+  onAdmission(null);
+});

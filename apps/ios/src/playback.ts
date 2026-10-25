@@ -1,10 +1,8 @@
 import { appFailure, type AnalyticsFailure } from "@mrstreamer/contracts/analytics";
-import type { StreamFailure } from "@mrstreamer/contracts/playback";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import { languageCode } from "@mrstreamer/core/ondemand/tracks";
 import {
   createVideoPlayer,
-  type ObservedFailure,
   type ObservedItemIdentity,
   type ObservedTrackSelection,
   type ObservedTrackSnapshot,
@@ -17,11 +15,15 @@ import {
   decideAudio,
   decideSubtitles,
   holdOf,
+  nextStep,
   observedFileTracks,
   rematch,
   remembered,
+  START_TIMEOUT_MS,
+  STALL_TIMEOUT_MS,
   type MediaPolicy,
   type ObservedFileTracks,
+  type PlaybackFailure,
   type TrackContext,
   type TrackHold,
 } from "./media-policy.ts";
@@ -30,7 +32,7 @@ import {
   getMediaPreferences,
   updateMediaPreferences,
 } from "./media-preferences.ts";
-import { currentSource, onSignedIn } from "./sources.ts";
+import { currentSource, onSignedIn, type Source as SignedInSource } from "./sources.ts";
 import { store, useStore, type Store } from "./store.ts";
 import { openFormat, type FormatSession } from "./title-formats.ts";
 
@@ -267,25 +269,47 @@ interface Choice {
   readonly holds: { audio?: TrackHold; subtitles?: TrackHold };
 }
 
+/** One source binding and recovery budget. Only play and explicit Try again replace it. */
+interface Epoch {
+  readonly id: number;
+  /** The exact binding and its private login parts, including a login restored before lookup. */
+  signedIn: SignedInSource | undefined;
+  sourceBound: boolean;
+  candidate: number;
+  playedOn: number | null;
+  reconnects: number;
+  played: boolean;
+  terminal: boolean;
+  last: PlaybackFailure | null;
+  backoff: ReturnType<typeof setTimeout> | null;
+  watchdog: {
+    readonly stage: "startup" | "stall";
+    spentMs: number;
+    armedAt: number | null;
+    timer: ReturnType<typeof setTimeout> | null;
+    lastMedia: number | null;
+  } | null;
+  playingSince: number | null;
+  playedMs: number;
+}
+
+/** A native paused sample acknowledges intent; it never creates viewer intent. */
+let held: { readonly by: "viewer" | "away"; acknowledged: boolean } | null = null;
+let epochs = 0;
+
 let current: {
   readonly item: Playing;
   readonly choice: Choice;
   readonly options: PlayOptions;
+  readonly epoch: Epoch;
   /** Seconds to seek to once the title is ready; null once done. */
   seek: number | null;
   /** Whether the stream got as far as playing, so a position means something. */
   loaded: boolean;
   /** Where a title was when it was let go of, for Try again. */
   stoppedAt: number | null;
-  readonly resource: Resource;
-  failure: PlaybackFailure | null;
+  resource: Resource;
 } | null = null;
-/** Failure facts stay local. Only the existing analytics callback receives a lossy category. */
-type PlaybackFailure =
-  | { readonly kind: "native"; readonly failure: ObservedFailure }
-  | { readonly kind: "format"; readonly failure: StreamFailure }
-  | { readonly kind: "lookup"; readonly error: AppError }
-  | { readonly kind: "bridge" | "reset" | "cancelled" | "detach-timeout" };
 
 type FormatReader = ReturnType<typeof openFormat>;
 type Group = "audio" | "subtitles";
@@ -312,8 +336,7 @@ interface Resource {
   readonly controller: AbortController;
   readonly sourceStands: () => boolean;
   readonly subscriptionId: string | null;
-  /** Actual bound login parts stay private, including a source restored after play was asked. */
-  redaction: readonly string[];
+  readonly automatic: boolean;
   readonly formats: FormatReader[];
   readonly closed: Promise<void>;
   readonly drained: () => void;
@@ -380,8 +403,20 @@ function stands(resource: Resource): boolean {
 }
 
 onSignedIn(() => {
-  if (current && !current.resource.retired && !current.resource.sourceStands()) void stop();
+  if (!current || sourceStands(current)) return;
+  if (!current.resource.retired) void stop();
+  else endRecovery();
 });
+
+const attended = () => {
+  const { watch, pip, external } = state.get();
+  return watch || pip || external;
+};
+
+const sourceStands = ({ item, epoch }: NonNullable<typeof current>) =>
+  item.subscriptionId === null ||
+  !epoch.sourceBound ||
+  currentSource(item.subscriptionId) === epoch.signedIn;
 
 function noteClosing() {
   const holding = [
@@ -569,6 +604,7 @@ export function player(): VideoPlayer {
     const silent = !isExternalPlaybackActive && !watch && !pip;
     if (silent) made.muted = true;
     state.set((s) => ({ ...s, external: isExternalPlaybackActive, muted: silent || s.muted }));
+    attentionChanged();
   });
   created = made;
   return made;
@@ -577,6 +613,10 @@ export function player(): VideoPlayer {
 /** Releases readers independently of the ordered progress-save result. */
 function release(): Promise<Saved> {
   const saved = report();
+  if (current) {
+    clearWatchdog(current.epoch);
+    playingTime(current.epoch, false);
+  }
   if (current?.loaded && !current.item.live) current.stoppedAt = player().currentTime;
   if (checkpoint) clearInterval(checkpoint);
   checkpoint = null;
@@ -587,48 +627,163 @@ function release(): Promise<Saved> {
   return saved;
 }
 
-function fail(failure: PlaybackFailure) {
+function clearWatchdog(epoch: Epoch) {
+  if (epoch.watchdog) clearTimeout(epoch.watchdog.timer ?? undefined);
+  epoch.watchdog = null;
+}
+
+function cancelEpoch(epoch: Epoch) {
+  clearTimeout(epoch.backoff ?? undefined);
+  epoch.backoff = null;
+  clearWatchdog(epoch);
+}
+
+function playingTime(epoch: Epoch, playing: boolean) {
+  const now = Date.now();
+  if (epoch.playingSince !== null) epoch.playedMs += now - epoch.playingSince;
+  epoch.playingSince = playing ? now : null;
+}
+
+/** One policy decision per failure; an automatic step changes only the Resource. */
+function fail(failure: PlaybackFailure): void {
   if (!current || current.resource.retired) return;
-  current.failure = failure;
-  const { item, options, loaded, resource } = current;
+  const owned = current;
+  const { choice, epoch } = owned;
+  epoch.last = failure;
+  playingTime(epoch, false);
+  clearWatchdog(epoch);
+  const step = nextStep(
+    failure,
+    {
+      candidates: choice.plan.kind === "live" ? choice.plan.candidates.length : 1,
+      candidate: epoch.candidate,
+      playedOn: epoch.playedOn,
+      reconnects: epoch.reconnects,
+      playedMs: epoch.playedMs,
+    },
+    {
+      live: choice.plan.kind === "live",
+      attended: attended(),
+      held: held !== null,
+      sourceStands: sourceStands(owned),
+    },
+  );
+  if (step.kind === "fail") return terminal(owned);
+  release();
+  owned.loaded = false;
+  epoch.candidate = step.candidate;
+  state.set((s) => ({ ...s, phase: { kind: "loading", item: choice.item } }));
+  if (current !== owned || epoch.terminal) return;
+  if (!attended() || held !== null || !sourceStands(owned)) return terminal(owned);
+  if (step.kind === "candidate") return void admit(owned);
+  epoch.reconnects = step.reconnects;
+  const id = epoch.id;
+  epoch.backoff = setTimeout(() => {
+    epoch.backoff = null;
+    if (current !== owned || current.epoch.id !== id || epoch.terminal) return;
+    if (!attended() || held !== null || !sourceStands(owned)) return terminal(owned);
+    void admit(owned);
+  }, step.delayMs);
+}
+
+/** Publishes once even when backoff left every reader retired. */
+function terminal(owned: NonNullable<typeof current>): void {
+  const { item, options, epoch } = owned;
+  const failure = epoch.last;
+  if (current !== owned || epoch.terminal || !failure) return;
+  epoch.terminal = true;
+  cancelEpoch(epoch);
+  playingTime(epoch, false);
   const formatFailure = failure.kind === "format" ? failure.failure : null;
   const native = failure.kind === "native" ? failure.failure : null;
   const analytics = formatFailure
     ? appFailure({ kind: "stream", failure: formatFailure })
     : failure.kind === "lookup"
       ? appFailure(failure.error)
-      : native?.kind === "auth"
-        ? "credentials"
-        : native?.kind === "network"
-          ? "network"
-          : native?.kind === "unsupported" || native?.kind === "decode"
-            ? "unsupported"
-            : native?.kind === "missing" || native?.kind === "rate-limit" || native?.kind === "http"
-              ? "unavailable"
-              : "app";
+      : failure.kind === "deadline"
+        ? "network"
+        : native?.kind === "auth"
+          ? "credentials"
+          : native?.kind === "network"
+            ? "network"
+            : native?.kind === "unsupported" || native?.kind === "decode"
+              ? "unsupported"
+              : native?.kind === "missing" ||
+                  native?.kind === "rate-limit" ||
+                  native?.kind === "http"
+                ? "unavailable"
+                : "app";
   release();
   failed?.(analytics);
-  if (!loaded) options.outcome?.(false);
-  current.loaded = false;
+  if (!epoch.played) options.outcome?.(false);
+  owned.loaded = false;
   const message = formatFailure
     ? describeError({ kind: "stream", failure: formatFailure })
     : failure.kind === "lookup"
       ? describeError(failure.error)
-      : native?.kind === "network"
-        ? "The connection to the provider failed."
-        : native?.kind === "unsupported" || native?.kind === "decode"
-          ? "Mr. Streamer can't play this file."
-          : failure.kind === "detach-timeout"
-            ? "The previous stream is still closing. Try again."
-            : "The player stopped. Try again.";
+      : failure.kind === "deadline"
+        ? failure.stage === "startup"
+          ? `No picture or sound within ${START_TIMEOUT_MS / 1000} s.`
+          : "The stream stopped delivering data."
+        : native?.kind === "network"
+          ? "The connection to the provider failed."
+          : native?.kind === "unsupported" || native?.kind === "decode"
+            ? "Mr. Streamer can't play this file."
+            : failure.kind === "detach-timeout"
+              ? "The previous stream is still closing. Try again."
+              : "The player stopped. Try again.";
+  if (current !== owned) return;
   state.set((s) => ({
     ...s,
     phase: {
       kind: "failed",
       item,
-      error: withoutLogin(message, [...options.login, ...resource.redaction]),
+      error: withoutLogin(message, [...options.login, ...(epoch.signedIn?.login ?? [])]),
     },
   }));
+}
+
+/** Cancel a pending automatic open or backoff, keeping the last real failure. */
+function endRecovery() {
+  const owned = current;
+  if (owned && (owned.epoch.backoff !== null || (owned.resource.automatic && !owned.loaded)))
+    terminal(owned);
+}
+
+function attentionChanged() {
+  if (!attended() || held !== null) endRecovery();
+  reconsiderWatchdog();
+}
+
+/** Armed time is retained while disarmed. Only actual media progress resets a stall. */
+function reconsiderWatchdog(mediaTime?: number): void {
+  const owned = current;
+  if (!owned || owned.resource.retired || owned.epoch.terminal || !sourceStands(owned)) return;
+  const { epoch, resource } = owned;
+  const watchdog = epoch.watchdog;
+  if (!watchdog) return;
+  const now = Date.now();
+  clearTimeout(watchdog.timer ?? undefined);
+  watchdog.timer = null;
+  if (watchdog.armedAt !== null) watchdog.spentMs += now - watchdog.armedAt;
+  watchdog.armedAt = null;
+  if (watchdog.stage === "stall" && mediaTime !== undefined && Number.isFinite(mediaTime)) {
+    if (watchdog.lastMedia !== null && mediaTime > watchdog.lastMedia) watchdog.spentMs = 0;
+    watchdog.lastMedia = mediaTime;
+  }
+  if (
+    !attended() ||
+    held !== null ||
+    (watchdog.stage === "stall" && resource.timeControl === "paused")
+  )
+    return;
+  const limit = watchdog.stage === "startup" ? START_TIMEOUT_MS : STALL_TIMEOUT_MS;
+  if (watchdog.spentMs >= limit) return fail({ kind: "deadline", stage: watchdog.stage });
+  watchdog.armedAt = now;
+  watchdog.timer = setTimeout(() => {
+    if (current === owned && current.resource === resource && stands(resource))
+      reconsiderWatchdog();
+  }, limit - watchdog.spentMs);
 }
 
 /** Apply the pending viewer Pause only once an actual item exists. */
@@ -774,11 +929,10 @@ function tryConfirm(resource: Resource, group: Group) {
 }
 
 /** An earlier query cannot stand in for readback of a newer native request. */
-async function readbackAfterRequest(resource: Resource, group: Group, op: number) {
+async function readbackAfterRequest(resource: Resource) {
   await resource.querying?.catch(() => null);
-  if (!stands(resource) || resource[group].op !== op) return;
+  if (!stands(resource)) return;
   await refreshTracks(resource);
-  if (!stands(resource) || resource[group].op !== op) return;
 }
 
 /** One pending evaluate-now token per group, deciding from current facts only at dequeue. */
@@ -840,7 +994,7 @@ function schedule(resource: Resource, group: Group) {
         };
         tryConfirm(resource, group);
       }
-      await readbackAfterRequest(resource, group, op);
+      await readbackAfterRequest(resource);
       if (!stands(resource) || state.op !== op) return;
     } catch {
       // A refused bridge call changes no authority, hold or accepted preference.
@@ -884,7 +1038,7 @@ function chooseManually(resource: Resource, revision: number, selection: Observe
         choice,
       };
       tryConfirm(resource, group);
-      await readbackAfterRequest(resource, group, op);
+      await readbackAfterRequest(resource);
       if (!stands(resource) || state.op !== op) return;
     } catch {
       // Rejection never confirms a pick.
@@ -974,9 +1128,12 @@ function observe(event: PlaybackObservation) {
       }
       return;
     case "state": {
+      const previous = resource.timeControl;
       resource.timeControl = event.timeControl;
       const playing = event.timeControl === "playing";
       const paused = event.timeControl === "paused";
+      if (held && paused) held.acknowledged = true;
+      else if (held?.acknowledged && previous === "paused" && playing) held = null;
       const viewerPaused = paused && pauseOnStart === "viewer-applied";
       if (viewerPaused) pauseOnStart = false;
       clock.set(event.mediaTimeSeconds);
@@ -990,8 +1147,24 @@ function observe(event: PlaybackObservation) {
       }
       if (playing && !current.loaded) {
         current.loaded = true;
-        current.options.outcome?.(true);
+        current.epoch.playedOn ??= current.epoch.candidate;
+        if (!current.epoch.played) {
+          current.epoch.played = true;
+          current.options.outcome?.(true);
+          if (!stands(resource)) return;
+        }
+        if (current.epoch.watchdog?.stage === "startup") {
+          clearWatchdog(current.epoch);
+          current.epoch.watchdog = {
+            stage: "stall",
+            spentMs: 0,
+            armedAt: null,
+            timer: null,
+            lastMedia: event.mediaTimeSeconds,
+          };
+        }
       }
+      playingTime(current.epoch, playing);
       if (playing) checkpoint ??= setInterval(report, CHECKPOINT_MS);
       else if (checkpoint !== null) {
         clearInterval(checkpoint);
@@ -1006,6 +1179,7 @@ function observe(event: PlaybackObservation) {
       if (kind !== phase.kind && stands(resource) && resource.sequence === event.sequence) {
         state.set((s) => ({ ...s, phase: { kind, item: phase.item } }));
       }
+      if (stands(resource)) reconsiderWatchdog(event.mediaTimeSeconds);
     }
   }
 }
@@ -1056,15 +1230,61 @@ export function play(item: Playing, plan: Plan, options: PlayOptions) {
   return start(choice, choice.options);
 }
 
-/** Plays only after earlier native and format readers positively close. No source probes. */
+/** A new budget on the same frozen Choice, including explicit Try again. */
 async function start(choice: Choice, options: PlayOptions) {
-  const { item, plan } = choice;
-  const open = plan.kind === "file" ? plan.open : plan.candidates[0].open;
   requests++;
+  if (current) cancelEpoch(current.epoch);
   release();
+  const signedIn =
+    choice.item.subscriptionId === null ? undefined : currentSource(choice.item.subscriptionId);
+  const epoch: Epoch = {
+    id: ++epochs,
+    signedIn,
+    sourceBound: signedIn !== undefined,
+    candidate: 0,
+    playedOn: null,
+    reconnects: 0,
+    played: false,
+    terminal: false,
+    last: null,
+    backoff: null,
+    watchdog: null,
+    playingSince: null,
+    playedMs: 0,
+  };
+  const resource = makeResource(choice, epoch, false);
+  const owned = {
+    item: choice.item,
+    choice,
+    options,
+    epoch,
+    seek: options.from ?? null,
+    loaded: false,
+    stoppedAt: null,
+    resource,
+  };
+  current = owned;
+  resumeOnReturn = false;
+  pauseOnStart = false;
+  soundOnPlay = false;
+  held = null;
+  state.set((s) => {
+    const muted = options.watch || s.watch ? false : s.muted;
+    player().muted = muted;
+    return {
+      ...s,
+      phase: { kind: "loading", item: owned.item },
+      watch: options.watch || s.watch,
+      aside: false,
+      muted,
+    };
+  });
+  await runAttempt(owned, resource);
+}
+
+function makeResource(choice: Choice, epoch: Epoch, automatic: boolean): Resource {
+  const { item } = choice;
   const controller = new AbortController();
-  let signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
-  let sourceBound = signedIn !== undefined;
   let drained!: () => void;
   let uncertain!: (cause: Error) => void;
   let opened!: () => void;
@@ -1078,11 +1298,11 @@ async function start(choice: Choice, options: PlayOptions) {
     key: item.id,
     controller,
     subscriptionId: item.subscriptionId,
-    redaction: signedIn?.login ?? [],
+    automatic,
     sourceStands: () =>
       item.subscriptionId === null ||
-      !sourceBound ||
-      currentSource(item.subscriptionId) === signedIn,
+      !epoch.sourceBound ||
+      currentSource(item.subscriptionId) === epoch.signedIn,
     formats: [],
     closed,
     drained,
@@ -1116,47 +1336,54 @@ async function start(choice: Choice, options: PlayOptions) {
     lease: null,
     submitted: false,
   };
-  current = {
-    item,
-    choice,
-    options,
-    seek: options.from ?? null,
-    loaded: false,
-    stoppedAt: null,
-    resource,
-    failure: null,
-  };
-  resumeOnReturn = false;
-  pauseOnStart = false;
-  soundOnPlay = false;
-  const owned = current;
-  state.set((s) => {
-    const muted = options.watch || s.watch ? false : s.muted;
-    player().muted = muted;
-    return {
-      ...s,
-      phase: { kind: "loading", item: owned.item },
-      watch: options.watch || s.watch,
-      aside: false,
-      muted,
-    };
-  });
+  return resource;
+}
+
+/** Automatic attempts preserve viewer requests, presentation, options, Choice and source binding. */
+async function admit(owned: NonNullable<typeof current>) {
+  if (current !== owned || owned.epoch.terminal) return;
+  if (!sourceStands(owned) || !attended() || held !== null) return terminal(owned);
+  const resource = makeResource(owned.choice, owned.epoch, true);
+  owned.resource = resource;
+  owned.loaded = false;
+  owned.epoch.playingSince = null;
+  owned.epoch.playedMs = 0;
+  await runAttempt(owned, resource);
+}
+
+function attemptStands(owned: NonNullable<typeof current>, resource: Resource) {
+  if (!stands(resource)) return false;
+  if (resource.automatic && (!attended() || held !== null)) {
+    terminal(owned);
+    return false;
+  }
+  return true;
+}
+
+/** Every attempt waits for all earlier native/format readers before reclaim or lookup. */
+async function runAttempt(owned: NonNullable<typeof current>, resource: Resource) {
+  const { item, options, choice, epoch } = owned;
+  const { plan } = choice;
+  const { controller } = resource;
+  const open = plan.kind === "file" ? plan.open : plan.candidates[epoch.candidate]?.open;
   let stage: "readers" | "lookup" | "native" = "native";
   try {
+    if (!attemptStands(owned, resource)) return;
+    if (!open) return fail({ kind: "bridge" });
     if (player().mrStreamerPlaybackContract !== 1) throw new Error("Player contract unavailable.");
     stage = "readers";
     await waitForReaders(resource);
-    if (!stands(resource)) return;
+    if (!attemptStands(owned, resource)) return;
     stage = "lookup";
     if (item.subscriptionId !== null) await acquireBeforeLookup(resource, item.subscriptionId);
-    if (!stands(resource)) return;
-    if (!sourceBound) {
-      signedIn = item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
-      sourceBound = true;
+    if (!attemptStands(owned, resource)) return;
+    if (!epoch.sourceBound) {
+      epoch.signedIn =
+        item.subscriptionId === null ? undefined : currentSource(item.subscriptionId);
+      epoch.sourceBound = true;
     }
-    resource.redaction = signedIn?.login ?? [];
     const source = await open(controller.signal);
-    if (!stands(resource)) return;
+    if (!attemptStands(owned, resource)) return;
     resource.observed =
       plan.kind === "file" && !item.live && item.subscriptionId !== null
         ? (source.observed ?? null)
@@ -1185,13 +1412,24 @@ async function start(choice: Choice, options: PlayOptions) {
         owned.seek = null;
       } else {
         await opening.closed;
-        if (!stands(resource)) return;
+        if (!attemptStands(owned, resource)) return;
       }
     }
     stage = "native";
     resource.submitted = true;
+    if (plan.kind === "live") {
+      epoch.watchdog = {
+        stage: "startup",
+        spentMs: 0,
+        armedAt: null,
+        timer: null,
+        lastMedia: null,
+      };
+      reconsiderWatchdog();
+    }
+    if (!attemptStands(owned, resource)) return;
     const result = await attach(resource, playable);
-    if (!stands(resource)) return;
+    if (!attemptStands(owned, resource)) return;
     if (result.attemptId !== resource.id) return fail({ kind: "bridge" });
     if (result.kind === "attached") {
       if (!acceptItem(resource, result)) return fail({ kind: "bridge" });
@@ -1206,7 +1444,7 @@ async function start(choice: Choice, options: PlayOptions) {
       fail({ kind: "native", failure: result.failure });
     } else fail({ kind: "cancelled" });
   } catch (cause) {
-    if (!stands(resource)) return;
+    if (!attemptStands(owned, resource)) return;
     if (stage === "lookup") {
       const error = appError(cause);
       fail(
@@ -1232,7 +1470,7 @@ function groupState(hold: TrackHold | undefined): GroupState {
   };
 }
 
-/** The current live candidate; U1 opens the plan's first candidate only. */
+/** The candidate actually playing, never a backoff or a failed override. */
 export function liveStream() {
   if (!current || current.choice.plan.kind !== "live") return null;
   const { kind } = state.get().phase;
@@ -1240,7 +1478,9 @@ export function liveStream() {
     channel: current.item.id,
     explicit: current.choice.plan.explicit,
     playing:
-      kind === "playing" || kind === "paused" ? current.choice.plan.candidates[0].variantId : null,
+      kind === "playing" || kind === "paused"
+        ? (current.choice.plan.candidates[current.epoch.candidate]?.variantId ?? null)
+        : null,
   };
 }
 
@@ -1263,6 +1503,7 @@ export function retry() {
  */
 export async function stop(): Promise<Saved> {
   requests++;
+  if (current) cancelEpoch(current.epoch);
   const saved = release();
   const readers = current?.resource.settlement;
   current = null;
@@ -1271,6 +1512,7 @@ export async function stop(): Promise<Saved> {
   resumeOnReturn = false;
   pauseOnStart = false;
   soundOnPlay = false;
+  held = null;
   state.set((s) => ({
     ...s,
     phase: { kind: "idle" },
@@ -1295,15 +1537,18 @@ export function togglePause() {
   resumeOnReturn = false;
   const { phase } = state.get();
   if (phase.kind === "playing" || phase.kind === "loading") {
+    held = { by: "viewer", acknowledged: false };
     pauseOnStart = phase.kind === "loading" ? "viewer" : false;
     if (pauseOnStart === "viewer" && current && current.resource.itemId !== null) {
       applyViewerPause(current.resource);
     } else player().pause();
   } else if (phase.kind === "paused") {
+    held = null;
     pauseOnStart = false;
     if (soundOnPlay) setMuted(false);
     player().play();
   }
+  attentionChanged();
 }
 
 export function seekBy(seconds: number) {
@@ -1415,7 +1660,9 @@ export function openWatch() {
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
   const resume = aside && resumeOnReturn;
   if (pauseOnStart === "away") pauseOnStart = false;
+  if (held?.by === "away" || resume) held = null;
   resumeOnReturn = false;
+  attentionChanged();
   if (!resume || (phase.kind !== "playing" && phase.kind !== "paused")) return;
   if (phase.item.live) retry();
   else if (phase.kind === "paused") {
@@ -1437,6 +1684,9 @@ export function closeWatch(): Promise<Saved> {
   const { pip, external, phase, muted } = state.get();
   const away = !pip && !external;
   if (away) {
+    if (phase.kind === "playing" || phase.kind === "loading") {
+      held ??= { by: "away", acknowledged: false };
+    }
     resumeOnReturn = false;
     if ((phase.kind === "playing" || phase.kind === "loading") && !pauseOnStart) {
       pauseOnStart = "away";
@@ -1447,6 +1697,7 @@ export function closeWatch(): Promise<Saved> {
   const silent = away || muted;
   player().muted = silent;
   state.set((s) => ({ ...s, watch: false, aside: false, muted: silent }));
+  attentionChanged();
   return report();
 }
 
@@ -1460,6 +1711,9 @@ export function setAside() {
   requests++;
   const { phase, external } = state.get();
   if (phase.kind === "idle" || external) return void closeWatch();
+  if (phase.kind === "playing" || phase.kind === "loading") {
+    held ??= { by: "away", acknowledged: false };
+  }
   resumeOnReturn =
     (phase.kind === "playing" || phase.kind === "loading") &&
     pauseOnStart !== "viewer" &&
@@ -1471,6 +1725,7 @@ export function setAside() {
   // Paused, it makes no sound; played again from the accessory, it plays as Watch would.
   player().muted = false;
   state.set((s) => ({ ...s, watch: false, aside: true, muted: false }));
+  attentionChanged();
 }
 
 /**
@@ -1482,8 +1737,10 @@ export function unsetAside() {
   if (!state.get().aside) return;
   resumeOnReturn = false;
   if (pauseOnStart === "away") pauseOnStart = false;
+  if (held?.by === "away") held = null;
   player().muted = false;
   state.set((s) => ({ ...s, watch: true, aside: false, muted: false }));
+  attentionChanged();
 }
 
 /**
@@ -1494,11 +1751,13 @@ export function pictureInPicture(active: boolean) {
   requests++;
   if (active) {
     state.set((s) => ({ ...s, pip: true, watch: false, aside: false }));
+    attentionChanged();
     return;
   }
   const { watch } = state.get();
   if (!watch) player().muted = true;
   state.set((s) => ({ ...s, pip: false, muted: s.watch ? s.muted : true }));
+  attentionChanged();
 }
 
 /**
@@ -1513,6 +1772,7 @@ export function restoreFromPictureInPicture(): Playing | null {
   if (!pip || item === null) return null;
   player().muted = false;
   state.set((s) => ({ ...s, watch: true, muted: false }));
+  attentionChanged();
   return item;
 }
 

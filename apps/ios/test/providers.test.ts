@@ -1315,3 +1315,60 @@ describe("guide identity erasure through account lifecycle", () => {
     }
   });
 });
+
+describe("accepted channel picks on provider removal", () => {
+  it("keeps a pick with history, restores it under the retained id and erases only that provider's picks", async () => {
+    const { app, a, b } = await twoProviders();
+    const prefs = await import("../src/media-preferences.ts");
+    const own = channels(app).find((channel) => channel.subscriptionId === b);
+    const other = channels(app).find((channel) => channel.subscriptionId === a);
+    if (!own?.variants[0] || !other?.variants[0]) throw new Error("No provider channels");
+    prefs.updateChannelPick(own, own.variants[0].id);
+    prefs.updateChannelPick(other, other.variants[0].id);
+    await app.remove(b, { keepHistory: true });
+    expect(prefs.channelPicks(b)).toEqual({ [own.id]: own.variants[0].id });
+    expect(await app.add({ server: two.url, ...TWO })).toBe(b);
+    await app.remove(b, { keepHistory: false });
+    expect(prefs.channelPicks(b)).toEqual({});
+    expect(prefs.channelPicks(a)).toEqual({ [other.id]: other.variants[0].id });
+    await launch();
+    expect((await import("../src/media-preferences.ts")).channelPicks(b)).toEqual({});
+  });
+
+  it("retains erasing after a refused pick deletion and retries it on launch", async () => {
+    const { app, a, b } = await twoProviders();
+    const prefs = await import("../src/media-preferences.ts");
+    const own = channels(app).find((channel) => channel.subscriptionId === b);
+    if (!own?.variants[0]) throw new Error("No channel");
+    prefs.updateChannelPick(own, own.variants[0].id);
+    memory.full.add("media-preferences.json");
+    await expect(app.remove(b, { keepHistory: false })).rejects.toThrow();
+    expect(ids(app)).toEqual([a]);
+    expect(registry()).toMatchObject({ erasing: [b] });
+    expect(prefs.channelPicks(b)).toEqual({ [own.id]: own.variants[0].id });
+    memory.full.clear();
+    const again = await launch();
+    expect(ids(again)).toEqual([a]);
+    expect(registry()).toMatchObject({ erasing: [] });
+    expect((await import("../src/media-preferences.ts")).channelPicks(b)).toEqual({});
+  });
+
+  it.each(["version", "shape"] as const)(
+    "keeps erase pending while future preferences are read-only: %s",
+    async (future) => {
+      const { b } = await twoProviders();
+      const original = JSON.stringify(
+        future === "version"
+          ? { version: 88, channelVariants: { [b]: { "10": "11" } } }
+          : { version: 1, channelVariants: ["future-shape"] },
+      );
+      memory.files.set(doc("media-preferences.json"), original);
+      const app = await launch();
+      await expect(app.remove(b, { keepHistory: false })).rejects.toThrow();
+      expect(registry()).toMatchObject({ erasing: [b] });
+      await launch();
+      expect(registry()).toMatchObject({ erasing: [b] });
+      expect(memory.files.get(doc("media-preferences.json"))).toBe(original);
+    },
+  );
+});
