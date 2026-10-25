@@ -2256,6 +2256,35 @@ describe("the native queue's boundaries", { timeout: 40_000 }, () => {
     });
   }
 
+  it("ends a download whose pause and revoke its record couldn't write yet when its subscription goes", async () => {
+    await install();
+    const app = await launch();
+    const { a, b } = await withProviders(app, true);
+    one.stallMovieFile(movie().id, 20_000, 60_000);
+    const film = await app.addDownload(movieRef(a));
+    await until(() => receivedOf(app, film.id) === 20_000, "the transfer to stall");
+    const blocked = new Folder(native.root, "documents", "downloads.json.next");
+    blocked.create();
+    // Paused for a stream of its provider, then ended by its subscription's removal: downloads.json
+    // refuses both receipts, and the removal's intent.
+    await pausedWithResume(app, a, film);
+    await app.remove(a, { keepHistory: true });
+    expect(background.receipts.map((each) => each.outcome.kind)).toEqual(["paused", "refresh"]);
+    expect(doc().items).toMatchObject([{ id: film.id }]);
+    expect(doc().items[0].removal).toBeUndefined();
+    const asked = native.requests.length;
+    blocked.delete();
+    // The next roster change ends it: neither receipt can be its completion.
+    await app.update(b!, { name: "Renamed" });
+    await until(() => doc().items.length === 0, "the automatic removal");
+    await until(() => !folder(film.id).exists, "its folder");
+    appGoes("background");
+    appGoes("active");
+    await until(() => background.receipts.length === 0, "its receipts acknowledged");
+    expect(app.downloadList().items).toEqual([]);
+    expect(native.requests).toHaveLength(asked);
+  });
+
   it("frees the slot for the next download when a file being published is removed under a Keychain fence", async () => {
     await install();
     const app = await launch();

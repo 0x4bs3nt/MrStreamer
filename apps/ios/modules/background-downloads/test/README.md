@@ -26,7 +26,9 @@ output and the session's pinned SDK; none is a pass until observed.
    earlier ledger write so the completion's transition waits behind it, and hold the I/O lane so
    the media move waits: past the deadline neither may be admitted, and the marked attempt, its
    stage or media stay for the next trigger. A recovery retried by a later wake counts as that
-   wake's work from before its enumeration.
+   wake's work from before its enumeration. With recovery done and a finished file deferred, let
+   the session's finished-events callback come before the wake's handler reaches `hold`: the
+   handler is called once that publication's work settles, or at the deadline, never before.
 2. Unreadable Keychain. Before first unlock, or with the Keychain made unavailable, a finished
    transfer keeps its stage, marker and attempt with no receipt; a resume read that doesn't
    answer starts no request. After unlock, the next reconcile publishes the same bytes.

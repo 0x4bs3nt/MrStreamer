@@ -271,11 +271,14 @@ let known = new Map<string, AuthorizationView>();
 const early = new Map<string, ReceiptV2>();
 /** Receipts being taken in, by receipt: an event and a reconcile may bring the same one. */
 const taking = new Set<string>();
+/** A receipt the native side kept for a download, of this build or build 14. */
+type Fact = ReceiptV2 | LegacyReceipt;
 /**
- * Receipts the native side kept that couldn't be written down yet, by download: nothing asks for
- * such a download again, nor deletes its file, until each is.
+ * Receipts the native side kept that couldn't be written down yet, by download, then by receipt
+ * with its outcome's kind: nothing asks for such a download again, nor deletes its file, until
+ * each is. Only an owed completion holds an automatic removal back.
  */
-const owed = new Map<string, Set<string>>();
+const owed = new Map<string, Map<string, Fact["outcome"]["kind"]>>();
 /** Downloads whose earlier build's resume data couldn't be read: they wait for the next launch. */
 const held = new Set<string>();
 /** Removals under way, by download: one at a time for a record. */
@@ -346,9 +349,11 @@ function withoutRemoval(record: Stored): Stored {
   return rest;
 }
 
-/** Whether download `id` is owed a receipt other than `fact` that couldn't be written down yet. */
-function owesBesides(id: string, fact?: ReceiptV2): boolean {
-  return [...(owed.get(id) ?? [])].some((receipt) => receipt !== fact?.receipt);
+/** Whether download `id` is owed a completion other than `fact` not written down yet. */
+function owesCompletion(id: string, fact?: ReceiptV2): boolean {
+  return [...(owed.get(id) ?? [])].some(
+    ([receipt, kind]) => kind === "complete" && receipt !== fact?.receipt,
+  );
 }
 
 /**
@@ -580,15 +585,15 @@ async function take(receipt: ReceiptV2, heardLive: boolean): Promise<void> {
   if (taking.has(receipt.receipt)) return;
   taking.add(receipt.receipt);
   try {
-    await written(receipt.id, receipt.receipt, reduce(receipt, heardLive));
+    await written(receipt, reduce(receipt, heardLive));
     await transfers.acknowledge([receipt.receipt]).catch(() => undefined);
   } finally {
     taking.delete(receipt.receipt);
   }
 }
 
-/** Settles as `work` does, keeping download `id` owed `receipt` while what it writes is refused. */
-async function written(id: string, receipt: string, work: Promise<void>) {
+/** Settles as `work` does, keeping `fact` owed to its download while what it writes is refused. */
+async function written(fact: Fact, work: Promise<void>) {
   let refused = false;
   try {
     await work;
@@ -597,11 +602,11 @@ async function written(id: string, receipt: string, work: Promise<void>) {
     throw cause;
   } finally {
     // Read as it stands now: another receipt of the same download may have settled meanwhile.
-    const pending = owed.get(id) ?? new Set<string>();
-    if (refused) pending.add(receipt);
-    else pending.delete(receipt);
-    if (pending.size > 0) owed.set(id, pending);
-    else owed.delete(id);
+    const pending = owed.get(fact.id) ?? new Map<string, Fact["outcome"]["kind"]>();
+    if (refused) pending.set(fact.receipt, fact.outcome.kind);
+    else pending.delete(fact.receipt);
+    if (pending.size > 0) owed.set(fact.id, pending);
+    else owed.delete(fact.id);
   }
 }
 
@@ -764,8 +769,7 @@ async function takeLegacy(receipt: LegacyReceipt) {
     // A refused write keeps the copy's file and its receipt for the next try; a receipt that
     // doesn't apply is owed nothing more.
     await written(
-      receipt.id,
-      receipt.receipt,
+      receipt,
       applies && record
         ? apply(
             automatic ? withoutRemoval(record) : record,
@@ -882,9 +886,10 @@ async function removeNow(id: string, asked: Reason, fact?: ReceiptV2): Promise<R
     tell();
     return { kind: "kept" };
   }
-  if (reason === "source-removed" && owesBesides(id, fact)) {
-    // A receipt kept for it that couldn't be written down yet may be its completion, which wins
-    // an automatic removal: the removal waits, its intent kept, until that receipt is written.
+  if (reason === "source-removed" && owesCompletion(id, fact)) {
+    // A completion kept for it that couldn't be written down yet wins an automatic removal: the
+    // removal waits, its intent kept, until that receipt is written. Any other owed receipt is
+    // taken in after the drop, finding no record.
     throw new AppFailure({
       kind: "unexpected",
       detail: "This download's last result isn't written down yet.",

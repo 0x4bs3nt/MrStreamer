@@ -372,10 +372,13 @@ final class TransferOwner: NSObject, URLSessionDownloadDelegate {
       self.handlers.append(completion)
       self.armDeadline()
       // A new wake is a legitimate trigger: recovery an earlier one refused, or deferred
-      // publication, is tried again under this batch, its work counted from the start.
+      // publication, is tried again under this batch, its work counted from the start. The wake's
+      // own unit holds the handler until both are registered: a recovery done already ends its
+      // unit at once, and events may have finished before this handler came.
+      let wake = self.beginWork()
       self.recover(self.beginWork())
       self.trigger()
-      self.finishIfSettled()
+      self.endWork(wake)
     }
   }
 
