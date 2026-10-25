@@ -515,6 +515,131 @@ describe("attended Live deadlines", () => {
     expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
   });
 
+  it("keeps an initial paused Live item paused after Close during attach and return", async () => {
+    const provider = signIn();
+    const failed = vi.fn();
+    owner.onPlaybackFailure(failed);
+    const attaching = deferred<void>();
+    const replace = port.replaceObservedAsync.getMockImplementation();
+    if (!replace) throw new Error("No native attach port");
+    port.replaceObservedAsync.mockImplementationOnce(async (...args) => {
+      await attaching.promise;
+      const attached = await replace(...args);
+      port.state(false); // The attached item's initial fact, before its admission reply.
+      return attached;
+    });
+    try {
+      const item = await watch();
+      expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(7000);
+      await owner.closeWatch();
+      attaching.resolve();
+      await tick();
+      const attached = port.identity();
+      expect(owner.playbackState.get().phase).toEqual({ kind: "paused", item });
+      expect(port.play).not.toHaveBeenCalled();
+
+      owner.openWatch();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+      expect(owner.playingItem(owner.playbackState.get().phase)).toBe(item);
+      expect(opened(provider)).toEqual(["10"]);
+      expect(port.identity()).toEqual(attached);
+      expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
+      expect(port.play).not.toHaveBeenCalled();
+      expect(failed).not.toHaveBeenCalled();
+
+      owner.togglePause();
+      expect(port.play).toHaveBeenCalledOnce();
+      waiting();
+      await vi.advanceTimersByTimeAsync(12_999);
+      expect(opened(provider)).toEqual(["10"]);
+      expect(failed).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await tick();
+      expect(opened(provider)).toEqual(["10", "11"]);
+      expect(owner.playbackState.get().phase.kind).toBe("loading");
+      expect(owner.playingItem(owner.playbackState.get().phase)).toBe(item);
+    } finally {
+      attaching.resolve();
+      await tick();
+    }
+  });
+
+  it("keeps a late-playing Live item paused after Close until Play resumes the startup remainder", async () => {
+    const provider = signIn();
+    const outcome = vi.fn();
+    const failed = vi.fn();
+    owner.onPlaybackFailure(failed);
+    const item = {
+      id: channel.key,
+      subscriptionId: channel.subscriptionId,
+      title: channel.title,
+      place: "News",
+      live: true,
+      next: false,
+      versions: false,
+    };
+    await owner.play(
+      item,
+      {
+        kind: "live",
+        explicit: true,
+        candidates: [
+          {
+            variantId: "10",
+            open: async (signal) => {
+              const stream = await provider.provider.liveStream("10", signal);
+              return { url: stream.url, container: "m3u8" };
+            },
+          },
+        ],
+      },
+      { watch: true, login: [], outcome },
+    );
+    const attached = port.identity();
+    expect(port.play).toHaveBeenCalledOnce();
+    port.state(false);
+    expect(owner.playbackState.get().phase.kind).toBe("loading");
+    await vi.advanceTimersByTimeAsync(7000);
+    await owner.closeWatch();
+    port.pause.mockClear();
+    port.state(true);
+    expect(port.pause).toHaveBeenCalledOnce();
+    expect(outcome).not.toHaveBeenCalled();
+    port.state(false);
+    expect(owner.playbackState.get().phase).toEqual({ kind: "paused", item });
+
+    owner.openWatch();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(owner.playbackState.get()).toMatchObject({ watch: true, phase: { kind: "paused" } });
+    expect(owner.playingItem(owner.playbackState.get().phase)).toBe(item);
+    expect(opened(provider)).toEqual(["10"]);
+    expect(port.identity()).toEqual(attached);
+    expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
+    expect(port.play).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    expect(outcome).not.toHaveBeenCalled();
+
+    owner.togglePause();
+    expect(port.play).toHaveBeenCalledTimes(2);
+    waiting();
+    await vi.advanceTimersByTimeAsync(12_999);
+    expect(owner.playbackState.get().phase.kind).toBe("paused");
+    expect(failed).not.toHaveBeenCalled();
+    expect(outcome).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(owner.playbackState.get().phase).toEqual({
+      kind: "failed",
+      item,
+      error: "No picture or sound within 20 s.",
+    });
+    expect(opened(provider)).toEqual(["10"]);
+    expect(port.replaceObservedAsync).toHaveBeenCalledOnce();
+    expect(failed.mock.calls).toEqual([["network"]]);
+    expect(outcome.mock.calls).toEqual([[false]]);
+  });
+
   it("counts stall time while waiting, resets on progress and publishes the deadline as network only at terminal", async () => {
     const provider = signIn();
     await watch();

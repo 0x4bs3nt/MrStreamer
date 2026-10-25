@@ -771,10 +771,12 @@ function reconsiderWatchdog(mediaTime?: number): void {
     if (watchdog.lastMedia !== null && mediaTime > watchdog.lastMedia) watchdog.spentMs = 0;
     watchdog.lastMedia = mediaTime;
   }
+  // The initial native paused sample still counts while the app shows Connecting.
   if (
     !attended() ||
     held !== null ||
-    (watchdog.stage === "stall" && resource.timeControl === "paused")
+    (resource.timeControl === "paused" &&
+      (watchdog.stage === "stall" || state.get().phase.kind === "paused"))
   )
     return;
   const limit = watchdog.stage === "startup" ? START_TIMEOUT_MS : STALL_TIMEOUT_MS;
