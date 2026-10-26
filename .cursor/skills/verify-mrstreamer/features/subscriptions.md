@@ -24,6 +24,8 @@ Source: `docs/user/subscriptions.md`, `apps/desktop/src/renderer/src/features/se
 
 ## Gotchas
 
+Subscription fields support the platform's keyboard editing and a native right-click edit menu (`fieldMenu` in `apps/desktop/src/main/menu.ts`) that follows Chromium's available edits, including disabled Copy/Cut in password fields. For clipboard changes, seed the OS clipboard with a fake playlist link, then use actual keyboard paste and the native menu in both Connect and Settings > Subscriptions (Add subscription and the saved playlist's Edit form). Check selection, undo/redo and unavailable actions, submit the pasted link and observe the saved subscription. DOM value setters or an IPC subscription setter do not prove paste. The baseline `subscriptions` scenario types fixture values; it does not exercise the OS clipboard or native menu. Linux Electron proof does not establish native Windows or macOS acceptance.
+
 M3U `#EXTGRP` applies to subsequent entries until an empty directive or explicit `group-title` resets inheritance. `packages/core/test/playlist.test.ts` checks chunked reads, multiple memberships and inherited adult categories. Explicit Live/Movie/Series mappings remain authoritative; no category name automatically chooses a title kind. See `docs/user/category-compatibility.md` for provenance and supported conventions.
 
 An existing user's profile hides Connect and can write real secrets. Always use a fresh profile; macOS requires mock keychain. A row proves initial connection only, not refresh, restart or removal. A fake provider proves the app's contract with it, not acceptance of a real provider or entitlement.

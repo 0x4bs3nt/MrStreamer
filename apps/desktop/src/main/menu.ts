@@ -1,6 +1,25 @@
-// The macOS menu bar, in the interface language. Windows and Linux have no app menu.
-import type { MenuItemConstructorOptions } from "electron";
+// Native editing menus and the macOS menu bar, in the interface language.
+import type { ContextMenuParams, MenuItemConstructorOptions } from "electron";
 import { t } from "@mrstreamer/core/i18n";
+
+/** Standard field editing, with availability supplied by Chromium (including password fields). */
+export function fieldMenu({
+  isEditable,
+  editFlags,
+}: Pick<ContextMenuParams, "isEditable" | "editFlags">): MenuItemConstructorOptions[] {
+  if (!isEditable) return [];
+  return [
+    { role: "undo", label: t("Undo"), enabled: editFlags.canUndo },
+    { role: "redo", label: t("Redo"), enabled: editFlags.canRedo },
+    { type: "separator" },
+    { role: "cut", label: t("Cut"), enabled: editFlags.canCut },
+    { role: "copy", label: t("Copy"), enabled: editFlags.canCopy },
+    { role: "paste", label: t("Paste"), enabled: editFlags.canPaste },
+    { role: "delete", label: t("Delete"), enabled: editFlags.canDelete },
+    { type: "separator" },
+    { role: "selectAll", label: t("Select All"), enabled: editFlags.canSelectAll },
+  ];
+}
 
 /**
  * Electron's default menu, items and shortcuts alike, with the app's labels in the interface

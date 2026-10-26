@@ -2,9 +2,38 @@
 import type { MenuItemConstructorOptions } from "electron";
 import { afterEach, describe, expect, it } from "vitest";
 import { setLanguage } from "@mrstreamer/core/i18n";
-import { macMenu } from "../src/main/menu.ts";
+import { fieldMenu, macMenu } from "../src/main/menu.ts";
 
 afterEach(() => setLanguage({ locale: "en-US", formats: "en-US" }));
+
+it("offers native field edits only where allowed by the focused field", () => {
+  const context = {
+    isEditable: true,
+    editFlags: {
+      canUndo: false,
+      canRedo: true,
+      canCut: false,
+      canCopy: false,
+      canPaste: true,
+      canDelete: false,
+      canSelectAll: true,
+      canEditRichly: false,
+    },
+  };
+  const actions = fieldMenu(context)
+    .filter((item) => item.role)
+    .map((item) => [item.role, item.enabled]);
+  expect(actions).toEqual([
+    ["undo", false],
+    ["redo", true],
+    ["cut", false],
+    ["copy", false],
+    ["paste", true],
+    ["delete", false],
+    ["selectAll", true],
+  ]);
+  expect(fieldMenu({ ...context, isEditable: false })).toEqual([]);
+});
 
 /** Each item as its role and label, with the items of its menu. */
 type Shape = readonly [role: string | null, label: string | undefined, items?: readonly Shape[]];

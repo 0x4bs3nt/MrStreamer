@@ -52,6 +52,7 @@ import { updateHandlers } from "./handlers/updates.ts";
 import { aboutHandlers } from "./handlers/about.ts";
 import { emit, registerIpc, type IpcHandlers } from "./ipc.ts";
 import { applyLanguage, languageFor } from "./language.ts";
+import { fieldMenu } from "./menu.ts";
 import { miniPlayer, miniPlayerAvailable } from "./mini-player.ts";
 import { installedDistribution } from "./platform/installation.ts";
 import { electronInstaller } from "./platform/installer.ts";
@@ -354,6 +355,10 @@ function openWindow(
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("context-menu", (_event, params) => {
+    const items = fieldMenu(params);
+    if (items.length) Menu.buildFromTemplate(items).popup({ window });
+  });
   miniPlayers.set(window, miniPlayer(window, MIN_SIZE));
 
   // Attach lifecycle observation before loadFile/loadURL can emit the initial renderer start.
