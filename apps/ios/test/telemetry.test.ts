@@ -11,13 +11,18 @@ import { analyticsTransport, type CaptureTransport } from "../src/telemetry/tran
 // whose events are what iOS would report.
 
 const files = new Map<string, string>();
+let storageFails = false;
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("../src/files.ts", () => ({
   readJson: (name: string) => {
+    if (storageFails) throw new Error("Unreadable");
     const text = files.get(name);
     return text === undefined ? null : (JSON.parse(text) as unknown);
   },
-  writeJson: (name: string, value: unknown) => files.set(name, JSON.stringify(value)),
+  writeJson: (name: string, value: unknown) => {
+    if (storageFails) throw new Error("Unwritable");
+    files.set(name, JSON.stringify(value));
+  },
 }));
 
 const fakePlayer = nativePlayer();
@@ -62,6 +67,7 @@ let aborted = 0;
 
 beforeEach(async () => {
   files.clear();
+  storageFails = false;
   captured.length = 0;
   raw.length = 0;
   hung.length = 0;
@@ -163,8 +169,20 @@ const opens = async () => ({
 const login = [USERNAME, PASSWORD];
 
 describe("before the viewer chooses", () => {
-  it("are on from the first launch of a build with a capture", async () => {
-    await launch();
+  it("capture nothing before a saved opt-in, then report only subsequent activity", async () => {
+    const app = await launch();
+    app.onTelemetryScreen("/live");
+    app.onSearchText(SEARCH);
+    await quiet();
+    expect(captured).toEqual([]);
+    expect(stored()).toMatchObject({
+      choice: null,
+      installationId: null,
+      pending: [],
+      unfinished: null,
+    });
+    expect(app.statisticsChoice()).toBeNull();
+    app.setStatistics(true);
     await until(() => captured.length === 2);
     expect(names()).toEqual(["installation_observed", "app_active_day"]);
     const [first, second] = captured;
@@ -179,6 +197,88 @@ describe("before the viewer chooses", () => {
       $geoip_disable: true,
       activity_date: "2026-10-16",
     });
+  });
+
+  it.each(["on", "off"] as const)("keeps a deliberate beta %s choice", async (choice) => {
+    files.set(
+      "analytics.json",
+      JSON.stringify({
+        format: 1,
+        choice,
+        installationId: null,
+        lastDay: null,
+        pending: [],
+        unfinished: null,
+      }),
+    );
+    const app = await launch();
+    expect(app.statisticsChoice()).toBe(choice);
+    if (choice === "on") await until(() => captured.length === 2);
+    await quiet();
+    expect(captured).toHaveLength(choice === "on" ? 2 : 0);
+  });
+
+  it("discards the default-on beta backlog and unfinished play before opt-in", async () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    const unfinished: CaptureEvent = {
+      uuid: "00000000-0000-4000-8000-000000000002",
+      distinct_id: id,
+      timestamp: "2026-10-15T10:00:00.000Z",
+      event: "stream_stopped",
+      properties: {
+        app_version: "0.1.0",
+        app_build: "1",
+        os: "ios",
+        $process_person_profile: false,
+        $geoip_disable: true,
+        stream_type: "live",
+        watch_duration_seconds: 10,
+      },
+    };
+    files.set(
+      "analytics.json",
+      JSON.stringify({
+        format: 1,
+        choice: null,
+        installationId: id,
+        lastDay: "2026-10-15",
+        pending: [{ event: unfinished, attempts: 1 }],
+        unfinished,
+      }),
+    );
+    const app = await launch();
+    await quiet();
+    expect(captured).toEqual([]);
+    expect(stored()).toMatchObject({
+      choice: null,
+      installationId: null,
+      pending: [],
+      unfinished: null,
+    });
+    app.setStatistics(true);
+    await until(() => captured.length === 2);
+    await quiet();
+    expect(names()).toEqual(["installation_observed", "app_active_day"]);
+    expect(
+      captured.some((body) => body["distinct_id"] === id || body["uuid"] === unfinished.uuid),
+    ).toBe(false);
+  });
+
+  it("stays off after unreadable storage and a refused consent write, then permits a saved choice", async () => {
+    storageFails = true;
+    const app = await launch();
+    expect(app.setStatistics(true)).toEqual({ enabled: false, transport: "unavailable" });
+    expect(app.statisticsChoice()).toBeNull();
+    app.onTelemetryScreen("/live");
+    await quiet();
+    expect(captured).toEqual([]);
+    storageFails = false;
+    app.setStatistics(false);
+    appState("background");
+    const next = await launch();
+    expect(next.statisticsChoice()).toBe("off");
+    await quiet();
+    expect(captured).toEqual([]);
   });
 
   it("record and send nothing in a build without a capture", async () => {
@@ -750,6 +850,7 @@ describe("the outbox", () => {
 
 it("keeps one telemetry run across Live reconnect, excludes backoff and reports only the final failure", async () => {
   const app = await launch();
+  app.setStatistics(true);
   let lookups = 0;
   const outcome = vi.fn();
   try {

@@ -19,12 +19,6 @@ import {
 } from "./model.ts";
 import type { CaptureTransport } from "./transport.ts";
 
-/**
- * Whether statistics are on before the viewer chooses: on, in a build with a capture configured.
- * Settings shows it and turns it off; a saved choice, either way, is kept across launches.
- */
-export const STATISTICS_DEFAULT = true;
-
 /** Captures per minute. A viewer stays far below it; a runaway producer loses the rest. */
 const RATE_LIMIT = 60;
 /** How long a confirmed playing state counts without the clock moving on. */
@@ -108,6 +102,9 @@ export class Analytics {
       this.available = false;
     }
     this.settings = store(this.snapshot());
+    // Old beta records collected by default without a choice. Erase that work before any
+    // observation, recovery or delivery can run, including after a later opt-in.
+    if (this.record?.choice === null) this.save(this.record);
     // A stop saved before iOS ended the app last time is that run's end.
     const unfinished = this.record?.unfinished;
     if (this.record && unfinished) {
@@ -119,6 +116,11 @@ export class Analytics {
     }
   }
 
+  /** Only a successfully read or saved deliberate choice counts as consent. */
+  get choice(): AnalyticsRecord["choice"] {
+    return this.available ? (this.record?.choice ?? null) : null;
+  }
+
   /**
    * The viewer's statistics choice. Off clears every unsent event and aborts the request in
    * flight; the identity and the days already seen stay, so nothing is counted twice. A run
@@ -127,7 +129,7 @@ export class Analytics {
   configure(enabled: boolean): AnalyticsSettings {
     const choice = enabled ? "on" : "off";
     if (this.available && this.record && this.enabled() === enabled) {
-      // Choosing what's already in effect, the default included, only saves the choice.
+      // Choosing what's already in effect only saves the choice.
       if (this.record.choice !== choice) this.save({ ...this.record, choice });
       return this.settings.get();
     }
@@ -226,8 +228,7 @@ export class Analytics {
   }
 
   private enabled(): boolean {
-    const choice = this.record?.choice ?? (STATISTICS_DEFAULT ? "on" : "off");
-    return this.available && choice === "on";
+    return this.choice === "on";
   }
 
   private counting(): boolean {
@@ -449,10 +450,10 @@ function loaded(saved: unknown): AnalyticsRecord {
   if (saved === null) return fresh();
   const record = AnalyticsRecord()(saved);
   if (record instanceof type.errors) throw new Error("Analytics state unavailable.");
-  const on = (record.choice ?? (STATISTICS_DEFAULT ? "on" : "off")) === "on";
+  if (record.choice === null) return fresh();
   if (
     (record.installationId === null) !== (record.lastDay === null) ||
-    (!on && (record.pending.length > 0 || record.unfinished !== null)) ||
+    (record.choice === "off" && (record.pending.length > 0 || record.unfinished !== null)) ||
     [...record.pending.map((item) => item.event), record.unfinished].some(
       (event) => event !== null && event.distinct_id !== record.installationId,
     ) ||

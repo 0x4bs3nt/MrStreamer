@@ -5,8 +5,10 @@ React Native on Hermes (Expo SDK 58), building toward the desktop app's features
 own native adapters: the Keychain, app storage and one native player so far. Nothing of it is in
 the desktop's install, build or packages.
 
-Try demo on the empty-roster Connect screen opens a labelled Demo provider. Personal providers can
-be added alongside it afterwards. Demo needs no login or Keychain item. Its original generated movie
+The empty-roster Connect screen shows the selected welcome, Add provider, then a native statistics
+choice before the ordinary provider form. Both answers continue. Back cancels an unfinished login;
+Privacy policy and existing offline copies remain accessible. New onboarding has no demo entry.
+Existing labelled Demo providers remain usable and need no login or Keychain item. Its original generated movie
 and two episodes use the ordinary catalogue,
 player and download owners, with measured durations and no invented metadata. Files and artwork
 come from the commit pinned in `src/demo.ts`; network failures are shown normally. The asset commit
@@ -493,10 +495,13 @@ Each responsibility has one owner, a plain module with a store the screens read:
   version picked in each title's details by subscription and TMDB id, as the desktop keeps them,
   and beta 2's subscription for an older build to show. `src/files.ts` writes every file whole, through a file
   beside it. Removing a subscription keeps its history unless the viewer deletes it too.
-- `src/telemetry/`: product statistics, on until the viewer turns them off in Settings. One owner
+- `src/telemetry/`: product statistics, off until a deliberate opt-in. One owner
   keeps the viewer's choice, a random installation id and a bounded outbox in `analytics.json`,
   and builds every event from fixed observations: the app's activity, the player's state and
-  the screen on show. Events and properties are in `docs/telemetry.md`.
+  the screen on show. Deliberate beta On/Off choices survive; undecided beta identities, outbox
+  and unfinished work are discarded before capture, recovery or delivery. Restored providers
+  receive the same choice after startup without reconnecting. Failed storage keeps statistics
+  off while setup remains usable. Events and properties are in `docs/telemetry.md`.
 - `src/secrets.ts`: passwords in the Keychain. Keychain items outlive the app, so the first launch
   after installing removes what an earlier install left there, by an index of the ids it wrote;
   writes, removals and clearing run one at a time so none loses another's change to the index.

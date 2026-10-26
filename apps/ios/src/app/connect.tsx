@@ -1,57 +1,66 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
-import { startDemo } from "../account.ts";
+import { Image, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DownloadsLink } from "../downloads-screen.tsx";
 import { useDownloads } from "../downloads.ts";
+import { openLink } from "../open-link.ts";
 import { ProviderForm } from "../provider-form.tsx";
+import { requestStatisticsChoice } from "../statistics-consent.ts";
 import { colors, TextButton } from "../ui.tsx";
 
-/**
- * Adds the first Xtream subscription, on the provider form Settings adds the next ones with. The
- * root layout shows the tabs once one is saved. Downloads kept on the phone open from here too,
- * as they play with no provider.
- */
+/** Welcome, an optional statistics choice, then the ordinary cancellable provider form. */
 export default function Connect() {
   const downloads = useDownloads();
-  const [trying, setTrying] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const tryDemo = () => {
-    setTrying(true);
-    setNote(null);
-    void startDemo()
-      .then((result) => {
-        setTrying(false);
-        if (result.kind === "incomplete")
-          setNote("Earlier demo data couldn't all be removed. Try again.");
-        else if (result.kind === "refused") setNote("Demo couldn't start.");
-      })
-      .catch(() => {
-        setTrying(false);
-        setNote("Demo couldn't start. Try again.");
-      });
-  };
+  const [form, setForm] = useState(false);
   return (
     <ScrollView
       style={styles.screen}
       contentContainerStyle={styles.content}
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
     >
-      <View>
-        <Text style={styles.title} accessibilityRole="header">
-          Mr. Streamer
-        </Text>
-        <Text style={styles.lead}>Add your provider</Text>
-      </View>
-      <ProviderForm mode={{ kind: "connect" }} />
-      <Text style={styles.footnote}>The password stays in this iPhone's Keychain.</Text>
-      <TextButton label="Try demo" onPress={tryDemo} disabled={trying} testID="connect-demo" />
-      {note ? (
-        <Text accessibilityRole="alert" style={styles.footnote}>
-          {note}
-        </Text>
-      ) : null}
+      {form ? (
+        <>
+          <TextButton label="Back" onPress={() => setForm(false)} />
+          <View style={styles.heading}>
+            <Text style={styles.title} accessibilityRole="header">
+              Add your provider
+            </Text>
+            <Text style={styles.lead}>Use the login from your IPTV provider.</Text>
+          </View>
+          <ProviderForm mode={{ kind: "connect" }} />
+          <Text style={styles.footnote}>Your login goes only to your provider.</Text>
+          <View style={styles.space} />
+        </>
+      ) : (
+        <>
+          <View style={styles.brand}>
+            <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+              <Image source={require("../../assets/mark.png") as number} style={styles.mark} />
+            </View>
+            <Text style={styles.brandName}>Mr. Streamer</Text>
+          </View>
+          <View style={styles.welcome}>
+            <Text style={styles.welcomeTitle} accessibilityRole="header">
+              {"Your TV.\nYour provider."}
+            </Text>
+            <Text style={styles.lead}>
+              {"Live TV, movies and series.\nFrom your own provider."}
+            </Text>
+          </View>
+          <View style={styles.space} />
+          <TextButton
+            label="Add provider"
+            primary
+            onPress={() => requestStatisticsChoice(() => setForm(true))}
+          />
+        </>
+      )}
+      <TextButton
+        label="Privacy policy"
+        onPress={() => openLink("https://mrstreamer.app/privacy")}
+      />
       {downloads.items.length > 0 ? (
         <View style={styles.downloads}>
           <DownloadsLink onPress={() => router.push("/offline")} />
@@ -64,10 +73,23 @@ export default function Connect() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000000" },
-  content: { padding: 24, gap: 16 },
-  title: { color: colors.text, fontSize: 28, fontWeight: "700" },
-  lead: { color: colors.text, fontSize: 17, marginTop: 4, marginBottom: 8 },
-  footnote: { color: colors.dim, fontSize: 13 },
+  content: { flexGrow: 1, padding: 24, gap: 18 },
+  heading: { gap: 10 },
+  title: { color: colors.text, fontSize: 30, fontWeight: "700", letterSpacing: -1.05 },
+  lead: { color: colors.dim, fontSize: 17, lineHeight: 25 },
+  brand: { flexDirection: "row", alignItems: "center", gap: 10 },
+  mark: { width: 36, height: 36 },
+  brandName: { color: colors.text, fontSize: 17, fontWeight: "600" },
+  welcome: { paddingTop: 78, gap: 18 },
+  welcomeTitle: {
+    color: colors.text,
+    fontSize: 34,
+    fontWeight: "700",
+    lineHeight: 40,
+    letterSpacing: -1.19,
+  },
+  space: { flex: 1, minHeight: 24 },
+  footnote: { color: colors.dim, fontSize: 14, lineHeight: 20 },
   // The link's own row insets by 16; Connect's content already does by 24.
   downloads: { marginHorizontal: -16, marginTop: 8 },
 });

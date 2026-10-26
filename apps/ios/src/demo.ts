@@ -15,7 +15,7 @@ import {
 } from "@mrstreamer/core/provider";
 import { bodySize, describeNetworkError } from "@mrstreamer/core/xtream";
 
-// The built-in demo as a provider: what Try demo signs in to, with no login. Its movie and its
+// Existing demo subscriptions use this provider without a login. Its movie and its
 // series are original generated samples kept in this repository (apps/ios/demo-media). They are
 // listed here, and play and download from GitHub at the commit that added them, through the app's
 // usual title, player and download owners. Nothing here has a TMDB id, a year, a cast, a rating

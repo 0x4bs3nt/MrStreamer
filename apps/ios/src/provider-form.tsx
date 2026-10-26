@@ -114,6 +114,7 @@ export function ProviderForm({ mode, onDone }: { mode: FormMode; onDone?: () => 
         </View>
       ) : null}
       <TextButton
+        primary={mode.kind === "connect"}
         label={busy ? label.busy : failure ? "Try again" : label.idle}
         onPress={submit}
         disabled={busy}

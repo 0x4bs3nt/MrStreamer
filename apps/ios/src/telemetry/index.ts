@@ -67,6 +67,11 @@ export function setStatistics(enabled: boolean): AnalyticsSettings {
   return analytics().configure(enabled);
 }
 
+/** Null until a deliberate choice can be read or saved by the statistics owner. */
+export function statisticsChoice(): "on" | "off" | null {
+  return analytics().choice;
+}
+
 export function noteAction(action: IosAction): void {
   analytics().noteAction(action);
 }

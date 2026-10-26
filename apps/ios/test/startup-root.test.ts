@@ -10,6 +10,7 @@ const scenario = vi.hoisted(() => ({
   roster: { kind: "restoring" } as Roster,
   changed: new Set<() => void>(),
   finish: () => {},
+  prompts: 0,
 }));
 
 vi.mock("../src/account.ts", async () => {
@@ -43,6 +44,11 @@ vi.mock("react-native", async () => {
   const { createElement } = await import("react");
   return {
     View: ({ children }: { children?: React.ReactNode }) => createElement("div", null, children),
+    Alert: {
+      alert: () => {
+        scenario.prompts++;
+      },
+    },
     StyleSheet: { create: <T>(styles: T) => styles },
   };
 });
@@ -68,6 +74,7 @@ vi.mock("../src/playback.ts", () => ({ onScreen: () => {} }));
 vi.mock("../src/telemetry/index.ts", () => ({
   onTelemetryScreen: () => {},
   startTelemetry: () => {},
+  statisticsChoice: () => null,
 }));
 vi.mock("../src/startup-screen.tsx", async () => {
   const { createElement } = await import("react");
@@ -103,6 +110,7 @@ it("keeps the splash until routes are known, then mounts saved-account navigatio
     expect(currentStartup().kind).toBe("opening");
     expect(container.querySelector("[data-splash]")).not.toBeNull();
     expect(container.querySelector("main")).toBeNull();
+    expect(scenario.prompts).toBe(0);
     await React.act(async () => {
       scenario.roster = {
         kind: "ready",
@@ -130,10 +138,12 @@ it("keeps the splash until routes are known, then mounts saved-account navigatio
     expect(container.querySelector('[data-route="(tabs)"]')).not.toBeNull();
     expect(container.querySelector('[data-route="connect"]')).toBeNull();
     expect(container.querySelector("[data-watch]")).not.toBeNull();
+    expect(scenario.prompts).toBe(1);
     await React.act(async () => {
       scenario.finish();
     });
     expect(currentStartup().kind).toBe("open");
+    expect(scenario.prompts).toBe(1);
   } finally {
     React.act(() => root.unmount());
     vi.useRealTimers();
