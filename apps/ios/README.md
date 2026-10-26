@@ -145,6 +145,29 @@ once the SDK's react-native-screens is 4.30.0 or later.
 SDK 58 links prebuilt modules, which a patch can't reach, so `package.json` has autolinking build
 ExpoFileSystem, ExpoVideo and RNScreens from their patched source.
 
+## Public catalogue policy
+
+The public iOS app excludes recognised adult channels, movies and series. Provider adult flags
+and the shared category-name recognition are authoritative for this classification. Movies and
+series are filtered before indexing, so browse, Search, Continue watching and details share the
+same permitted catalogue. Saved watchlist records are checked against current provider lists and
+remember a recognised exclusion across later removals and relaunch. Ordinary versions remain
+available when a provider marks another version of the same title.
+
+Playback rechecks that authority through format preparation and native admission. Raw catalogue
+changes revoke pending or attached recognised sources. Queued download authorization waits for
+the current title lists, so it can fail when no saved or provider catalogue is available.
+Playback and new/retried download requests check the latest raw catalogue too, including while a
+replacement index is being built. Newly recognised unfinished downloads are fenced without
+removing their records. Recognised copies are hidden and cannot play; their files remain intact.
+Ordinary personal copies remain playable offline. There is no adult opt-in in this release and
+desktop policy is unchanged. Provider data with no recognisable classification is not proven
+adult-free.
+
+`test/downloads.test.ts` exercises refresh, restore, saved entries, stale action requests, a
+restricted transfer and retained offline playback against the fixture provider. Native iPhone
+acceptance remains separate from these service checks.
+
 ## Managed native playback contract
 
 The pinned expo-video patch adds iOS contract version 1 on its existing player. After checking

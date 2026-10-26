@@ -255,6 +255,46 @@ afterEach(() => {
 });
 
 describe("the whole watchlist", () => {
+  it.each([false, true])(
+    "keeps a recognised saved entry hidden before indexing, storage refusal: %s",
+    async (refused) => {
+      const index = providers({
+        id: "a",
+        titles: ready(lists([movie("7", "Dune"), movie("8", "Arrival")])),
+      });
+      save(titled(index, "Dune"));
+      save(titled(index, "Arrival"));
+      open();
+      const classified = lists([{ ...movie("7", "Dune"), adult: true }, movie("8", "Arrival")]);
+      scenario.complete = false;
+      scenario.members = [member("a", ready(classified))];
+      scenario.lists = { kind: "loading" };
+      scenario.refuse = refused;
+      React.act(() =>
+        watchlist.alignWatchlist(null, [{ subscriptionId: "a", catalogue: classified }]),
+      );
+      // The next raw catalogue arrives without the title before any index is published.
+      providers({ id: "a", titles: ready(lists([movie("8", "Arrival")])) });
+      expect(rows().some((row) => row.startsWith("Dune,"))).toBe(false);
+      expect(rows()).toEqual(["Arrival, Movie · 2021"]);
+      scenario.refuse = false;
+      React.act(() =>
+        watchlist.alignWatchlist(null, [
+          { subscriptionId: "a", catalogue: lists([movie("8", "Arrival")]) },
+        ]),
+      );
+      const restoredModule = "../src/watchlist.ts?restored-policy";
+      const restored: typeof watchlist = await import(restoredModule);
+      restored.setWatchlistOwners(["a"]);
+      const shown = restored.watchlistRows(
+        restored.currentWatchlist(),
+        { index: null, complete: false, members: scenario.members, named: (title) => title },
+        "newest",
+      );
+      expect(shown.map((row) => row.name)).toEqual(["Arrival"]);
+    },
+  );
+
   it("lists every saved title, newest first or by name, and keeps the order chosen", () => {
     const names = [
       "Film 10",

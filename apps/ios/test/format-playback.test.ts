@@ -76,7 +76,8 @@ Object.assign(globalThis, {
   },
 });
 
-const { onPlaybackFailure, play, playbackState, retry, stop } = await import("../src/playback.ts");
+const { onPlaybackFailure, play, playbackState, recheckPlayback, retry, stop } =
+  await import("../src/playback.ts");
 
 const movie = (id: string, subscriptionId: string | null = "sub") => ({
   id,
@@ -103,6 +104,45 @@ beforeEach(async () => {
 });
 
 describe("a file AVPlayer can't open", () => {
+  it.each(["catalogue change", "final admission"])(
+    "refuses a revoked source during format preparation: %s",
+    async (trigger) => {
+      let permitted = true;
+      void play(
+        movie("restricted"),
+        {
+          kind: "file",
+          originalLanguage: null,
+          open: async () => ({
+            url: "http://panel/restricted.mkv",
+            container: "mkv",
+            admit: () => {
+              if (!permitted) throw new Error("This source is no longer permitted.");
+            },
+          }),
+        },
+        options,
+      );
+      await settle();
+      expect(sessions).toHaveLength(1);
+      permitted = false;
+      if (trigger === "catalogue change") {
+        recheckPlayback();
+        expect(playbackState.get().phase.kind).toBe("failed");
+      }
+      sessions[0]!.opened.resolve({
+        kind: "session",
+        playlist: "http://127.0.0.1:1/restricted/main.m3u8",
+      });
+      await settle();
+      expect(playbackState.get().phase.kind).toBe("failed");
+      expect(given.filter((source) => source !== null)).toEqual([]);
+      expect(sessions[0]!.closeAsked).toBe(true);
+      sessions[0]!.closed.resolve();
+      await stop();
+    },
+  );
+
   it("plays from where it stopped through the session, without seeking again", async () => {
     void play(
       movie("a"),
@@ -118,7 +158,7 @@ describe("a file AVPlayer can't open", () => {
     );
     await settle();
     expect(sessions).toMatchObject([{ url: "http://panel/a.mkv", start: 300 }]);
-    session("1").opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/t/main.m3u8" });
+    sessions[0]!.opened.resolve({ kind: "session", playlist: "http://127.0.0.1:1/t/main.m3u8" });
     await settle();
     expect(given.at(-1)).toEqual({ uri: "http://127.0.0.1:1/t/main.m3u8", contentType: "hls" });
     fakePlayer.ready();

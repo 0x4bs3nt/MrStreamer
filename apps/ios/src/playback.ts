@@ -111,6 +111,8 @@ export interface Playback {
 
 /** Where a stream is, and its file type as whoever opened it knows it. */
 export interface Source {
+  /** Rechecks the catalogue/copy authority through format preparation and native admission. */
+  readonly admit?: () => void;
   readonly url: string;
   readonly headers?: Readonly<Record<string, string>>;
   /** "m3u8" for HLS; a title's listed container, or a copy's. */
@@ -363,6 +365,7 @@ interface Resource {
   selections: Promise<void>;
   viaSession: boolean;
   observed: Source["observed"] | null;
+  admit: Source["admit"] | null;
   facts: ObservedFileTracks | null;
   factsRevision: number;
   /** A viewer Pause applied before admission resolves must still suppress its initial play. */
@@ -1332,6 +1335,7 @@ function makeResource(choice: Choice, epoch: Epoch, automatic: boolean): Resourc
     selections: Promise.resolve(),
     viaSession: false,
     observed: null,
+    admit: null,
     facts: null,
     factsRevision: -1,
     holdInitialPlay: false,
@@ -1355,11 +1359,23 @@ async function admit(owned: NonNullable<typeof current>) {
 
 function attemptStands(owned: NonNullable<typeof current>, resource: Resource) {
   if (!stands(resource)) return false;
+  if (!recheckPlayback()) return false;
   if (resource.automatic && (!attended() || held !== null)) {
     terminal(owned);
     return false;
   }
   return true;
+}
+
+/** Raw catalogue changes revoke a pending or attached source before any later native action. */
+export function recheckPlayback(): boolean {
+  try {
+    current?.resource.admit?.();
+    return true;
+  } catch (cause) {
+    fail({ kind: "lookup", error: appError(cause) });
+    return false;
+  }
 }
 
 /** Every attempt waits for all earlier native/format readers before reclaim or lookup. */
@@ -1385,6 +1401,7 @@ async function runAttempt(owned: NonNullable<typeof current>, resource: Resource
       epoch.sourceBound = true;
     }
     const source = await open(controller.signal);
+    resource.admit = source.admit ?? null;
     if (!attemptStands(owned, resource)) return;
     resource.observed =
       plan.kind === "file" && !item.live && item.subscriptionId !== null
@@ -1402,7 +1419,7 @@ async function runAttempt(owned: NonNullable<typeof current>, resource: Resource
       // Observe failure now, even if opening itself is still pending.
       void opening.closed.catch(() => undefined);
       const opened = await opening.opened;
-      if (!stands(resource)) return opening.close();
+      if (!attemptStands(owned, resource)) return opening.close();
       if (opened.kind === "session") {
         const { session } = opened;
         resource.session = session;

@@ -3,6 +3,7 @@ import type { LoginInput } from "@mrstreamer/contracts/ipc";
 import type { AccountStatus } from "@mrstreamer/contracts/subscription";
 import type { Quality } from "@mrstreamer/contracts/library";
 import { chosenVariant, streamsToPlay } from "@mrstreamer/core/catalogue/variants";
+import { adultIn } from "@mrstreamer/core/adult";
 import type { LiveCatalogue, OnDemandCatalogue, Provider } from "@mrstreamer/core/provider";
 import { parseLogin, xtreamProvider, type XtreamAccount } from "@mrstreamer/core/xtream";
 import Constants from "expo-constants";
@@ -30,6 +31,7 @@ import {
   playbackState,
   progressSettled,
   request,
+  recheckPlayback,
   stop,
   type Plan,
 } from "./playback.ts";
@@ -1237,6 +1239,17 @@ let chosen: string | null = null;
 
 /** Core chooses up to three streams for Automatic, or only the explicit or accepted pick. */
 function livePlan(channel: Channel, asked?: string): Plan | null {
+  const permitted = () => {
+    if (channel.adult) return false;
+    const member = members().find((each) => each.entry.id === channel.subscriptionId);
+    const latest = member && shownOf(member.live);
+    if (!latest) return true;
+    const adult = adultIn(latest.categories);
+    return !latest.channels.some(
+      (row) => adult(row) && channel.variants.some((variant) => variant.id === row.id),
+    );
+  };
+  if (!permitted()) return null;
   const picks = channelPicks(channel.subscriptionId);
   const { liveQuality } = getMediaPreferences();
   const [first, ...rest] = streamsToPlay(
@@ -1246,8 +1259,14 @@ function livePlan(channel: Channel, asked?: string): Plan | null {
   ).map((variant) => ({
     variantId: variant.id,
     open: async (signal: AbortSignal) => {
+      if (!permitted()) throw new AppFailure({ kind: "channel-not-found", channelId: channel.id });
       const stream = await sourceOf(channel.subscriptionId).provider.liveStream(variant.id, signal);
+      if (!permitted()) throw new AppFailure({ kind: "channel-not-found", channelId: channel.id });
       return {
+        admit: () => {
+          if (!permitted())
+            throw new AppFailure({ kind: "channel-not-found", channelId: channel.id });
+        },
         url: stream.url,
         container: stream.format === "hls" ? "m3u8" : "ts",
         ...(stream.headers ? { headers: stream.headers } : {}),
@@ -1384,8 +1403,21 @@ export const channelsWorkedOut = () =>
 
 /** Shows the channels from the parts there are, and works out those still to come. */
 function publish() {
+  recheckPlayback();
   const all = members();
   const sources = liveSources(all);
+  for (const source of sources) {
+    const before = parts.get(source.subscriptionId);
+    if (!before || before.catalogue === source.catalogue) continue;
+    const wasAdult = adultIn(before.catalogue.categories);
+    const permitted = new Set(
+      before.catalogue.channels.filter((row) => !wasAdult(row)).map((row) => row.id),
+    );
+    const isAdult = adultIn(source.catalogue.categories);
+    if (source.catalogue.channels.some((row) => permitted.has(row.id) && isAdult(row))) {
+      parts.delete(source.subscriptionId);
+    }
+  }
   for (const id of parts.keys()) {
     if (!sources.some((source) => source.subscriptionId === id)) parts.delete(id);
   }

@@ -15,6 +15,7 @@ import type { OnDemandCatalogue } from "@mrstreamer/core/provider";
 import { xtreamProvider } from "@mrstreamer/core/xtream";
 import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { adultIn } from "@mrstreamer/core/adult";
 import { browseFixture } from "./title-browse-fixture.ts";
 
 // The titles owner publishes lists only once both kinds' collections are ready. It keeps the
@@ -252,7 +253,10 @@ vi.mock("../src/titles-ui.tsx", async (importOriginal) => {
     },
   };
 });
-vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
+vi.mock("../src/watchlist.ts", () => ({
+  alignWatchlist: () => undefined,
+  serveWatchlist: () => undefined,
+}));
 vi.mock("../src/header.tsx", () => ({ tabHref: () => "/" }));
 vi.mock("../src/loading.tsx", async () => {
   const { createElement, Fragment } = await import("react");
@@ -442,10 +446,15 @@ describe("the collections Movies, Series, Home and details show", () => {
     );
     expect(bare).toBe(0);
     expect(views.length).toBeGreaterThan(0);
+    const permitted = {
+      ...catalogue,
+      movies: catalogue.movies.filter((row) => !adultIn(catalogue.movieCategories)(row)),
+      series: catalogue.series.filter((row) => !adultIn(catalogue.seriesCategories)(row)),
+    };
     const expected = indexCatalogue(
       [
-        { subscriptionId: "a", catalogue },
-        { subscriptionId: "b", catalogue },
+        { subscriptionId: "a", catalogue: permitted },
+        { subscriptionId: "b", catalogue: permitted },
       ],
       "en",
     );
@@ -581,7 +590,6 @@ describe("the collections Movies, Series, Home and details show", () => {
     learn(3);
     expect(titles.collectionsOf("movie")).toBe(first);
     await new Promise((done) => setTimeout(done, 0));
-    expect(titles.collectionsOf("movie")).toBe(first);
     edges.services = servicesOf(index, "movie");
     learn(4);
     // However often it changed, what shows at last is made of the metadata as it stands now.

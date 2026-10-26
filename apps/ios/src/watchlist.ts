@@ -15,6 +15,8 @@ import {
 } from "@mrstreamer/core/ondemand/watchlist";
 import { useMemo } from "react";
 import type { Member } from "./account.ts";
+import type { OnDemandCatalogue } from "@mrstreamer/core/provider";
+import { excludedSaved } from "./content-policy.ts";
 import { readJson, removeJson, writeJson } from "./files.ts";
 import { store, useStore } from "./store.ts";
 
@@ -73,6 +75,13 @@ const saved = store<Accounts>({ accounts: {} });
 /** The saved subscriptions in their order: only their records show. */
 const owners = store<readonly string[]>([]);
 let loaded = false;
+let alignmentPending = false;
+let members: () => readonly Member[] = () => [];
+
+/** The catalogue owner supplies current raw memberships without a dependency on account.ts. */
+export function serveWatchlist(read: () => readonly Member[]): void {
+  members = read;
+}
 /**
  * The highest `sequence` this run read or gave, whatever was removed, erased or refused since. A
  * record's id is its time and sequence, so a new record never takes the id of one this run gave
@@ -82,6 +91,15 @@ let given = 0;
 
 const highest = (accounts: Accounts["accounts"]) =>
   Math.max(0, ...Object.values(accounts).flatMap((list) => list.map((entry) => entry.sequence)));
+
+function catalogueOf(member: Member | undefined): OnDemandCatalogue | null {
+  if (!member) return null;
+  return member.titles.kind === "ready"
+    ? member.titles.value
+    : "last" in member.titles
+      ? member.titles.last
+      : null;
+}
 
 function load() {
   if (loaded) return;
@@ -97,6 +115,7 @@ function load() {
 
 function write(accounts: Accounts["accounts"]) {
   writeJson(FILE, { version: 1, accounts });
+  alignmentPending = false;
   saved.set({ accounts });
 }
 
@@ -159,6 +178,7 @@ export function savedEntry(
  * saved already keeps its entry and time.
  */
 export function saveTitle(title: Title) {
+  if (title.adult) return;
   const { accounts } = saved.get();
   const ids = owners.get();
   if (savedEntry(entries(accounts, ids), title)) return;
@@ -168,6 +188,13 @@ export function saveTitle(title: Title) {
   for (const subscriptionId of ids) {
     const facts = factsOf(title, subscriptionId);
     if (facts.versionIds.length === 0) continue;
+    if (
+      excludedSaved(
+        catalogueOf(members().find((member) => member.entry.id === subscriptionId)),
+        facts,
+      )
+    )
+      continue;
     sequence += 1;
     next[subscriptionId] = [
       ...(accounts[subscriptionId] ?? []),
@@ -255,7 +282,17 @@ export function watchlistRows(
   sources: WatchlistSources,
   order: WatchlistOrder,
 ): readonly WatchlistRow[] {
-  const newest = latestFirst(list);
+  const catalogues = new Map(
+    sources.members.map((member) => [member.entry.id, catalogueOf(member)]),
+  );
+  const newest = latestFirst(
+    list.flatMap((entry) => {
+      const permitted = entry.filter(
+        (saved) => !excludedSaved(catalogues.get(saved.subscriptionId) ?? null, saved),
+      );
+      return permitted.length ? [permitted] : [];
+    }),
+  );
   const { index } = sources;
   const signedIn = new Set(
     sources.members.flatMap((member) => (member.needsSecret ? [] : [member.entry.id])),
@@ -324,15 +361,39 @@ export function watchlistTitles(
  * name, year, versions and TMDB id, and entries that turn out to be one title become the one
  * saved first.
  */
-export function alignWatchlist(index: IndexedCatalogue) {
+export function alignWatchlist(
+  index: IndexedCatalogue | null,
+  listed: readonly {
+    readonly subscriptionId: string;
+    readonly catalogue: OnDemandCatalogue;
+  }[] = [],
+) {
   const { accounts } = saved.get();
   let next: Record<string, readonly SavedTitle[]> | null = null;
   for (const subscriptionId of owners.get()) {
     const before = accounts[subscriptionId] ?? [];
-    const after = aligned(index, subscriptionId, before);
-    if (after !== before) (next ??= { ...accounts })[subscriptionId] = after;
+    const catalogue =
+      listed.find((each) => each.subscriptionId === subscriptionId)?.catalogue ?? null;
+    // Remember a recognised exclusion even if the provider later removes that row entirely.
+    // The record and personal media stay intact. A permitted title can settle it again below.
+    const classified = before.map((entry) =>
+      !entry.adult && excludedSaved(catalogue, entry) ? { ...entry, adult: true } : entry,
+    );
+    const after = index ? aligned(index, subscriptionId, classified) : classified;
+    if (after.length !== before.length || after.some((entry, at) => entry !== before[at])) {
+      (next ??= { ...accounts })[subscriptionId] = after;
+    }
   }
-  if (next) write(next);
+  if (!next && !alignmentPending) return;
+  const alignedAccounts = next ?? accounts;
+  // Classification takes effect even when storage refuses it. Retry the same in-memory facts
+  // on the next catalogue/status change without interrupting other catalogue listeners.
+  saved.set({ accounts: alignedAccounts });
+  try {
+    write(alignedAccounts);
+  } catch {
+    alignmentPending = true;
+  }
 }
 
 /** One subscription's records in line with the lists; the same array when nothing changes. */

@@ -212,7 +212,10 @@ vi.mock("../src/sources.ts", () => ({
   },
 }));
 vi.mock("../src/viewing.ts", () => ({ serveViewing: () => undefined }));
-vi.mock("../src/watchlist.ts", () => ({ alignWatchlist: () => undefined }));
+vi.mock("../src/watchlist.ts", () => ({
+  alignWatchlist: () => undefined,
+  serveWatchlist: () => undefined,
+}));
 vi.mock("@mrstreamer/core/metadata/store", () => ({
   metadataStore: (deps: { onChange: (change: { content: boolean }) => void }) => {
     scenario.notify = deps.onChange;

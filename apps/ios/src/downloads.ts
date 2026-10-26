@@ -47,7 +47,15 @@ import { fetchPicture } from "./picture-transfer.ts";
 import { keychainSecrets } from "./secrets.ts";
 import { currentSource, onSignedIn, sourceOf, type Source } from "./sources.ts";
 import { store, useStore } from "./store.ts";
-import { detailsOf, episodesOf, listedIndex, titleFile, titleOf } from "./titles.ts";
+import {
+  admitTitle,
+  detailsOf,
+  episodesOf,
+  excludedTitle,
+  listedIndex,
+  titleFile,
+  titleOf,
+} from "./titles.ts";
 import { recordProgress } from "./viewing.ts";
 
 // Movies and episodes downloaded to this iPhone: the queue and the copies that play with no
@@ -144,6 +152,8 @@ const Stored = lazy(() =>
     artwork: { poster: "boolean", wide: "boolean" },
     /** A transfer under way is `queued` on disk: the native side has it, or it waits for one. */
     state: "'queued' | 'failed' | 'complete'",
+    /** Recognised by the public catalogue policy, retained when offline or no longer listed. */
+    "excluded?": "boolean",
     "failure?": Failure(),
     /** The whole file's bytes once the server said; once complete, the bytes on disk. */
     size: "number | null",
@@ -485,8 +495,9 @@ function viewOf(
 function view(): DownloadList {
   const names = new Map(members().map((member) => [member.entry.id, member.label]));
   const busy = borrowed();
-  const queue = doc.items.filter((record) => record.state !== "complete");
-  const copies = doc.items
+  const visible = doc.items.filter((record) => !excludedDownload(record));
+  const queue = visible.filter((record) => record.state !== "complete");
+  const copies = visible
     .filter((record) => record.state === "complete")
     .toSorted((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   return {
@@ -631,6 +642,14 @@ async function reduce(receipt: ReceiptV2, heardLive: boolean) {
   // A removal under way, or one this receipt says was asked, is finished by its own path before
   // the receipt is acknowledged: a refused write leaves both for the next reconciliation.
   const removal = removalOf(record);
+  if (
+    receipt.outcome.kind === "cancelled" &&
+    typeof removal !== "object" &&
+    (restricting.has(record.id) || excludedDownload(record))
+  ) {
+    update(record.id, () => fenced(record));
+    return;
+  }
   if (receipt.outcome.kind === "cancelled" || typeof removal === "object") {
     await removeRecord(record.id, typeof removal === "object" ? removal.reason : "user", receipt);
     return;
@@ -980,6 +999,76 @@ function endRemoved() {
   }
 }
 
+const restricting = new Set<string>();
+const exclusions = new Map<string, boolean>();
+
+/** A retained classification also fences a copy while its provider lists are unavailable. */
+function excludedDownload(record: Stored): boolean {
+  return (
+    excludedTitle({ ...record.title, subscriptionId: record.subscriptionId }) ??
+    exclusions.get(record.id) ??
+    record.excluded ??
+    false
+  );
+}
+
+/** An unfinished recognised request, failed without its binding and kept on the list. */
+const fenced = (record: Stored): Stored => ({
+  ...unbound(record),
+  state: "failed",
+  failure: {
+    kind: "app",
+    error: {
+      kind: "unexpected",
+      detail: describeError({ kind: "title-not-found", titleId: record.title.id }),
+    },
+  },
+});
+
+/** Retains recognised records and copies, fencing only their unfinished requests. */
+async function endRestricted() {
+  for (const record of doc.items) {
+    if (!standing(record) || restricting.has(record.id)) continue;
+    const excluded = excludedDownload(record);
+    exclusions.set(record.id, excluded);
+    restricting.add(record.id);
+    try {
+      try {
+        if (Boolean(record.excluded) !== excluded)
+          update(record.id, (latest) => ({ ...latest, excluded }));
+      } catch {
+        // A refused classification write cannot keep an active native request authorised.
+      }
+      if (
+        owed.has(record.id) ||
+        !excluded ||
+        record.state === "complete" ||
+        (record.state === "failed" && !boundOf(record))
+      )
+        continue;
+      const bound = boundOf(record);
+      if (bound) {
+        const fence = await transfers.cancelAuthorization(bound.authorization, "remove");
+        for (const receipt of fence.receipts) {
+          if (
+            receipt.authorization === bound.authorization &&
+            receipt.outcome.kind === "complete"
+          ) {
+            await take(receipt, false);
+          }
+        }
+      }
+      const latest = find(record.id);
+      if (latest && latest.state !== "complete" && standing(latest) && !owed.has(record.id))
+        update(record.id, () => fenced(latest));
+    } catch {
+      // A refused native fence keeps its binding for reconciliation and the next attempt.
+    } finally {
+      restricting.delete(record.id);
+    }
+  }
+}
+
 /** Finishes every removal an earlier run wrote down and couldn't finish. */
 async function finishRemovals() {
   for (const record of doc.items) {
@@ -1233,6 +1322,7 @@ function refill() {
 }
 
 async function fill() {
+  await endRestricted();
   const snapshot = await transfers.reconcile("ordinary");
   known = new Map(snapshot.authorizations.map((each) => [each.authorization, each]));
   await applyFacts(snapshot);
@@ -1272,6 +1362,7 @@ async function fill() {
 async function authorize(record: Stored): Promise<boolean> {
   if (
     record.state !== "queued" ||
+    excludedDownload(record) ||
     !standing(record) ||
     record.transfer !== undefined ||
     held.has(record.id) ||
@@ -1302,19 +1393,29 @@ async function authorize(record: Stored): Promise<boolean> {
     }));
     return false;
   }
-  const file = await source.provider
-    .titleFile(record.title.kind, record.title.id, record.container, AbortSignal.timeout(20_000))
-    .catch((cause: unknown) => {
-      if (stands()) {
-        const detail = describeError(appError(cause));
-        update(record.id, (latest) => ({
-          ...latest,
-          state: "failed",
-          failure: { kind: "app", error: { kind: "unexpected", detail } },
-        }));
-      }
-      return null;
-    });
+  const ref = { ...record.title, subscriptionId: record.subscriptionId };
+  const file = await (async () => {
+    await listedIndex(ref.subscriptionId, AbortSignal.timeout(20_000));
+    admitTitle(ref);
+    const asked = await source.provider.titleFile(
+      record.title.kind,
+      record.title.id,
+      record.container,
+      AbortSignal.timeout(20_000),
+    );
+    admitTitle(ref);
+    return asked;
+  })().catch((cause: unknown) => {
+    if (stands()) {
+      const detail = describeError(appError(cause));
+      update(record.id, (latest) => ({
+        ...latest,
+        state: "failed",
+        failure: { kind: "app", error: { kind: "unexpected", detail } },
+      }));
+    }
+    return null;
+  });
   if (!file || !stands()) return false;
   let authorization: string;
   try {
@@ -1338,6 +1439,11 @@ async function authorize(record: Stored): Promise<boolean> {
       () => false,
     );
   if (!stands()) return abandon();
+  if (excludedDownload(record)) {
+    await abandon();
+    update(record.id, (latest) => fenced(latest));
+    return false;
+  }
   try {
     const folder = folderOf(record.id);
     folder.create({ intermediates: true, idempotent: true });
@@ -1362,6 +1468,7 @@ async function authorize(record: Stored): Promise<boolean> {
   }
   tell();
   try {
+    admitTitle(ref);
     await transfers.authorize(authorization, { url: file.url, headers: { ...file.headers } });
   } catch {
     // Never armed: retired, and the record asked again at the next refill.
@@ -1424,7 +1531,12 @@ export function startDownloads(): void {
   });
   playbackState.subscribe(tell);
   onRoster(() => {
-    if (phase === "ready") endRemoved();
+    if (phase === "ready") {
+      endRemoved();
+      void endRestricted()
+        .catch(() => undefined)
+        .finally(tell);
+    }
     tell();
     refill();
   });
@@ -1463,10 +1575,13 @@ export type Retried = "queued" | "unchanged" | "stopped";
  */
 async function again(record: Stored, stands: Stands = always): Promise<Retried> {
   const ref: TitleRef = { ...record.title, subscriptionId: record.subscriptionId };
+  if (excludedDownload(record)) throw new AppFailure({ kind: "title-not-found", titleId: ref.id });
   const container = await titleFile(ref, AbortSignal.timeout(20_000)).then(
     (file) => file.container,
     () => record.container,
   );
+  // Lookup failure may retain its known container, but never grants catalogue admission.
+  admitTitle(ref);
   const latest = find(record.id);
   if (latest?.state !== "failed" || !standing(latest)) return "unchanged";
   if (!stands()) return "stopped";
@@ -1486,6 +1601,7 @@ async function again(record: Stored, stands: Stands = always): Promise<Retried> 
  */
 export async function addDownload(ref: TitleRef): Promise<Download> {
   startDownloads();
+  admitTitle(ref);
   const answer = async (known: Stored) => {
     if (known.state === "failed") await again(known);
     tell();
@@ -1494,10 +1610,13 @@ export async function addDownload(ref: TitleRef): Promise<Download> {
     return shown;
   };
   const known = doc.items.find((each) => sameTitle(each, ref));
+  if (known && excludedDownload(known))
+    throw new AppFailure({ kind: "title-not-found", titleId: ref.id });
   if (known) return answer(known);
   const source = sourceOf(ref.subscriptionId);
   const file = await titleFile(ref, AbortSignal.timeout(20_000));
   const kept = await aboutOf(ref, AbortSignal.timeout(20_000));
+  admitTitle(ref);
   if (!savable(ref.subscriptionId, source)) {
     throw new AppFailure({ kind: "no-subscription" });
   }
@@ -1667,7 +1786,7 @@ export async function retryDownload(id: string, stands: Stands = always): Promis
 
 /** A complete copy that isn't being removed: the only kind that plays. */
 const playable = (record: Stored | undefined): record is Stored =>
-  record?.state === "complete" && removalOf(record) === undefined;
+  record?.state === "complete" && !excludedDownload(record) && removalOf(record) === undefined;
 
 /**
  * Plays a copy in Watch from where it was left, from the phone: no provider, login or network.
@@ -1744,7 +1863,14 @@ function playCopy(id: string, record: Stored) {
           tell();
           throw new AppFailure({ kind: "stream", failure: { kind: "unavailable", status: 404 } });
         }
-        return { url: media.uri, container: record.container };
+        return {
+          url: media.uri,
+          container: record.container,
+          admit: () => {
+            if (!playable(find(id)))
+              throw new AppFailure({ kind: "title-not-found", titleId: record.title.id });
+          },
+        };
       },
     },
     {

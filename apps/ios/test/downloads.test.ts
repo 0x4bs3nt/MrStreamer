@@ -38,6 +38,11 @@ const memory = vi.hoisted(() => ({
   appListeners: [] as Array<(state: string) => void>,
   /** While set, a series' details reach the app only once `released` settles. */
   details: null as null | { arrived: () => void; released: Promise<void> },
+  restricted: null as null | {
+    movies: readonly string[];
+    series: readonly string[];
+    channel: string;
+  },
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
@@ -148,6 +153,35 @@ vi.mock("expo-video", () => ({
 const passThrough = globalThis.fetch;
 vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
   const response = await passThrough(input, init);
+  const restricted = memory.restricted;
+  const action = typeof input === "string" ? new URL(input).searchParams.get("action") : null;
+  if (restricted && response.ok && action?.startsWith("get_")) {
+    if (action === "get_vod_categories") {
+      const categories = (await response.json()) as unknown[];
+      return Response.json([
+        ...categories,
+        { category_id: "excluded", category_name: "XXX Adults" },
+      ]);
+    }
+    if (["get_vod_streams", "get_series", "get_live_streams"].includes(action)) {
+      const rows = (await response.json()) as Record<string, unknown>[];
+      return Response.json(
+        rows.map((row) => {
+          const id = String(row["stream_id"] ?? row["series_id"]);
+          if (action === "get_vod_streams" && id === restricted.movies[0]) {
+            return { ...row, category_id: "excluded", category_ids: ["excluded"] };
+          }
+          const flagged =
+            action === "get_vod_streams"
+              ? restricted.movies.includes(id)
+              : action === "get_series"
+                ? restricted.series.includes(id)
+                : id === restricted.channel;
+          return flagged ? { ...row, is_adult: 1 } : row;
+        }),
+      );
+    }
+  }
   const held = memory.details;
   if (!held || typeof input !== "string" || !input.includes("action=get_series_info")) {
     return response;
@@ -221,6 +255,7 @@ const episode = () => {
 };
 
 afterEach(async () => {
+  memory.restricted = null;
   memory.details = null;
   one.stallMovieFile(movie().id, 0, 0);
   one.stallMovieFile(otherMovie().id, 0, 0);
@@ -376,6 +411,303 @@ function appGoes(state: "background" | "active") {
 }
 
 describe("downloads", { timeout: 30_000 }, () => {
+  it("excludes recognised catalogues and saved actions after refresh and restore, keeping personal copies", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    const watchlist = await import("../src/watchlist.ts");
+    const lists = app.titleLists();
+    const live = app.currentCatalogue();
+    if (lists.kind !== "ready" || live.kind !== "ready") throw new Error("No lists");
+    const { kindOf } = await import("@mrstreamer/core/ondemand/catalogue");
+    const film = app.titleOf(lists.index, "movie", movieRef(a))!;
+    const series = app.titleOf(lists.index, "series", {
+      subscriptionId: a,
+      id: String(episode().series.id),
+    })!;
+    const ordinary = kindOf(lists.index, "movie").titles.find((title) =>
+      title.versions.every(
+        (version) => ![String(movie().id), String(otherMovie().id)].includes(version.id),
+      ),
+    )!;
+    const channel = live.library.channels[0]!;
+    watchlist.saveTitle(film);
+    watchlist.saveTitle(series);
+    watchlist.saveTitle(ordinary);
+    const copy = await app.addDownload(movieRef(a));
+    await until(() => isComplete(app, copy.id), "the personal copy");
+    const originalCopy = mediaFile(copy.id)!;
+    const ordinaryCopy = await app.addDownload({
+      kind: "movie",
+      subscriptionId: a,
+      id: ordinary.id,
+    });
+    await until(() => isComplete(app, ordinaryCopy.id), "the permitted personal copy");
+    memory.restricted = {
+      movies: [String(movie().id), String(otherMovie().id)],
+      series: series.versions.map((version) => version.id),
+      channel: channel.variants[0]!.id,
+    };
+    app.reloadTitles(a);
+    app.reloadChannels(a);
+    await until(() => {
+      const titles = app.titleLists();
+      return (
+        titles.kind === "ready" &&
+        app.titlesWorkedOut() &&
+        app.members()[0]?.titles.kind === "ready" &&
+        app.members()[0]?.live.kind === "ready" &&
+        app.currentCatalogue().kind === "ready" &&
+        !app.titleOf(titles.index, "movie", movieRef(a))
+      );
+    }, "the filtered refresh");
+    const requests = one.fileRequests();
+    await expect(app.titleFile(movieRef(a), AbortSignal.timeout(1000))).rejects.toMatchObject({
+      error: { kind: "title-not-found" },
+    });
+    await expect(app.detailsOf(film)).rejects.toMatchObject({
+      error: { kind: "title-not-found" },
+    });
+    await expect(
+      app.titleFile(
+        {
+          kind: "episode",
+          subscriptionId: a,
+          id: String(episode().first.id),
+          seriesId: series.id,
+          season: 1,
+          episode: 1,
+        },
+        AbortSignal.timeout(1000),
+      ),
+    ).rejects.toMatchObject({ error: { kind: "title-not-found" } });
+    await expect(app.addDownload(movieRef(a))).rejects.toMatchObject({
+      error: { kind: "title-not-found" },
+    });
+    app.playChannel(channel, "Live", { watch: true });
+    expect(app.playbackState.get().phase.kind).toBe("idle");
+    expect(one.fileRequests()).toBe(requests);
+    const shownWatchlist = () => {
+      const lists = app.titleLists();
+      return watchlist.watchlistRows(
+        watchlist.currentWatchlist(),
+        {
+          index: lists.kind === "ready" ? lists.index : null,
+          complete: app.titlesWorkedOut(),
+          members: app.members(),
+          named: app.named,
+        },
+        "newest",
+      );
+    };
+    expect(shownWatchlist().map((row) => row.name)).toEqual([ordinary.title]);
+    app = await launch();
+    await until(
+      () => app.titlesWorkedOut() && app.titleLists().kind === "ready",
+      "the restored lists",
+    );
+    const restoredWatchlist = await import("../src/watchlist.ts");
+    const restored = app.titleLists();
+    if (restored.kind !== "ready") throw new Error("No restored lists");
+    expect(
+      restoredWatchlist
+        .watchlistRows(
+          restoredWatchlist.currentWatchlist(),
+          { index: restored.index, complete: true, members: app.members(), named: app.named },
+          "newest",
+        )
+        .map((row) => row.name),
+    ).toEqual([ordinary.title]);
+    expect(kindOf(restored.index, "movie").titles.some((title) => title.id === film.id)).toBe(
+      false,
+    );
+    expect(
+      kindOf(restored.index, "movie").titles.some((title) => title.id === String(otherMovie().id)),
+    ).toBe(false);
+    expect(kindOf(restored.index, "series").titles.some((title) => title.id === series.id)).toBe(
+      false,
+    );
+    expect(
+      app.searchTitles(restored.index, "movie", ordinary.title, 10).titles.map((title) => title.id),
+    ).toContain(ordinary.id);
+    expect(
+      app.searchTitles(restored.index, "movie", film.title, 10).titles.map((title) => title.id),
+    ).not.toContain(film.id);
+    const beforePlayback = memory.played.length;
+    const beforeFiles = one.fileRequests();
+    app.playDownload(copy.id);
+    await app.progressSettled();
+    expect(memory.played).toHaveLength(beforePlayback);
+    expect(app.downloadList().items.some((item) => item.id === copy.id)).toBe(false);
+    expect(originalCopy.exists).toBe(true);
+    app.playDownload(ordinaryCopy.id);
+    await until(() => memory.played.length > beforePlayback, "the permitted offline copy");
+    expect(memory.played.at(-1)?.uri).toBe(mediaFile(ordinaryCopy.id)!.uri);
+    expect(one.fileRequests()).toBe(beforeFiles);
+    await expect(
+      app.titleFile(
+        { kind: "movie", subscriptionId: a, id: ordinary.id },
+        AbortSignal.timeout(1000),
+      ),
+    ).resolves.toHaveProperty("url");
+  });
+
+  it("fences a newly recognised unfinished download and refuses Retry after restore, leaving ordinary downloads usable", async () => {
+    await install();
+    let app = await launch();
+    const { a } = await withProviders(app);
+    one.stallMovieFile(movie().id, 1024, 10_000);
+    const unfinished = await app.addDownload(movieRef(a));
+    await until(() => (receivedOf(app, unfinished.id) ?? 0) > 0, "the unfinished request");
+    memory.restricted = { movies: [String(movie().id)], series: [], channel: "" };
+    app.reloadTitles(a);
+    await until(
+      () =>
+        native.open === 0 && !app.downloadList().items.some((item) => item.id === unfinished.id),
+      "the restricted transfer to stop",
+    );
+    await expect(app.retryDownload(unfinished.id)).rejects.toMatchObject({
+      error: { kind: "title-not-found" },
+    });
+    const requests = one.fileRequests();
+    app = await launch();
+    await until(
+      () => app.titlesWorkedOut() && app.titleLists().kind === "ready",
+      "the restored classification",
+    );
+    await expect(app.retryDownload(unfinished.id)).rejects.toMatchObject({
+      error: { kind: "title-not-found" },
+    });
+    expect(one.fileRequests()).toBe(requests);
+    expect(app.downloadList().items.some((item) => item.id === unfinished.id)).toBe(false);
+    const ordinary = await app.addDownload(movieRef(a, otherMovie().id));
+    await until(() => isComplete(app, ordinary.id), "the permitted download");
+  });
+
+  it("refuses an episode lookup whose provider classifies its series while details are in flight", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const { series, first } = episode();
+    const arrived = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    memory.details = { arrived: arrived.resolve, released: released.promise };
+    const reading = app.titleFile(
+      {
+        kind: "episode",
+        subscriptionId: a,
+        id: String(first.id),
+        seriesId: String(series.id),
+        season: 1,
+        episode: first.number ?? 1,
+      },
+      AbortSignal.timeout(20_000),
+    );
+    const rejected = expect(reading).rejects.toMatchObject({ error: { kind: "title-not-found" } });
+    try {
+      await arrived.promise;
+      memory.restricted = { movies: [], series: [String(series.id)], channel: "" };
+      app.reloadTitles(a);
+      await until(
+        () => app.titlesWorkedOut() && app.members()[0]?.titles.kind === "ready",
+        "the new classification",
+      );
+    } finally {
+      memory.details = null;
+      released.resolve();
+    }
+    await rejected;
+    await expect(app.titleFile(movieRef(a), AbortSignal.timeout(1000))).resolves.toHaveProperty(
+      "url",
+    );
+  });
+
+  it("enforces catalogue and native download exclusion while classification storage refuses writes", async () => {
+    await install();
+    const app = await launch();
+    const { a } = await withProviders(app);
+    const lists = app.titleLists();
+    if (lists.kind !== "ready") throw new Error("No lists");
+    const watchlist = await import("../src/watchlist.ts");
+    const film = app.titleOf(lists.index, "movie", movieRef(a))!;
+    watchlist.saveTitle(film);
+    one.stallMovieFile(movie().id, 1024, 10_000);
+    const copy = await app.addDownload(movieRef(a));
+    await until(() => (receivedOf(app, copy.id) ?? 0) > 0, "the partial download");
+    native.sync = (operation, path) => {
+      if (
+        operation === "write" &&
+        (path.endsWith("downloads.json.next") || path.endsWith("watchlists.json.next"))
+      )
+        throw new Error("Storage refused");
+    };
+    memory.restricted = { movies: [String(movie().id)], series: [], channel: "" };
+    try {
+      app.reloadTitles(a);
+      await until(
+        () =>
+          app.titlesWorkedOut() && app.members()[0]?.titles.kind === "ready" && native.open === 0,
+        "catalogue invalidation and native fence",
+      );
+      const current = app.titleLists();
+      if (current.kind !== "ready") throw new Error("No refreshed lists");
+      expect(app.titleOf(current.index, "movie", movieRef(a))).toBeUndefined();
+      expect(app.downloadList().items.some((item) => item.id === copy.id)).toBe(false);
+      expect(
+        watchlist.watchlistRows(
+          watchlist.currentWatchlist(),
+          { index: current.index, complete: true, members: app.members(), named: app.named },
+          "newest",
+        ),
+      ).toEqual([]);
+    } finally {
+      native.sync = null;
+    }
+    app.reloadTitles(a);
+    await until(() => background.receipts.length === 0, "the retained fence receipt");
+    const ordinary = await app.addDownload(movieRef(a, otherMovie().id));
+    await until(() => isComplete(app, ordinary.id), "an ordinary transfer after storage recovers");
+  });
+
+  it.each(["missed native notification", "refused completion write"])(
+    "retains a completed personal copy while restriction fences it after %s",
+    async (race) => {
+      await install();
+      const app = await launch();
+      const { a } = await withProviders(app);
+      one.stallMovieFile(movie().id, 1024, 500);
+      const copy = await app.addDownload(movieRef(a));
+      await until(() => (receivedOf(app, copy.id) ?? 0) > 0, "the partial download");
+      appGoes("background");
+      if (race === "missed native notification") background.die();
+      else
+        native.sync = (operation, path) => {
+          if (operation === "write" && path.endsWith("downloads.json.next"))
+            throw new Error("Storage refused");
+        };
+      await until(() => native.open === 0 && mediaFile(copy.id) !== undefined, "native completion");
+      const media = mediaFile(copy.id)!;
+      const requests = one.fileRequests();
+      memory.restricted = { movies: [String(movie().id)], series: [], channel: "" };
+      app.reloadTitles(a);
+      await until(
+        () => app.titlesWorkedOut() && app.members()[0]?.titles.kind === "ready",
+        "the classified catalogue",
+      );
+      expect(app.downloadList().items.some((item) => item.id === copy.id)).toBe(false);
+      native.sync = null;
+      appGoes("active");
+      await until(() => background.receipts.length === 0, "the completion to be reconciled");
+      memory.restricted = null;
+      app.reloadTitles(a);
+      await until(() => isComplete(app, copy.id), "the permitted retained copy");
+      expect(media.exists).toBe(true);
+      expect(one.fileRequests()).toBe(requests);
+      app.playDownload(copy.id);
+      await until(() => memory.played.at(-1)?.uri === media.uri, "the retained offline playback");
+    },
+  );
+
   it("applies a saved copy's original language through the real play action without establishing provider-file facts", async () => {
     await install();
     let app = await launch();
