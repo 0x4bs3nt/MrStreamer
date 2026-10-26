@@ -6,9 +6,9 @@ import { acceptPreferences } from "../../src/renderer/src/lib/preferences.ts";
 // ahead it reaches, and the pages of the guide it reads, only those around what is in view.
 import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { Programme } from "@mrstreamer/contracts/guide";
 import type { Reminder, ReminderList } from "@mrstreamer/contracts/reminders";
@@ -191,19 +191,10 @@ async function gridPage(
     marked: [],
     sequence: 1,
   });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(GuidePage, { active: true })),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(GuidePage, { active: true }));
+  unmount = mounted.unmount;
   const grid = () => container.querySelector<HTMLElement>('[role="grid"]');
   return {
     client,

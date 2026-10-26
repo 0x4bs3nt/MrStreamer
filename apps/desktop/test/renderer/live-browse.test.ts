@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { LiveBrowseResult } from "@mrstreamer/contracts/live-browse";
@@ -72,9 +72,8 @@ async function mount({ loadPreferences = true } = {}) {
     kind: "topic" as const,
     topic: "music" as const,
   }));
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   let liveChannels: readonly LiveChannel[] | undefined;
   let homeChannels: readonly LiveChannel[] | undefined;
   function View() {
@@ -101,14 +100,8 @@ async function mount({ loadPreferences = true } = {}) {
       createElement(BrowseFilters, { list, result: browse.data }),
     );
   }
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(View))),
-  );
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  await mounted.render(createElement(View));
+  cleanup = mounted.unmount;
   await settle();
   const click = (text: string) =>
     act(async () => {

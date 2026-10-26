@@ -5,9 +5,9 @@
 // removed. The built window checks layout, Tab order and the accessibility tree; see the
 // poster-grid scenario of verify-mrstreamer.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, type ReactElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CollectionPage, Title } from "@mrstreamer/contracts/ondemand";
 import type { WatchlistEntry } from "@mrstreamer/contracts/watchlist";
@@ -105,18 +105,14 @@ async function shown(page: (active: boolean) => ReactElement) {
   client.setQueryData(queries.subscriptions().queryKey, [playlist]);
   const stopLists = syncOnDemand(client);
   const stopWatchlist = syncWatchlist(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  const render = (active: boolean) =>
-    act(async () => root.render(createElement(QueryClientProvider, { client }, page(active))));
+  const mounted = queryView(client);
+  const render = (active: boolean) => mounted.render(page(active));
   await render(true);
   await settle();
   unmount = () => {
     stopLists();
     stopWatchlist();
-    act(() => root.unmount());
-    container.remove();
+    mounted.unmount();
   };
   return render;
 }

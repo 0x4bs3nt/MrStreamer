@@ -121,13 +121,9 @@ vi.mock("react-native-safe-area-context", async () => {
 });
 vi.mock("react-native", async () => {
   const { createElement, Fragment, memo } = await import("react");
-  const box = ({ children }: { children?: React.ReactNode }) =>
-    createElement("div", null, children);
+  const { reactNative } = await import("./react-native.ts");
   return {
-    View: box,
-    Text: box,
-    ScrollView: box,
-    Image: () => null,
+    ...reactNative,
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     FlatList: memo(
       ({
@@ -150,33 +146,12 @@ vi.mock("react-native", async () => {
             : ListEmptyComponent,
         ),
     ),
-    Pressable: ({
-      children,
-      onPress,
-      accessibilityLabel,
-      accessibilityState,
-      testID,
-    }: {
-      children?: React.ReactNode;
-      onPress?: () => void;
-      accessibilityLabel?: string;
-      accessibilityState?: { selected?: boolean };
-      testID?: string;
-    }) => {
+    Pressable: (props: Parameters<typeof reactNative.Pressable>[0]) => {
+      const { onPress, accessibilityLabel, testID } = props;
       if (onPress && accessibilityLabel) edges.presses.set(accessibilityLabel, onPress);
       if (onPress && testID) edges.presses.set(`native:${testID}`, onPress);
-      return createElement(
-        "button",
-        {
-          onClick: onPress,
-          "aria-label": accessibilityLabel,
-          "aria-pressed": accessibilityState?.selected,
-        },
-        children,
-      );
+      return reactNative.Pressable(props);
     },
-    Modal: box,
-    StyleSheet: { create: <T>(styles: T) => styles },
   };
 });
 vi.mock("../src/ui.tsx", async () => {
@@ -990,11 +965,14 @@ describe("the collections Movies, Series, Home and details show", () => {
       },
     );
 
-    it.each(
-      (["movie", "series"] as const).flatMap((kind) =>
-        (["All tab", "4K tab", "pushed collection"] as const).map((place) => ({ kind, place })),
-      ),
-    )(
+    // Every place for movies; series share the screens, so one place for them.
+    it.each([
+      ...(["All tab", "4K tab", "pushed collection"] as const).map((place) => ({
+        kind: "movie" as const,
+        place,
+      })),
+      { kind: "series" as const, place: "All tab" as const },
+    ])(
       "opens fresh $kind $place taps after password replacement with retained failed-refresh lists",
       async ({ kind, place }) => {
         const { CollectionScreen, TitlesHome } = await import("../src/titles-screen.tsx");

@@ -11,9 +11,9 @@
 // is `focus()` here. Trusted input, and a real touchscreen, are the native check's.
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { runs } from "./title-engine-stand-in.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
@@ -76,14 +76,10 @@ async function watching(): Promise<void> {
   runs.length = 0;
   await open("1");
   useUi.setState({ playingTitle: true });
-  container = document.body.appendChild(document.createElement("div"));
-  const root = createRoot(container);
-  unmount = () => act(() => root.unmount());
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client: new QueryClient() }, createElement(TitleWatch)),
-    ),
-  );
+  const mounted = queryView(new QueryClient());
+  container = mounted.container;
+  unmount = mounted.unmount;
+  await mounted.render(createElement(TitleWatch));
 }
 
 const button = (label: string) =>

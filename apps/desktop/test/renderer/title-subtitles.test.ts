@@ -10,9 +10,9 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pesReader } from "@mrstreamer/core/subtitles/transport";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
@@ -129,16 +129,11 @@ let view = document.createElement("div");
 
 /** Shows the playing title's view, and reads the note it shows where a changed speed does. */
 async function watching(): Promise<() => string | null> {
-  const container = document.createElement("div");
-  view = container;
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client: new QueryClient() }, createElement(TitleWatch)),
-    ),
-  );
-  unmount = () => act(() => root.unmount());
-  return () => container.querySelector('[role="status"]')?.textContent ?? null;
+  const mounted = queryView(new QueryClient());
+  view = mounted.container;
+  await mounted.render(createElement(TitleWatch));
+  unmount = mounted.unmount;
+  return () => view.querySelector('[role="status"]')?.textContent ?? null;
 }
 
 /** Opens CC, and reads the chosen track's row: its name and the word beside it. */

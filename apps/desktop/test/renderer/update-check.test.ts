@@ -3,9 +3,9 @@
 // stays beside Download. While an update downloads or waits for its restart, there is nothing to
 // check. A copy the Microsoft Store installed leaves updates to the Store.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Distribution, UpdatePhase, UpdateStatus } from "@mrstreamer/contracts/updates";
 import { UpdatesSection } from "../../src/renderer/src/features/updates/UpdatesSection.tsx";
@@ -31,13 +31,10 @@ async function buttonsFor(
   };
   const client = new QueryClient();
   client.setQueryData(["updates"], status);
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(UpdatesSection))),
-  );
-  unmount = () => act(() => root.unmount());
-  return container;
+  const mounted = queryView(client);
+  await mounted.render(createElement(UpdatesSection));
+  unmount = mounted.unmount;
+  return mounted.container;
 }
 
 const named = (container: HTMLElement, text: string) =>

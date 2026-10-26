@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlaylistGroupPage } from "@mrstreamer/contracts/playlist";
 import { syncLibraryUpdates, syncOnDemand } from "../../src/renderer/src/lib/queries.ts";
@@ -46,18 +46,13 @@ async function render(element: ReturnType<typeof createElement>) {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   client.setQueryData(["subscriptions"], [subscription]);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () => root.render(createElement(QueryClientProvider, { client }, element)));
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(element);
   // Lets Settings take in what just happened, on the fake clock.
   const settle = () => act(() => vi.advanceTimersByTimeAsync(30));
   await settle();
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  cleanup = mounted.unmount;
   const button = (label: string) =>
     [...document.querySelectorAll("button")].find((each) => each.textContent?.trim() === label);
   const click = async (label: string) => {

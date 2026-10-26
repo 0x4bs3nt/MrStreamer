@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TitlesPage } from "../../src/renderer/src/features/titles/TitlesPage.tsx";
 import { queries } from "../../src/renderer/src/lib/queries.ts";
@@ -26,23 +26,10 @@ it.each(["movie", "series"] as const)(
     ipc.always("ondemand.collection", { name: "All", total: 0, titles: [] });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(queries.subscriptions().queryKey, [subscription]);
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    cleanup = () => {
-      act(() => root.unmount());
-      container.remove();
-      client.clear();
-    };
-    await act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(TitlesPage, { kind, active: false }),
-        ),
-      ),
-    );
+    const mounted = queryView(client);
+    const { container } = mounted;
+    cleanup = mounted.unmount;
+    await mounted.render(createElement(TitlesPage, { kind, active: false }));
     await vi.waitFor(async () => {
       await act(() => vi.advanceTimersByTimeAsync(10));
       expect(container.querySelector('nav [aria-pressed="true"]')?.textContent).toBe(

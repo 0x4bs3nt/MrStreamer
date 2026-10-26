@@ -4,9 +4,9 @@
 // once it is, Undo, a mark that wasn't stored, and a record that can't be read. Then what
 // Continue watching makes of a marked series beside what was played.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppError } from "@mrstreamer/contracts/errors";
 import type { Episode, SeriesDetails, Title } from "@mrstreamer/contracts/ondemand";
@@ -197,19 +197,11 @@ async function sheet(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["subscriptions"], saved);
   const stopSync = syncViewing(client);
-  const root = createRoot(document.createElement("div"));
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(DetailsView, { target: { kind: "series", ...HARBOUR } }),
-      ),
-    ),
-  );
+  const view = queryView(client);
+  await view.render(createElement(DetailsView, { target: { kind: "series", ...HARBOUR } }));
   unmount = () => {
     stopSync();
-    act(() => root.unmount());
+    view.unmount();
   };
   await act(async () => listed.resolve([title]));
   await act(async () => progress.resolve(read?.progress ?? []));
@@ -482,6 +474,8 @@ describe("Continue watching with a marked series", () => {
 
   /** What the row shows of the series for a record that reads `viewing`. */
   async function row(viewing: Pick<Viewing, "continueWatching" | "marked">): Promise<string[]> {
+    // Each read replaces the last one's view, so no earlier record is still mounted.
+    unmount();
     ipc.reset();
     const client = new QueryClient();
     client.setQueryData(queries.viewing().queryKey, {
@@ -497,11 +491,9 @@ describe("Continue watching with a marked series", () => {
       lines = loading ? ["loading"] : entries.map((entry) => entry.line);
       return null;
     }
-    const root = createRoot(document.createElement("div"));
-    await act(async () =>
-      root.render(createElement(QueryClientProvider, { client }, createElement(Probe))),
-    );
-    unmount = () => act(() => root.unmount());
+    const view = queryView(client);
+    await view.render(createElement(Probe));
+    unmount = view.unmount;
     await until(() => expect(lines).not.toEqual(["loading"]));
     return lines;
   }

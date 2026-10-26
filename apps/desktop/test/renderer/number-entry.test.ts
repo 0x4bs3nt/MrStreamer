@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import { useUi, type ChannelList } from "../../src/renderer/src/app/ui-store.ts";
@@ -53,19 +53,9 @@ it.each<ChannelList>([
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await client.fetchQuery(queries.preferences());
   const onChannel = vi.fn();
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(NumberEntry, { onChannel })),
-    ),
-  );
+  const mounted = queryView(client);
+  cleanup = mounted.unmount;
+  await mounted.render(createElement(NumberEntry, { onChannel }));
   await vi.waitFor(() => expect(ipc.argsOf("library.browse")).toHaveLength(1));
   await act(async () => {
     numberEntry.type("9");

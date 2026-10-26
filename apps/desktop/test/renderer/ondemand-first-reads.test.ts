@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { HomeScreen } from "../../src/renderer/src/features/home/HomeScreen.tsx";
@@ -76,25 +76,16 @@ async function mount(home: boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [subscription]);
   const stop = syncOnDemand(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   cleanup = () => {
     stop();
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    mounted.unmount();
   };
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        home
-          ? createElement(HomeScreen, { active: false })
-          : createElement(TitlesPage, { kind: "movie", active: false }),
-      ),
-    ),
+  await mounted.render(
+    home
+      ? createElement(HomeScreen, { active: false })
+      : createElement(TitlesPage, { kind: "movie", active: false }),
   );
   const click = async (label: string) => {
     await until(() =>

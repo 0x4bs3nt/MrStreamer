@@ -1,8 +1,8 @@
+import { createRoot, document, type Root } from "./dom.ts";
 import * as React from "react";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { indexCatalogue, kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import type { OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
-import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Member } from "../src/account.ts";
 import type { TitleLists } from "../src/titles.ts";
@@ -14,35 +14,13 @@ import type { TitleLists } from "../src/titles.ts";
 // indexed by core as the app's are. What else Home shows (the Stage, On now, Favourites, Movies for
 // you) stands in as nothing; how each provider stands is set by each test.
 
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
 const scenario = vi.hoisted(() => ({
   members: [] as Member[],
   lists: { kind: "loading" } as TitleLists,
   did: [] as string[],
 }));
 
-vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    View: box,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Pressable: ({ children, testID, onPress }: Props & { onPress?: () => void }) =>
-      createElement("button", { "data-testid": testID, onClick: onPress }, children),
-    ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
-    StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {}, hairlineWidth: 1 },
-  };
-});
+vi.mock("react-native", async () => (await import("./react-native.ts")).reactNative);
 vi.mock("expo-router", () => ({
   useIsFocused: () => true,
   router: { push: (href: string) => scenario.did.push(`push ${href}`) },

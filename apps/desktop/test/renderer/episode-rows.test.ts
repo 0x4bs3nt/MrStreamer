@@ -3,9 +3,9 @@
 // shown once they come: the other seasons ask for nothing until their tab opens. The sheet shows
 // the title from the lists while the provider answers, and TMDB's details once they arrive.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Profiler } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Episode, SeriesDetails, Title } from "@mrstreamer/contracts/ondemand";
 import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
@@ -134,31 +134,24 @@ it("leaves episode selection alone on other-file progress and updates its own fa
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["subscriptions"], [SAVED]);
   const stop = syncDownloads(client);
-  const root = createRoot(document.createElement("div"));
+  const view = queryView(client);
   let commits = 0;
   unmount = () => {
     stop();
-    act(() => root.unmount());
-    client.clear();
+    view.unmount();
   };
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(
-          Profiler,
-          {
-            id: "details",
-            onRender: () => {
-              commits++;
-            },
-          },
-          createElement(DetailsView, {
-            target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
-          }),
-        ),
-      ),
+  await view.render(
+    createElement(
+      Profiler,
+      {
+        id: "details",
+        onRender: () => {
+          commits++;
+        },
+      },
+      createElement(DetailsView, {
+        target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
+      }),
     ),
   );
   await until(() => expect(text()).toContain("Episode 2"));
@@ -238,21 +231,15 @@ describe("a series' episodes", () => {
     const client = new QueryClient();
     client.setQueryData(["subscriptions"], [SAVED]);
     const stopSync = syncOnDemand(client);
-    const root = createRoot(document.createElement("div"));
-    await act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(DetailsView, {
-            target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
-          }),
-        ),
-      ),
+    const view = queryView(client);
+    await view.render(
+      createElement(DetailsView, {
+        target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
+      }),
     );
     unmount = () => {
       stopSync();
-      act(() => root.unmount());
+      view.unmount();
     };
     await act(async () => listed.resolve([series]));
     await act(async () => progress.resolve([]));
@@ -322,21 +309,15 @@ describe("a series' details", () => {
     const client = new QueryClient();
     client.setQueryData(["subscriptions"], [SAVED]);
     const stopSync = syncOnDemand(client);
-    const root = createRoot(document.createElement("div"));
-    await act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(DetailsView, {
-            target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
-          }),
-        ),
-      ),
+    const view = queryView(client);
+    await view.render(
+      createElement(DetailsView, {
+        target: { kind: "series", subscriptionId: SUBSCRIPTION, id: "harbour" },
+      }),
     );
     unmount = () => {
       stopSync();
-      act(() => root.unmount());
+      view.unmount();
     };
     await act(async () => listed.resolve([series]));
     await act(async () => progress.resolve([]));

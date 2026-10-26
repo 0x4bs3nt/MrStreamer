@@ -1,7 +1,7 @@
+import { createRoot, window } from "./dom.ts";
 import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
 import type { DownloadList } from "@mrstreamer/contracts/downloads";
-import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue } from "../src/account.ts";
 import type { Playing } from "../src/playback.ts";
@@ -16,13 +16,6 @@ import type { Playing } from "../src/playback.ts";
 // the iPhone can. The Swift itself is not run here. The star of a channel playing saves to the
 // real viewing record, over the files stand-in (native-files.ts), with the channels Live shows
 // set by each test.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /** One stand-in VideoView, as the test drives it. */
 interface NativeView {
@@ -150,33 +143,18 @@ vi.mock("expo-video", async () => {
     },
   };
 });
-vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string; onPress?: () => void };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    View: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Pressable: ({ children, testID, onPress }: Props) =>
-      createElement("button", { "data-testid": testID, onClick: onPress }, children),
-    StatusBar: () => null,
-    Image: () => null,
-    StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {} },
-    Keyboard: { dismiss: () => undefined },
-    PanResponder: { create: () => ({ panHandlers: {} }) },
-    ActionSheetIOS: {
-      showActionSheetWithOptions: (
-        options: { options: readonly string[]; message?: string },
-        pick: (index: number) => void,
-      ) => {
-        native.sheets.push({ ...options, pick });
-      },
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  ActionSheetIOS: {
+    showActionSheetWithOptions: (
+      options: { options: readonly string[]; message?: string },
+      pick: (index: number) => void,
+    ) => {
+      native.sheets.push({ ...options, pick });
     },
-    Alert: { alert: (title: string, message: string) => void native.alerts.push([title, message]) },
-    useWindowDimensions: () => ({ width: 390, height: 844 }),
-  };
-});
+  },
+  Alert: { alert: (title: string, message: string) => void native.alerts.push([title, message]) },
+}));
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));

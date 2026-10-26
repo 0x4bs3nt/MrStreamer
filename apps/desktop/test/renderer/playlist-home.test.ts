@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { HomeScreen } from "../../src/renderer/src/features/home/HomeScreen.tsx";
@@ -81,20 +81,13 @@ it("shows a mapped series' current exact progress, then drops its bar when that 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [subscription]);
   const stop = syncOnDemand(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   cleanup = () => {
     stop();
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    mounted.unmount();
   };
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
-    ),
-  );
+  await mounted.render(createElement(HomeScreen, { active: false }));
   const until = (check: () => void) =>
     vi.waitFor(async () => {
       await act(() => vi.advanceTimersByTimeAsync(10));
@@ -157,19 +150,10 @@ it("shows mapped titles without live channels or invented added dates, and opens
   ipc.always("watchlist.list", { total: 0, entries: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["subscriptions"], [subscription]);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
-    ),
-  );
+  const mounted = queryView(client);
+  const { container } = mounted;
+  cleanup = mounted.unmount;
+  await mounted.render(createElement(HomeScreen, { active: false }));
   await vi.waitFor(async () => {
     await act(() => vi.advanceTimersByTimeAsync(20));
     expect(container.textContent).toContain("Playlist film");

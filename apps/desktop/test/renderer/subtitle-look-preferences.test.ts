@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultPreferences, DEFAULT_SUBTITLE_LOOK } from "@mrstreamer/contracts/preferences";
 import { acceptPreferences, syncPreferences } from "../../src/renderer/src/lib/preferences.ts";
@@ -25,32 +25,23 @@ async function render() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stop = syncPreferences(client, (preferences) => player.hydrate(preferences));
   acceptPreferences(client, { revision: 1, preferences: defaultPreferences });
-  const host = document.createElement("div");
-  document.body.append(host);
-  const root = createRoot(host);
+  const mounted = queryView(client);
+  const host = mounted.container;
   const mount = async (settings = false, cc = true) => {
-    await act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(
-            Fragment,
-            null,
-            cc ? createElement(LookRows, { text: true }) : null,
-            createElement(Flash),
-            settings ? createElement(SubtitlesSettingsSection) : null,
-          ),
-        ),
+    await mounted.render(
+      createElement(
+        Fragment,
+        null,
+        cc ? createElement(LookRows, { text: true }) : null,
+        createElement(Flash),
+        settings ? createElement(SubtitlesSettingsSection) : null,
       ),
     );
     await act(() => vi.advanceTimersByTimeAsync(20));
   };
   cleanup = () => {
     stop();
-    act(() => root.unmount());
-    client.clear();
-    host.remove();
+    mounted.unmount();
   };
   await mount();
   const pick = async (label: string) => {

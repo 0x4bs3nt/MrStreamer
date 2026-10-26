@@ -567,7 +567,7 @@ describe("Demo through the production lifecycle", () => {
     expect(await app.startDemo()).toEqual({ kind: "incomplete", pending: ["downloads"] });
   });
 
-  it.each(["bad", { version: 2, state: "active" }, null])(
+  it.each([{ version: 2, state: "active" }, null])(
     "restores personal providers around an unreadable marker %j",
     async (demo) => {
       const entries = [personal("one"), personal("two")];

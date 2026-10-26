@@ -7,9 +7,9 @@
 // programmes come from, its own guide and each XMLTV source of Settings > Guides, why its own
 // guide's download failed, and leads to the sources.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GuideSourceStatus, GuideStatus } from "@mrstreamer/contracts/guide";
 import type { CatalogueStatus, LiveChannel } from "@mrstreamer/contracts/library";
@@ -132,17 +132,10 @@ async function section(
     loaded.catalogues ?? subscriptions.map((each) => catalogueOf(each)),
   );
   client.setQueryData(["ondemand", "status"], { lists: [], metadata: null });
-  const container = document.createElement("div");
-  // In the page, as a field takes focus only there.
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(SubscriptionSection))),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(SubscriptionSection));
+  unmount = mounted.unmount;
   const rows = () => [...container.querySelectorAll("li")];
   /** The row of the subscription listed as `name`: its line, its buttons and what stands under it. */
   const row = (name: string) => {

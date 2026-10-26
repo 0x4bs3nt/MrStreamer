@@ -1,5 +1,5 @@
+import { createRoot, document, Event } from "./dom.ts";
 import * as React from "react";
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Member, DemoErase, DemoStart } from "../src/account.ts";
 import { demoEntry } from "../src/demo.ts";
@@ -10,13 +10,7 @@ import { demoEntry } from "../src/demo.ts";
 // happy-dom window, as provider-form.test.ts does; the action sheet and alerts answer as the test
 // picks, and `remove` fails the way the account owner does on each side of its registry write.
 
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document, __DEV__: false });
-const { document, Event } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+Object.assign(globalThis, { __DEV__: false });
 
 interface Button {
   readonly text: string;
@@ -40,36 +34,22 @@ const scenario = vi.hoisted(() => ({
 }));
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
-vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    View: box,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Image: () => null,
-    Switch: () => null,
-    Linking: { openURL: async () => undefined },
-    Pressable: ({ children, testID, onPress }: Props & { onPress: () => void }) =>
-      createElement("button", { "data-testid": testID, onClick: onPress }, children),
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1 },
-    ActionSheetIOS: {
-      showActionSheetWithOptions: (
-        { options }: { options: readonly string[] },
-        pick: (index: number) => void,
-      ) => {
-        scenario.sheet = { options, pick };
-      },
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  ActionSheetIOS: {
+    showActionSheetWithOptions: (
+      { options }: { options: readonly string[] },
+      pick: (index: number) => void,
+    ) => {
+      scenario.sheet = { options, pick };
     },
-    Alert: {
-      alert: (title: string, message: string, buttons?: readonly Button[]) => {
-        scenario.alerts.push({ title, message, ...(buttons ? { buttons } : {}) });
-      },
+  },
+  Alert: {
+    alert: (title: string, message: string, buttons?: readonly Button[]) => {
+      scenario.alerts.push({ title, message, ...(buttons ? { buttons } : {}) });
     },
-  };
-});
+  },
+}));
 vi.mock("expo-constants", () => ({ default: { expoConfig: { version: "0.0.0" } } }));
 vi.mock("expo-router", () => ({
   router: { push: () => undefined },

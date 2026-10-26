@@ -1,10 +1,10 @@
+import { createRoot, document, type Root } from "./dom.ts";
 import * as React from "react";
 import type { TitleKind } from "@mrstreamer/contracts/ondemand";
 import { indexCatalogue, kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import { collections, type Collections } from "@mrstreamer/core/ondemand/collections";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { Window } from "happy-dom";
 import type {
   LiveCatalogue,
   ProviderChannel,
@@ -21,14 +21,6 @@ import { native } from "./native-files.ts";
 // live-browse.test.ts does, over the real viewing record (viewing.ts), whose file is written to
 // the files stand-in (native-files.ts), and a library library.ts builds from two fake providers
 // whose stream ids collide. Playback, navigation and the system's alerts are recorded.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface Shown {
   readonly title: string;
@@ -47,84 +39,23 @@ const scenario = vi.hoisted(() => ({
 
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("react-native", async () => {
-  const { createElement, Fragment, isValidElement, useEffect } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string; accessibilityLabel?: string };
-  const box = ({ children, testID, accessibilityLabel }: Props) =>
-    createElement("div", { "data-testid": testID, "aria-label": accessibilityLabel }, children);
-  const View = ({
-    onLayout,
-    ...props
-  }: Props & {
-    onLayout?: (event: { nativeEvent: { layout: { width: number; height: number } } }) => void;
-  }) => {
-    useEffect(() => onLayout?.({ nativeEvent: { layout: { width: 390, height: 600 } } }), []);
-    return box(props);
-  };
-  const node = (part: unknown) =>
-    part === undefined || part === null
-      ? null
-      : isValidElement(part)
-        ? part
-        : createElement(part as React.ComponentType);
+  const { useEffect } = await import("react");
+  const { box, reactNative } = await import("./react-native.ts");
   return {
-    View,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Image: () => null,
-    Pressable: ({
-      children,
-      testID,
-      onPress,
-      disabled,
-      accessibilityLabel,
-    }: Props & { onPress?: () => void; disabled?: boolean }) =>
-      createElement(
-        "button",
-        { "data-testid": testID, "aria-label": accessibilityLabel, disabled, onClick: onPress },
-        typeof children === "function" ? null : children,
-      ),
-    FlatList: <T>({
-      data,
-      renderItem,
-      ListHeaderComponent,
-      ListFooterComponent,
-      ListEmptyComponent,
-      testID,
-    }: {
-      data: readonly T[];
-      renderItem: (info: { item: T; index: number }) => React.ReactNode;
-      ListHeaderComponent?: unknown;
-      ListFooterComponent?: unknown;
-      ListEmptyComponent?: unknown;
-      testID?: string;
-    }) =>
-      createElement(
-        "div",
-        { "data-testid": testID },
-        node(ListHeaderComponent),
-        data.length === 0
-          ? node(ListEmptyComponent)
-          : data.map((item, index) =>
-              createElement(Fragment, { key: index }, renderItem({ item, index })),
-            ),
-        node(ListFooterComponent),
-      ),
-    TextInput: () => null,
-    ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
+    ...reactNative,
+    /** A view, which lays out once, as a phone's screen. */
+    View: ({
+      onLayout,
+      ...props
+    }: Parameters<typeof box>[0] & {
+      onLayout?: (event: { nativeEvent: { layout: { width: number; height: number } } }) => void;
+    }) => {
+      useEffect(() => onLayout?.({ nativeEvent: { layout: { width: 390, height: 600 } } }), []);
+      return box(props);
+    },
     Alert: {
       alert: (title: string, _message: string, buttons?: Shown["buttons"]) =>
         void scenario.alerts.push({ title, ...(buttons ? { buttons } : {}) }),
-    },
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1, absoluteFill: {} },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
-    DynamicColorIOS: () => "#000000",
-    AppState: { currentState: "active", addEventListener: () => undefined },
-    AccessibilityInfo: {
-      isReduceTransparencyEnabled: async () => false,
-      isReduceMotionEnabled: async () => false,
-      addEventListener: () => undefined,
-      announceForAccessibility: () => undefined,
-      announceForAccessibilityWithOptions: () => undefined,
     },
   };
 });

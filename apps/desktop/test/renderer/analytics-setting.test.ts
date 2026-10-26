@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Locale } from "@mrstreamer/contracts/language";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
@@ -29,18 +29,14 @@ async function render(locale: Locale = "en-US", enabled = true) {
   setLanguage({ locale, formats: locale });
   const client = new QueryClient();
   const detach = syncPreferences(client, () => {});
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(PrivacySection))),
-  );
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(createElement(PrivacySection));
   await settle();
-  unmount = () =>
-    act(() => {
-      detach();
-      root.unmount();
-      client.clear();
-    });
+  unmount = () => {
+    detach();
+    view.unmount();
+  };
   const checkbox = [...container.querySelectorAll<HTMLElement>('[role="checkbox"]')].find(
     (element) => element.getAttribute("aria-label") === t("Share basic usage statistics"),
   );

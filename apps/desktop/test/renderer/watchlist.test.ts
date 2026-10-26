@@ -6,9 +6,9 @@
 // however quickly it is pressed again. Beside another subscription, they say whose a title is
 // where that tells two apart.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, type ReactElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OnDemandStatus, Title } from "@mrstreamer/contracts/ondemand";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
@@ -139,14 +139,11 @@ afterEach(() => {
 async function shown(view: ReactElement): Promise<void> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stopSync = syncWatchlist(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () => root.render(createElement(QueryClientProvider, { client }, view)));
+  const mounted = queryView(client);
+  await mounted.render(view);
   unmount = () => {
     stopSync();
-    act(() => root.unmount());
-    container.remove();
+    mounted.unmount();
   };
 }
 

@@ -1,6 +1,6 @@
+import { createRoot, window, document, type Root } from "./dom.ts";
 import { nativePlayer } from "./native-player.ts";
 import * as React from "react";
-import { Window } from "happy-dom";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Live's Find countries or categories as the viewer meets it, over the app's own owners: account.ts
@@ -10,14 +10,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 // recorded and acted out: a push draws the screen pushed, Back the one under it, which stays as
 // it was. The native player records what it is given, and every request to a panel is counted, so
 // a test sees that finding and opening plays nothing and asks nothing of a provider.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const scenario = vi.hoisted(() => ({
   keychain: new Map<string, string>(),
@@ -45,104 +37,7 @@ vi.mock("expo-video", () => ({
 }));
 
 vi.mock("../src/telemetry/index.ts", () => ({ noteAction: () => undefined }));
-vi.mock("react-native", async () => {
-  const { createElement, Fragment } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string; accessibilityLabel?: string };
-  const box = ({ children, testID, accessibilityLabel }: Props) =>
-    createElement("div", { "data-testid": testID, "aria-label": accessibilityLabel }, children);
-  const node = (part: unknown) =>
-    part === undefined || part === null || typeof part !== "function"
-      ? (part as React.ReactNode)
-      : createElement(part as React.ComponentType);
-  return {
-    View: box,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Image: () => null,
-    Pressable: ({
-      children,
-      testID,
-      onPress,
-      accessibilityLabel,
-    }: Props & { onPress?: () => void }) =>
-      createElement(
-        "button",
-        { "data-testid": testID, "aria-label": accessibilityLabel, onClick: onPress },
-        typeof children === "function" ? null : children,
-      ),
-    TextInput: ({
-      value,
-      onChangeText,
-      testID,
-    }: {
-      value: string;
-      onChangeText: (text: string) => void;
-      testID?: string;
-    }) =>
-      createElement("input", {
-        "data-testid": testID,
-        value,
-        onChange: (event: { target: { value: string } }) => onChangeText(event.target.value),
-      }),
-    FlatList: <T>({
-      data,
-      renderItem,
-      ListHeaderComponent,
-      testID,
-    }: {
-      data: readonly T[];
-      renderItem: (info: { item: T; index: number }) => React.ReactNode;
-      ListHeaderComponent?: unknown;
-      testID?: string;
-    }) =>
-      createElement(
-        "div",
-        { "data-testid": testID },
-        node(ListHeaderComponent),
-        data.map((item, index) =>
-          createElement(Fragment, { key: index }, renderItem({ item, index })),
-        ),
-      ),
-    SectionList: <T>({
-      sections,
-      renderItem,
-      renderSectionHeader,
-      testID,
-    }: {
-      sections: readonly { title: string; data: readonly T[] }[];
-      renderItem: (info: { item: T }) => React.ReactNode;
-      renderSectionHeader: (info: { section: { title: string; data: readonly T[] } }) => unknown;
-      testID?: string;
-    }) =>
-      createElement(
-        "div",
-        { "data-testid": testID },
-        sections.map((section) =>
-          createElement(
-            "section",
-            { key: section.title },
-            renderSectionHeader({ section }) as React.ReactNode,
-            section.data.map((item, index) =>
-              createElement(Fragment, { key: index }, renderItem({ item })),
-            ),
-          ),
-        ),
-      ),
-    ActionSheetIOS: { showActionSheetWithOptions: () => undefined },
-    Alert: { alert: () => undefined },
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1, absoluteFill: {} },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
-    DynamicColorIOS: () => "#000000",
-    AppState: { currentState: "active", addEventListener: () => undefined },
-    AccessibilityInfo: {
-      isReduceTransparencyEnabled: async () => false,
-      isReduceMotionEnabled: async () => false,
-      addEventListener: () => undefined,
-      announceForAccessibility: () => undefined,
-      announceForAccessibilityWithOptions: () => undefined,
-    },
-  };
-});
+vi.mock("react-native", async () => (await import("./react-native.ts")).reactNative);
 vi.mock("react-native-safe-area-context", async () => {
   const { createElement } = await import("react");
   return {

@@ -1,3 +1,4 @@
+import { createRoot, document, Event } from "./dom.ts";
 import * as React from "react";
 import type { Download } from "@mrstreamer/contracts/downloads";
 import type { TitleRef } from "@mrstreamer/contracts/ondemand";
@@ -5,7 +6,6 @@ import type { TitleProgress } from "@mrstreamer/contracts/viewing";
 import type { OwnedId } from "@mrstreamer/contracts/subscription";
 import { byIds, indexCatalogue, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import type { OnDemandCatalogue } from "@mrstreamer/core/provider";
-import { Window } from "happy-dom";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,14 +19,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // views stand in as plain elements, menus answer as the test picks, Play records the version it
 // plays and the downloads owner records what it was asked. The version picked is kept by the
 // app's own state owner (storage.ts) over real files (`native-files.ts`).
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document, Event } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const scenario = vi.hoisted(() => ({
   lists: { kind: "idle" } as { kind: "idle" } | { kind: "ready"; index: unknown },
@@ -70,40 +62,24 @@ const scenario = vi.hoisted(() => ({
     new Promise(() => undefined),
 }));
 
-vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    View: box,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Pressable: ({
-      children,
-      testID,
-      disabled,
-      onPress,
-    }: Props & { disabled?: boolean; onPress: () => void }) =>
-      createElement("button", { "data-testid": testID, disabled, onClick: onPress }, children),
-    StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {} },
-    Alert: {
-      alert: (
-        title: string,
-        message?: string,
-        buttons: readonly { text: string; onPress?: () => void }[] = [],
-      ) => scenario.alerts.push({ title, message, buttons }),
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  Alert: {
+    alert: (
+      title: string,
+      message?: string,
+      buttons: readonly { text: string; onPress?: () => void }[] = [],
+    ) => scenario.alerts.push({ title, message, buttons }),
+  },
+  ActionSheetIOS: {
+    showActionSheetWithOptions: (
+      { title, message, options }: { title?: string; message?: string; options: string[] },
+      pick: (index: number) => void,
+    ) => {
+      scenario.menu = { title, message, options, pick };
     },
-    ActionSheetIOS: {
-      showActionSheetWithOptions: (
-        { title, message, options }: { title?: string; message?: string; options: string[] },
-        pick: (index: number) => void,
-      ) => {
-        scenario.menu = { title, message, options, pick };
-      },
-    },
-  };
-});
+  },
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("../src/glass.tsx", async () => {
@@ -299,6 +275,7 @@ interface App {
 const launched: App = { React, createRoot, DetailsScreen };
 
 /** The app's modules as a relaunch starts them, over the same files, with state.json read. */
+const REACT_DOM = "react-dom/client";
 async function relaunch(): Promise<App> {
   vi.resetModules();
   const fresh = (await import(REACT_DOM)) as { createRoot: typeof createRoot };

@@ -4,7 +4,7 @@
 // time. The Speed button sets the speed and nothing else: the subtitles' settings are under CC.
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { bareView } from "./mount.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SubtitleTrack } from "@mrstreamer/contracts/playback";
 import { SpeedMenu } from "../../src/renderer/src/features/watch/SpeedMenu.tsx";
@@ -116,25 +116,12 @@ describe("the Speed button", () => {
   let unmount = () => {};
   afterEach(() => unmount());
   async function menu(hereOnly: boolean, onSpeed: (speed: number) => void = () => {}) {
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    unmount = () => {
-      act(() => root.unmount());
-      container.remove();
-    };
-    await act(async () => {
-      root.render(
-        createElement(SpeedMenu, {
-          speed: 1,
-          hereOnly,
-          open: true,
-          onSpeed,
-          onOpenChange: () => {},
-        }),
-      );
-      await settle();
-    });
+    const mounted = bareView();
+    unmount = mounted.unmount;
+    await mounted.render(
+      createElement(SpeedMenu, { speed: 1, hereOnly, open: true, onSpeed, onOpenChange: () => {} }),
+    );
+    await act(settle);
     return [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')];
   }
 

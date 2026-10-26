@@ -4,9 +4,9 @@
 // recording that plays opens again where it got to, and stops at the programme's end.
 import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Programme } from "@mrstreamer/contracts/guide";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
@@ -94,19 +94,10 @@ async function scheduleOf(channels: readonly LiveChannel[], programmes: readonly
     sequence: 1,
   });
   ipc.always("guide.schedule", programmes);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(GuidePage, { active: true })),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(createElement(GuidePage, { active: true }));
+  unmount = view.unmount;
   await ready(() =>
     expect(container.querySelectorAll("[data-index]"), container.textContent ?? "").toHaveLength(1),
   );

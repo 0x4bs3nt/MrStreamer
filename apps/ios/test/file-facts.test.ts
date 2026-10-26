@@ -1,3 +1,4 @@
+import { createRoot, window } from "./dom.ts";
 import * as React from "react";
 import type {
   Episode,
@@ -8,7 +9,6 @@ import type {
 import { ownedKey } from "@mrstreamer/contracts/subscription";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import type { FilterFiles } from "@mrstreamer/core/ondemand/filters";
-import { Window } from "happy-dom";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,12 +21,6 @@ import { nativePlayer } from "./native-player.ts";
 // `observed` sink directly; caller cases deliver native-port snapshots through the real player
 // and play-title owners. Neither establishes AVFoundation behavior. A screen that reads them
 // as `useFileFacts` says runs with React DOM on a happy-dom window.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
 
 const memory = vi.hoisted(() => ({
   keychain: new Map<string, string>(),

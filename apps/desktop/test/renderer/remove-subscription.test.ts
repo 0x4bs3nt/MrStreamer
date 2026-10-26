@@ -5,9 +5,9 @@
 // plays from it has how far it got saved before the subscription goes.
 import { ipc } from "./support.ts";
 import { browseChannels, browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Download } from "@mrstreamer/contracts/downloads";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
@@ -91,12 +91,10 @@ async function removing(
   const opened = reads();
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], saved);
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(SubscriptionSection))),
-  );
-  unmount = () => act(() => root.unmount());
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(SubscriptionSection));
+  unmount = mounted.unmount;
   await opened(saved);
   const button = (text: string) =>
     [...container.querySelectorAll("button")].find((each) => each.textContent?.trim() === text);

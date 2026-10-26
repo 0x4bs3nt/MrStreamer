@@ -3,9 +3,9 @@
 // names a film's 4K version, even when it is the version the film shows first and another has
 // progress, unless the viewer picked a version for the film.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
@@ -69,6 +69,8 @@ async function opened(
   picks = defaultSubscriptionPreferences,
   { title = film, asked = false, played = [] as readonly TitleProgress[] } = {},
 ): Promise<string | undefined> {
+  // A second open in one test replaces the first, so its page and requests are its own.
+  unmount();
   ipc.reset();
   ipc.always("ondemand.details", {
     kind: "movie",
@@ -87,19 +89,13 @@ async function opened(
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], [SAVED]);
   client.setQueryData(queries.subscriptionPreferences(SUBSCRIPTION).queryKey, picks);
-  const root = createRoot(document.createElement("div"));
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(DetailsView, {
-          target: { kind: "movie", subscriptionId: SUBSCRIPTION, id, asked },
-        }),
-      ),
-    ),
+  const view = queryView(client);
+  await view.render(
+    createElement(DetailsView, {
+      target: { kind: "movie", subscriptionId: SUBSCRIPTION, id, asked },
+    }),
   );
-  unmount = () => act(() => root.unmount());
+  unmount = view.unmount;
   await act(async () => listed.resolve([title]));
   await act(async () => progress.resolve(played));
   // Wait for the public request and rendered answer, rather than guessing React Query's timing.

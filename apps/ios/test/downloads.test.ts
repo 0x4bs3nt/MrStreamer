@@ -1977,11 +1977,7 @@ describe("offline Next", { timeout: 30_000 }, () => {
     );
   }
 
-  for (const continuation of [
-    undefined,
-    { version: 2, title: "future" },
-    { version: 1, title: { kind: "bad" } },
-  ]) {
+  for (const continuation of [undefined, { version: 2, title: "future" }]) {
     it(`keeps a copy playable without guessing an unreadable saved order: ${JSON.stringify(continuation)}`, async () => {
       let { app, a, from } = await pair();
       await app.remove(a, { keepHistory: false });

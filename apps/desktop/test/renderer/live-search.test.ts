@@ -4,9 +4,9 @@
 // another list does to a search.
 import { browseChannels, browseChannelsOf, browseResult } from "./browse-support.ts";
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListingMatch, Programme } from "@mrstreamer/contracts/guide";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
@@ -122,20 +122,10 @@ async function guidePage(list: ChannelList = { kind: "all" }, channels = CHANNEL
     marked: [],
     sequence: 1,
   });
-  const container = document.createElement("div");
-  // In the page, as a field takes focus only there.
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(GuidePage, { active: true })),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(GuidePage, { active: true }));
+  unmount = mounted.unmount;
   await ready(() =>
     expect(container.querySelectorAll("[data-index]")).toHaveLength(
       list.kind === "favourites" ? FAVOURITES.length : channels.length,

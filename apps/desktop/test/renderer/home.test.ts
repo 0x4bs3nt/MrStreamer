@@ -2,9 +2,9 @@
 import { ipc } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
 import { acceptPreferences } from "../../src/renderer/src/lib/preferences.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SettingsPage } from "../../src/renderer/src/features/settings/SettingsPage.tsx";
 import { WindowBar } from "../../src/renderer/src/components/WindowBar.tsx";
@@ -45,24 +45,10 @@ it("edits empty Home rows, retains focus and future IDs, serializes writes and r
       { id: "future", visible: false },
     ],
   });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(TooltipProvider, null, createElement(CustomizeHome)),
-      ),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  const mounted = queryView(client);
+  await mounted.render(createElement(TooltipProvider, null, createElement(CustomizeHome)));
+  unmount = mounted.unmount;
   await settle();
   expect(labels()).toEqual([
     "Watchlist",
@@ -144,29 +130,16 @@ const checkbox = (name: string) =>
 /** Real Settings tab switches and closing/reopening share the same preference write. */
 async function showReopenable() {
   ipc.reset();
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const mounted = queryView(new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   useUi.setState({ settings: "home" });
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(
-          TooltipProvider,
-          null,
-          createElement(Fragment, null, createElement(WindowBar), createElement(SettingsPage)),
-        ),
-      ),
+  await mounted.render(
+    createElement(
+      TooltipProvider,
+      null,
+      createElement(Fragment, null, createElement(WindowBar), createElement(SettingsPage)),
     ),
   );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  unmount = mounted.unmount;
   await settle();
 }
 
@@ -349,29 +322,18 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
-  await act(async () =>
-    root.render(
+  const mounted = queryView(client);
+  const { container } = mounted;
+  unmount = mounted.unmount;
+  await mounted.render(
+    createElement(
+      TooltipProvider,
+      null,
       createElement(
-        QueryClientProvider,
-        { client },
-        createElement(
-          TooltipProvider,
-          null,
-          createElement(
-            Fragment,
-            null,
-            createElement(HomeScreen, { active: false }),
-            createElement(SettingsPage),
-          ),
-        ),
+        Fragment,
+        null,
+        createElement(HomeScreen, { active: false }),
+        createElement(SettingsPage),
       ),
     ),
   );
@@ -472,21 +434,14 @@ it("sparse saved titles keep their resolved owner and unavailable-entry action w
   ipc.always("watchlist.list", { total: 2, entries: [resolved, unavailable] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    mounted.unmount();
     useUi.setState(useUi.getInitialState(), true);
     measuredWidth.mockRestore();
   };
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
-    ),
-  );
+  await mounted.render(createElement(HomeScreen, { active: false }));
   await settle();
   const cards = container.querySelectorAll("[data-home-row=watchlist] article");
   expect(cards).toHaveLength(2);

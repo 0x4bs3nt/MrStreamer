@@ -1,5 +1,5 @@
+import { createRoot, document, type Root } from "./dom.ts";
 import * as React from "react";
-import { Window } from "happy-dom";
 import type { LiveCatalogue, ProviderChannel } from "@mrstreamer/core/provider";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catalogue, Member } from "../src/account.ts";
@@ -12,14 +12,6 @@ import type { SavedState } from "../src/storage.ts";
 // tab and clears, the tab kept on return, and a category's own list. The real screen runs with
 // React DOM on a happy-dom window, as loading-feedback.test.ts does, over a library library.ts
 // builds from two fake providers; saved state, playback and navigation are recorded.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type Sheet = { options: string[]; choose: (index: number) => void };
 
@@ -37,72 +29,17 @@ const scenario = vi.hoisted(() => ({
 
 // ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
 vi.mock("expo-file-system", () => import("./native-files.ts"));
-vi.mock("react-native", async () => {
-  const { createElement, Fragment, isValidElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  const node = (part: unknown) =>
-    part === undefined || part === null
-      ? null
-      : isValidElement(part)
-        ? part
-        : createElement(part as React.ComponentType);
-  return {
-    View: box,
-    ScrollView: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Image: () => null,
-    Pressable: ({
-      children,
-      testID,
-      onPress,
-      accessibilityLabel,
-    }: Props & { onPress?: () => void; accessibilityLabel?: string }) =>
-      createElement(
-        "button",
-        { "data-testid": testID, "aria-label": accessibilityLabel, onClick: onPress },
-        children,
-      ),
-    FlatList: <T>({
-      data,
-      renderItem,
-      ListHeaderComponent,
-      testID,
-    }: {
-      data: readonly T[];
-      renderItem: (info: { item: T; index: number }) => React.ReactNode;
-      ListHeaderComponent?: unknown;
-      testID?: string;
-    }) =>
-      createElement(
-        "div",
-        { "data-testid": testID },
-        node(ListHeaderComponent),
-        data.map((item, index) =>
-          createElement(Fragment, { key: index }, renderItem({ item, index })),
-        ),
-      ),
-    ActionSheetIOS: {
-      showActionSheetWithOptions: (
-        { options }: { options: string[] },
-        choose: (index: number) => void,
-      ) => {
-        scenario.sheet = { options, choose };
-      },
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  ActionSheetIOS: {
+    showActionSheetWithOptions: (
+      { options }: { options: string[] },
+      choose: (index: number) => void,
+    ) => {
+      scenario.sheet = { options, choose };
     },
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1, absoluteFill: {} },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
-    DynamicColorIOS: () => "#000000",
-    AppState: { currentState: "active", addEventListener: () => undefined },
-    AccessibilityInfo: {
-      isReduceTransparencyEnabled: async () => false,
-      isReduceMotionEnabled: async () => false,
-      addEventListener: () => undefined,
-      announceForAccessibilityWithOptions: () => undefined,
-    },
-  };
-});
+  },
+}));
 vi.mock("react-native-safe-area-context", async () => {
   const { createElement } = await import("react");
   return {

@@ -4,7 +4,7 @@ import { ipc, SUBSCRIPTION } from "./support.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, createElement, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { bareView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { ChannelTracks, SubtitleTrack } from "@mrstreamer/contracts/playback";
@@ -144,18 +144,11 @@ function Controls() {
   );
 }
 async function mount() {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
-  await act(async () => {
-    root.render(createElement(Controls));
-    await settle();
-  });
-  return container;
+  const mounted = bareView();
+  unmount = mounted.unmount;
+  await mounted.render(createElement(Controls));
+  await act(settle);
+  return mounted.container;
 }
 beforeEach(() => {
   player.reset();

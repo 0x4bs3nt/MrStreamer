@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
   MovieDetails,
@@ -74,28 +74,19 @@ async function mount(opened = "opened", switching = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
   const stop = syncOnDemand(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   const render = (id: string, switching: boolean) =>
-    act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(RelatedTitles, {
-            details: details(id),
-            switching,
-            here: (related) => ({ season: null, scroll: 0, related }),
-          }),
-        ),
-      ),
+    mounted.render(
+      createElement(RelatedTitles, {
+        details: details(id),
+        switching,
+        here: (related) => ({ season: null, scroll: 0, related }),
+      }),
     );
   cleanup = () => {
     stop();
-    act(() => root.unmount());
-    client.clear();
-    container.remove();
+    mounted.unmount();
   };
   await render(opened, switching);
   // Lets the list's timers and answers run on the fake clock until `check` passes.
@@ -108,7 +99,7 @@ async function mount(opened = "opened", switching = false) {
       { interval: 1 },
     );
   /** Closes the details the row is part of, as Close or Settings does. */
-  const close = () => act(async () => root.render(createElement(QueryClientProvider, { client })));
+  const close = () => mounted.render();
   /** Sends `ondemand.updated`, and lets the views take it in while nothing else answers. */
   const updated = async (status: OnDemandUpdate) => {
     await act(async () => ipc.emit("ondemand.updated", status));

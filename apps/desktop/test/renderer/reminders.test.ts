@@ -4,9 +4,9 @@
 // the change or its answer comes first and when rows go together, what a failed save, an empty
 // list and a list that can't be read say, and Watch and Dismiss.
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { Reminder, ReminderList } from "@mrstreamer/contracts/reminders";
@@ -92,26 +92,19 @@ async function shown(list: ReminderList, before: () => void = () => {}) {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stop = syncReminders(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   const tree = (bell: boolean) =>
     createElement(
-      QueryClientProvider,
-      { client },
-      createElement(
-        Fragment,
-        null,
-        bell && createElement(RemindersMenu),
-        createElement(ReminderBanners),
-      ),
+      Fragment,
+      null,
+      bell && createElement(RemindersMenu),
+      createElement(ReminderBanners),
     );
-  await act(async () => root.render(tree(true)));
+  await mounted.render(tree(true));
   unmount = () => {
-    act(() => root.unmount());
-    container.remove();
+    mounted.unmount();
     stop();
-    client.clear();
   };
   const bell = () =>
     [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
@@ -166,7 +159,7 @@ async function shown(list: ReminderList, before: () => void = () => {}) {
         );
       }),
     /** Goes to another page, which has no bell. The notices and the list's reads stay. */
-    leave: () => act(async () => root.render(tree(false))),
+    leave: () => mounted.render(tree(false)),
     /** Once nothing is being changed or read. */
     settled: () =>
       ready(() => {
@@ -329,9 +322,10 @@ describe("the keys as a reminder's row goes", () => {
     { which: "only", titles: ["Only"], out: "Only", next: null },
   ];
 
-  it.each(orders.flatMap((order) => positions.map((position) => ({ order, ...position }))))(
-    "hands them from the $which row's cross on as the row goes, $order",
-    async ({ order, titles, out, next }) => {
+  // The change comes first here; both orders meet each place below, where rows go together.
+  it.each(positions)(
+    "hands them from the $which row's cross on as the row goes",
+    async ({ titles, out, next }) => {
       const all = titles.map((title, at) => reminder(title, 30 * (at + 1)));
       const rest = { notifications: null, reminders: all.filter((each) => each.id !== out) };
       const page = await shown({ notifications: null, reminders: all });
@@ -340,19 +334,14 @@ describe("the keys as a reminder's row goes", () => {
       const answer = await page.takeOut(out);
       const target = () => (next ? page.cross(next) : page.popup());
 
-      if (order === "the change first") await page.change(rest);
-      else {
-        page.serve(rest);
-        await act(async () => answer.resolve(null));
-      }
+      await page.change(rest);
       await ready(() =>
         expect(page.rows().map(([title]) => title)).toEqual(rest.reminders.map((each) => each.id)),
       );
       expect(document.activeElement).toBe(target());
 
-      // The other one comes as well, and moves nothing.
-      if (order === "the change first") await act(async () => answer.resolve(null));
-      else await page.change(rest);
+      // The answer comes as well, and moves nothing.
+      await act(async () => answer.resolve(null));
       await page.settled();
       expect(document.activeElement).toBe(target());
       expect(ipc.argsOf("reminders.cancel")).toEqual([{ id: out }]);

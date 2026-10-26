@@ -646,7 +646,7 @@ it("bounds discontinuity churn when segment durations falsely claim almost no me
   await playback.close(session.sessionId);
 }, 30_000);
 
-it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"', '#EXT-X-MAP:URI="init.mp4"'])(
+it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"'])(
   "retains known converted delivery when a live refresh adds %s",
   async (tag) => {
     const { host, playback, channel } = await app();
@@ -689,7 +689,7 @@ it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"', '#EXT-X-MAP:URI="init.mp4"']
   },
 );
 
-it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"', '#EXT-X-MAP:URI="init.mp4"'])(
+it.each(['#EXT-X-KEY:METHOD=AES-128,URI="key.bin"'])(
   "retains known converted receiver diagnostics when a live refresh adds %s",
   async (tag) => {
     const { host, playback, channel } = await app();

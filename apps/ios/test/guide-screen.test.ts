@@ -1,5 +1,5 @@
+import { createRoot, document } from "./dom.ts";
 import * as React from "react";
-import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Programme } from "@mrstreamer/contracts/guide";
 import type { Catalogue } from "../src/account.ts";
@@ -12,13 +12,6 @@ import type { guideFixture } from "./native-guide.ts";
 import { finish } from "@mrstreamer/core/steps";
 import { combine, partSteps } from "../src/library.ts";
 
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
-const { document } = window;
-const REACT_DOM = "react-dom/client";
-const { createRoot } = (await import(REACT_DOM)) as {
-  createRoot(container: object): { render(node: React.ReactNode): void; unmount(): void };
-};
 const state = vi.hoisted(() => ({
   catalogue: { kind: "loading" } as Catalogue,
   owner: null as ReturnType<typeof createGuide> | null,
@@ -159,6 +152,7 @@ vi.mock("expo-video", () => ({ VideoView: () => null }));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("react-native", async () => {
   const { createElement, useEffect, isValidElement } = await import("react");
+  const { reactNative } = await import("./react-native.ts");
   type Props = {
     children?: React.ReactNode;
     testID?: string;
@@ -175,22 +169,10 @@ vi.mock("react-native", async () => {
   const node = (value: unknown) =>
     !value ? null : isValidElement(value) ? value : createElement(value as React.ComponentType);
   return {
+    ...reactNative,
     View: box,
     ScrollView: box,
     Text: box,
-    Image: () => null,
-    Pressable: ({
-      children,
-      testID,
-      onPress,
-      accessibilityLabel,
-      disabled,
-    }: Props & { onPress?: () => void; disabled?: boolean }) =>
-      createElement(
-        "button",
-        { "data-testid": testID, "aria-label": accessibilityLabel, onClick: onPress, disabled },
-        children,
-      ),
     FlatList: <T>({
       data,
       renderItem,
@@ -227,9 +209,6 @@ vi.mock("react-native", async () => {
         node(ListFooterComponent),
       );
     },
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1, absoluteFill: {} },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
-    ActionSheetIOS: { showActionSheetWithOptions: () => {} },
   };
 });
 const { LiveHome } = await import("../src/live-screen.tsx");

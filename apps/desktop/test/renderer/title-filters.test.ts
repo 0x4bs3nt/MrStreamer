@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { FilterOptions } from "@mrstreamer/contracts/title-filters";
 import type { Title, TitleKind, MovieDetails } from "@mrstreamer/contracts/ondemand";
@@ -69,26 +69,13 @@ async function mount() {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(queries.subscriptions().queryKey, [subscription]);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   const render = (kind: TitleKind, active = true) =>
-    act(async () =>
-      root.render(
-        createElement(QueryClientProvider, { client }, createElement(TitlesPage, { kind, active })),
-      ),
-    );
+    mounted.render(createElement(TitlesPage, { kind, active }));
   const showDetails = (target: DetailsTarget) =>
-    act(async () =>
-      root.render(
-        createElement(QueryClientProvider, { client }, createElement(DetailsView, { target })),
-      ),
-    );
-  cleanup = () => {
-    act(() => root.unmount());
-    client.clear();
-    container.remove();
-  };
+    mounted.render(createElement(DetailsView, { target }));
+  cleanup = mounted.unmount;
   // Lets the page's timers and answers run on the fake clock until `check` passes.
   const until = (check: () => void) =>
     vi.waitFor(

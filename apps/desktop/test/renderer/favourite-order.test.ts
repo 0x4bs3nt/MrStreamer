@@ -4,9 +4,9 @@
 // and what a failure leaves, that nothing plays meanwhile, and what ends a draft or keeps one.
 import { browseChannels, browseChannelsOf, browseResult } from "./browse-support.ts";
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import {
@@ -116,19 +116,10 @@ async function favouritesPage(count: number, list: ChannelList = { kind: "favour
     sequence: 1,
   };
   client.setQueryData(["viewing"], viewing);
-  const container = document.createElement("div");
-  // In the page, as an element takes the focus only there.
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(GuidePage, { active: true })),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(createElement(GuidePage, { active: true }));
+  unmount = view.unmount;
   await settled();
 
   /** A button by its label, or else by the words it begins with. */

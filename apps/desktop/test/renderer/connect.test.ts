@@ -3,9 +3,9 @@
 // https first, and the login goes over plain http only after the viewer agrees. An address typed
 // with http:// says so under the field. Settings adds further subscriptions with the same form.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectScreen } from "../../src/renderer/src/features/connect/ConnectScreen.tsx";
 
@@ -32,24 +32,11 @@ async function settled(step: () => unknown): Promise<void> {
 /** The screen in the page, for a first login. */
 async function connectScreen(): Promise<HTMLElement> {
   ipc.reset();
-  const container = document.createElement("div");
-  // In the page, as a field takes focus only there.
-  document.body.append(container);
-  const root = createRoot(container);
-  await settled(() =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client: new QueryClient() },
-        createElement(ConnectScreen),
-      ),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
-  return container;
+  const view = queryView(new QueryClient());
+  await view.render(createElement(ConnectScreen));
+  await settled(() => {});
+  unmount = view.unmount;
+  return view.container;
 }
 
 /** Types into the login form's fields, in order: server, username, password. */

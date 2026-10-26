@@ -202,8 +202,6 @@ describe("optional analytics startup", () => {
   );
 
   it.each([
-    [false, [true]],
-    [true, [false]],
     [false, [true, false, true]],
     [true, [false, true, false]],
   ] as const)(

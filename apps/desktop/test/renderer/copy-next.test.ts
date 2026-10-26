@@ -8,9 +8,9 @@
 // provider, the viewing record or a receiver.
 import { ipc } from "./support.ts";
 import { runs } from "./title-engine-stand-in.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CopySession, Download, DownloadList } from "@mrstreamer/contracts/downloads";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -75,14 +75,10 @@ beforeEach(async () => {
   runs.length = 0;
   ipc.always("downloads.recordProgress", null);
   useUi.setState(useUi.getInitialState(), true);
-  container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client: new QueryClient() }, createElement(TitleWatch)),
-    ),
-  );
-  unmount = () => act(() => root.unmount());
+  const view = queryView(new QueryClient());
+  container = view.container;
+  await view.render(createElement(TitleWatch));
+  unmount = view.unmount;
 });
 
 afterEach(() => {

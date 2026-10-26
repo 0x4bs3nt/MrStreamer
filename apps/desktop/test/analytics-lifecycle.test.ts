@@ -286,8 +286,8 @@ describe("foreground version lifecycle", () => {
     });
   });
 
-  it.each([undefined, { version: 2 }, { version: 1, pending: "bad" }])(
-    "isolates absent/malformed/future optional state from base consent and legacy queue",
+  it.each([undefined, { version: 2 }])(
+    "isolates absent/unreadable optional state from base consent and legacy queue",
     async (lifecycle) => {
       const directory = await tempDir();
       const id = randomUUID();

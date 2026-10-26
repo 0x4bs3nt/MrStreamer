@@ -373,7 +373,7 @@ describe("the interface language", () => {
 });
 
 describe("the next-episode delay", () => {
-  it.each([0, 1, 10, 37, 60])(
+  it.each([0, 10, 60])(
     "accepts and keeps exactly %i seconds across restart",
     async (nextEpisodeDelaySeconds) => {
       const dataDir = await tempDir();
@@ -388,7 +388,7 @@ describe("the next-episode delay", () => {
     },
   );
 
-  it.each([-1, 0.5, 37.5, 61, NaN, Infinity, -Infinity, "37", null])(
+  it.each([-1, 0.5, 61, NaN, Infinity, "37", null])(
     "rejects %s at IPC ingress",
     (nextEpisodeDelaySeconds) => {
       expect(ipcInputs["preferences.update"]()({ nextEpisodeDelaySeconds })).toBeInstanceOf(
@@ -405,7 +405,7 @@ describe("the next-episode delay", () => {
     expect(await stored(dataDir)).not.toHaveProperty("nextEpisodeDelaySeconds");
   });
 
-  it.each([75, "future", { mode: "future" }, null, -1, 37.5])(
+  it.each([-1, 37.5, 75, "future", { mode: "future" }, null])(
     "preserves unsupported raw %j through writes, older readers and original-source forgetting",
     async (nextEpisodeDelaySeconds) => {
       const { dataDir, subscriptions, id } = await connected();

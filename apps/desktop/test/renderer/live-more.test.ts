@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, useState, type ComponentProps } from "react";
-import { createRoot } from "react-dom/client";
+import { bareView, queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { SubtitleFormat, SubtitleTrack } from "@mrstreamer/contracts/playback";
@@ -75,16 +75,9 @@ it("keeps mouse actions, page focus and discovery tied to More as tracks and out
       quality: null,
     });
   }
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
-  await act(async () => {
-    root.render(createElement(Controls));
-  });
+  const mounted = bareView();
+  unmount = mounted.unmount;
+  await mounted.render(createElement(Controls));
   await settle();
   function button(name: string) {
     const found = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -201,27 +194,16 @@ const cast = {
 async function watch() {
   ipc.reset();
   ipc.always("library.browse", browseResult([qualityChannel, nextChannel]));
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  const mounted = queryView(new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+  unmount = mounted.unmount;
   await act(async () => {
     ipc.emit("output.changed", cast);
     openWatch();
     player.play(qualityChannel);
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
-        createElement(WatchScreen),
-      ),
-    );
   });
+  await mounted.render(createElement(WatchScreen));
   await settle();
-  return container;
+  return mounted.container;
 }
 
 function named(name: string) {
@@ -452,17 +434,12 @@ it("sets a channel's subtitle timing and look under CC, and lists them greyed wh
       onSubtitle: setSubtitle,
     });
   }
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = bareView();
   unmount = () => {
-    act(() => root.unmount());
-    container.remove();
+    mounted.unmount();
     setSubtitleDelay(player.element, 0);
   };
-  await act(async () => {
-    root.render(createElement(Controls));
-  });
+  await mounted.render(createElement(Controls));
   await settle();
   const named = (name: string) =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(

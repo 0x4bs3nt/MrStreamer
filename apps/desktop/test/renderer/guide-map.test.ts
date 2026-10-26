@@ -4,9 +4,9 @@
 // channels are searched by name or id, a mapping is made for the exact guide channel of the exact
 // guide picked, the channels are read again after it, and the keyboard goes through both lists.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   GuideChannelPage,
@@ -109,19 +109,14 @@ async function sheet(
   if (pages.sources) client.setQueryData(["guide", "sources"], pages.sources);
   client.setQueryData(["library", "status"], []);
   client.setQueryData(["ondemand", "status"], { lists: [], metadata: null });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(SubscriptionSection))),
-  );
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(createElement(SubscriptionSection));
   // As the app does: what the main process reports of the guides is read again.
   const stopSync = syncGuideUpdates(client);
   unmount = () => {
     stopSync();
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    view.unmount();
   };
   const dialog = () => document.body.querySelector('[role="dialog"]');
   const lists = () => [...(dialog()?.querySelectorAll('[role="listbox"]') ?? [])];

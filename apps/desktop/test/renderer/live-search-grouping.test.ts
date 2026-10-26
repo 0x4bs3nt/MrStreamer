@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { browseChannels, browseChannelsOf, browseResult } from "./browse-support.ts";
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSubscriptionPreferences } from "@mrstreamer/contracts/preferences";
 import { ownedId, ownedKey, type SubscriptionSummary } from "@mrstreamer/contracts/subscription";
@@ -180,31 +180,20 @@ async function page(
       ]),
     ),
   );
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(
-          Fragment,
-          null,
-          kind === "guide"
-            ? createElement(GuidePage, { active: true })
-            : createElement(SearchPalette),
-          realPlayback ? createElement(WatchScreen) : null,
-        ),
-      ),
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(
+    createElement(
+      Fragment,
+      null,
+      kind === "guide" ? createElement(GuidePage, { active: true }) : createElement(SearchPalette),
+      realPlayback ? createElement(WatchScreen) : null,
     ),
   );
   unmount = () => {
     stopLibrary();
     stopViewing();
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    mounted.unmount();
   };
   await settled();
   const scope = () => (kind === "guide" ? container : document.body);

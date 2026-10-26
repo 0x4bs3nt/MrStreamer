@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Viewing } from "@mrstreamer/contracts/viewing";
 import { call } from "../../src/renderer/src/lib/ipc.ts";
@@ -36,16 +36,13 @@ it("does not republish removed personal records from a late pre-removal favourit
   client.setQueryData(queries.subscriptions().queryKey, [SAVED, { ...SAVED, id: "removed" }]);
   client.setQueryData(queries.viewing().queryKey, record(120, true));
   const newFavourite = { ...removed, id: "8" };
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   function Star() {
     const toggle = useToggleFavourite();
     return createElement("button", { onClick: () => toggle(newFavourite) }, "Star");
   }
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(Star))),
-  );
+  await mounted.render(createElement(Star));
   await act(async () => container.querySelector("button")!.click());
   expect(ipc.argsOf("viewing.setFavourite").at(-1)).toMatchObject({
     channel: newFavourite,
@@ -64,8 +61,7 @@ it("does not republish removed personal records from a late pre-removal favourit
     });
     expect(client.getQueryData(queries.viewing().queryKey)).toEqual(record(100));
   } finally {
-    await act(async () => root.unmount());
-    container.remove();
+    mounted.unmount();
     stop();
   }
 });

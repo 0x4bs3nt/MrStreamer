@@ -1,4 +1,3 @@
-import type * as ReactModule from "react";
 import { Window } from "happy-dom";
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
@@ -32,19 +31,13 @@ vi.mock("../src/loading.tsx", () => ({
 }));
 vi.mock("react-native", async () => {
   const { createElement } = await import("react");
-  type Props = { children?: ReactModule.ReactNode };
   return {
-    View: ({ children }: Props) => createElement("div", null, children),
-    ScrollView: ({ children }: Props) => createElement("div", null, children),
+    ...(await import("./react-native.ts")).reactNative,
     FlatList: () => null,
-    Pressable: ({ children }: Props) => createElement("div", null, children),
-    Text: ({ children }: Props) => createElement("span", null, children),
     Image: ({ source, onError }: { source: { uri: string }; onError: () => void }) => {
       drawn.set(source.uri, onError);
       return createElement("img", { "data-uri": source.uri });
     },
-    StyleSheet: { create: <T>(styles: T) => styles, absoluteFill: {}, hairlineWidth: 1 },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
   };
 });
 

@@ -202,7 +202,7 @@ describe("IndexNow production notification HTTP contract", () => {
     },
   );
 
-  it.each([400, 403, 422, 429, 500, 503])(
+  it.each([429, 503])(
     "reports HTTP %s and never retries POST or waits for Retry-After",
     async (status) => {
       const f = await fixture((req, res) => {

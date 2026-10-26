@@ -7,9 +7,9 @@
 // can press after either; two guides read differently in their rows and every button, however
 // they are named; and a rename in place keeps a name at Enter or leaving it, and not at Escape.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GuideSourceStatus } from "@mrstreamer/contracts/guide";
 import { formatBytes, formatPercent } from "@mrstreamer/core/i18n";
@@ -69,16 +69,12 @@ async function section(sources: readonly GuideSourceStatus[]) {
   ipc.always("guide.sources", sources);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stop = syncGuideUpdates(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(GuidesSection))),
-  );
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(createElement(GuidesSection));
   unmount = () => {
     stop();
-    act(() => root.unmount());
-    container.remove();
+    view.unmount();
   };
   const settled = () => act(async () => new Promise<void>((resolve) => setTimeout(resolve, 20)));
   await settled();

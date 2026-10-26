@@ -14,9 +14,9 @@
 // channels were read, and to subscriptions saved since.
 import { browseResult } from "./browse-support.ts";
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CustomList } from "@mrstreamer/contracts/custom-lists";
 import type { Category, LiveChannel } from "@mrstreamer/contracts/library";
@@ -163,36 +163,20 @@ async function livePage(
     client.setQueryData(["ondemand", "status"], { lists: [], metadata: null });
   }
   const stopLists = syncCustomLists(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  const beside = document.createElement("div");
-  document.body.append(beside);
-  const besideRoot = createRoot(beside);
-  if (settings)
-    await act(async () =>
-      besideRoot.render(
-        createElement(QueryClientProvider, { client }, createElement(SubscriptionSection)),
-      ),
-    );
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        app
-          ? createElement(TooltipProvider, null, createElement(App))
-          : createElement(GuidePage, { active: true }),
-      ),
-    ),
+  const mounted = queryView(client);
+  const { container } = mounted;
+  const besideView = queryView(client);
+  const beside = besideView.container;
+  if (settings) await besideView.render(createElement(SubscriptionSection));
+  await mounted.render(
+    app
+      ? createElement(TooltipProvider, null, createElement(App))
+      : createElement(GuidePage, { active: true }),
   );
   unmount = () => {
     stopLists();
-    act(() => root.unmount());
-    act(() => besideRoot.unmount());
-    client.clear();
-    container.remove();
-    beside.remove();
+    mounted.unmount();
+    besideView.unmount();
   };
   await settled();
 

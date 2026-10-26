@@ -4,9 +4,9 @@
 // and a copy playing offline in the same player, which asks no provider, record, receiver or
 // subtitle service.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Profiler, type ReactElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Download, DownloadList, DownloadSeries } from "@mrstreamer/contracts/downloads";
 import type { InterfaceLanguage } from "@mrstreamer/contracts/language";
@@ -104,17 +104,11 @@ beforeEach(() => {
 async function show(element: ReactElement, ready?: string): Promise<HTMLElement> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   stopSync = syncDownloads(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () => {
-    root.render(createElement(QueryClientProvider, { client }, element));
-    await settle();
-  });
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  const view = queryView(client);
+  const { container } = view;
+  await view.render(element);
+  await act(settle);
+  unmount = view.unmount;
   if (ready) await until(() => container.querySelector(ready) !== null);
   return container;
 }

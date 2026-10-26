@@ -1,15 +1,7 @@
+import { createRoot, document } from "./dom.ts";
 import * as React from "react";
 import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
-import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { createRoot } = (await import(REACT_DOM)) as {
-  createRoot(container: object): { render(node: React.ReactNode): void; unmount(): void };
-};
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const owner = vi.hoisted(() => ({
   list: { items: [], series: {}, bytes: 0, free: null, ended: 0 } as DownloadList,
@@ -77,7 +69,7 @@ const transferring = (received: number, size: number | null) =>
     rate: null,
     restarted: false,
   });
-let container = window.document.createElement("div");
+let container = document.createElement("div");
 let root = createRoot(container);
 const button = () => container.querySelector("button");
 const label = () => button()?.getAttribute("aria-label");
@@ -88,7 +80,7 @@ function publish(items: readonly Download[]) {
   });
 }
 beforeEach(() => {
-  container = window.document.createElement("div");
+  container = document.createElement("div");
   root = createRoot(container);
   owner.list = { items: [], series: {}, bytes: 0, free: null, ended: 0 };
   owner.asked.length = 0;

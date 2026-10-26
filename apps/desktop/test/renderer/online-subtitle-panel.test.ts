@@ -519,11 +519,14 @@ describe("subtitle choices while the picture plays", () => {
     },
   );
 
-  it.each(
-    (["Off", "file track", "C off", "C without a track", "saved result"] as const).flatMap(
-      (choice) => (["success", "failure"] as const).map((reply) => ({ choice, reply })),
+  // Every choice meets a late success; a late failure, which the same cancel drops, meets a
+  // choice that changes the selection and one that only turns subtitles off.
+  it.each([
+    ...(["Off", "file track", "C off", "C without a track", "saved result"] as const).map(
+      (choice) => ({ choice, reply: "success" as const }),
     ),
-  )("keeps $choice when a pending download returns $reply", async ({ choice, reply }) => {
+    ...(["Off", "C off"] as const).map((choice) => ({ choice, reply: "failure" as const })),
+  ])("keeps $choice when a pending download returns $reply", async ({ choice, reply }) => {
     await opened(choice === "C without a track" ? [] : [english]);
     if (choice === "C off" || choice === "saved result")
       titlePlayer.acceptDownloaded("movie", saved);

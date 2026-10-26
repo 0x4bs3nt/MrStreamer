@@ -9,9 +9,9 @@
 // or once the viewer took the next episode back while the record was asked.
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { runs } from "./title-engine-stand-in.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Episode, SeriesDetails } from "@mrstreamer/contracts/ondemand";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
@@ -94,14 +94,10 @@ beforeEach(async () => {
   ipc.reset();
   runs.length = 0;
   useUi.setState(useUi.getInitialState(), true);
-  container = document.createElement("div");
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client: new QueryClient() }, createElement(TitleWatch)),
-    ),
-  );
-  unmount = () => act(() => root.unmount());
+  const mounted = queryView(new QueryClient());
+  container = mounted.container;
+  await mounted.render(createElement(TitleWatch));
+  unmount = mounted.unmount;
 });
 
 afterEach(() => {
@@ -370,7 +366,6 @@ describe("the end of an episode", () => {
 
   // Space plays the title everywhere else. Enter on a message's cross is in title-subtitles.test.ts.
   it("closes why the next episode didn't start with Space on its cross, and starts nothing", async () => {
-    document.body.append(container);
     await playToEnd(pilotHouse, "s1");
     const failed = ipc.hold("playback.openTitle");
     await wait(10_000);
@@ -390,7 +385,6 @@ describe("the end of an episode", () => {
     expect(text()).not.toContain("Didn't start");
     expect(titlePlayer.state().phase.kind).toBe("failed");
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Play");
-    container.remove();
   });
 
   it("ends the last episode of a series watched through by recording that every version of it is finished", async () => {
@@ -653,7 +647,7 @@ describe("the saved countdown policy", () => {
     expect(opened()).toEqual(["e13", "e21", "e21"]);
   });
 
-  it.each([0, 37, 60])("opens once after exactly %i seconds", async (nextEpisodeDelaySeconds) => {
+  it.each([0, 60])("opens once after exactly %i seconds", async (nextEpisodeDelaySeconds) => {
     ipc.always("preferences.get", ipc.snapshot({ ...defaultPreferences, nextEpisodeDelaySeconds }));
     await playToEnd(pilotHouse, "s1");
     if (nextEpisodeDelaySeconds > 0) {

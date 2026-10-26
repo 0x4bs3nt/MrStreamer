@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   defaultPreferences,
@@ -38,16 +38,11 @@ afterEach(() => {
 const settle = () => act(() => vi.advanceTimersByTimeAsync(20));
 async function render(component = createElement(SettingsPage)) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = document.createElement("div");
-  document.body.append(view);
-  const root = createRoot(view);
-  await act(async () => root.render(createElement(QueryClientProvider, { client }, component)));
+  const mounted = queryView(client);
+  const { container: view } = mounted;
+  await mounted.render(component);
   await settle();
-  cleanup = () => {
-    act(() => root.unmount());
-    client.clear();
-    view.remove();
-  };
+  cleanup = mounted.unmount;
   return { view, client };
 }
 async function type(field: HTMLInputElement, value: string) {

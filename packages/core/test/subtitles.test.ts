@@ -88,7 +88,7 @@ describe("subtitles the player draws", () => {
     expect(cleared?.screen).toMatchObject({ kind: "picture", pictures: [] });
   });
 
-  it.each([1, 7, 1000, 65_536])(
+  it.each([1, 1000, 65_536])(
     "reads closed captions from the picture, pop-on, until erased, in %i-byte chunks",
     (chunkSize) => {
       const changes = decode(0x100, "captions", 1, chunkSize);

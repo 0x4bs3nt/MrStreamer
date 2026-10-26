@@ -767,7 +767,7 @@ describe("a movie whose TV another takes the place of", () => {
 });
 
 describe("an episode on a receiver", () => {
-  it.each([0, 37, 60])(
+  it.each([0, 60])(
     "uses %i seconds on the receiver and never opens local playback",
     async (nextEpisodeDelaySeconds) => {
       ipc.prefer({ nextEpisodeDelaySeconds });

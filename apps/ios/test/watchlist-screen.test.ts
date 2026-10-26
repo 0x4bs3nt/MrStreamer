@@ -1,8 +1,8 @@
+import { createRoot, document, type Root } from "./dom.ts";
 import * as React from "react";
 import type { Title, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { indexCatalogue, kindOf, type IndexedCatalogue } from "@mrstreamer/core/ondemand/catalogue";
 import type { OnDemandCatalogue, ProviderTitle } from "@mrstreamer/core/provider";
-import { Window } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Member } from "../src/account.ts";
 import type { TitleLists } from "../src/titles.ts";
@@ -12,14 +12,6 @@ import type { TitleLists } from "../src/titles.ts";
 // out the entry as it stands. The real screen runs with React DOM on a happy-dom window over the
 // real watchlist owner, whose file is written to the files stand-in (native-files.ts). The lists
 // are indexed by core as the app's are; how each provider's lists stand is set by each test.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /** A system sheet that showed: its options, and what choosing one does. */
 interface Sheet {
@@ -44,69 +36,24 @@ const scenario = vi.hoisted(() => ({
   did: [] as string[],
 }));
 
-vi.mock("react-native", async () => {
-  const { createElement, Fragment } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    View: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Pressable: ({
-      children,
-      testID,
-      onPress,
-      accessibilityLabel,
-    }: Props & { onPress?: () => void; accessibilityLabel?: string }) =>
-      createElement(
-        "button",
-        { "data-testid": testID, "aria-label": accessibilityLabel, onClick: onPress },
-        children,
-      ),
-    FlatList: <T>({
-      data,
-      renderItem,
-      keyExtractor,
-      ListHeaderComponent,
-      ListEmptyComponent,
-      testID,
-    }: {
-      data: readonly T[];
-      renderItem: (info: { item: T }) => React.ReactNode;
-      keyExtractor: (item: T) => string;
-      ListHeaderComponent?: React.ReactNode;
-      ListEmptyComponent?: React.ReactNode;
-      testID?: string;
-    }) =>
-      createElement(
-        "div",
-        { "data-testid": testID },
-        ListHeaderComponent,
-        data.length === 0
-          ? ListEmptyComponent
-          : data.map((item) =>
-              createElement(Fragment, { key: keyExtractor(item) }, renderItem({ item })),
-            ),
-      ),
-    ActionSheetIOS: {
-      showActionSheetWithOptions: (
-        { title, options }: { title?: string; options: string[] },
-        callback: (index: number) => void,
-      ) =>
-        scenario.sheets.push({
-          title,
-          options,
-          choose: (label) => React.act(() => callback(options.indexOf(label))),
-        }),
-    },
-    Alert: {
-      alert: (title: string, message: string, buttons: { text: string; onPress?: () => void }[]) =>
-        scenario.alerts.push({ title, message, buttons }),
-    },
-    StyleSheet: { create: <T>(styles: T) => styles, hairlineWidth: 1 },
-    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
-  };
-});
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  ActionSheetIOS: {
+    showActionSheetWithOptions: (
+      { title, options }: { title?: string; options: string[] },
+      callback: (index: number) => void,
+    ) =>
+      scenario.sheets.push({
+        title,
+        options,
+        choose: (label) => React.act(() => callback(options.indexOf(label))),
+      }),
+  },
+  Alert: {
+    alert: (title: string, message: string, buttons: { text: string; onPress?: () => void }[]) =>
+      scenario.alerts.push({ title, message, buttons }),
+  },
+}));
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 vi.mock("../src/files.ts", async (original) => {

@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { browseChannels, browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Category } from "@mrstreamer/contracts/library";
 import type { ChannelList } from "../../src/renderer/src/app/ui-store.ts";
@@ -71,9 +71,8 @@ async function picker(
   client.setQueryData(browseChannels(null).queryKey, { ...browseResult([]), total: 63412 });
   const onPick = vi.fn();
   const onChannels = vi.fn();
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   function View() {
     const state = useListPicker(selected);
     return createElement(ListPicker, {
@@ -84,14 +83,8 @@ async function picker(
       onChannels,
     });
   }
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(View))),
-  );
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  await mounted.render(createElement(View));
+  cleanup = mounted.unmount;
   const rows = () => [...container.querySelectorAll<HTMLButtonElement>("[data-entry]")];
   const field = () => container.querySelector<HTMLInputElement>("input")!;
   const click = async (title: string) =>

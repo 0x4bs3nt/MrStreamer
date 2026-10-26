@@ -3,9 +3,9 @@
 // last read the preferences, as picking a sound or subtitle track does.
 import { ipc } from "./support.ts";
 import { acceptPreferences, syncPreferences } from "../../src/renderer/src/lib/preferences.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
 import { PlaybackSection } from "../../src/renderer/src/features/settings/GeneralSection.tsx";
@@ -29,14 +29,12 @@ describe("Settings > Playback", () => {
       preferences: { ...defaultPreferences, audioLanguage: "es" },
     });
     ipc.emit("preferences.changed", { revision: 1, preferences: defaultPreferences });
-    const container = document.createElement("div");
-    const root = createRoot(container);
-    await act(async () =>
-      root.render(createElement(QueryClientProvider, { client }, createElement(PlaybackSection))),
-    );
+    const mounted = queryView(client);
+    const { container } = mounted;
+    await mounted.render(createElement(PlaybackSection));
     unmount = () => {
       detach();
-      act(() => root.unmount());
+      mounted.unmount();
     };
     await act(() => vi.advanceTimersByTimeAsync(20));
 
@@ -48,23 +46,10 @@ describe("Settings > Playback", () => {
   it("saves custom seconds and Instant separately from autoplay, retaining the acknowledged delay on failure", async () => {
     ipc.reset();
     ipc.prefer({ nextEpisodeDelaySeconds: 10 });
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    await act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client: new QueryClient() },
-          createElement(PlaybackSection),
-        ),
-      ),
-    );
-    unmount = () =>
-      act(() => {
-        root.unmount();
-        container.remove();
-      });
+    const mounted = queryView(new QueryClient());
+    const { container } = mounted;
+    await mounted.render(createElement(PlaybackSection));
+    unmount = mounted.unmount;
     await act(() => vi.advanceTimersByTimeAsync(20));
     const field = () =>
       container.querySelector<HTMLInputElement>('[aria-label="Next episode delay"]')!;

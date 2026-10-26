@@ -5,9 +5,9 @@
 // which one's progress resumes, and where a pick is kept.
 import { browseChannels, browseResult } from "./browse-support.ts";
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogueStatus, LiveChannel } from "@mrstreamer/contracts/library";
 import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
@@ -108,18 +108,10 @@ async function liveTv(statuses: readonly CatalogueStatus[]) {
     marked: [],
     sequence: 1,
   });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(GuidePage, { active: true })),
-    ),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(GuidePage, { active: true }));
+  unmount = mounted.unmount;
   await settled();
   return {
     container,
@@ -220,24 +212,13 @@ async function filmSheet(played: readonly TitleProgress[], picks: Record<string,
       ...(picks[id] ? { titleVersions: { "movie:603": picks[id] } } : {}),
     });
   }
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(DetailsView, {
-          target: { kind: "movie", subscriptionId: holiday.id, id: "91000" },
-        }),
-      ),
-    ),
+  const mounted = queryView(client);
+  await mounted.render(
+    createElement(DetailsView, {
+      target: { kind: "movie", subscriptionId: holiday.id, id: "91000" },
+    }),
   );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  unmount = mounted.unmount;
   const opened = ipc.hold("ondemand.details");
   await act(async () => listed.resolve([film]));
   await act(async () => progress.resolve(played));

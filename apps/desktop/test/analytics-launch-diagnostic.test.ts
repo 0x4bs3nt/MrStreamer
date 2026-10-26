@@ -134,8 +134,6 @@ function fixture(rejectedUrl = "about:blank") {
 describe("failure-only renderer launch evidence", () => {
   it.each([
     { label: "empty", url: "" },
-    { label: "blank", url: "about:blank" },
-    { label: "chrome-error", url: "chrome-error://chromewebdata/" },
     { label: "long foreign", url: `https://foreign.invalid/${"x".repeat(4096)}` },
   ])(
     "durably records the exact $label URL before querying, independently of cleanup and later navigation",

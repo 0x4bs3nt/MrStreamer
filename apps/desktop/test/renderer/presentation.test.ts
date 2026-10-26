@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, Fragment } from "react";
+import { queryView } from "./mount.ts";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultPreferences } from "@mrstreamer/contracts/preferences";
@@ -83,19 +84,9 @@ it("skips disabled Home title rows even before saved preferences answer, then re
   ipc.always("ondemand.collection", { name: "New movies", total: 0, titles: [] });
   ipc.always("watchlist.list", { total: 0, entries: [] });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
-  await act(async () =>
-    root.render(
-      createElement(QueryClientProvider, { client }, createElement(HomeScreen, { active: false })),
-    ),
-  );
+  const mounted = queryView(client);
+  cleanup = mounted.unmount;
+  await mounted.render(createElement(HomeScreen, { active: false }));
   await act(() => vi.advanceTimersByTimeAsync(50));
   expect(ipc.argsOf("ondemand.collection")).toEqual([]);
   expect(ipc.argsOf("ondemand.titles")).toEqual([]);
@@ -179,46 +170,35 @@ async function showContinuingHome() {
   ipc.always("ondemand.titles", [film]);
   ipc.always("guide.listings", {});
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  cleanup = () => {
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  cleanup = mounted.unmount;
   const render = async (visible: boolean) => {
-    await act(async () =>
-      root.render(
+    await mounted.render(
+      createElement(
+        TooltipProvider,
+        null,
         createElement(
-          QueryClientProvider,
-          { client },
+          Fragment,
+          null,
           createElement(
-            TooltipProvider,
-            null,
-            createElement(
-              Fragment,
-              null,
-              createElement(
-                PresentationVisible,
-                { value: visible },
-                createElement(HomeScreen, { active: false }),
-              ),
-              !visible &&
-                createElement(NowPlayingBar, {
-                  visible: true,
-                  channel: channels[0]!,
-                  categories: new Map(),
-                  menu: null,
-                  keyboardMenu: false,
-                  fullscreen: false,
-                  onMenu: () => {},
-                  onToggleFullscreen: () => {},
-                  onOpenChannels: () => {},
-                  onSwitch: () => {},
-                }),
-            ),
+            PresentationVisible,
+            { value: visible },
+            createElement(HomeScreen, { active: false }),
           ),
+          !visible &&
+            createElement(NowPlayingBar, {
+              visible: true,
+              channel: channels[0]!,
+              categories: new Map(),
+              menu: null,
+              keyboardMenu: false,
+              fullscreen: false,
+              onMenu: () => {},
+              onToggleFullscreen: () => {},
+              onOpenChannels: () => {},
+              onSwitch: () => {},
+            }),
         ),
       ),
     );

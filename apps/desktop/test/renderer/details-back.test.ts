@@ -11,9 +11,9 @@
 // viewer does meanwhile: Settings, a title played, Search, another Back, Close or another title,
 // opened and left again too, and the way back stays as it was.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type {
   Episode,
@@ -234,23 +234,11 @@ async function window_(): Promise<QueryClient> {
   useUi.setState({ view: "movies" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stopLists = syncOnDemand(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(TooltipProvider, null, createElement(App)),
-      ),
-    ),
-  );
+  const mounted = queryView(client);
+  await mounted.render(createElement(TooltipProvider, null, createElement(App)));
   unmount = () => {
     stopLists();
-    act(() => root.unmount());
-    client.clear();
-    container.remove();
+    mounted.unmount();
   };
   await vi.waitFor(
     async () => {

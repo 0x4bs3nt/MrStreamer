@@ -1,7 +1,8 @@
+import { createRoot, document, Event } from "./dom.ts";
 import * as React from "react";
 import { createRequire } from "node:module";
 import { AppFailure } from "@mrstreamer/contracts/errors";
-import { Window, type HTMLInputElement } from "happy-dom";
+import type { HTMLInputElement } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The Connect form after a failed sign-in: its button says Try again only for the details that
@@ -12,19 +13,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // no install.
 
 /** The app's own types have no React DOM; the tests resolve it from the desktop's install. */
-const REACT_DOM = "react-dom/client";
 // Metro supplies native asset ids; Node has no PNG loader.
 createRequire(import.meta.url).extensions[".png"] = (module) => {
   module.exports = 1;
 };
 
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document, Event } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.stubGlobal("__DEV__", false);
 
 /** Sign-ins waiting for an answer, oldest first. */
@@ -63,47 +56,20 @@ vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 // Channel rows draw their star with an SF Symbol.
 vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
-vi.mock("react-native", async () => {
-  const { createElement } = await import("react");
-  type Props = { children?: React.ReactNode; testID?: string };
-  const box = ({ children, testID }: Props) =>
-    createElement("div", { "data-testid": testID }, children);
-  return {
-    Alert: {
-      alert: (_title: string, _message: string, answers: typeof consent.answers) => {
-        consent.answers = answers;
-        consent.prompts++;
-      },
+vi.mock("react-native", async () => ({
+  ...(await import("./react-native.ts")).reactNative,
+  Alert: {
+    alert: (_title: string, _message: string, answers: typeof consent.answers) => {
+      consent.answers = answers;
+      consent.prompts++;
     },
-    Linking: {
-      openURL: async (url: string) => {
-        consent.privacy.push(url);
-      },
+  },
+  Linking: {
+    openURL: async (url: string) => {
+      consent.privacy.push(url);
     },
-    ScrollView: box,
-    View: box,
-    Text: ({ children }: Props) => createElement("span", null, children),
-    Pressable: ({
-      children,
-      disabled,
-      onPress,
-    }: Props & { disabled?: boolean; onPress: () => void }) =>
-      createElement("button", { disabled, onClick: onPress }, children),
-    TextInput: ({
-      testID,
-      value,
-      onChangeText,
-    }: Props & { value: string; onChangeText: (value: string) => void }) =>
-      createElement("input", {
-        "data-testid": testID,
-        value,
-        onChange: (event: { target: { value: string } }) => onChangeText(event.target.value),
-      }),
-    Image: box,
-    StyleSheet: { create: <T>(styles: T) => styles },
-    useWindowDimensions: () => ({ fontScale: 1 }),
-  };
-});
+  },
+}));
 
 const { default: Connect } = await import("../src/app/connect.tsx");
 

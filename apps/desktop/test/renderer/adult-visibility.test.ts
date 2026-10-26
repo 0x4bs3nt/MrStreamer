@@ -2,9 +2,9 @@
 // Titles for adults stay out of sight whatever the views kept from before: once Settings hides
 // them, and once a refresh's lists mark for adults a title they listed for everyone before.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement, type ReactElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcInput } from "@mrstreamer/contracts/ipc";
 import type { OnDemandUpdate, Title, TitlePage } from "@mrstreamer/contracts/ondemand";
@@ -106,25 +106,14 @@ async function mount() {
   const stopPreferences = syncPreferences(client, () => {});
   acceptPreferences(client, ipc.snapshot({ ...defaultPreferences, adultTitles: true }));
   const stopOnDemand = syncOnDemand(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const view = queryView(client);
+  const { container } = view;
   const show = (open: boolean) =>
-    act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          open ? createElement(TitlesPage, { kind: "movie", active: true }) : null,
-        ),
-      ),
-    );
+    view.render(open ? createElement(TitlesPage, { kind: "movie", active: true }) : null);
   cleanup = () => {
     stopOnDemand();
     stopPreferences();
-    act(() => root.unmount());
-    container.remove();
-    client.clear();
+    view.unmount();
   };
   await show(true);
   const tabs = () =>
@@ -279,24 +268,13 @@ describe("after a refresh marks a listed title for adults", () => {
     client.setQueryData(queries.subscriptions().queryKey, [SAVED]);
     const stops = [syncPreferences(client, () => {}), syncOnDemand(client), syncWatchlist(client)];
     acceptPreferences(client, ipc.snapshot(defaultPreferences));
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
+    const mounted = queryView(client);
+    const { container } = mounted;
     const render = (view: ReactElement | null) =>
-      act(async () =>
-        root.render(
-          createElement(
-            QueryClientProvider,
-            { client },
-            createElement(TooltipProvider, null, view),
-          ),
-        ),
-      );
+      mounted.render(createElement(TooltipProvider, null, view));
     cleanup = () => {
       for (const stop of stops) stop();
-      act(() => root.unmount());
-      container.remove();
-      client.clear();
+      mounted.unmount();
       useUi.setState({ searchOpen: false, searchFrom: "" });
     };
     const press = async (label: string) => {
@@ -491,31 +469,22 @@ describe("Continue watching, after a refresh marks a title in it for adults", ()
       syncViewing(client),
     ];
     acceptPreferences(client, ipc.snapshot(defaultPreferences));
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
+    const view = queryView(client);
+    const { container } = view;
     cleanup = () => {
       for (const stop of stops) stop();
-      act(() => root.unmount());
-      container.remove();
-      client.clear();
+      view.unmount();
     };
     /** Home open or not, and in view or covered, as by Watch or a playing title. */
     const show = (open: boolean, visible = true) =>
-      act(async () =>
-        root.render(
+      view.render(
+        createElement(
+          TooltipProvider,
+          null,
           createElement(
-            QueryClientProvider,
-            { client },
-            createElement(
-              TooltipProvider,
-              null,
-              createElement(
-                PresentationVisible,
-                { value: visible },
-                open ? createElement(HomeScreen, { active: visible }) : null,
-              ),
-            ),
+            PresentationVisible,
+            { value: visible },
+            open ? createElement(HomeScreen, { active: visible }) : null,
           ),
         ),
       );

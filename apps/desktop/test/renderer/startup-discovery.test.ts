@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../../src/renderer/src/app/App.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
@@ -45,23 +45,11 @@ afterEach(() => {
 async function mount(cached = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (cached) client.setQueryData(queries.rememberedLiveBrowse().queryKey, remembered);
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  cleanup = () => {
-    act(() => root.unmount());
-    client.clear();
-  };
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(TooltipProvider, null, createElement(App)),
-      ),
-    ),
-  );
+  const mounted = queryView(client);
+  cleanup = mounted.unmount;
+  await mounted.render(createElement(TooltipProvider, null, createElement(App)));
   await settle();
-  return { client, container };
+  return { client, container: mounted.container };
 }
 
 it.each([false, true])("opens only the restored discovery, cached=%s", async (cached) => {

@@ -2,9 +2,9 @@
 // Remove from Continue watching in a film's details takes every version of it out, and the button
 // goes once the record has it, while Resume stays; a removal that fails says why.
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MovieDetails, Title } from "@mrstreamer/contracts/ondemand";
 import type { TitleProgress, Viewing } from "@mrstreamer/contracts/viewing";
@@ -93,24 +93,15 @@ async function openDetails(): Promise<HTMLElement> {
   const client = new QueryClient();
   client.setQueryData(["subscriptions"], [SAVED]);
   const stopSync = syncViewing(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(DetailsView, {
-          target: { kind: "movie", subscriptionId: SUBSCRIPTION, id: "hd" },
-        }),
-      ),
-    ),
+  const view = queryView(client);
+  await view.render(
+    createElement(DetailsView, {
+      target: { kind: "movie", subscriptionId: SUBSCRIPTION, id: "hd" },
+    }),
   );
   unmount = () => {
     stopSync();
-    act(() => root.unmount());
-    container.remove();
+    view.unmount();
   };
   await act(async () => listed.resolve([film]));
   await act(async () => progress.resolve([halfway]));

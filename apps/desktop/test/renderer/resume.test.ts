@@ -2,9 +2,9 @@
 // Continue watching's Resume on a series waits for the series' details and for how its episodes
 // stand. Whatever the viewer does meanwhile, a new account above all, wins over that wait.
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import type { TitleProgress } from "@mrstreamer/contracts/viewing";
@@ -122,11 +122,9 @@ beforeEach(async () => {
     resume = useResume();
     return null;
   }
-  const root = createRoot(document.createElement("div"));
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(Probe))),
-  );
-  unmount = () => act(() => root.unmount());
+  const mounted = queryView(client);
+  await mounted.render(createElement(Probe));
+  unmount = mounted.unmount;
 });
 
 afterEach(() => unmount());

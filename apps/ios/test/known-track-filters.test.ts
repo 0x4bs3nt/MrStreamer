@@ -1,8 +1,8 @@
+import { createRoot, window, type Root } from "./dom.ts";
 import * as React from "react";
-import type { CollectionId, Title, TitleKind } from "@mrstreamer/contracts/ondemand";
+import type { CollectionId, TitleKind } from "@mrstreamer/contracts/ondemand";
 import { kindOf } from "@mrstreamer/core/ondemand/catalogue";
 import type { ObservedTrackSnapshot } from "expo-video";
-import { Window } from "happy-dom";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,12 +10,6 @@ import { observedFileTracks } from "../src/media-policy.ts";
 
 // Real Titles, controls, poster tiles, account and facts owner over the fake panel and real local
 // files. Calling titleFile's public callback models the future consumer, not a native read.
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const memory = vi.hoisted(() => ({
   secrets: new Map<string, string>(),
@@ -59,61 +53,13 @@ vi.mock("react-native-safe-area-context", async () => {
   };
 });
 vi.mock("react-native", async () => {
-  const { createElement, Fragment } = await import("react");
-  const box = ({ children }: { children?: React.ReactNode }) =>
-    createElement("div", null, children);
+  const { reactNative } = await import("./react-native.ts");
   return {
-    View: box,
-    Text: box,
-    ScrollView: box,
-    Modal: box,
-    Image: () => null,
-    StyleSheet: { create: <T>(styles: T) => styles },
+    ...reactNative,
     useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 2 }),
-    AppState: { currentState: "active", addEventListener: () => ({ remove: () => undefined }) },
-    FlatList: ({
-      data,
-      renderItem,
-      ListHeaderComponent,
-      ListEmptyComponent,
-    }: {
-      data: readonly Title[];
-      renderItem: (info: { item: Title }) => React.ReactNode;
-      ListHeaderComponent?: React.ReactNode;
-      ListEmptyComponent?: React.ReactNode;
-    }) =>
-      createElement(
-        "section",
-        null,
-        ListHeaderComponent,
-        data.length
-          ? data.map((item) => createElement(Fragment, { key: item.key }, renderItem({ item })))
-          : ListEmptyComponent,
-      ),
-    Pressable: ({
-      children,
-      onPress,
-      accessibilityLabel,
-      accessibilityState,
-      testID,
-    }: {
-      children?: React.ReactNode;
-      onPress?: () => void;
-      accessibilityLabel?: string;
-      accessibilityState?: { selected?: boolean };
-      testID?: string;
-    }) => {
-      if (testID && onPress) memory.presses.set(testID, onPress);
-      return createElement(
-        "button",
-        {
-          onClick: onPress,
-          "aria-label": accessibilityLabel,
-          "aria-pressed": accessibilityState?.selected,
-          "data-testid": testID,
-        },
-        children,
-      );
+    Pressable: (props: Parameters<typeof reactNative.Pressable>[0]) => {
+      if (props.testID && props.onPress) memory.presses.set(props.testID, props.onPress);
+      return reactNative.Pressable(props);
     },
   };
 });

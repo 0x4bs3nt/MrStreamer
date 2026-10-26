@@ -8,9 +8,9 @@
 // for while another is open.
 import { ipc, SUBSCRIPTION } from "./support.ts";
 import { browseResult } from "./browse-support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LiveChannel } from "@mrstreamer/contracts/library";
 import type { LivePlaying, StreamFailure, StreamFormat } from "@mrstreamer/contracts/playback";
@@ -163,11 +163,10 @@ async function watching(channel = vrt): Promise<void> {
   await act(async () => player.play(channel));
   const client = new QueryClient();
   await client.fetchQuery(queries.preferences());
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(WatchScreen))),
-  );
-  unmount = () => act(() => root.unmount());
+  const mounted = queryView(client);
+  container = mounted.container;
+  await mounted.render(createElement(WatchScreen));
+  unmount = mounted.unmount;
 }
 
 /** Watch on a channel whose stream plays for `seconds`. */
@@ -196,8 +195,6 @@ beforeEach(() => {
   ipc.reset();
   sessions = 0;
   useUi.setState(useUi.getInitialState(), true);
-  container = document.createElement("div");
-  document.body.append(container);
 });
 
 afterEach(async () => {
@@ -207,7 +204,6 @@ afterEach(async () => {
   });
   await unmount();
   unmount = () => {};
-  container.remove();
   vi.useRealTimers();
 });
 

@@ -2,9 +2,9 @@
 // About exports only on request. Save refers to the inspected snapshot, and cancelling the
 // native dialog must not claim a file was saved. Rating is available only for Store copies.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DiagnosticsPreview } from "@mrstreamer/contracts/diagnostics";
 import type { Distribution, UpdateStatus } from "@mrstreamer/contracts/updates";
@@ -37,17 +37,10 @@ async function about(distribution: Distribution = "direct") {
   };
   client.setQueryData(["updates"], status);
   ipc.always("updates.status", status);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () =>
-    root.render(createElement(QueryClientProvider, { client }, createElement(SettingsPage))),
-  );
-  unmount = () => {
-    act(() => root.unmount());
-    client.clear();
-    container.remove();
-  };
+  const mounted = queryView(client);
+  const { container } = mounted;
+  await mounted.render(createElement(SettingsPage));
+  unmount = mounted.unmount;
   return container;
 }
 function button(container: HTMLElement, name: string) {

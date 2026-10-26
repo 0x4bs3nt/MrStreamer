@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Download, DownloadList, DownloadStatus } from "@mrstreamer/contracts/downloads";
 import type { Episode, SeriesDetails } from "@mrstreamer/contracts/ondemand";
@@ -121,24 +121,17 @@ async function mount(
   ipc.always("downloads.remove", null);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const stop = syncDownloads(client);
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   const render = (value = picked, key = "series", marks: readonly EpisodeMark[] = []) =>
-    act(async () =>
-      root.render(
-        createElement(
-          QueryClientProvider,
-          { client },
-          createElement(SeriesDownload, {
-            details: value,
-            progress,
-            marks,
-            version: "NL · Fixture",
-            key,
-          }),
-        ),
-      ),
+    mounted.render(
+      createElement(SeriesDownload, {
+        details: value,
+        progress,
+        marks,
+        version: "NL · Fixture",
+        key,
+      }),
     );
   await render();
   await until(() => expect(client.getQueryData(downloadsQuery().queryKey)).toBeDefined());
@@ -158,10 +151,8 @@ async function mount(
     await act(async () => ipc.emit("downloads.changed", list(items)));
   };
   cleanup = () => {
-    act(() => root.unmount());
+    mounted.unmount();
     stop();
-    client.clear();
-    container.remove();
   };
   return { container, client, render, click, open, changed };
 }

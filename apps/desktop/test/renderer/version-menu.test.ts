@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { ipc, SAVED, SUBSCRIPTION } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Title } from "@mrstreamer/contracts/ondemand";
 import { VersionMenu } from "../../src/renderer/src/features/titles/VersionMenu.tsx";
@@ -71,29 +71,19 @@ async function mount(title = film) {
       { ...SAVED, id: GREEN, name: "Green" },
     ],
   );
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
+  const mounted = queryView(client);
+  const { container } = mounted;
   const picked = vi.fn();
-  await act(async () =>
-    root.render(
-      createElement(
-        QueryClientProvider,
-        { client },
-        createElement(VersionMenu, {
-          title,
-          picked: null,
-          automatic: { subscriptionId: SUBSCRIPTION, id: "hd" },
-          onPick: picked,
-          children: "Versions",
-        }),
-      ),
-    ),
+  await mounted.render(
+    createElement(VersionMenu, {
+      title,
+      picked: null,
+      automatic: { subscriptionId: SUBSCRIPTION, id: "hd" },
+      onPick: picked,
+      children: "Versions",
+    }),
   );
-  unmount = () => {
-    act(() => root.unmount());
-    container.remove();
-  };
+  unmount = mounted.unmount;
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[aria-label="Versions"]')?.click(),
   );

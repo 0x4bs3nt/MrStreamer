@@ -3,9 +3,9 @@
 // listed by its own name, and a pick shows the window's text in it at once, while titles, sound
 // and subtitles keep their own languages.
 import { ipc } from "./support.ts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { queryView } from "./mount.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InterfaceLanguage } from "@mrstreamer/contracts/language";
 import { setLanguage } from "@mrstreamer/core/i18n";
@@ -44,16 +44,15 @@ async function render() {
   ipc.reset();
   ipc.prefer({ titleLanguage: "nl", audioLanguage: "original", subtitleLanguage: "en" });
   ipc.always("language.get", english);
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  const client = new QueryClient();
+  const mounted = queryView(new QueryClient());
+  const { container } = mounted;
   function Root() {
     useLocale();
-    return createElement(QueryClientProvider, { client }, createElement(GeneralSection));
+    return createElement(GeneralSection);
   }
-  await act(async () => root.render(createElement(Root)));
+  await mounted.render(createElement(Root));
   await settle();
-  unmount = () => act(() => root.unmount());
+  unmount = mounted.unmount;
   const select = () => container.querySelector<HTMLSelectElement>("section select");
   return { container, select };
 }

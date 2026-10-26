@@ -1,6 +1,6 @@
+import { createRoot, document } from "./dom.ts";
 import * as React from "react";
 import type { Download, DownloadList } from "@mrstreamer/contracts/downloads";
-import { Window } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Downloads as the viewer meets it: the queue, then the copies, and what each row's tap, button,
@@ -8,14 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // a happy-dom window, as details-screen.test.ts does. React Native's list draws its sections in
 // order, each pressable is kept by its test id so the test can tap it, long-press it or run a
 // VoiceOver action, sheets answer as the test picks, and the owner records what it was asked.
-
-const REACT_DOM = "react-dom/client";
-const window = new Window();
-Object.assign(globalThis, { window, document: window.document });
-const { document } = window;
-type Root = { render(node: unknown): void; unmount(): void };
-const { createRoot } = (await import(REACT_DOM)) as { createRoot(container: object): Root };
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 interface Touchable {
   readonly onPress?: () => void;
