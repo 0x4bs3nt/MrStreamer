@@ -684,12 +684,15 @@ Settings, so the guide group that fails on purpose never runs at launch. Each ru
 report; receipts go to `.local/ios-proof/` at the repository's root. A release build leaves the
 proof out: `src/app/proof.tsx` loads it only in development.
 
-## For TestFlight
+## Signed iPhone candidates and TestFlight
 
 The app installs as `app.mrstreamer.player`, the desktop's `appId`, in development and release
 builds alike. Its version is its own, not the desktop's: `version` in `app.json` is `0.1.0` for
-the private beta, and `ios.buildNumber` goes up by one for every upload, because App Store Connect
-refuses a build number it has seen.
+the public candidate as well as the private beta. Read the current App Store Connect build and
+version inventory before allocating an unused `ios.buildNumber`; record the dated readback and
+allocation on the candidate's project card.
+`supportsTablet: false` requests iPhone device family 1; this removes the native iPad target,
+not Apple's iPhone compatibility mode on iPad. Inspect actual archive/export device families.
 
 Xtream panels are mostly plain `http://` servers at whatever address the viewer types, so
 `app.json` lets the app load from any host without HTTPS. Expo's template allows local networking
@@ -701,17 +704,51 @@ system's HTTPS and Keychain, so uploads skip the export compliance question.
 The icon, `assets/icon.png`, is the desktop's Store tile at 1024 px, rendered with the desktop's
 icons by `pnpm icons:export` in `apps/desktop`.
 
-The build runs on the Mac mini from a committed checkout:
+The build runs on the Mac mini from a committed checkout, through its fleet-managed signing
+interface. Xcode resolves the existing cached team profiles with Automatic signing; the fleet's
+profiles are Xcode managed and cannot be used under Manual. The device archive uses Apple Development;
+the App Store export uses Apple Distribution. No provisioning-update or device-registration flags
+are passed, so missing material fails rather than creating or refreshing profiles:
 
 ```sh
-onmac run -- apps/ios/scripts/testflight.sh archive
-onmac run -- apps/ios/scripts/testflight.sh upload
+onmac run -- onmac-job apps/ios/scripts/testflight.sh archive
+onmac run -- onmac-job apps/ios/scripts/testflight.sh export app-store
+# Deliberately restricted alternative for a different candidate:
+onmac run -- onmac-job apps/ios/scripts/testflight.sh export internal-only
 ```
 
-`archive` generates the native project and archives a Release build with its JavaScript inside,
-so it runs without Metro, the fixtures or a launch argument, then prints the commit, identifier,
-version and build it archived. `upload` sends that archive to App Store Connect for internal
-testers only. The app's record has to exist there first; the API can't create one.
+Load the approved production environment privately before archiving. The CLI requires the TMDB
+key and production statistics inputs, disables Expo dotenv loading and refuses fixture overrides. Keep inputs,
+their hashes and all artifacts in ignored private storage. No provider login belongs in the bundle.
+Run `pnpm check`, both iOS typechecks, real Metro export and affected contract tests first.
+
+`archive` prebuilds a Release device app with embedded JavaScript/Hermes and its composed source
+map, checks the licence inventory against installed pods, retains matching FFmpeg dSYMs from the
+exact linked build outputs, then records committed source and file hashes. An existing archive, map or receipt is preserved. Export verifies those hashes and refuses another source
+commit, including a rebase. It also rejects added or missing receipt files and added, removed or
+retargeted symlinks before exporting or uploading. Symlink paths and targets are recorded in a
+separate JSON receipt covered by the archive hashes.
+`export` always saves locally with `method: app-store-connect` and
+`destination: export`; it cannot upload. Both explicit intents preserve version/build. A local
+export is not Apple processing, App Store eligibility or public release acceptance.
+
+A separately authorized `upload app-store` or `upload internal-only` sends the source-bound archive.
+There is no implicit upload intent. The app record must already exist. After an authorized upload,
+read back Apple's exact build identity, processing state and audience; an old internal-only beta
+cannot stand in for this candidate. Upload, tester delivery, build selection and public submission
+remain separate permissions.
+
+Before accepting a candidate, inspect the actual archive and IPA: device family, bundle/version,
+minimum OS, signatures/profile/entitlements, embedded bundle and configuration hashes, Mach-O device
+slices/linkage, licences/source inventory and dSYM UUID matches. Retain archive, IPA, map, symbols,
+logs and source privately before cleaning only this task's Mac mirror. Legal clearance, physical
+phone/accessibility, old-beta upgrades and download acceptance remain independent gates.
+
+Apple's [SDK minimum](https://developer.apple.com/news/?id=ueeok6yw) requires iOS SDK 26 or later
+for uploads from 28 April 2026. Its [15 October release notes](https://developer.apple.com/help/app-store-connect/release-notes/)
+accept Xcode 27.1 / iOS 27.1 for App Store uploads. Check the actual managed toolchain before building.
+Keep the pinned Expo 58 / RN 0.88 release candidate / Hermes inputs; no SDK upgrade is implied.
+The observed minimum OS remains a candidate artifact fact, not the SDK version.
 
 The provider guide foundation is `src/guide.ts`, fed by account restore, sign-in, catalogue and
 erasure lifecycle calls. It resolves only the current catalogue's trusted IDs, including stream

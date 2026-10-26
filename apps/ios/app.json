@@ -14,8 +14,8 @@
     },
     "ios": {
       "bundleIdentifier": "app.mrstreamer.player",
-      "buildNumber": "15",
-      "supportsTablet": true,
+      "buildNumber": "16",
+      "supportsTablet": false,
       "config": {
         "usesNonExemptEncryption": false
       },
