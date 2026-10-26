@@ -37,6 +37,7 @@ Start with the [contribution policy](../CONTRIBUTING.md).
 - [Microsoft Store submissions](./maintainers/microsoft-store.md)
 - [Desktop installation reports](./maintainers/desktop-telemetry/README.md): prepared PostHog definitions and UTC activity queries
 - [Licences and sources](./maintainers/licences.md)
+- [Public iPhone submission dossier](./maintainers/ios-public-submission-dossier.md): privacy, media rights, source obligations and unresolved public-release evidence
 - [The website](../apps/marketing/README.md): running it, publishing it and the one-time setup
 - [The iOS app](../apps/ios/README.md): its own install, what Hermes lacks, the runtime proof and TestFlight builds
 
