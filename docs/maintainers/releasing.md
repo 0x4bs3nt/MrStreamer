@@ -31,6 +31,7 @@ Releases come from `.github/workflows/release.yml`, which plans them, builds eac
   - checks again that the tag is unused and the version sorts after every release it competes with
   - uploads into a draft, which the app can't see, then publishes it; publishing creates the tag on the planned commit
 - Then points the [update feed](#update-feed) at the release. Until then the app doesn't offer it.
+- After GitHub publication, an optional job [announces the release on Discord](discord.md), independently of the feed, Store and website. Missing webhooks or delivery errors warn without failing publication.
 - Release dry runs also run [bounded real-app UI proof](../contributing/testing.md#bounded-release-ui-proof) on the exact shared JS bundle/version, with retained CLI exits, screenshots, side effects and cleanup. Missing or failed required proof fails the dry run. This Linux source-build proof leaves installed native acceptance separate.
 - Dry runs and stable releases also build the [Microsoft Store package](#microsoft-store-package) and test it installed. Outside a dry run its failure doesn't hold up the release, and it's never attached to the release.
 - A stable release also runs the [installed upgrade check](../contributing/testing.md#installed-upgrade) on Windows, from the newest stable release to the tested nightly it promotes, beside the build. Publishing waits for it to pass.

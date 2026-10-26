@@ -9,7 +9,7 @@
 
 <p align="center">Live TV, movies and series.<br>An open source IPTV player for Mac, Windows and Linux.</p>
 
-<p align="center"><strong><a href="https://mrstreamer.app/download">Download</a></strong> · <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">Microsoft Store</a></p>
+<p align="center"><strong><a href="https://mrstreamer.app/download">Download</a></strong> · <a href="https://apps.microsoft.com/detail/9N45GG76ZP4T?referrer=appbadge">Microsoft Store</a> · <a href="https://discord.gg/sR4tjEw6bQ">Discord</a></p>
 
 <img src="docs/assets/readme-poster.webp" alt="Home with a live preview, favourites and Continue watching, with Live TV and the TV Guide in front of it" width="100%">
 
@@ -30,6 +30,8 @@ Connect Xtream Codes or an M3U playlist. Mr. Streamer includes no channels and s
 macOS 13 or later on Apple silicon, Windows 11 on x64, or x86_64 Linux. [Installers, requirements and checksums](https://mrstreamer.app/download) are on the website, and the files on [GitHub Releases](https://github.com/Mr-Streamer-OSS/MrStreamer/releases/latest). [Updates and channels](docs/user/updates.md) also covers Homebrew and the AUR.
 
 ## Help
+
+Join the [Discord community](https://discord.gg/sR4tjEw6bQ) for questions, chat and Stable/Nightly release announcements.
 
 [Subscriptions](docs/user/subscriptions.md) · [Live TV](docs/user/live-tv.md) · [Movies and series](docs/user/movies-and-series.md) · [Downloads](docs/user/downloads.md) · [Updates and channels](docs/user/updates.md) · [What plays](docs/user/playback.md) · [Troubleshooting](docs/user/troubleshooting.md) · [Privacy](docs/privacy.md) · [Security](docs/security.md)
 

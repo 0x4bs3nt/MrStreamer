@@ -74,6 +74,7 @@ describe("the home page", () => {
     expect(links("header nav a")).toEqual([
       ["Guides", "/docs"],
       ["FAQ", "/faq"],
+      ["Discord", "https://discord.gg/sR4tjEw6bQ"],
       ["Download", "/download"],
     ]);
     expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);

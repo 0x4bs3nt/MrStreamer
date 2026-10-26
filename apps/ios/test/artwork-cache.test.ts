@@ -404,7 +404,12 @@ describe("pictures no one shows any more", () => {
     const busy = [1, 2, 3, 4].map((n) => at(`/logo/busy${n}.png`));
     app.logos([...busy, at("/logo/waiting.png")]);
     await settled(() => expect(totalAsked()).toBe(4));
-    app.logos([]);
+    // Removing the DOM precedes passive subscription cleanup; finish both before freeing a slot.
+    const { act } = await import("react");
+    const environment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    environment.IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => app.logos([]));
+    environment.IS_REACT_ACT_ENVIRONMENT = false;
     await settled(() => expect(app.shown()).toEqual([]));
     for (const each of held) each[0]?.();
     await settled(() => expect(pictureFiles(kept)).toHaveLength(4));

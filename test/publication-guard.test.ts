@@ -10,11 +10,12 @@ import { describe, expect, it } from "vitest";
 // For every event a release run starts on, every plan output that matters, every result of the
 // release run's other jobs and whether the run was cancelled, it works out which of release.yml's
 // calls of publish.yml start and, inside each, which of publish.yml's jobs would run, assuming a
-// job that runs succeeds and reports every output it declares, with every kill switch on. A
+// job that runs succeeds unless an outcome says otherwise, with every kill switch on. A
 // context path it doesn't model fails the test rather than reading as some value. actionlint
 // checks the rest of the YAML; docs/maintainers/ci.md traces each path.
 
 interface Job {
+  readonly "continue-on-error"?: boolean | string;
   readonly if?: string;
   readonly needs?: string | readonly string[];
   readonly uses?: string;
@@ -249,13 +250,15 @@ function callInputs(publish: Workflow, given: Record<string, Value>) {
 
 /**
  * The jobs of publish.yml that run for one call, in an order that respects their needs: a job that
- * runs succeeds and reports every output it declares as "true"; one that doesn't is skipped.
+ * runs succeeds unless `outcomes` says otherwise, and reports its outputs as "true" on success;
+ * one that doesn't run is skipped.
  */
 function simulate(
   publish: Workflow,
   given: Record<string, Value>,
   event: string,
   cancelled: boolean,
+  outcomes: Readonly<Record<string, Result>> = {},
 ) {
   const inputs = callInputs(publish, given);
   const context = (path: string): Value => {
@@ -281,7 +284,10 @@ function simulate(
     if (index === -1) throw new Error(`A cycle among ${pending.join(", ")}`);
     const [name] = pending.splice(index, 1);
     const scope = jobScope(publish, name!, results, outputs, context, cancelled);
-    results.set(name!, runs(publish.jobs[name!]!.if, scope) ? "success" : "skipped");
+    results.set(
+      name!,
+      runs(publish.jobs[name!]!.if, scope) ? (outcomes[name!] ?? "success") : "skipped",
+    );
   }
   return [...results].flatMap(([name, result]) => (result === "success" ? [name] : []));
 }
@@ -421,7 +427,11 @@ describe("publishing", { timeout: 120_000 }, () => {
   });
 
   it("does publish a scheduled nightly and a stable release once everything they wait for passed", () => {
-    expect(publishedBy(release, publish, passed({}))["publish"]).toEqual(["release", "feed"]);
+    expect(publishedBy(release, publish, passed({}))["publish"]).toEqual([
+      "release",
+      "discord",
+      "feed",
+    ]);
     const stable = publishedBy(
       release,
       publish,
@@ -431,10 +441,11 @@ describe("publishing", { timeout: 120_000 }, () => {
         firstTag: "v0.0.13-nightly.20261013.301",
       }),
     );
-    expect(stable["nightly-first-publish"]).toEqual(["release", "feed"]);
+    expect(stable["nightly-first-publish"]).toEqual(["release", "discord", "feed"]);
     expect(stable["publish"]).toEqual(
       expect.arrayContaining([
         "release",
+        "discord",
         "feed",
         "store",
         "finalize",
@@ -442,6 +453,20 @@ describe("publishing", { timeout: 120_000 }, () => {
         "indexnow",
       ]),
     );
+  });
+
+  it("announces only a successful publication, independently of feed failures, without failing its caller", () => {
+    const given = {
+      channel: "nightly",
+      version: "0.0.21-nightly.20261026.400",
+      tag: "v0.0.21-nightly.20261026.400",
+    };
+    for (const result of ["failure", "skipped", "cancelled"] as const)
+      expect(simulate(publish, given, "schedule", false, { release: result })).not.toContain(
+        "discord",
+      );
+    expect(simulate(publish, given, "schedule", false, { feed: "failure" })).toContain("discord");
+    expect(publish.jobs["discord"]?.["continue-on-error"]).toBe(true);
   });
 
   it("publishes the website alone after a push to main that changes it", () => {

@@ -1,9 +1,10 @@
-# Everything that changes what people see or install: the GitHub release, the update feed, the
-# Microsoft Store and the website. docs/maintainers/ci.md shows when each job runs.
+# Everything that changes what people see or install: the GitHub release, its Discord
+# announcement, the update feed, the Microsoft Store and the website. docs/maintainers/ci.md shows
+# when each job runs.
 #
 # - After a release's files are built: release.yml calls this with the release, never for a
-#   dry run. The GitHub release goes out first; the feed, the Store (stable only) and the version
-#   commit on main (stable only) follow it, and a stable release then publishes the website.
+#   dry run. The GitHub release goes out first; Discord, the feed, the Store (stable only) and the
+#   version commit on main (stable only) follow it, and a stable release then publishes the website.
 # - After a push to main that changes what the website is built from: the website alone.
 # - By hand, from main: the feed (regenerate, or allow-regress after deleting a bad release), the
 #   Store (preflight, status, or submit a release's package) or the website.
@@ -164,6 +165,35 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --latest
           fi
+
+  # The release's post in #releases or #nightly, sent once the GitHub release is out, whatever the
+  # feed, Store and website do. It is optional: a failure here never fails the run, so it cannot
+  # stop the nightly a stable run publishes first and with it the stable release.
+  discord:
+    name: Discord announcement
+    needs: release
+    if: needs.release.result == 'success'
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Announce the published release
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          DISCORD_STABLE_WEBHOOK_URL: ${{ secrets.DISCORD_STABLE_WEBHOOK_URL }}
+          DISCORD_NIGHTLY_WEBHOOK_URL: ${{ secrets.DISCORD_NIGHTLY_WEBHOOK_URL }}
+        run: node scripts/discord-release.ts
 
   # The update feed, updates.json at the root of the GitHub Pages site, which names the newest
   # release on each channel. It never moves a channel down unless allow-regress says so. The
