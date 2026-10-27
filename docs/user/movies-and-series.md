@@ -91,7 +91,7 @@ Marks are for one episode at a time. There is none for a whole season or series.
 
 **Save** in a title's details keeps a movie or a whole series for later. It works as soon as the details open, before the story and the cast arrive. Episodes can't be saved on their own.
 
-**Watchlist** in the top navigation bar shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The navigation entry stays available when that row is hidden or empty. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters and Enter opens one; Tab reaches the poster they are on, then its ×.
+**Watchlist** in the top navigation bar shows everything you saved, movies and series together, the title saved last first. **A to Z** sorts them by name. Home also has a **Watchlist** row whose **All** opens the page. The navigation entry appears while there is a saved title visible under your adult-content setting, including unavailable titles. It works when Home’s row is hidden. Removing the last visible save hides the entry and leaves an already open Watchlist page in place. A poster opens the title's details, and it plays from there as from anywhere else. On the page the arrow keys move through the posters and Enter opens one; Tab reaches the poster they are on, then its ×.
 
 Only you take a title off: with the × on its poster, or with **Saved** in its details. Starting a title, finishing it or removing it from Continue watching leaves it saved, and saving changes nothing about how far you got. The same title can be in both rows.
 

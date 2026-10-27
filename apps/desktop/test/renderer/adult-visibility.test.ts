@@ -343,7 +343,7 @@ describe("after a refresh marks a listed title for adults", () => {
         answer: (titles) =>
           ipc.always("watchlist.list", { total: titles.length, entries: titles.map(saved) }),
         hold: () => {
-          const held = ipc.hold("watchlist.list");
+          const held = ipc.hold("watchlist.list", (query) => query.limit !== 1);
           return {
             resolve: (titles) => held.resolve({ total: titles.length, entries: titles.map(saved) }),
           };

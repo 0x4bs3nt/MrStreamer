@@ -1182,6 +1182,12 @@ async function run(scenario: Scenario, prior?: string) {
       if (observed["additionalStreamRequests"] !== 0 || provider.activeStreams() !== 1)
         throw new Error("Home/Watch opened another stream.");
     } else {
+      if (scenario === "watchlist") {
+        await wait(async () => !(await exists(button("header button", "Watchlist"))));
+        await wait(async () => !(await exists(button("header button", "Downloads"))));
+        observed["emptyNavigation"] = true;
+        await capture("empty-navigation");
+      }
       await click("Open Movies", button("header button", "Movies"));
       await click("Open All movies", button("nav button", "All movies"));
       const poster = `[...document.querySelectorAll('button[title]')].find(b => b.title.includes('Two sound tracks'))`;
@@ -1206,6 +1212,19 @@ async function run(scenario: Scenario, prior?: string) {
         observed["watchlistTitles"] = await livePage.evaluate<string[]>(
           "[...document.querySelectorAll('button[title]')].map(b => b.title)",
         );
+        await capture("first-save-navigation");
+        // Use the grid's actual keyboard removal, leaving focus on its empty page.
+        await livePage.evaluate("document.querySelector('button[data-remove]').focus()");
+        await key("Enter", 13);
+        await wait(async () => !(await exists(button("header button", "Watchlist"))));
+        await wait(() =>
+          livePage.evaluate<boolean>(
+            "document.querySelector('h1')?.textContent === 'Watchlist' && document.body.innerText.includes('Nothing saved yet') && document.activeElement?.getAttribute('tabindex') === '-1' && !!document.activeElement?.querySelector('h1')",
+          ),
+        );
+        observed["lastRemoval"] = { hidden: true, pageRetained: true, focusOnPage: true };
+        await capture("last-save-removed");
+        await click("Leave empty Watchlist normally", button("header button", "Home"));
       } else {
         await key("Escape", 27);
         await click("Open Series", button("header button", "Series"));

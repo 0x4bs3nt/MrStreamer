@@ -93,7 +93,7 @@ it("skips disabled Home title rows even before saved preferences answer, then re
   await act(async () => preferences.resolve(ipc.snapshot(saved)));
   await act(() => vi.advanceTimersByTimeAsync(50));
   expect(ipc.argsOf("ondemand.collection")).toEqual([]);
-  expect(ipc.argsOf("watchlist.list")).toEqual([]);
+  expect(ipc.argsOf("watchlist.list").filter((query) => query.home)).toEqual([]);
   expect(ipc.argsOf("ondemand.recommendations")).toEqual([]);
   expect(ipc.argsOf("ondemand.titles")).toEqual([]);
   ipc.prefer({

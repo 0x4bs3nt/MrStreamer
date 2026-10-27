@@ -8,7 +8,7 @@
 // bar's Update stays. Unlike the rem-sized app, it takes the selected Paper design's literal px, so
 // it keeps one size across window widths; page zoom still scales it.
 import { Dialog } from "@base-ui/react/dialog";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { t } from "@mrstreamer/core/i18n";
 import { useUi } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
@@ -44,9 +44,13 @@ export function UpdateReminder() {
   const version = useKeptUpdate();
   // The service names only the release on offer, so a due reminder is always downloadable.
   const due = status?.reminder?.version ?? null;
+  const returnFocus = useRef<Element | null>(null);
   const recordDisplay = useCallback(
     (node: HTMLElement | null) => {
-      if (node && version) void call("updates.reminderShown", { version }).catch(() => {});
+      if (node && version) {
+        returnFocus.current = document.activeElement;
+        void call("updates.reminderShown", { version }).catch(() => {});
+      }
     },
     [version],
   );
@@ -101,6 +105,21 @@ export function UpdateReminder() {
         <Dialog.Popup
           ref={recordDisplay}
           data-update-reminder
+          finalFocus={() => {
+            const focused = document.activeElement;
+            if (focused && focused !== document.body && !focused.closest("[data-update-reminder]"))
+              return false;
+            const previous = returnFocus.current;
+            // Playback may have removed the opener before the deferred reminder appeared.
+            return previous instanceof HTMLElement &&
+              previous !== document.body &&
+              previous.isConnected &&
+              !previous.closest("[inert], [hidden]")
+              ? previous
+              : (document.querySelector<HTMLElement>('[data-view="title"], [data-view="watch"]') ??
+                  document.querySelector<HTMLElement>("[data-update-notice]") ??
+                  true);
+          }}
           className="fixed top-[44%] left-1/2 z-50 flex w-[380px] max-w-[calc(100vw-2rem)] -translate-1/2 flex-col rounded-[16px] bg-popover px-[22px] pt-[22px] pb-[18px] shadow-[0_24px_64px_#000000b3] ring-1 ring-[#ffffff1f] outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0"
         >
           <Dialog.Title className="text-[20px] leading-[26px] font-semibold tracking-[-0.02em] text-white">

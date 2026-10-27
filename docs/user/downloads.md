@@ -16,7 +16,7 @@ Supported are movies and episodes of Xtream subscriptions and of playlists whose
 
 ## The Downloads page
 
-**Downloads**, the last page in the top bar, has the queue at the top and what is on this computer below. In a narrow window it is the download icon beside Search.
+**Downloads**, the last page in the top bar, has the queue at the top and what is on this computer below. The entry appears while any download is kept, including queued, paused, failed, completed or missing copies. In a narrow window it is the download icon beside Search, with the same rule. Removing the last download hides the entry and leaves an already open Downloads page in place.
 
 While a download runs, waits or is queued, the top bar shows it beside Search, on every page but Downloads: the arrow with its progress, **Waiting** or **Queued**, or **Paused** once only paused downloads are left. **Download stopped** shows when one failed and nothing else is left, until you retry or delete it. Pressing it opens Downloads, also from a title that plays, which stops as **Back** would stop it.
 

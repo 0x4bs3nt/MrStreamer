@@ -50,7 +50,7 @@ export function useSaveToggle(kind: TitleKind, version: OwnedId, listed: boolean
     // Stored by now: the button says so at once, and the lists read again.
     onSuccess: (saved) => {
       client.setQueryData(query.queryKey, saved);
-      void client.invalidateQueries({ queryKey: ["watchlist", "list"] });
+      void client.invalidateQueries({ queryKey: ["watchlist"] });
     },
     onSettled: () => {
       underWay.current = false;

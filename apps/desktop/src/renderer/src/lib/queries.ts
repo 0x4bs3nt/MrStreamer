@@ -479,10 +479,15 @@ export const queries = {
       queryFn: () => call("viewing.episodes", { series: ownedId(series) }),
       staleTime: Infinity,
     }),
-  /**
-   * A page of the watchlist: saved titles with what the lists have of each now. Kept current by
-   * `syncWatchlist`.
-   */
+  // Only availability is retained across adult-policy resets; no title data survives here.
+  watchlistAvailability: () =>
+    queryOptions({
+      queryKey: ["watchlist", "availability"],
+      queryFn: async () =>
+        (await call("watchlist.list", { sort: "saved", offset: 0, limit: 1 })).total > 0,
+      staleTime: Infinity,
+    }),
+  /** A page of saved titles, kept current by `syncWatchlist`. */
   watchlist: (sort: WatchlistSort, offset: number, limit: number, home = false) =>
     queryOptions({
       queryKey: ["watchlist", "list", sort, offset, limit, home],
@@ -880,12 +885,24 @@ export function syncCustomLists(client: QueryClient): () => void {
  * Reads the watchlist again once a title was saved or removed, and once the lists changed: they
  * say which title each entry is. Once they marked for adults a title they listed before, its
  * pages go rather than show what they kept, as other lists of titles do (see `syncOnDemand`).
+ * Only the navigation's title-free availability answer stays while it reads again.
  */
 export function syncWatchlist(client: QueryClient): () => void {
-  const read = () => void client.invalidateQueries({ queryKey: ["watchlist"] });
+  const read = () => {
+    // Cancel an older first read too: invalidation alone may reuse it as the new answer.
+    void client.cancelQueries({
+      queryKey: ["watchlist"],
+      predicate: (query) => query.state.data === undefined,
+    });
+    void client.invalidateQueries({ queryKey: ["watchlist"] });
+  };
   const stopChanges = listen("watchlist.changed", read);
   const stopLists = listen("ondemand.updated", ({ markedForAdults }) => {
     if (!markedForAdults) return read();
+    void client.cancelQueries({
+      queryKey: ["watchlist"],
+      predicate: (query) => query.queryKey[1] !== "list" && query.state.data === undefined,
+    });
     void client.invalidateQueries({
       queryKey: ["watchlist"],
       predicate: (query) => query.queryKey[1] !== "list",

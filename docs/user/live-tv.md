@@ -6,7 +6,7 @@ Home plays the channel you watched last, muted, in a compact preview with what's
 
 Below the preview, Home starts with **Continue watching**, local **Recommendations** and **Watchlist**, then favourite and recent channels, new movies, new series and your current category. Rows with nothing to show stay out. **All** opens a full list, and **All channels** opens every channel.
 
-**Watchlist** in the top navigation bar always opens all saved titles, even when its row is hidden or empty. **Settings > Home** lists every row, including empty ones. Use the checkboxes to show or hide rows and the up/down buttons to reorder them. Tab reaches each control; Enter activates a move and Space changes a checkbox. Changes save immediately and survive restart. **Reset to defaults** restores the order above and shows every row.
+**Watchlist** in the top navigation bar opens all saved titles while any are visible under your adult-content setting, even when its Home row is hidden. The entry hides when there are none. **Settings > Home** lists every row, including empty ones. Use the checkboxes to show or hide rows and the up/down buttons to reorder them. Tab reaches each control; Enter activates a move and Space changes a checkbox. Changes save immediately and survive restart. **Reset to defaults** restores the order above and shows every row.
 
 Recommendations use up to three available titles from a bounded recent local viewing record and the catalogue already on your computer. Each suggestion names the title you watched and its matching genre, category or name. Without viewing history, Home keeps its ordinary catalogue and channel rows. Titles for adults never appear on Home, even with **For adults** on.
 

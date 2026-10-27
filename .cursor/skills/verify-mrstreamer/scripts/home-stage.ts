@@ -273,10 +273,8 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
   require(!(await d.exists(row("continue"))) &&
     !(await d.exists(row("recommendations"))), "No-history personalized rows");
   await measure(fixture.liveOnly ? "live-only" : "no-history");
-  await d.click("Open permanent empty Watchlist", text("header button", "Watchlist"));
-  await d.wait(() => d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"));
-  await d.capture("empty-watchlist");
-  await home();
+  await d.wait(async () => !(await d.exists(text("header button", "Watchlist"))));
+  await d.capture("empty-navigation");
   if (fixture.liveOnly) {
     require(!(await d.exists(text("header button", "Movies"))), "Live-only title navigation");
     require(fixture.counts().titleLists === 0 &&
@@ -286,11 +284,9 @@ export async function homeStageScenario(d: Driver, fixture: Fixture): Promise<vo
     await d.wait(async () => (await promoted()) === null);
     await done();
     await d.capture("live-only-hidden-category");
-    await d.click("Empty Watchlist while all rows hidden", text("header button", "Watchlist"));
-    await d.wait(() =>
-      d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"),
-    );
-    await home();
+    require(!(await d.exists(
+      text("header button", "Watchlist"),
+    )), "Empty Watchlist navigation returned");
     await customize();
     await reset();
     await done();

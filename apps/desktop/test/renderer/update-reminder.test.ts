@@ -114,6 +114,21 @@ it("closes on Escape, returning the keyboard", async () => {
   expect(document.activeElement).toBe(opener);
 });
 
+it("returns to Update after playback leaves no connected opener", async () => {
+  ipc.always("updates.showReminder", true);
+  useUi.setState({ playingTitle: true });
+  const view = await mount();
+  opener.remove();
+
+  await act(async () => useUi.setState({ playingTitle: false }));
+  await settle();
+  expect(dialog()?.contains(document.activeElement)).toBe(true);
+
+  await act(async () => named("Not now")!.click());
+  await settle();
+  expect(document.activeElement).toBe(view.container.querySelector("[data-update-notice]"));
+});
+
 it("downloads through the updater and closes", async () => {
   ipc.always("updates.showReminder", true);
   const view = await mount();

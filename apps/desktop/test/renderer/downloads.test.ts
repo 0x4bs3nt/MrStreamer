@@ -23,6 +23,7 @@ import { DownloadsPage } from "../../src/renderer/src/features/downloads/Downloa
 import { SettingsPage } from "../../src/renderer/src/features/settings/SettingsPage.tsx";
 import { TitleWatch } from "../../src/renderer/src/features/titles/TitleWatch.tsx";
 import { WatchScreen } from "../../src/renderer/src/features/watch/WatchScreen.tsx";
+import { syncWatchlist } from "../../src/renderer/src/lib/queries.ts";
 import { syncDownloads, watchOffline } from "../../src/renderer/src/lib/downloads.ts";
 import { player } from "../../src/renderer/src/player/player.ts";
 import { titlePlayer } from "../../src/renderer/src/player/title-player.ts";
@@ -103,7 +104,12 @@ beforeEach(() => {
  */
 async function show(element: ReactElement, ready?: string): Promise<HTMLElement> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  stopSync = syncDownloads(client);
+  const downloads = syncDownloads(client);
+  const watchlist = syncWatchlist(client);
+  stopSync = () => {
+    downloads();
+    watchlist();
+  };
   const view = queryView(client);
   const { container } = view;
   await view.render(element);
@@ -1295,5 +1301,96 @@ describe("the top bar's word on the downloads", () => {
       await click(focused);
       expect(useUi.getState().view).toBe("downloads");
     });
+
+    it("folds Downloads beside Search as the first comes, and back once Watchlist goes", async () => {
+      ipc.always("watchlist.list", { total: 1, entries: [] });
+      ipc.always("downloads.list", list([]));
+      useUi.setState({ view: "movies" });
+      const layout = layOut(780);
+      const bar = await show(createElement(WindowBar), "header nav button");
+      await layout.resize();
+      // A saved title but nothing kept: no Downloads anywhere.
+      await until(() => !pages(bar).includes("Downloads"));
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Watchlist"]);
+      expect(bar.querySelector("[data-downloads-notice]")).toBeNull();
+
+      // The first doesn't fit beside the names, though nothing resized.
+      await changed(list([download()]), () => labelled(bar, "Downloads") !== null);
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Watchlist"]);
+
+      // The last save goes. Its name leaves Downloads room among them, without a resize.
+      ipc.always("watchlist.list", { total: 0, entries: [] });
+      await act(async () => ipc.emit("watchlist.changed", null));
+      await until(() => pages(bar).includes("Downloads"));
+      expect(pages(bar)).toEqual(["Home", "Live TV", "Movies", "Series", "Downloads"]);
+      expect(bar.querySelector("[data-downloads-notice]")).toBeNull();
+    });
+
+    it.each([1300, 780])(
+      "hands focus to Home when the last Downloads entry goes at %s px",
+      async (width) => {
+        ipc.always("watchlist.list", { total: 1, entries: [] });
+        ipc.always("downloads.list", list([download()]));
+        useUi.setState({ view: "downloads" });
+        const layout = layOut(width);
+        const bar = await show(createElement(WindowBar), "header nav button");
+        await layout.resize();
+        const entry = labelled(bar, "Downloads") ?? button(bar, "Downloads");
+        expect(entry).toBeDefined();
+        entry!.focus();
+        expect(document.activeElement).toBe(entry);
+        await changed(
+          list([]),
+          () => labelled(bar, "Downloads") === null && !button(bar, "Downloads"),
+        );
+        await settle();
+        expect(useUi.getState().view).toBe("downloads");
+        expect(document.activeElement).toBe(button(bar, "Home"));
+      },
+    );
+
+    it("hands focus to folded Downloads when a first save adds Watchlist", async () => {
+      ipc.always("watchlist.list", { total: 0, entries: [] });
+      ipc.always("downloads.list", list([download()]));
+      useUi.setState({ view: "downloads" });
+      const layout = layOut(780);
+      const bar = await show(createElement(WindowBar), "header nav button");
+      await layout.resize();
+      const entry = button(bar, "Downloads")!;
+      expect(bar.querySelector("[data-downloads-notice]")).toBeNull();
+      entry.focus();
+
+      ipc.always("watchlist.list", { total: 1, entries: [] });
+      await act(async () => ipc.emit("watchlist.changed", null));
+      await until(() => labelled(bar, "Downloads") !== null);
+      expect(useUi.getState().view).toBe("downloads");
+      expect(document.activeElement).toBe(labelled(bar, "Downloads"));
+    });
+  });
+
+  it("names Downloads while main keeps any, and hides the last removal without leaving its page", async () => {
+    useUi.setState({ view: "movies" });
+    const read = ipc.hold("downloads.list");
+    const bar = await show(createElement(WindowBar), "header nav button");
+    // Nothing says it is empty before main answers.
+    expect(pages(bar)).toContain("Downloads");
+    await act(async () => {
+      read.resolve(list([]));
+      await settle();
+    });
+    expect(pages(bar)).not.toContain("Downloads");
+
+    // A copy whose file went is kept as much as any other.
+    await changed(list([download({ status: { kind: "missing" } })]), () =>
+      pages(bar).includes("Downloads"),
+    );
+    await act(async () => useUi.setState({ view: "downloads" }));
+    const home = button(bar, "Home")!;
+    home.focus();
+    await changed(list([]), () => useUi.getState().view === "downloads");
+    await settle();
+    expect(button(bar, "Downloads")).toBeUndefined();
+    expect(useUi.getState().view).toBe("downloads");
+    expect(document.activeElement).toBe(home);
   });
 });

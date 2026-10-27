@@ -17,9 +17,11 @@ import type { WatchlistEntry, WatchlistPage as Page } from "@mrstreamer/contract
 import { App } from "../../src/renderer/src/app/App.tsx";
 import { useUi } from "../../src/renderer/src/app/ui-store.ts";
 import { TooltipProvider } from "../../src/renderer/src/components/ui/tooltip.tsx";
+import { WindowBar } from "../../src/renderer/src/components/WindowBar.tsx";
 import { DetailsView } from "../../src/renderer/src/features/titles/DetailsView.tsx";
 import { SavedSheet } from "../../src/renderer/src/features/watchlist/SavedSheet.tsx";
 import { WatchlistPage } from "../../src/renderer/src/features/watchlist/WatchlistPage.tsx";
+import { syncPreferences } from "../../src/renderer/src/lib/preferences.ts";
 import { syncWatchlist } from "../../src/renderer/src/lib/queries.ts";
 
 const own = (id: string) => ({ subscriptionId: SUBSCRIPTION, id });
@@ -276,7 +278,8 @@ describe("the Watchlist page", () => {
   async function watchlist(first: Page, state = status(), subscriptions = [SAVED]) {
     ipc.reset();
     useUi.setState({ view: "watchlist", details: null, savedEntry: null, searchOpen: false });
-    const listed = ipc.hold("watchlist.list");
+    ipc.always("watchlist.list", first);
+    const listed = ipc.hold("watchlist.list", (query) => query.limit === 120);
     const stand = ipc.hold("ondemand.status");
     const saved = ipc.hold("subscription.list");
     await shown(createElement(WatchlistPage, { active: true }));
@@ -295,7 +298,9 @@ describe("the Watchlist page", () => {
   it("shows what is saved as posters, newest first, with one the provider dropped marked Unavailable", async () => {
     await watchlist(page([canyon, meridian, harbour]));
 
-    expect(ipc.argsOf("watchlist.list")).toEqual([{ sort: "saved", offset: 0, limit: 120 }]);
+    expect(ipc.argsOf("watchlist.list").filter((query) => query.limit === 120)).toEqual([
+      { sort: "saved", offset: 0, limit: 120 },
+    ]);
     expect(document.body.querySelector("h1")?.parentElement?.textContent).toBe("Watchlist3");
     expect(tiles()).toEqual([
       ["Canyon Hours", "Series · 2024"],
@@ -324,7 +329,7 @@ describe("the Watchlist page", () => {
 
   it("orders by name when asked, and opens the title the arrow keys are on with Enter", async () => {
     await watchlist(page([canyon, meridian, harbour]));
-    const byName = ipc.hold("watchlist.list");
+    const byName = ipc.hold("watchlist.list", (query) => query.limit === 120);
 
     await press("A to Z");
     await act(async () => byName.resolve(page([canyon, meridian, harbour])));
@@ -341,6 +346,8 @@ describe("the Watchlist page", () => {
     await key("Delete");
     await key("Backspace");
     expect(ipc.methods()).not.toContain("watchlist.remove");
+    // The order outlives the page: put it back for the tests after.
+    await press("Saved");
   });
 
   it("takes a title off with its cross once the main process has, and says when it couldn't", async () => {
@@ -356,7 +363,7 @@ describe("the Watchlist page", () => {
     expect(tiles()).toHaveLength(3);
 
     const removed = ipc.hold("watchlist.remove");
-    const after = ipc.hold("watchlist.list");
+    const after = ipc.hold("watchlist.list", (query) => query.limit === 120);
     await pressTwice("Remove Meridian Dawn from Watchlist");
     await act(async () => removed.resolve(null));
     await act(async () => after.resolve(page([canyon, harbour])));
@@ -378,12 +385,35 @@ describe("the Watchlist page", () => {
     );
     expect(button("A to Z")).toBeUndefined();
 
-    const changed = ipc.hold("watchlist.list");
+    const changed = ipc.hold("watchlist.list", (query) => query.limit === 120);
     await act(async () => ipc.emit("watchlist.changed", null));
     await act(async () => changed.resolve(page([harbour])));
     await settle();
 
     expect(tiles()).toEqual([["Night Harbour", "Movie · 2024"]]);
+  });
+
+  it("keeps last-removal focus when the reply arrives before the collection event", async () => {
+    await watchlist(page([harbour]));
+    const cross = button("Remove Night Harbour from Watchlist")!;
+    cross.focus();
+    const removed = ipc.hold("watchlist.remove");
+    const older = ipc.hold("watchlist.list", (query) => query.limit === 120);
+    await press("Remove Night Harbour from Watchlist");
+    await act(async () => removed.resolve(null));
+    await settle();
+
+    const newer = ipc.hold("watchlist.list", (query) => query.limit === 120);
+    await act(async () => ipc.emit("watchlist.changed", null));
+    await settle();
+    await act(async () => newer.resolve(page([])));
+    await settle();
+    expect(document.body.textContent).toContain("Nothing saved yet.");
+    expect(document.activeElement).toBe(document.querySelector("h1")?.parentElement?.parentElement);
+
+    await act(async () => older.resolve(page([harbour])));
+    await settle();
+    expect(tiles()).toHaveLength(0);
   });
 
   it("keeps showing what was saved when the lists couldn't be refreshed, without calling it unavailable", async () => {
@@ -447,13 +477,13 @@ describe("the Watchlist page", () => {
   it("says why the watchlist can't be read, and reads it again on Try again", async () => {
     ipc.reset();
     useUi.setState({ view: "watchlist", details: null, savedEntry: null });
-    const failed = ipc.hold("watchlist.list");
+    const failed = ipc.hold("watchlist.list", (query) => query.limit === 120);
     await shown(createElement(WatchlistPage, { active: true }));
     await act(async () => failed.reject({ kind: "unexpected", detail: "unable to open database" }));
     await settle();
 
     expect(document.body.textContent).toContain("Something went wrong: unable to open database");
-    const again = ipc.hold("watchlist.list");
+    const again = ipc.hold("watchlist.list", (query) => query.limit === 120);
     await press("Try again");
     await act(async () => again.resolve(page([canyon])));
     await settle();
@@ -534,7 +564,7 @@ describe("a saved title the provider no longer lists", () => {
     useUi.setState({ ...useUi.getInitialState(), view: "watchlist" }, true);
     const subscribed = ipc.hold("subscription.list");
     const stand = ipc.hold("ondemand.status");
-    const listed = ipc.hold("watchlist.list");
+    const listed = ipc.hold("watchlist.list", (query) => query.limit === 120);
     await shown(createElement(TooltipProvider, null, createElement(App)));
     await act(async () => subscribed.resolve([SAVED]));
     // Connected, the window draws the page, which asks what is saved. As in `details`, the
@@ -576,7 +606,8 @@ describe("a saved title the provider no longer lists", () => {
     // Stored, the main process lists the watchlist without it, as often as it is asked.
     ipc.prefer({ adultTitles: false });
     ipc.hold("ondemand.status").resolve(status());
-    for (let asked = 0; asked < 3; asked++) ipc.hold("watchlist.list").resolve(page([harbour]));
+    for (let asked = 0; asked < 3; asked++)
+      ipc.hold("watchlist.list", (query) => query.limit === 120).resolve(page([harbour]));
     await act(async () =>
       stored.resolve(ipc.snapshot({ ...defaultPreferences, adultTitles: false })),
     );
@@ -590,3 +621,95 @@ describe("a saved title the provider no longer lists", () => {
     useUi.setState(useUi.getInitialState(), true);
   });
 });
+
+it("keeps Watchlist availability through failed and obsolete reads, then hides the last removal without leaving the page", async () => {
+  ipc.reset();
+  useUi.setState({ ...useUi.getInitialState(), view: "home" }, true);
+  const older = ipc.hold("watchlist.list");
+  await shown(createElement(TooltipProvider, null, createElement(WindowBar)));
+  const nav = () => document.querySelector("header nav")?.textContent ?? "";
+  expect(nav()).toContain("Watchlist");
+
+  // A real saved-entry notification overtakes the initial empty snapshot.
+  const newer = ipc.hold("watchlist.list");
+  await act(async () => ipc.emit("watchlist.changed", null));
+  await act(async () => newer.resolve(page([meridian])));
+  await settle();
+  await act(async () => older.resolve(page([])));
+  await settle();
+  expect(nav()).toContain("Watchlist");
+
+  const failed = ipc.hold("watchlist.list");
+  await act(async () => ipc.emit("watchlist.changed", null));
+  await act(async () => failed.reject({ kind: "unexpected", detail: "unavailable" }));
+  await settle();
+  expect(nav()).toContain("Watchlist");
+
+  await press("Watchlist");
+  const home = button("Home")!;
+  home.focus();
+  const empty = ipc.hold("watchlist.list");
+  await act(async () => ipc.emit("watchlist.changed", null));
+  expect(nav()).toContain("Watchlist");
+  await act(async () => empty.resolve(page([])));
+  await settle();
+  expect(nav()).not.toContain("Watchlist");
+  expect(useUi.getState().view).toBe("watchlist");
+  expect(document.activeElement).toBe(home);
+
+  const saved = ipc.hold("watchlist.list");
+  await act(async () => ipc.emit("watchlist.changed", null));
+  expect(nav()).not.toContain("Watchlist");
+  await act(async () => saved.resolve(page([meridian])));
+  await settle();
+  expect(nav()).toContain("Watchlist");
+
+  button("Watchlist")!.focus();
+  const removed = ipc.hold("watchlist.list");
+  await act(async () => ipc.emit("watchlist.changed", null));
+  await act(async () => removed.resolve(page([])));
+  await settle();
+  expect(nav()).not.toContain("Watchlist");
+  expect(useUi.getState().view).toBe("watchlist");
+  expect(document.activeElement).toBe(home);
+});
+
+it.each(["adult setting", "adult catalogue"] as const)(
+  "keeps known-empty navigation across page mounts during a pending and failed %s refresh",
+  async (change) => {
+    ipc.reset();
+    ipc.always("watchlist.list", page([]));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const stopWatchlist = syncWatchlist(client);
+    const stopPreferences = syncPreferences(client, () => {});
+    const mounted = queryView(client);
+    unmount = () => {
+      stopWatchlist();
+      stopPreferences();
+      mounted.unmount();
+    };
+    const bar = (key: string) =>
+      createElement(TooltipProvider, null, createElement(WindowBar, { key }));
+    const nav = () => document.querySelector("header nav")?.textContent ?? "";
+    await mounted.render(bar("home"));
+    await settle();
+    expect(nav()).not.toContain("Watchlist");
+
+    await act(async () => ipc.emit("preferences.changed", ipc.snapshot(defaultPreferences)));
+    const pending = ipc.hold("watchlist.list");
+    await act(async () => {
+      if (change === "adult setting") {
+        ipc.emit("preferences.changed", ipc.snapshot({ ...defaultPreferences, adultTitles: true }));
+      } else {
+        ipc.emit("ondemand.updated", { ...status(), markedForAdults: true });
+      }
+    });
+    expect(nav()).not.toContain("Watchlist");
+    await mounted.render(bar("movies"));
+    expect(nav()).not.toContain("Watchlist");
+    await act(async () => pending.reject({ kind: "unexpected", detail: "unavailable" }));
+    await settle();
+    await mounted.render(bar("series"));
+    expect(nav()).not.toContain("Watchlist");
+  },
+);

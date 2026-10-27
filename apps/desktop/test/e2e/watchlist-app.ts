@@ -2,7 +2,7 @@
 // suite can't, because happy-dom lays nothing out, moves no real focus and plays nothing. The
 // first provider's subscription is saved alone at first. In order:
 //
-// - The top bar permanently opens Watchlist, whose page says how to save while empty.
+// - Empty collections stay out of the top bar; saved titles make Watchlist reachable.
 // - A real click on Save in a movie's details saves it once the record has it, and the button
 //   reads Saved.
 // - In a series' details, Tab reaches Save from Play; Space saves, Enter takes it off again and
@@ -321,18 +321,21 @@ try {
 
   {
     const problems: string[] = [];
+    // Main's lists can be ready before the renderer's availability refresh settles.
+    await waitFor(
+      async () =>
+        !(await exists(page, pageButton("Watchlist"))) &&
+        !(await exists(page, pageButton("Downloads"))),
+      10_000,
+    );
     const pages = await page.evaluate<string[]>(
       `[...document.querySelectorAll("header button")].map((each) => each.textContent.trim()).filter(Boolean)`,
     );
-    if (pages.join() !== "Home,Live TV,Movies,Series,Watchlist,Downloads") {
+    if (pages.join() !== "Home,Live TV,Movies,Series") {
       problems.push(`the top bar has ${pages.join(", ")}`);
     }
     if (await exists(page, withText("h2", "Watchlist"))) problems.push("Home has a Watchlist row");
-    await openWatchlist(page);
-    if (!(await says(page, "Nothing saved yet. Save a movie or series from its details."))) {
-      problems.push("the empty page doesn't say how to save");
-    }
-    report("The top bar opens the full Watchlist and its empty saving instructions", problems);
+    report("The empty collections stay out of the top bar", problems);
   }
 
   {
@@ -1044,8 +1047,9 @@ try {
     if ((await saved(page)).total !== 0) problems.push("its watchlist outlived the delete");
     if (accountsSaved() !== 0)
       problems.push(`${accountsSaved()} accounts are kept in the database`);
-    await openWatchlist(page);
-    if (!(await says(page, "Nothing saved yet."))) problems.push("the page isn't empty");
+    await waitFor(async () => !(await exists(page, pageButton("Watchlist"))), 10_000);
+    if (await exists(page, pageButton("Watchlist")))
+      problems.push("empty Watchlist navigation remains");
     report(
       "Removing the last subscription keeps its watchlist, and deletes it with its box ticked",
       problems,

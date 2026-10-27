@@ -44,16 +44,8 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     !(await titles()).includes("Recommendations"),
     "No history showed personalized recommendations",
   );
-  expect(
-    await d.exists(byText("header button", "Watchlist")),
-    "Watchlist missing from top navigation",
-  );
+  await d.wait(async () => !(await d.exists(byText("header button", "Watchlist"))));
   await d.capture("home-no-history");
-  await d.click("Open empty Watchlist from Home", byText("header button", "Watchlist"));
-  await d.wait(() => d.exists(byText("h1", "Watchlist")));
-  await d.wait(() => d.evaluate<boolean>("document.body.innerText.includes('Nothing saved yet')"));
-  await d.capture("watchlist-empty");
-  await d.click("Return Home", byText("header button", "Home"));
   await customize();
   await d.wait(() => d.exists(controls));
   expect(
@@ -111,13 +103,8 @@ export async function homeScenario(d: Driver, counts: () => Record<string, numbe
     "Hidden reordered Watchlist returned after restart",
   );
   expect(!(await titles()).includes("New movies"), "Hidden row returned after restart");
-  await d.click(
-    "Open full Watchlist while its row is hidden",
-    byText("header button", "Watchlist"),
-  );
-  await d.wait(() => d.exists(byText("h1", "Watchlist")));
-  await d.capture("watchlist-hidden-row-restart");
-  await d.click("Return Home", byText("header button", "Home"));
+  await d.wait(async () => !(await d.exists(byText("header button", "Watchlist"))));
+  await d.capture("empty-navigation-restart");
   await customize();
   await d.click("Reset all rows", byText("button", "Reset to defaults"));
   await d.wait(

@@ -4,9 +4,11 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type Ref,
   type ReactNode,
   type RefCallback,
 } from "react";
+import type { DownloadList } from "@mrstreamer/contracts/downloads";
 import type { Locale } from "@mrstreamer/contracts/language";
 import { hasTitles } from "@mrstreamer/contracts/subscription";
 import { useLocale } from "../app/language.ts";
@@ -27,6 +29,7 @@ import {
 } from "../features/updates/UpdateNotice.tsx";
 import { useQuery } from "@tanstack/react-query";
 import { type PlainKey, t } from "@mrstreamer/core/i18n";
+import { downloadsQuery } from "../lib/downloads.ts";
 import { queries, useSubscriptions } from "../lib/queries.ts";
 import { cn } from "../lib/utils.ts";
 import { WINDOW_BAR } from "../../../shared/window-bar.ts";
@@ -43,6 +46,8 @@ const VIEWS = [
   { view: "downloads", label: "Downloads" },
 ] as const satisfies readonly { readonly view: View; readonly label: PlainKey }[];
 
+const anyKept = (list: DownloadList) => list.items.length > 0;
+
 /**
  * The top of the window: brand, the pages, how far TMDB has come, search and settings. It is also
  * the window's drag area; macOS draws its traffic lights on the left and Windows its controls on
@@ -50,8 +55,9 @@ const VIEWS = [
  * title's details, Back takes the pages' place and returns to the page underneath; over details
  * a related title opened, it first returns through those it was opened from (`backDetails`).
  * Details get a bar of their own above their backdrop for it (`App.tsx`). `onBack` overrides
- * where it goes, as a playing title or an open collection does. Subscriptions with
- * live TV only have no Movies or Series; Watchlist stays reachable. Where the window is too
+ * where it goes, as a playing title or an open collection does. Subscriptions with live TV only
+ * have no Movies or Series. Watchlist and Downloads show once anything is saved or kept; hiding an
+ * empty page's entry leaves that page open. Where the window is too
  * narrow for every page's name, Downloads goes beside Search as a button of its own, under the same name. That
  * place also says how the downloads stand while one is under way, waits or stopped, except over
  * the Downloads page itself while its name is in the bar. Where even the other names, or Back,
@@ -74,7 +80,38 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
   const update = useQuery(queries.updates()).data;
   const updateOpen = useUi((state) => state.updateDialog === "panel");
   const updateWords = updateNoticeLabel(update, updateOpen, useKeptUpdate());
-  const [pages, fold] = useFolds(status?.text, updateWords, locale);
+  const filled: Partial<Record<View, boolean>> = {
+    // The owner counts visible saves, including unavailable titles and the adult setting.
+    watchlist: useQuery(queries.watchlistAvailability()).data ?? true,
+    // Every retained record counts, regardless of transfer or file state.
+    downloads: useQuery({ ...downloadsQuery(), select: anyKept }).data ?? true,
+  };
+  const shown = VIEWS.filter(
+    (entry) => (!liveOnly || withoutTitles(entry.view)) && filled[entry.view] !== false,
+  );
+  const home = useRef<HTMLButtonElement>(null);
+  const focused = document.activeElement;
+  const focusedCollection =
+    focused instanceof HTMLElement && home.current?.closest("header")?.contains(focused)
+      ? focused.dataset["view"] === "watchlist"
+        ? "watchlist"
+        : focused.dataset["view"] === "downloads" || focused.hasAttribute("data-downloads-notice")
+          ? "downloads"
+          : null
+      : null;
+  // A removed entry hands focus to Home; a folded Downloads entry keeps it on its replacement.
+  useLayoutEffect(() => {
+    if (!focusedCollection || focused?.isConnected || document.activeElement !== document.body)
+      return;
+    if (filled[focusedCollection] === false) home.current?.focus();
+    else if (focusedCollection === "downloads")
+      home.current
+        ?.closest("header")
+        ?.querySelector<HTMLButtonElement>("[data-downloads-notice]")
+        ?.focus();
+  });
+  const names = shown.map((entry) => t(entry.label)).join();
+  const [pages, fold] = useFolds(status?.text, updateWords, locale, names);
   const [backRoom, backFold] = useFolds(status?.text, updateWords, locale);
   const folded = fold !== "none";
   const back =
@@ -88,7 +125,6 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
           : savedOpen
             ? () => useUi.setState({ savedEntry: null })
             : null);
-  const shown = liveOnly ? VIEWS.filter((entry) => withoutTitles(entry.view)) : VIEWS;
   return (
     <BarFrame className={className}>
       <Brand />
@@ -108,7 +144,12 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
           {shown
             .filter((entry) => !(folded && entry.view === "downloads"))
             .map((entry) => (
-              <PageButton key={entry.view} view={entry.view} current={entry.view === view}>
+              <PageButton
+                key={entry.view}
+                ref={entry.view === "home" ? home : undefined}
+                view={entry.view}
+                current={entry.view === view}
+              >
                 {t(entry.label)}
               </PageButton>
             ))}
@@ -119,7 +160,7 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
         <TmdbProgress />
         {back ? (
           <DownloadsNotice status={status} compact={backFold === "arrow"} />
-        ) : folded ? (
+        ) : folded && shown.some((entry) => entry.view === "downloads") ? (
           <DownloadsNotice
             status={status}
             page
@@ -194,16 +235,20 @@ export function Brand() {
 
 /** A page's name in the bar: bold and white for the page on screen. */
 export function PageButton({
+  ref,
   view,
   current,
   children,
 }: {
+  ref?: Ref<HTMLButtonElement> | undefined;
   view: View;
   current: boolean;
   children: ReactNode;
 }) {
   return (
     <button
+      ref={ref}
+      data-view={view}
       aria-current={current ? "page" : undefined}
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => openView(view)}
@@ -232,26 +277,32 @@ type Fold = "none" | "downloads" | "arrow";
  * all their names took, a little more than they need while it stands beside Search. The arrow
  * tries its words again whenever the pages' room grows, the words change or the language does, as
  * Back's name can while the words read the same, and keeps them only if the names still fit beside
- * them; the try is measured before the bar is drawn, so it shows nothing when it fails.
+ * them; the try is measured before the bar is drawn, so it shows nothing when it fails. When the
+ * pages' `names` change, a page coming or going, Downloads tries its place among them the same
+ * way, unless its button beside Search has the keyboard, which it would lose.
  */
 function useFolds(
   words: string | undefined,
   updateWords: string | undefined,
   locale: Locale,
+  names?: string,
 ): [RefCallback<HTMLElement>, Fold] {
   const [fold, setFold] = useState<Fold>("none");
   // The room all the pages' names took when they stopped fitting, and the room the pages had
   // beside the arrow when last measured.
   const needed = useRef(0);
   const besideArrow = useRef(Infinity);
-  const measured = useRef<(again: boolean) => void>(undefined);
+  const measured = useRef<(again: boolean, renamed?: boolean) => void>(undefined);
   const ref = useCallback((element: HTMLElement | null) => {
     if (!element) return;
     // `again`: what the bar holds changed, so the arrow tries its words whatever the room.
-    const measure = (again: boolean) =>
+    // `renamed`: the names changed, so Downloads tries its place among them too.
+    const measure = (again: boolean, renamed = false) =>
       setFold((was) => {
         const room = element.clientWidth;
         const over = element.scrollWidth > room;
+        const notice = element.parentElement?.querySelector("[data-downloads-notice]");
+        if (renamed && was !== "none" && !notice?.contains(document.activeElement)) return "none";
         switch (was) {
           case "none":
             if (!over) return "none";
@@ -269,7 +320,7 @@ function useFolds(
       });
     measured.current = measure;
     // The pages come back after Back with the fold they had, and the bar may have changed meanwhile.
-    measure(true);
+    measure(true, true);
     const observer = new ResizeObserver(() => measure(false));
     observer.observe(element);
     return () => {
@@ -282,5 +333,6 @@ function useFolds(
   // or a language that changes resize nothing either while the arrow stands alone.
   useLayoutEffect(() => measured.current?.(false), [fold]);
   useLayoutEffect(() => measured.current?.(true), [words, updateWords, locale]);
+  useLayoutEffect(() => measured.current?.(true, true), [names]);
   return [ref, fold];
 }

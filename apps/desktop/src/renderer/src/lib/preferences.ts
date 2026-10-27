@@ -54,8 +54,14 @@ function applyChanges(
     if (adult) {
       if (!after.adultTitles) consumers.get(client)?.hideAdults();
       for (const group of ["library", "guide", "watchlist"]) {
-        void client.resetQueries({ queryKey: [group] });
+        void client.resetQueries({
+          queryKey: [group],
+          predicate: (query) => group !== "watchlist" || query.queryKey[1] !== "availability",
+        });
       }
+      // Keep only the last availability answer while titles are discarded and read again.
+      void client.cancelQueries({ queryKey: ["watchlist", "availability"] });
+      void client.invalidateQueries({ queryKey: ["watchlist", "availability"] });
     }
     if (adult || titles) {
       // Cancel old first reads too: invalidation alone may reuse them as the new answer.

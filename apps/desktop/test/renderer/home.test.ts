@@ -372,10 +372,6 @@ it("promotes the first visible nonempty channel row once, across title rows, mov
   assertOnce("recent");
   await save(() => button("Reset to defaults").click());
   assertOnce("favourites");
-  await act(async () => button("Back").click());
-  await act(async () => button("Watchlist").click());
-  const { useUi } = await import("../../src/renderer/src/app/ui-store.ts");
-  expect(useUi.getState().view).toBe("watchlist");
 });
 
 it("sparse saved titles keep their resolved owner and unavailable-entry action without eager details", async () => {
