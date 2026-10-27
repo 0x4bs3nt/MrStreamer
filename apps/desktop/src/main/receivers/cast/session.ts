@@ -322,7 +322,7 @@ export async function openSession(
   /** A media status message: every media the app holds, in answer to `requestId` or as news. */
   const mediaStatuses = (statuses: readonly MediaStatus[], requestId: number | undefined) => {
     const current = load;
-    if (!current || !channel || !app) return;
+    if (closed || !current || !channel || !app) return;
     for (const status of statuses) {
       // The load's media is the one the answer to its LOAD names, or one playing its address,
       // as found when asking again after the connection broke before the answer.
@@ -332,11 +332,17 @@ export async function openSession(
       ) {
         current.mediaSessionId = status.mediaSessionId;
         if (current.dropped) {
-          channel.send(app.transportId, NAMESPACE.media, {
-            type: "STOP",
-            mediaSessionId: status.mediaSessionId,
-            requestId: nextRequest++,
-          });
+          try {
+            channel.send(app.transportId, NAMESPACE.media, {
+              type: "STOP",
+              mediaSessionId: status.mediaSessionId,
+              requestId: nextRequest++,
+            });
+          } catch {
+            // Reconnecting cannot shrink this app's transport id. Stop the owned app instead,
+            // then invalidate the session even if that STOP also cannot be sent or answered.
+            void disconnect().then(() => emit({ type: "lost", failure: { kind: "unreachable" } }));
+          }
         }
       }
       if (status.mediaSessionId === current.mediaSessionId && !current.dropped) {
@@ -490,18 +496,24 @@ export async function openSession(
         // Stopping the app ends its media too; the media's own stop is for a receiver that is
         // slow about the app. Nothing waits longer than `close` for the receiver to confirm.
         if (load && load.mediaSessionId !== null) {
-          channel.send(app.transportId, NAMESPACE.media, {
-            type: "STOP",
-            mediaSessionId: load.mediaSessionId,
-            requestId: nextRequest++,
-          });
+          try {
+            channel.send(app.transportId, NAMESPACE.media, {
+              type: "STOP",
+              mediaSessionId: load.mediaSessionId,
+              requestId: nextRequest++,
+            });
+          } catch {
+            // The app's STOP can still fit when its media's STOP cannot.
+          }
         }
         await ask({ type: "STOP", sessionId: app.sessionId }, timings.close).catch(() => {});
         channel?.send(app.transportId, NAMESPACE.connection, { type: "CLOSE" });
         channel?.send(PLATFORM, NAMESPACE.connection, { type: "CLOSE" });
       }
-      end();
-    })());
+    })()
+      // A receiver's identifiers can make even STOP too large. Closing must still settle.
+      .catch(() => {})
+      .finally(end));
 
   /** The LAUNCH, once sent: a connect given up meanwhile still has an app to stop. */
   let launching: Promise<unknown> = Promise.resolve();
@@ -541,8 +553,9 @@ export async function openSession(
               requestId: nextRequest++,
             });
           }
-          end();
-        }),
+        })
+        .catch(() => {})
+        .finally(end),
     );
     throw error;
   }

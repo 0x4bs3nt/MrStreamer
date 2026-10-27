@@ -255,11 +255,11 @@ export interface ChannelOptions {
   readonly silence: number;
   /** Gives up opening when it aborts. An open channel is closed with `close`. */
   readonly signal: AbortSignal;
-  /** Hears every message but the heartbeat's. */
+  /** Hears every message but the heartbeat's; a thrown reply failure breaks the channel. */
   readonly message: (message: CastMessage) => void;
   /**
    * The open connection is gone: the socket failed, the receiver went silent, or it sent what
-   * isn't the protocol. Told once, and never after `close`.
+   * isn't the protocol, or a reply could not be sent. Told once, and never after `close`.
    */
   readonly broken: () => void;
 }
@@ -348,9 +348,14 @@ export function openChannel(options: ChannelOptions): Promise<Channel> {
     for (const message of messages) {
       // A message may have closed the channel: the ones behind it are for nobody.
       if (state !== "open") return;
-      if (message.namespace !== NAMESPACE.heartbeat) options.message(message);
-      else if (readPlatformMessage(message.payload)?.type === "PING") {
-        send(message.sourceId, NAMESPACE.heartbeat, { type: "PONG" });
+      try {
+        if (message.namespace !== NAMESPACE.heartbeat) options.message(message);
+        else if (readPlatformMessage(message.payload)?.type === "PING") {
+          send(message.sourceId, NAMESPACE.heartbeat, { type: "PONG" });
+        }
+      } catch {
+        // Receiver identifiers can fit incoming messages but leave no room for our reply.
+        return fail();
       }
     }
   });
