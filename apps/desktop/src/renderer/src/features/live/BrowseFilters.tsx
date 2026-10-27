@@ -23,14 +23,20 @@ export function BrowseFilters({
   list,
   result,
   summaryOnly = false,
+  onOpenChange,
 }: {
   list: ChannelList;
   result?: LiveBrowseResult | undefined;
   summaryOnly?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const filters = list.filters ?? EMPTY_LIVE_FILTERS;
   const subscriptions = useSubscriptions();
   const [open, setOpen] = useState<keyof LiveFilters | null>(null);
+  useLayoutEffect(() => {
+    onOpenChange?.(open !== null);
+    return () => onOpenChange?.(false);
+  }, [open, onOpenChange]);
   const box = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const triggers = useRef(new Map<string, HTMLButtonElement>());

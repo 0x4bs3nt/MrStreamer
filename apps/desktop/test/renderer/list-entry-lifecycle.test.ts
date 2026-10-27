@@ -226,7 +226,7 @@ async function livePage(
     heading: () => container.querySelector("main h1")?.textContent,
     rows: () =>
       [...container.querySelectorAll("[data-index]")].map(
-        (row) => row.querySelector("[title]")?.firstElementChild?.textContent,
+        (row) => row.querySelector("[data-name]")?.textContent,
       ),
     /** The order being made, if one is: its rows' list, and Save. */
     drafting: () =>

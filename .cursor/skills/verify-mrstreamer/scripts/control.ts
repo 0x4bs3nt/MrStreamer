@@ -34,6 +34,7 @@ import { settingsScenario } from "./settings.ts";
 import { controlsScenario } from "./controls.ts";
 import { backupChannel, customListSourcesScenario, customListsScenario } from "./custom-lists.ts";
 import { customListRoundTripScenario } from "./custom-lists-round-trip.ts";
+import { liveNamesScenario, longNamed } from "./live-names.ts";
 import { preferencesScenario } from "./preferences.ts";
 import { movedGuideScenario } from "./moved-guide.ts";
 import { nextEpisodeScenario } from "./next-episode.ts";
@@ -68,6 +69,7 @@ const scenarios = [
   "remove-during-guide",
   "moved-guide",
   "live-tv",
+  "live-names",
   "guides",
   "guide-labels",
   "catch-up",
@@ -272,6 +274,7 @@ async function run(scenario: Scenario, prior?: string) {
         ? { guideIdOf: (channel) => sourcedGuideId(channel.name) ?? channel.guideId }
         : {}),
       ...(scenario === "custom-lists-sources" ? { adultChannels: true } : {}),
+      ...(scenario === "live-names" ? { channelOf: longNamed } : {}),
       ...(scenario === "guide-labels"
         ? { guideIdOf: (channel) => labelledGuideId(channel.name) ?? channel.guideId }
         : {}),
@@ -288,6 +291,15 @@ async function run(scenario: Scenario, prior?: string) {
     }
     if (scenario === "live-categories")
       other = await startFakeProvider({ channels: 300, titles: 10, live: true });
+    // The same channels under the same names: every row says whose it is.
+    if (scenario === "live-names")
+      other = await startFakeProvider({
+        channels: 60,
+        titles: 10,
+        live: true,
+        second: true,
+        channelOf: longNamed,
+      });
     if (
       scenario === "custom-lists" ||
       scenario === "custom-lists-sources" ||
@@ -851,6 +863,24 @@ async function run(scenario: Scenario, prior?: string) {
             active: provider!.activeStreams() + other!.activeStreams(),
           }),
         },
+      );
+    } else if (scenario === "live-names") {
+      await liveNamesScenario(
+        {
+          profile,
+          observed,
+          evaluate: livePage.evaluate,
+          send,
+          wait,
+          exists,
+          click,
+          key,
+          capture,
+          action,
+          launch,
+          quit,
+        },
+        { otherUrl: other!.url },
       );
     } else if (scenario === "custom-lists-round-trip") {
       await customListRoundTripScenario(

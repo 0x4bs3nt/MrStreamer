@@ -98,7 +98,7 @@ const drawn = (page: Page) =>
       const list = row.closest(".overflow-y-auto").getBoundingClientRect();
       return {
         index: Number(row.dataset.index),
-        title: row.querySelector("[title]")?.firstElementChild?.textContent ?? "",
+        title: row.querySelector("[data-name]")?.textContent ?? "",
         inView: box.top >= list.top - 1 && box.bottom <= list.bottom + 1,
       };
     });

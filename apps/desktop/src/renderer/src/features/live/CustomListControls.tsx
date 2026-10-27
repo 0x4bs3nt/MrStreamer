@@ -246,6 +246,7 @@ export function ListMenu({
   shown,
   onSet,
   onNew,
+  onOpenChange,
 }: {
   channel: LiveChannel;
   lists: readonly CustomList[];
@@ -253,10 +254,23 @@ export function ListMenu({
   shown: boolean;
   onSet: (list: CustomList, member: boolean) => void;
   onNew: () => void;
+  onOpenChange?: (open: boolean) => void;
 }) {
+  const open = useRef(false);
+  useEffect(
+    () => () => {
+      if (open.current) onOpenChange?.(false);
+    },
+    [onOpenChange],
+  );
   return (
     <span onClick={keep} onKeyDown={keep}>
-      <Menu.Root>
+      <Menu.Root
+        onOpenChange={(next) => {
+          open.current = next;
+          onOpenChange?.(next);
+        }}
+      >
         <Menu.Trigger
           aria-label={t("Lists for {name}", { name: channel.title })}
           title={t("Lists")}

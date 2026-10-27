@@ -24,9 +24,9 @@ const NEW_LIST = `[...${PICKER}.querySelectorAll('[data-entry]')].find(e => e.te
 const LIST_FIELD = `${PICKER}?.querySelector('input[aria-label="List name"]')`;
 /** A channel's row in Live TV's list, by the provider's name of its first stream. */
 const row = (name: string) =>
-  `[...document.querySelectorAll('main [data-index]')].find(r => r.querySelector('[title=${JSON.stringify(name)}]'))`;
+  `[...document.querySelectorAll('main [data-index]')].find(r => r.querySelector('[data-name=${JSON.stringify(name)}]'))`;
 /** The row names Live TV's list shows, in order. */
-const ROWS = `[...document.querySelectorAll('main [data-index]')].sort((a, b) => a.dataset.index - b.dataset.index).map(r => r.querySelector('span[title]')?.title)`;
+const ROWS = `[...document.querySelectorAll('main [data-index]')].sort((a, b) => a.dataset.index - b.dataset.index).map(r => r.querySelector('[data-name]')?.dataset.name)`;
 const HEADING = "document.querySelector('main h1')?.textContent";
 const SETTINGS = "document.querySelector('header button[aria-pressed]')";
 const MENU = "document.querySelector('[role=menu]')";
@@ -591,8 +591,9 @@ export async function customListsScenario(
     return quality!;
   };
   const quality = await openQuality();
+  await d.wait(() => d.exists("document.querySelector('main [data-index=\"0\"] [data-name]')"));
   const firstRow = await d.evaluate<string>(
-    "document.querySelector('main [data-index=\"0\"] span[title]')?.title ?? ''",
+    "document.querySelector('main [data-index=\"0\"] [data-name]')?.dataset.name ?? ''",
   );
   const listsBefore = await listed();
   await newListFromRow(firstRow);
@@ -615,6 +616,7 @@ export async function customListsScenario(
   await d.send("Input.insertText", { text: "From Belgium" });
   await d.key("Enter", 13);
   await d.wait(async () => (await d.evaluate<string | undefined>(HEADING)) === "From Belgium");
+  await d.wait(async () => (await shownRows(d)).length > 0);
   const made = (await saved()).filter((list) => list.name === "From Belgium");
   const shown = await shownRows(d);
   d.observed["madeFromCategory"] = { from: quality, row: firstRow, shown, stored: made };

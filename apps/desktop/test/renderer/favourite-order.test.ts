@@ -132,7 +132,7 @@ async function favouritesPage(count: number, list: ChannelList = { kind: "favour
   };
   const rowOf = (title: string) =>
     [...container.querySelectorAll("[data-index]")].find(
-      (row) => row.querySelector("[title]")?.firstElementChild?.textContent === title,
+      (row) => row.querySelector("[data-name]")?.textContent === title,
     );
   return {
     client,
@@ -142,7 +142,7 @@ async function favouritesPage(count: number, list: ChannelList = { kind: "favour
     /** The channels drawn, top to bottom: the rows in view, and the one that holds the focus. */
     rows: () =>
       [...container.querySelectorAll("[data-index]")].map(
-        (row) => row.querySelector("[title]")?.firstElementChild?.textContent,
+        (row) => row.querySelector("[data-name]")?.textContent,
       ),
     /** Where a channel stands in the list, from 0, when its row is drawn. */
     indexOf: (title: string) => Number(rowOf(title)?.getAttribute("data-index") ?? Number.NaN),

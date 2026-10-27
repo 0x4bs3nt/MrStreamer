@@ -146,12 +146,12 @@ async function guidePage(list: ChannelList = { kind: "all" }, channels = CHANNEL
     /** The channels shown, top to bottom. */
     rows: () =>
       [...container.querySelectorAll("[data-index]")].map(
-        (row) => row.querySelector("[title]")?.firstElementChild?.textContent,
+        (row) => row.querySelector("[data-name]")?.textContent,
       ),
     /** A channel's row, with its programmes when the rest of its day is open. */
     row: (title: string) =>
       [...container.querySelectorAll("[data-index]")].find(
-        (row) => row.querySelector("[title]")?.firstElementChild?.textContent === title,
+        (row) => row.querySelector("[data-name]")?.textContent === title,
       ),
     text: () => container.querySelector("main")?.textContent ?? "",
     notice: () => container.querySelector('[role="status"]')?.textContent ?? "",

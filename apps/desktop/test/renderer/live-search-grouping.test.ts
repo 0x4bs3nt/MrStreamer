@@ -965,15 +965,9 @@ describe("real search components with two subscriptions", () => {
     await p.press("ArrowRight", window);
     expect(p.rows()).toHaveLength(6);
     expect(p.rows()[0]!.getAttribute("aria-expanded")).toBe("true");
-    expect(p.rows()[1]!.textContent).toContain("FHD · HD");
-    expect(p.rows()[1]!.textContent).toContain("Blue");
-    expect(p.rows()[1]!.textContent).toContain("Belgium · Vlaanderen");
-    const summary = p.rows()[1]!.querySelector<HTMLElement>("span[title] span[title]")!;
-    expect(summary.textContent).toBe("FHD · HD · Blue · Belgium · Vlaanderen");
-    expect(summary.title).toBe("FHD · HD · Blue · Belgium · Vlaanderen");
-    expect(p.rows()[2]!.querySelector("span[title] span[title]")?.textContent).toBe(
-      "SD · Blue · Belgium · General",
-    );
+    // Each copy's line under the name leads with the subscription that tells it apart.
+    expect(p.rows()[1]!.textContent).toContain("Blue · FHD · HD · Belgium · Vlaanderen");
+    expect(p.rows()[2]!.textContent).toContain("Blue · SD · Belgium · General");
     expect(p.rows()[1]!.getAttribute("aria-label")).toContain("Belgium, Vlaanderen, 10");
     await expect
       .poll(async () => {

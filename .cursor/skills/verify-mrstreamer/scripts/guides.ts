@@ -183,7 +183,7 @@ export async function guidesScenario(
     const read = () =>
       d.evaluate<Record<string, string>>(`Object.fromEntries(
         [...document.querySelectorAll('[data-index]')].map(row => [
-          row.querySelector('[title]')?.firstElementChild?.textContent.trim() ?? '',
+          row.querySelector('[data-name]')?.textContent.trim() ?? '',
           row.innerText,
         ]))`);
     await d.wait(async () => {

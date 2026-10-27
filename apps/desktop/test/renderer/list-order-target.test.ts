@@ -144,7 +144,7 @@ async function sameChannelsPage(shown: ChannelList) {
     button,
     rows: () =>
       [...container.querySelectorAll("[data-index]")].map(
-        (row) => row.querySelector("[title]")?.firstElementChild?.textContent,
+        (row) => row.querySelector("[data-name]")?.textContent,
       ),
     heading: () => container.querySelector("main h1")?.textContent,
     /** The order being made, if one is: its rows' list, and Save. */

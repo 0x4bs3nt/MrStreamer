@@ -5,21 +5,33 @@ export const TooltipProvider = TooltipPrimitive.Provider;
 
 /**
  * Wraps a control with a short label that appears on hover or keyboard focus. `disabled` keeps the
- * label away while the control says it itself, with the control left as it is.
+ * label away while the control says it itself, with the control left as it is. With `open` the
+ * caller decides when it shows, hearing what hover and focus ask through `onOpenChange`.
  */
 export function Tooltip({
   label,
   children,
   side = "top",
   disabled = false,
+  open,
+  onOpenChange,
+  disableHoverablePopup,
 }: {
   label: ReactNode;
   children: ReactElement;
   side?: "top" | "bottom" | "left" | "right";
   disabled?: boolean;
+  open?: boolean;
+  onOpenChange?: TooltipPrimitive.Root.Props["onOpenChange"];
+  disableHoverablePopup?: boolean;
 }) {
   return (
-    <TooltipPrimitive.Root disabled={disabled}>
+    <TooltipPrimitive.Root
+      disabled={disabled}
+      open={open}
+      onOpenChange={onOpenChange}
+      disableHoverablePopup={disableHoverablePopup}
+    >
       <TooltipPrimitive.Trigger render={children} />
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner side={side} sideOffset={8} className="z-[140]">
