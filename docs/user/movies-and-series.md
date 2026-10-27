@@ -1,7 +1,5 @@
 # Movies and series
 
-The poster-grid keyboard and related-title Back changes below are new in 0.0.20, including its Nightly previews.
-
 **Movies** and **Series** in the top bar list what your providers offer on demand, from [every subscription you added](subscriptions.md) together. Mr. Streamer loads both lists after connecting and keeps them on your computer, refreshing them twice a day; the first load can take a few seconds on a large subscription.
 
 Each film shows once, even when your provider lists it once per language or quality. Mr. Streamer picks the version in your language, then one with several languages, then one without a language mark. The arrow beside **Play** lets you pick another, as below.
@@ -27,7 +25,7 @@ The field at the end of the tabs searches movies on Movies and series on Series.
 
 ## Filtering the current list
 
-From 0.0.9, **Quality** and **Language** filter an open movie or series grid and its search results. From 0.0.12 they are compact menus on one line with **Verified**, after **Sort** where a list has one. Each menu lists every choice, with the current one checked, and **Any** clears that filter. Long menus scroll, and Escape closes an open menu before it leaves the list.
+**Quality** and **Language** filter an open movie or series grid and its search results. They are compact menus on one line with **Verified**, after **Sort** where a list has one. Each menu lists every choice, with the current one checked, and **Any** clears that filter. Long menus scroll, and Escape closes an open menu before it leaves the list.
 
 Quality and Language are hints from the provider's names. **Unknown** means no hint, and **MULTI** means a mark for several languages. The count shows matches out of the current list, beside a collection's name; **Reset** clears every filter. Switching between Movies and Series clears them too. ⌘K's search stays unfiltered.
 
@@ -68,7 +66,7 @@ A poster opens its details over the list, which stays where it was: the artwork,
 
 **Also in your subscriptions** lists related titles from your subscriptions' catalogues, excluding adult titles. Its posters open their details in place of these. **Back** in the top bar returns through up to eight previous details, restoring the season and scroll position, with keyboard focus on the related poster when it is still listed. From the first it returns to the page. **Close** or Escape returns to the page at once. Playing a title or opening Settings from the details keeps the way back. Opening a title from a page or search starts a new one. The top bar remains usable in details, including Back, Search and Settings.
 
-From 0.0.9, **Versions** lists quality first, then language and subscription. These are hints from the provider's name until you open a file. Equal hints within one subscription show a version count: expand it to choose each exact file by its original label, file type and added date where listed. Files in an expanded group get a version number in the provider’s list order. Matching names never make different files interchangeable.
+**Versions** lists quality first, then language and subscription. These are hints from the provider's name until you open a file. Equal hints within one subscription show a version count: expand it to choose each exact file by its original label, file type and added date where listed. Files in an expanded group get a version number in the provider’s list order. Matching names never make different files interchangeable.
 
 A tick names tracks actually read on this computer. A file with no subtitles says **No subtitles** only after it was read; another file with the same hints makes no such claim. A series observation says how many exact files it has read, including alternate files of one episode, rather than promising the tracks of every episode. Opening the menu reads no files. Changing or replacing a source clears obsolete observations, and series observations require its current episode details to have been opened here.
 
@@ -112,9 +110,9 @@ The watchlist is kept on your computer, with the subscription each title was sav
 The picture fills the window below the top bar, with the title, a timeline and the controls along the bottom; they fade while you watch and come back when you move the pointer.
 
 - Drag the timeline, or skip back and forward 10 seconds. A skip into what's already loaded is instant; further away, the picture takes a second to catch up.
-- **Sound** lists the sound tracks the file carries, and **CC** its subtitles. From 0.0.9, CC opens a panel with everything about subtitles: the tracks, their timing and look, and [online search](playback.md#online-subtitles-from-009). C turns the last ones you picked on and off, and a paused title stays paused while it changes. Your choice of language is remembered, and the next title or channel that has it starts with it, as **Audio in** and **Subtitles** under Settings > Playback and Settings > Subtitles describe. When the file has no sound in that language, its own default plays.
-- **Speed**, beside them, plays from 0.5× to 2×. Voices keep their pitch. The speed lasts for the title, and carries on when **Next episode** plays the one after. In 0.0.8 it is the first row of the sliders button's **Playback** menu.
-- **Timing**, in CC from 0.0.9, moves subtitles earlier or later in tenths of a second, for this title only. **Look** sets their size, a box or a shadow behind the text, low or higher up, and stays for every title and channel. Subtitles drawn as pictures, as on Blu-rays and DVDs, take only size and position. In 0.0.8 both are under **Playback > Subtitle timing** and **Subtitle look**.
+- **Sound** lists the sound tracks the file carries, and **CC** its subtitles. CC opens a panel with everything about subtitles: the tracks, their timing and look, and [online search](playback.md#online-subtitles). C turns the last ones you picked on and off, and a paused title stays paused while it changes. Your choice of language is remembered, and the next title or channel that has it starts with it, as **Audio in** and **Subtitles** under Settings > Playback and Settings > Subtitles describe. When the file has no sound in that language, its own default plays.
+- **Speed**, beside them, plays from 0.5× to 2×. Voices keep their pitch. The speed lasts for the title, and carries on when **Next episode** plays the one after.
+- **Timing**, in CC, moves subtitles earlier or later in tenths of a second, for this title only. **Look** sets their size, a box or a shadow behind the text, low or higher up, and stays for every title and channel. Subtitles drawn as pictures, as on Blu-rays and DVDs, take only size and position.
 - Menus follow the arrow keys. Escape or a click outside closes them without pausing or skipping.
 - **Mini player**, beside full screen, or P, shrinks the window into a small picture in a corner of the screen, on top of other windows. The title plays on where it was, with its subtitles, and the keys work as before. Drag the top of the picture to move it, and its corner to resize it. Escape, a double click or the arrows button puts the window back where it was, full screen included; the cross leaves the title. The countdown to the next episode carries on in it, and the next episode plays there. On a Mac the window and its Dock icon disappear for a moment each time it shrinks or grows back. Linux under Wayland can't keep a window on top, so there the mini player isn't offered.
 - **Next episode**, or N, plays the next one at once.

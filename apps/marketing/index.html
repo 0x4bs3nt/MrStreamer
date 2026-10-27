@@ -207,19 +207,87 @@
           </section>
         </div>
 
+        <!-- Each "also" names only players whose own pages document that need, as the README's sources show. -->
         <section class="need" id="what-you-need" data-reveal>
-          <h2>Bring your subscription.</h2>
-          <p>Connect Xtream Codes or an M3U playlist. No channels are included.</p>
+          <div>
+            <h2>Is it for you?</h2>
+            <p>Bring your Xtream Codes login or M3U playlist. No channels are included.</p>
+          </div>
+          <div>
+            <table>
+              <thead>
+                <tr>
+                  <td></td>
+                  <th scope="col">Mr. Streamer</th>
+                  <th scope="col">Also documented by</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Watch on a computer</th>
+                  <td>Yes. Mac, Windows and Linux.</td>
+                  <td>VLC, Kodi; IPTV Smarters on Mac and Windows; IPTVX on Apple silicon Macs</td>
+                </tr>
+                <tr>
+                  <th scope="row">Watch on Android TV</th>
+                  <td>No</td>
+                  <td>TiviMate, IPTV Smarters, IPTVX</td>
+                </tr>
+                <tr>
+                  <th scope="row">Your own XMLTV guide</th>
+                  <td>Yes, beside your provider's</td>
+                  <td>IPTVX, Kodi with IPTV Simple</td>
+                </tr>
+                <tr>
+                  <th scope="row">Offline downloads</th>
+                  <td>Yes, whole series included</td>
+                  <td>IPTVX on iPhone and iPad</td>
+                </tr>
+                <tr>
+                  <th scope="row">Record live TV</th>
+                  <td>No. Catch-up when your provider keeps it.</td>
+                  <td>TiviMate; IPTVX with its media server; VLC</td>
+                </tr>
+                <tr>
+                  <th scope="row">Play on a TV</th>
+                  <td>AirPlay on Mac, Google Cast on Windows</td>
+                  <td>IPTVX with AirPlay 2; VLC with Chromecast</td>
+                </tr>
+                <tr>
+                  <th scope="row">Free, open source</th>
+                  <td>Yes. No ads, no account.</td>
+                  <td>VLC, Kodi</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="checked">
+              Checked 27 October 2026 against each player's own pages; one not named may still do
+              it. <a href="https://github.com/Mr-Streamer-OSS/MrStreamer#is-it-for-you">Sources</a>
+            </p>
+          </div>
         </section>
 
         <section class="downloads" id="downloads" data-reveal>
-          <h2>Download</h2>
-          <p>macOS 13 or later on Apple silicon, Windows 11 or 64-bit Linux.</p>
-          <p class="actions">
-            <a class="button primary" href="/download">Download</a>
-            <!-- package:homebrew:availability -->
-            <!-- package:aur:availability -->
-          </p>
+          <h2>Get Mr. Streamer</h2>
+          <!-- The formats are words; the button goes to them. Homebrew and AUR are written by the build. -->
+          <dl>
+            <div>
+              <dt>Mac</dt>
+              <dd>macOS 13 or later, Apple silicon</dd>
+              <dd>DMG<!-- package:homebrew:lane --></dd>
+            </div>
+            <div>
+              <dt>Windows</dt>
+              <dd>Windows 11, 64-bit</dd>
+              <dd>Microsoft Store <span>·</span> Setup .exe</dd>
+            </div>
+            <div>
+              <dt>Linux</dt>
+              <dd>64-bit. The AppImage needs FUSE 2.</dd>
+              <dd>AppImage <span>·</span> .deb<!-- package:aur:lane --></dd>
+            </div>
+          </dl>
+          <a class="button primary" href="/download">Download</a>
         </section>
       </main>
 

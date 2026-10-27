@@ -4,13 +4,11 @@ Mr. Streamer is a free, open source IPTV player for Mac, Windows and Linux. Brin
 
 ## What it plays
 
-- Live TV from Xtream Codes or an M3U playlist, with a programme guide when your provider or playlist supplies one, as a list or a grid by time. You can add XMLTV guides of your own, which fill in the channels it doesn't cover. Programmes that aired play from their start when your provider keeps catch-up.
-- Movies and series from Xtream Codes or a playlist whose groups you mapped in Settings, with a watchlist and saved progress. Playlist movies and episodes need finished files; HLS entries stay out.
+- Live TV from Xtream Codes or an M3U playlist, with favourites, [your own channel lists](user/live-tv.md#your-lists) and [programme reminders](user/live-tv.md#reminders), and a programme guide when your provider or playlist supplies one, as a list or a grid by time. You can add XMLTV guides of your own, which fill in the channels it doesn't cover. Programmes that aired play from their start when your provider keeps catch-up.
+- Movies and series from Xtream Codes or a playlist whose groups you mapped in Settings, with a watchlist, saved progress, keyboard navigation through poster grids and Back through related titles. Playlist movies and episodes need finished files; HLS entries stay out.
 - The sound and subtitle tracks your provider sends. See [What plays](user/playback.md) for formats, playback on a TV and limits.
 
-You can [download movies and episodes](user/downloads.md) to watch offline. Mr. Streamer does not record live TV, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
-
-Stable 0.0.20 is the current release. New in 0.0.20, including its Nightly previews: [custom channel lists and programme reminders](user/live-tv.md#your-lists), [download pause, queue ordering and offline series continuation](user/downloads.md), and [poster-grid keyboard navigation and Back through related titles](user/movies-and-series.md).
+You can [download movies, episodes and whole series](user/downloads.md) to watch offline, pause downloads and reorder the queue. Downloaded episodes continue when **Next episode** is enabled and the next complete copy is on this computer. Mr. Streamer does not record live TV, bypass DRM or provide an IPTV subscription. It has no ads or account. Your provider decides what you can watch.
 
 It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI movies and episodes. Playback depends on the file's tracks and your system's decoders; [What plays](user/playback.md) describes conversion and the known limits. DASH streams are not supported.
 
@@ -26,7 +24,7 @@ It reads MPEG-TS and HLS live streams, MP3 and AAC radio, and MKV, MP4 and AVI m
 
 ## Your data
 
-Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider requests go directly from the app to the configured addresses and any redirects or stream addresses they supply, subject to the [login checks](security.md#your-login). From 0.0.11, usage statistics default on and can be turned off in **Settings > Privacy**: first-seen profiles and daily app use, and from 0.0.12 the parts of the app opened, playback, download and update-check results, and unexpected window stops. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections and the website's analytics; [Security](security.md) explains login storage and installer signing.
+Logins, preferences, favourites, watchlist, history and progress stay on your computer. Provider requests go directly from the app to the configured addresses and any redirects or stream addresses they supply, subject to the [login checks](security.md#your-login). Usage statistics default on and can be turned off in **Settings > Privacy**: first-seen profiles and daily app use, the parts of the app opened, playback, download and update-check results, and unexpected window stops. Viewing history and provider details are excluded; builds without a configured PostHog project send no app statistics. The [privacy policy](privacy.md) describes its connections, what each app sends and the website's analytics; [Security](security.md) explains login storage and installer signing.
 
 ## Licence and source
 

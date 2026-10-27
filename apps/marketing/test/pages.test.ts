@@ -73,9 +73,9 @@ describe("public document pages without JavaScript", () => {
     expect([...document.querySelectorAll("main h2")].map((heading) => heading.textContent)).toEqual(
       ["Getting started", "Watching", "Installing and updates", "Price and privacy"],
     );
-    expect(document.querySelectorAll(".faq-rows > div[id]")).toHaveLength(14);
+    expect(document.querySelectorAll(".faq-rows > div[id]")).toHaveLength(15);
     expect(document.querySelector("#download")?.textContent).toContain(
-      "Download a movie or an episode",
+      "Download a movie, an episode or a whole series",
     );
     expect(document.querySelector("#record")?.textContent).toContain("Live TV can't be recorded");
     expect(document.querySelector('main a[href="/docs/downloads"]')).not.toBeNull();
@@ -89,7 +89,7 @@ describe("public document pages without JavaScript", () => {
   it("sends non-public documentation to the repository and renders untrusted notes safely", () => {
     open(
       renderMarkdown(
-        "[Signing](../maintainers/signing.md#checking-a-build) [Privacy](../privacy.md#deleting-your-data)\n\n<script>alert(1)</script>\n\n[Bad](javascript:alert(1)) ![Remote](https://example.com/image.png)",
+        '[Signing](../maintainers/signing.md#checking-a-build) [Privacy](../privacy.md#deleting-your-data)\n\n<a id="old-heading"></a>\n\n<a id="old_heading"></a>\n\n<script>alert(1)</script>\n\n[Bad](javascript:alert(1)) ![Remote](https://example.com/image.png) <a id="inline" href="https://example.com">x</a>',
         "docs/user/playback.md",
       ),
     );
@@ -99,7 +99,9 @@ describe("public document pages without JavaScript", () => {
       ),
     ).not.toBeNull();
     expect(document.querySelector('a[href="/privacy#deleting-your-data"]')).not.toBeNull();
-    expect(document.querySelector("script, img")).toBeNull();
+    expect(document.querySelector("a#old-heading:empty")).not.toBeNull();
+    expect(document.querySelector("a#old_heading:empty")).not.toBeNull();
+    expect(document.querySelector("#inline, script, img")).toBeNull();
     expect(document.querySelector('a[href^="javascript:"]')).toBeNull();
   });
 

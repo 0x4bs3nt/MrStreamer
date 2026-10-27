@@ -1,5 +1,7 @@
 # Troubleshooting
 
+This guide covers the latest desktop release. See [Updates and channels](updates.md) to update an older installation.
+
 ## Where your data is
 
 Mr. Streamer keeps everything on your computer, in one folder:
@@ -44,7 +46,7 @@ The Windows installer isn't code-signed yet, so SmartScreen shows "Windows prote
 - **A guide address fails:** its row in Settings > Guides says why, or the line under the field when the address itself isn't one. "Not with an XMLTV guide" means the address answered with something else, usually a sign-in or error page, so check the address and its key. "Stopped before its end, or is damaged" is a download cut short or a broken file. "Every programme in this guide has ended" is a guide its publisher no longer updates. A guide over 2 GB unpacked or 50,000 channels is larger than Mr. Streamer reads: ask its publisher for a smaller one, such as one country's.
 - **A guide says "needs its address again":** your system no longer gives Mr. Streamer the key that encrypts the saved address, as after the app's signature or your keychain changed. The listings it downloaded still show. Add the same address once more in Settings > Guides: it keeps its place and your mapped channels.
 - **"Channels unavailable":** the provider didn't send the channel list. **Try again**, or check your internet connection. When a refresh fails, Mr. Streamer keeps showing the last channel list it received, and Settings > Subscriptions says why the list may be out of date, under the subscription it is about; the refresh button beside Channels tries again.
-- **No Movies, Series or Watchlist in the top bar:** an unmapped playlist brings live TV only. From 0.0.9, they also show once you [map a playlist's groups](subscriptions.md#mapping-mixed-playlists), or when one of your subscriptions has an Xtream login.
+- **No Movies, Series or Watchlist in the top bar:** an unmapped playlist brings live TV only. They show once you [map a playlist's groups](subscriptions.md#mapping-mixed-playlists), or when one of your subscriptions has an Xtream login.
 - **One subscription's channels or titles are missing:** its provider didn't answer, or its password is needed again. The others show as usual. Settings > Subscriptions says which under its row, with **Retry** or **Enter password**; see [Subscriptions](subscriptions.md#looking-after-them).
 - **Movies or Series stay empty:** the first load of a large list takes a few seconds. If the provider offers no movies or series, the pages say so. A failed refresh keeps the last lists; Settings > Subscriptions says why under that subscription and refreshes them on their own.
 - **No genres or streaming services:** they come from TMDB, which takes about a quarter of an hour the first time on a large subscription. Settings > Movies and series shows how far it got beside TMDB, or that TMDB refused the key; **Own key…** takes your own. Titles your provider lists without a TMDB id never get them.

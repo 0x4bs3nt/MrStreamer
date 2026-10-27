@@ -78,10 +78,24 @@ describe("the home page", () => {
       ["Download", "/download"],
     ]);
     expect(links(".hero .actions a")).toEqual([["Download", "/download"]]);
-    expect(links("#downloads a")).toEqual([["Download", "/download"], HOMEBREW, AUR]);
+    expect(links("#downloads a")).toEqual([
+      ["Homebrew tap", HOMEBREW[1]],
+      ["AUR", AUR[1]],
+      ["Download", "/download"],
+    ]);
     expect(
       document.querySelector('[data-installer], [data-release-version], a[href^="https://apps."]'),
     ).toBeNull();
+  });
+
+  it("lays out each system with what it needs and how it installs, the formats as words", () => {
+    open(home);
+
+    expect(shown("#downloads dl > div").map((lane) => [...lane.children].map(said))).toEqual([
+      ["Mac", "macOS 13 or later, Apple silicon", "DMG · Homebrew tap"],
+      ["Windows", "Windows 11, 64-bit", "Microsoft Store · Setup .exe"],
+      ["Linux", "64-bit. The AppImage needs FUSE 2.", "AppImage · .deb · AUR for Arch"],
+    ]);
   });
 });
 

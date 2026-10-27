@@ -1,6 +1,6 @@
 # Subscriptions
 
-Mr. Streamer plays the subscriptions you add: Xtream Codes access, with a server address, username and password, or an M3U playlist link. Playlists start with live TV; from 0.0.9, explicit group mapping also imports movies and series. You can add several, and everything from all of them shows together. There is no subscription to switch to: Home, Live TV, Movies, Series and search always show every one.
+Mr. Streamer plays the subscriptions you add: Xtream Codes access, with a server address, username and password, or an M3U playlist link. Playlists start with live TV; [mapping their groups](#mapping-mixed-playlists) also imports movies and series. You can add several, and everything from all of them shows together. There is no subscription to switch to: Home, Live TV, Movies, Series and search always show every one.
 
 ## Adding one
 
@@ -14,7 +14,7 @@ Its channels join the lists first, then its guide, movies and series. What you'r
 
 ## Mapping mixed playlists
 
-From version 0.0.9, open a playlist subscription in Settings and choose **Map** beside **Groups**. Choose each group's use: **Live TV**, **Movies**, **Series** or **Skip**. Picks apply immediately. A playlist without mapping keeps its original live-only behaviour.
+Open a playlist subscription in Settings and choose **Map** beside **Groups**. Choose each group's use: **Live TV**, **Movies**, **Series** or **Skip**. Picks apply immediately. A playlist without mapping stays live TV only.
 
 Groups come from `group-title` or `#EXTGRP`, with semicolons for several memberships. An `#EXTGRP` group applies to following entries until an empty directive or explicit `group-title` resets it. See the [category compatibility matrix](category-compatibility.md) for supported conventions and fixture sources.
 
@@ -79,7 +79,7 @@ A subscription's programme guide comes from its provider, or from the guide its 
 
 A guide that isn't XMLTV, stops before its end, lists no programmes still to come or is larger than Mr. Streamer reads fails the same way, and the programmes it had stay in use.
 
-From 0.0.13, a guide address you gave a subscription before is in Settings > Guides, with the channels you mapped to it. The same address given to several subscriptions is one guide there. It downloads again straight after the update. Until then it uses the newest of what your subscriptions had downloaded, and a channel you mapped to what only an older download listed shows programmes again once that download is in.
+After updating from a version before 0.0.13, a guide address you gave a subscription there is in Settings > Guides, with the channels you mapped to it. The same address given to several subscriptions is one guide there. It downloads again straight after the update. Until then it uses the newest of what your subscriptions had downloaded, and a channel you mapped to what only an older download listed shows programmes again once that download is in.
 
 ### Channels without programmes
 
@@ -99,8 +99,8 @@ Open its row and choose **Remove**. Mr. Streamer asks first, and says what happe
 
 - What plays from it stops. What plays from another subscription carries on.
 - Its login, its lists and its own guide are deleted from this computer, with the channels you mapped. The other subscriptions keep theirs, and the guides of Settings > Guides stay.
-- Its favourites, watchlist, history and progress stay, and come back when you add the same account again. From 0.0.20, including its Nightly previews, this also includes channels in your custom lists. Tick **Also delete…** to delete them too, along with saved subtitles. Your custom lists themselves stay. A title on the watchlist that another subscription saved as well stays there either way.
-- From 0.0.20, removing a subscription also removes its programme reminders. Finished downloads stay; unfinished downloads are cancelled.
+- Its favourites, watchlist, history and progress stay, and come back when you add the same account again. This includes channels in your custom lists. Tick **Also delete…** to delete them too, along with saved subtitles. Your custom lists themselves stay. A title on the watchlist that another subscription saved as well stays there either way.
+- Removing a subscription also removes its programme reminders. Finished downloads stay; unfinished downloads are cancelled.
 - Removing your only subscription returns to the Connect screen.
 
 ## Going back to an older version

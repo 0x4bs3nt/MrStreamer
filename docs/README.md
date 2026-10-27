@@ -3,7 +3,7 @@
 ## Using Mr. Streamer
 
 - [About Mr. Streamer](./about.md)
-- [Download and install](../README.md#install)
+- [Download and install](../README.md#download-and-set-up)
 - [Subscriptions](./user/subscriptions.md)
 - [Live TV](./user/live-tv.md)
 - [Movies and series](./user/movies-and-series.md)

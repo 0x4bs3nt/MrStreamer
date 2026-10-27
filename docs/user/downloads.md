@@ -1,13 +1,13 @@
 # Downloads
 
-From 0.0.10 you can download a movie or a single episode, and from 0.0.12 a whole series, and watch it later on this computer, without a network connection and without a subscription.
+This guide covers the latest desktop release. See [Updates and channels](updates.md) to update an older installation.
 
-Pausing, queue ordering and offline series continuation are new in 0.0.20, including its Nightly previews.
+Download a movie, an episode or a whole series and watch it later on this computer, without a network connection and without a subscription. Pause downloads, reorder the queue, and watch a downloaded series episode after episode.
 
 ## Downloading
 
 - **Movies:** open the movie and press **Download**, beside **Play** and **Save**. It downloads the version **Play** would play, so pick another with the arrow beside **Play** first if you want that one.
-- **Series**, from 0.0.12: open **Download**, beside **Play** and **Save**. Its menu names every available season, including Specials, and the selected provider version. Pick another version with Play’s arrow first. Confirm **Download … episodes** to add the remaining episodes to the end of the queue. Each episode uses the file its row would play, including its resumed file when still listed. Already downloaded or queued files are skipped; failed files are retried. A partial result names files that could not be added and offers **Retry**, while successful additions stay in the queue. The menu also offers **Retry failed**, **Cancel the rest** and **Open Downloads**. New episodes need another confirmation.
+- **Series:** open **Download**, beside **Play** and **Save**. Its menu names every available season, including Specials, and the selected provider version. Pick another version with Play’s arrow first. Confirm **Download … episodes** to add the remaining episodes to the end of the queue. Each episode uses the file its row would play, including its resumed file when still listed. Already downloaded or queued files are skipped; failed files are retried. A partial result names files that could not be added and offers **Retry**, while successful additions stay in the queue. The menu also offers **Retry failed**, **Cancel the rest** and **Open Downloads**. New episodes need another confirmation.
 - **Episodes:** each row keeps a download icon in the same place. Queued, progress, waiting and failure messages appear beside its date and duration; a thin progress bar runs along the still. The icon cancels an unfinished download, resumes a paused one, retries a failed one, or watches a completed copy offline.
 
 A movie’s button then shows how the download stands: **Queued**, its progress, **Waiting for playback**, **Paused** with **Resume**, or what went wrong with **Retry**. Pressing it while it is queued or downloading cancels it, and while it is paused resumes it. Once it is on this computer it reads **Watch offline**, and on a movie the arrow beside it has **Delete download**.
@@ -31,7 +31,7 @@ The page also shows how much space downloads take and how much is free on that d
 
 ## Episodes of a series
 
-From 0.0.20, two or more downloaded episodes of the same series version sit together on the Downloads page, under the series' name. Each season lists its episodes in the series' order. An episode the series has between two of yours that isn't on this computer gets a line of its own, such as "S2 E3 isn't on this computer". The arrow beside the name folds the episodes away. Episodes downloaded with an earlier version of the app keep their own rows.
+Two or more downloaded episodes of the same series version sit together on the Downloads page, under the series' name. Each season lists its episodes in the series' order. An episode the series has between two of yours that isn't on this computer gets a line of its own, such as "S2 E3 isn't on this computer". The arrow beside the name folds the episodes away. Episodes downloaded with an earlier version of the app keep their own rows.
 
 When an episode ends, the next one plays after the countdown if its complete copy is on this computer. **Play now** starts it at once and **Cancel** stays where you are. **Next episode** and its delay in **Settings > Playback** work here too. The next one is always the episode right after it in the series. When that one isn't on this computer, or is still downloading, the end of the episode says so and nothing plays. No missing episode is skipped or streamed instead. Episodes downloaded with an earlier version of the app have no next episode.
 

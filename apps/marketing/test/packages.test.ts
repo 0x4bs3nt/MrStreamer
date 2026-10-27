@@ -107,41 +107,74 @@ describe("independently published download routes", () => {
     expect(document.querySelector("[data-package], pre")).toBeNull();
   });
 
-  it.each(
-    [home, faq].flatMap((html) => (["homebrew", "aur"] as const).map((name) => ({ html, name }))),
-  )("keeps availability copy in sync with publication and withdrawal", ({ html, name }) => {
-    for (const state of ["published", "withdrawn", "unpublished"] as const) {
-      const routes = published(name);
-      const template = document.createElement("template");
-      template.innerHTML = writePackages(html, {
-        ...routes,
-        [name]: {
-          ...routes[name],
-          publication:
-            state === "unpublished"
-              ? { state, lastVerifiedVersion: null }
-              : {
-                  state,
-                  lastVerifiedVersion: "0.0.18",
-                  receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1",
-                },
-        },
-      });
-      const link = template.content.querySelector<HTMLAnchorElement>("[data-package]");
-      if (state === "published") {
-        expect(link?.href).toBe(PACKAGE_ROUTES[name].url);
-        const route = PACKAGE_ROUTES[name];
-        expect(link?.parentElement?.textContent).toBe(
-          `Also on ${route.name} · ${route.platform}, ${route.architecture}.`,
-        );
-      } else {
-        expect(link).toBeNull();
-        expect(template.content.textContent).not.toContain("Also on");
+  /**
+   * `html` as the build writes it with `name` in `state` and the other route unpublished. In every
+   * state the page keeps its /download link and shows nothing of the other route.
+   */
+  function written(
+    html: string,
+    name: PackageName,
+    state: "published" | "withdrawn" | "unpublished",
+  ) {
+    const routes = published(name);
+    const template = document.createElement("template");
+    template.innerHTML = writePackages(html, {
+      ...routes,
+      [name]: {
+        ...routes[name],
+        publication:
+          state === "unpublished"
+            ? { state, lastVerifiedVersion: null }
+            : {
+                state,
+                lastVerifiedVersion: "0.0.18",
+                receipt: "https://github.com/orgs/Mr-Streamer-OSS/projects/1",
+              },
+      },
+    });
+    expect(template.content.querySelector('a[href="/download"]')).not.toBeNull();
+    expect(
+      template.content.querySelector(`[data-package="${name === "aur" ? "homebrew" : "aur"}"]`),
+    ).toBeNull();
+    return template.content;
+  }
+
+  it.each(["homebrew", "aur"] as const)(
+    "keeps the FAQ's %s availability in sync with publication and withdrawal",
+    (name) => {
+      for (const state of ["published", "withdrawn", "unpublished"] as const) {
+        const page = written(faq, name, state);
+        const link = page.querySelector<HTMLAnchorElement>("[data-package]");
+        if (state === "published") {
+          const route = PACKAGE_ROUTES[name];
+          expect(link?.href).toBe(route.url);
+          expect(link?.parentElement?.textContent).toBe(
+            `Also on ${route.name} · ${route.platform}, ${route.architecture}.`,
+          );
+        } else {
+          expect(link).toBeNull();
+          expect(page.textContent).not.toContain("Also on");
+        }
       }
-      expect(template.content.querySelector('a[href="/download"]')).not.toBeNull();
-      expect(
-        template.content.querySelector(`[data-package="${name === "aur" ? "homebrew" : "aur"}"]`),
-      ).toBeNull();
-    }
-  });
+    },
+  );
+
+  it.each([
+    ["homebrew", "DMG", "DMG · Homebrew tap"],
+    ["aur", "AppImage · .deb", "AppImage · .deb · AUR for Arch"],
+  ] as const)(
+    "names the home page's %s route after its formats only while published",
+    (name, formats, withRoute) => {
+      for (const state of ["published", "withdrawn", "unpublished"] as const) {
+        const page = written(home, name, state);
+        const lanes = [...page.querySelectorAll("#downloads dd")].map((dd) =>
+          dd.textContent?.replace(/\s+/g, " ").trim(),
+        );
+        expect(lanes).toContain(state === "published" ? withRoute : formats);
+        expect(page.querySelector<HTMLAnchorElement>("[data-package]")?.href).toBe(
+          state === "published" ? PACKAGE_ROUTES[name].url : undefined,
+        );
+      }
+    },
+  );
 });

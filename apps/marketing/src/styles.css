@@ -2,9 +2,11 @@
  * mrstreamer.app: true black, white text. Sizes are in em of the body's font size, which follows
  * the window's width, so the home page keeps its proportions:
  * - Up to 700 px wide everything is one column: the hero, the fan of windows,
- *   the two features, the subscription and Download.
- * - From 700 px the features are two across.
- * - From 1120 px the fan, the features and the subscription share one width.
+ *   the two features, Is it for you? with its needs as stacked rows, and Get Mr. Streamer with
+ *   a row for each system.
+ * - From 700 px the features are two across and the needs are a table.
+ * - From 1120 px the fan, the features, Is it for you? and Get Mr. Streamer share one width,
+ *   Is it for you?'s heading beside the table and the systems in three columns.
  * - From 1600 px the page stops growing and stays centred.
  * Every download action on the home page is a link to /download. There, the visitor's own system
  * comes first (src/system.ts) above the rows for every system.
@@ -376,8 +378,7 @@ h1 {
 }
 
 .feature p,
-.need p,
-.downloads p {
+.need p {
   margin-top: 0.4em;
   color: var(--soft);
   line-height: 1.45;
@@ -392,17 +393,186 @@ h1 {
   margin: 4em var(--inset) 0;
 }
 
-.need p {
+.need h2 + p {
   max-width: 30em;
   font-size: 1.05em;
 }
 
-.downloads {
-  text-align: center;
+/*
+ * Is it for you?: what a visitor may want, what Mr. Streamer does, and the players whose own pages
+ * document it. A table from 700 px; below that each need is a stacked row under one line naming
+ * its two parts, Mr. Streamer in white and the other players in grey, as the rows show them.
+ */
+.need table {
+  width: 100%;
+  margin-top: 1.25em;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.95em;
+  line-height: 1.41;
 }
 
-.downloads .actions {
-  margin-top: 1.3em;
+.need th,
+.need td {
+  padding: 0.82em 1.18em 0.82em 0;
+  border-bottom: 1px solid #1c1c1c;
+  text-align: left;
+  vertical-align: top;
+}
+
+.need tr > :last-child {
+  padding-right: 0;
+  color: var(--soft);
+}
+
+.need thead td {
+  width: 28.2%;
+}
+
+.need thead th:first-of-type {
+  width: 34.6%;
+}
+
+.need thead > tr > * {
+  padding-top: 0;
+  padding-bottom: 0.67em;
+  border-color: var(--line);
+  font-size: 0.88em;
+  color: var(--soft);
+}
+
+.need th {
+  font-weight: 650;
+}
+
+.need .checked {
+  margin-top: 0.9em;
+  font-size: 0.83em;
+}
+
+.need .checked a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+@media (max-width: 43.74em) {
+  .need table {
+    font-size: 1em;
+  }
+
+  .need tr {
+    display: grid;
+    gap: 0.2em;
+    padding: 0.75em 0;
+    border-top: 1px solid #1c1c1c;
+  }
+
+  .need thead tr {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2em 1em;
+    padding: 0;
+    border: 0;
+  }
+
+  .need thead td {
+    /* Keep the empty first column in the accessible table, outside the visible legend. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .need thead th:first-of-type {
+    width: auto;
+    color: #fff;
+  }
+
+  .need tbody tr:first-child {
+    border-top-color: var(--line);
+  }
+
+  .need tbody tr:last-child {
+    border-bottom: 1px solid #1c1c1c;
+  }
+
+  .need th,
+  .need td {
+    padding: 0;
+    border: 0;
+    line-height: 1.4;
+  }
+
+  .need td {
+    font-size: 0.94em;
+  }
+
+  .need .checked {
+    margin-top: 0.85em;
+    font-size: 0.875em;
+  }
+}
+
+/*
+ * Get Mr. Streamer: each system with what it needs and how it installs, then the one button, to
+ * /download. A row per system with its name on the left; from 1120 px three columns, the button
+ * beside the heading. Homebrew and AUR show only once the build writes them (scripts/pages.ts).
+ */
+.downloads {
+  display: grid;
+  gap: 1.125em;
+}
+
+/* The systems' names share one column, wide enough for the longest in any font. */
+.downloads dl {
+  display: grid;
+  grid-template-columns: minmax(4.75em, max-content) 1fr;
+  border-top: 1px solid var(--line);
+}
+
+.downloads dl > div {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  gap: 0.19em 0.75em;
+  padding: 0.75em 0;
+  border-bottom: 1px solid #1c1c1c;
+}
+
+.downloads dt {
+  grid-row: span 2;
+  font-weight: 650;
+}
+
+.downloads dt,
+.downloads dd {
+  line-height: 1.375;
+}
+
+.downloads dd {
+  grid-column: 2;
+}
+
+.downloads dd:first-of-type {
+  color: var(--soft);
+  font-size: 0.94em;
+  line-height: 1.4;
+}
+
+.downloads dd span {
+  color: var(--dim);
+}
+
+.downloads dd a {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.downloads .button {
+  justify-self: start;
+  margin-top: 0.375em;
 }
 
 /*
@@ -621,7 +791,8 @@ footer p {
 
   .showcase,
   .gallery,
-  .need {
+  .need,
+  .downloads {
     width: 68em;
     margin-inline: auto;
   }
@@ -649,13 +820,60 @@ footer p {
     margin-top: 5.5em;
   }
 
-  .need p {
-    margin-top: 0;
+  .need h2 + p {
+    margin-top: 0.7em;
     font-size: 1.1em;
   }
 
+  .need table {
+    margin-top: 0;
+  }
+
   .downloads {
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 1.56em 2.2em;
     margin-top: 5.5em;
+  }
+
+  .downloads dl {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3em;
+    padding-top: 1.22em;
+  }
+
+  .downloads dl > div {
+    grid-column: auto;
+    grid-template-columns: 1fr;
+    align-content: start;
+    gap: 0.33em;
+    padding: 0;
+    border: 0;
+  }
+
+  .downloads dt {
+    grid-row: auto;
+    font-size: 1.33em;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.02em;
+  }
+
+  .downloads dd,
+  .downloads dd:first-of-type {
+    grid-column: auto;
+    font-size: 0.944em;
+    line-height: 1.41;
+  }
+
+  .downloads dd:last-child {
+    padding-top: 0.59em;
+  }
+
+  .downloads .button {
+    grid-area: 1 / 2;
+    margin-top: 0;
   }
 
   footer {
@@ -671,7 +889,7 @@ footer p {
  * - As the page opens, without JavaScript: the bar drops in, the mark pops, the headline and its
  *   lines rise and the button pops.
  * - As a part scrolls into view, main.ts adds `revealed` to it and takes it off once every
- *   animation under it has finished: a feature, the subscription and Download rise, and the
+ *   animation under it has finished: a feature, Is it for you? and Download rise, and the
  *   stack's three windows fan out from one spot, one after another, 1.4 seconds in all.
  */
 @keyframes drop {

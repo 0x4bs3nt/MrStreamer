@@ -1,7 +1,5 @@
 # Live TV
 
-Custom channel lists and programme reminders are new in 0.0.20, including its Nightly previews.
-
 ## Home
 
 Home plays the channel you watched last, muted, in a compact preview with what's on it now: the programme, how long it has left and what comes next. **Watch** opens it full window with sound, on the same stream, so it doesn't start again. The speaker button turns the sound on without leaving Home.
@@ -30,7 +28,7 @@ Under each channel's name, a smaller line tells it apart: the subscription it's 
 
 - Click a channel to watch it. **Back**, or Escape, returns to the same place in the list.
 - The arrow at the end of a row lists the rest of the day. Click a later programme to read about it.
-- From 0.0.13, on a channel your provider keeps recordings of (catch-up), the rest of the day starts with today's programmes that already aired. Click one to watch it from its start. Watch says when it aired, and at its end the channel stops; **Watch** then plays the channel live. A programme older than your provider keeps says how many days back catch-up goes. Catch-up plays on this computer, not on a TV.
+- On a channel your provider keeps recordings of (catch-up), the rest of the day starts with today's programmes that already aired. Click one to watch it from its start. Watch says when it aired, and at its end the channel stops; **Watch** then plays the channel live. A programme older than your provider keeps says how many days back catch-up goes. Catch-up plays on this computer, not on a TV.
 - The star adds a channel to your favourites. A new favourite goes last, and **Reorder** puts them in the order you want.
 
 **Guide**, beside **Watch** at the top, or G, shows the same channels as a grid: channels down the side and time across, with a line at now. It goes ahead as far as your provider's guide reaches, and back a couple of hours, or as many days as the longest catch-up among the list's channels keeps, at most a week; hatched stretches are where the guide has nothing. Left and Right move between programmes, Up and Down between channels at the same time, and Page Up, Page Down, Home and End jump as in the list. Click a programme, or move to it, to see what it is under its channel. **Watch live**, Enter or a double click watches the channel; click a channel's name to watch it. Channels with catch-up have a clock sign beside their name. A programme that aired and that catch-up keeps plays from its start with Enter, a double click or **Play from start**, and one on now has **Play from start** after **Watch live**. Programmes that aired and can't be played again are dimmed. Wheels and trackpads scroll both ways, and **Now** comes back to now. **List**, G again or Escape goes back to the list, and Live TV opens in the view you left it in. A search shows each channel it finds once, as the list's shared rows do.
@@ -63,13 +61,13 @@ The guide, the channel list while watching and Home's category row show the list
 
 ## Watching
 
-While watching, the channel list opens over the left of the picture with the list button, Enter or the left arrow. Click a channel to switch; its title switches to another category, with the same countries and **Find** as Live TV. Clicking the picture shows the controls, and a double click toggles full screen. From 0.0.9, scroll over the picture to switch channel, once per gesture.
+While watching, the channel list opens over the left of the picture with the list button, Enter or the left arrow. Click a channel to switch; its title switches to another category, with the same countries and **Find** as Live TV. Clicking the picture shows the controls, and a double click toggles full screen. Scroll over the picture to switch channel, once per gesture.
 
-From 0.0.9, the bar keeps Channels, Favourite, Stop or Watch, CC when available, volume, full screen and **More**. More holds channel up, channel down, the previous channel, Sound, Quality, Play on and Mini player. In 0.0.8, these actions have their own buttons in the bar.
+The bar keeps Channels, Favourite, Stop or Watch, CC when available, volume, full screen and **More**. More holds channel up, channel down, the previous channel, Sound, Quality, Play on and Mini player.
 
 - **Sound**, in More, shows when a channel has more than one sound track. Picking another starts the channel again with it, which takes a moment. An HLS channel, as most of a playlist's are, switches without starting again.
 - **CC** lists the channel's subtitles: DVB subtitles, teletext subtitle pages and closed captions, and on an HLS channel the subtitles its stream offers. C turns the last ones you picked on and off.
-- From 0.0.9, **CC** also has **Timing**, which moves teletext subtitles and captions earlier or later until you switch channel, and the rows that set how subtitles look, as for [movies and series](movies-and-series.md#watching). In 0.0.8 they are under **Playback**. Live channels play at their own speed.
+- **CC** also has **Timing**, which moves teletext subtitles and captions earlier or later until you switch channel, and the rows that set how subtitles look, as for [movies and series](movies-and-series.md#watching). Live channels play at their own speed.
 - **Quality**, in More, shows on a channel with several qualities. Its page says which one plays. Q opens it directly.
 - **Mini player**, in More, or P, shrinks the window into a small picture on top of other windows, as for [movies and series](movies-and-series.md#watching). Up and Down still switch channel; opening the list puts the window back.
 - The keyboard's media keys and the system's own controls show the programme, the channel and its logo. Pause or stop there stops the channel, and **Watch** starts it again. Next and previous do nothing, so a tap on your headphones never changes channel. On [a TV](playback.md#playing-on-a-tv), a channel paused with the TV's own remote shows as paused, and play there plays it on.

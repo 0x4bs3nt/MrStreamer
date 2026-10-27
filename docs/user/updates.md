@@ -72,7 +72,7 @@ The Microsoft Store updates a copy you installed from it, so Mr. Streamer never 
 
 Windows lists the Store copy with 1 added to the first number of the version, such as 1.0.4.0 for Mr. Streamer 0.0.4, because the Store doesn't take a 0 there.
 
-From 0.0.8, the Store and the Start menu call it "Mr. Streamer: IPTV Player". It's the same app.
+The Store and the Start menu call it "Mr. Streamer: IPTV Player"; packages up to 0.0.7 use "Mr. Streamer". It's the same app.
 
 The Store copy and a copy installed from the setup file are separate. Each keeps its own login, preferences, favourites and history, and neither reads or changes the other's. Moving from the setup file to the Store copy starts fresh: you sign in again, and your favourites, history and progress stay with the other copy. Store updates keep its data. Uninstalling it removes its data, as Windows does for every Store app.
 

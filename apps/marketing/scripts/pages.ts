@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { Marked } from "marked";
 import type { Downloads } from "../src/downloads.ts";
-import { PACKAGE_ROUTES, type PackageRoutes } from "../src/packages.ts";
+import { PACKAGE_ROUTES, type PackageName, type PackageRoutes } from "../src/packages.ts";
 import { RELEASES, type Release } from "./releases.ts";
 
 export const SITE = "https://mrstreamer.app";
@@ -140,19 +140,27 @@ function escapeHtml(text: string): string {
   );
 }
 
+/** Home's platform lanes name a route in the fewest words: its link, then what it is for. */
+const LANE: Readonly<Record<PackageName, readonly [link: string, after: string]>> = {
+  homebrew: ["Homebrew tap", ""],
+  aur: ["AUR", " for Arch"],
+};
+
 /** Writes only independently verified package routes, never inferred from the release feed. */
 export function writePackages(html: string, routes: PackageRoutes = PACKAGE_ROUTES): string {
   return html.replaceAll(
-    /<!-- package:(homebrew|aur):(link|details|availability) -->/g,
-    (_mark, name: "homebrew" | "aur", part: "link" | "details" | "availability") => {
+    /<!-- package:(homebrew|aur):(link|details|availability|lane) -->/g,
+    (_mark, name: PackageName, part: "link" | "details" | "availability" | "lane") => {
       const route = routes[name];
       if (
         route.publication.state !== "published" ||
         !/^\d+\.\d+\.\d+$/.test(route.publication.lastVerifiedVersion)
       )
         return "";
-      const label = `${route.name} · ${route.platform}, ${route.architecture}`;
-      const link = `<a data-package="${name}" href="${escapeHtml(route.url)}">${escapeHtml(label)}</a>`;
+      const anchor = (words: string) =>
+        `<a data-package="${name}" href="${escapeHtml(route.url)}">${escapeHtml(words)}</a>`;
+      if (part === "lane") return ` <span>·</span> ${anchor(LANE[name][0])}${LANE[name][1]}`;
+      const link = anchor(`${route.name} · ${route.platform}, ${route.architecture}`);
       if (part === "availability") return `<span>Also on ${link}.</span>`;
       if (part === "link") return link;
       return `<div class="package-route">${link}<small>${escapeHtml(route.updates)} Package ${escapeHtml(route.publication.lastVerifiedVersion)}.</small><pre><code>${escapeHtml(route.install)}</code></pre></div>`;
@@ -179,7 +187,10 @@ function linkTo(href: string, source: string): string | null {
   return `${REPOSITORY}/blob/main/${target}${suffix}`;
 }
 
-/** Render Markdown without embedded HTML, unsafe URLs or third-party image requests. */
+/**
+ * Render Markdown without embedded HTML, unsafe URLs or third-party image requests. The one HTML
+ * kept is an empty anchor alone in a paragraph, which holds a renamed heading's old fragment.
+ */
 export function renderMarkdown(
   text: string,
   source: string,
@@ -216,6 +227,10 @@ export function renderMarkdown(
         return target
           ? `<a href="${escapeHtml(target)}">${escapeHtml(text || "Image")}</a>`
           : escapeHtml(text);
+      },
+      paragraph({ text }) {
+        const legacy = /^<a id="([a-z0-9_-]+)"><\/a>$/.exec(text.trim())?.[1];
+        return legacy ? `<a id="${anchorPrefix}${legacy}"></a>\n` : false;
       },
       html({ text }) {
         return escapeHtml(text);
