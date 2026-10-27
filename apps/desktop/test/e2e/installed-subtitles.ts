@@ -206,9 +206,16 @@ export async function bootstrapSubtitles(
     const boundary = Symbol.for('mrstreamer.installedSubtitles');
     if (globalThis[boundary]) throw new Error('Subtitle boundary already installed');
     globalThis[boundary] = { requests };
-    globalThis.fetch = (${subtitleFetch.toString()})(${JSON.stringify(origin)}, globalThis.fetch, request => {
+    const wrap = request => (${subtitleFetch.toString()})(${JSON.stringify(origin)}, request, observed => {
       if (requests.length >= 1000) throw new Error('Subtitle request evidence limit exceeded');
-      requests.push(request);
+      requests.push(observed);
+    });
+    let current = wrap(globalThis.fetch);
+    // The app installs its own fetch before clients capture it; keep this boundary on that one.
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      get: () => current,
+      set: request => { current = wrap(request); },
     });
     return { pid: process.pid, origin: ${JSON.stringify(origin)}, boundary: 'SubDL fetch only' };
   })()`;

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { subtitleServiceClient } from "../src/main/subtitles/service-client.ts";
 import { connect } from "./e2e/app.ts";
@@ -130,6 +131,13 @@ describe("installed subtitle network boundary", () => {
       `
       (async () => {
       if (!globalThis[Symbol.for('mrstreamer.installedSubtitles')]) throw new Error('Entry ran before network bootstrap');
+      // The packaged app replaces fetch at startup before clients capture it.
+      const { install, MockAgent, setGlobalDispatcher } = require(${JSON.stringify(createRequire(new URL("../package.json", import.meta.url)).resolve("undici"))});
+      const isolated = new MockAgent();
+      isolated.disableNetConnect();
+      isolated.enableNetConnect(${JSON.stringify(new URL(fixture.origin).host)});
+      setGlobalDispatcher(isolated);
+      install();
       const request = fetch;
       const response = await request('https://api.subdl.com/api/v1/subtitles?api_key=synthetic-installed-subdl&type=movie&tmdb_id=123&languages=EN');
       const reply = await response.json();
