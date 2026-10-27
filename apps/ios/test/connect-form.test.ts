@@ -52,6 +52,9 @@ vi.mock("../src/downloads.ts", () => ({
   useDownloads: () => ({ items: [], series: {}, bytes: 0, free: null, ended: 0 }),
 }));
 vi.mock("expo-router", () => ({ router: { push: () => undefined } }));
+vi.mock("react-native-safe-area-context", async () => ({
+  SafeAreaView: (await import("./react-native.ts")).reactNative.View,
+}));
 // ui.tsx keeps its pictures with artwork-cache.ts: over the files stand-in here.
 vi.mock("expo-file-system", () => import("./native-files.ts"));
 // Channel rows draw their star with an SF Symbol.

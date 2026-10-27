@@ -1,6 +1,7 @@
 import { router } from "expo-router";
 import { useState } from "react";
 import { Image, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { DownloadsLink } from "../downloads-screen.tsx";
 import { useDownloads } from "../downloads.ts";
 import { openLink } from "../open-link.ts";
@@ -8,72 +9,83 @@ import { ProviderForm } from "../provider-form.tsx";
 import { requestStatisticsChoice } from "../statistics-consent.ts";
 import { colors, TextButton } from "../ui.tsx";
 
-/** Welcome, an optional statistics choice, then the ordinary cancellable provider form. */
+/**
+ * Welcome, an optional statistics choice, then the ordinary cancellable provider form.
+ * Welcome lays out inside the safe area, so its stretched content fits the screen exactly and
+ * only scrolls when it truly overflows (large text, downloads). The form keeps native automatic
+ * and keyboard insets.
+ */
 export default function Connect() {
   const { fontScale } = useWindowDimensions();
   const downloads = useDownloads();
   const [form, setForm] = useState(false);
   return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
-      keyboardShouldPersistTaps="handled"
-      automaticallyAdjustKeyboardInsets
-    >
-      {form ? (
-        <>
-          <TextButton label="Back" onPress={() => setForm(false)} />
-          <View style={styles.heading}>
-            <Text style={styles.title} accessibilityRole="header">
-              Add your provider
-            </Text>
-            <Text style={styles.lead}>Use the login from your IPTV provider.</Text>
-          </View>
-          <ProviderForm mode={{ kind: "connect" }} />
-          <Text style={styles.footnote}>Your login goes only to your provider.</Text>
-          <View style={styles.space} />
-        </>
-      ) : (
-        <>
-          <View style={[styles.brand, fontScale > 1.2 && styles.brandTop]}>
-            <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-              <Image source={require("../../assets/mark.png") as number} style={styles.mark} />
+    <SafeAreaView style={styles.screen} edges={form ? [] : ["top", "bottom"]}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior={form ? "automatic" : "never"}
+        alwaysBounceVertical={form}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+      >
+        {form ? (
+          <>
+            <TextButton label="Back" onPress={() => setForm(false)} />
+            <View style={styles.heading}>
+              <Text style={styles.title} accessibilityRole="header">
+                Add your provider
+              </Text>
+              <Text style={styles.lead}>Use the login from your IPTV provider.</Text>
             </View>
-            <Text style={styles.brandName}>Mr. Streamer</Text>
+            <ProviderForm mode={{ kind: "connect" }} />
+            <Text style={styles.footnote}>Your login goes only to your provider.</Text>
+            <View style={styles.space} />
+          </>
+        ) : (
+          <>
+            <View style={[styles.brand, fontScale > 1.2 && styles.brandTop]}>
+              <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                <Image source={require("../../assets/mark.png") as number} style={styles.mark} />
+              </View>
+              <Text style={styles.brandName}>Mr. Streamer</Text>
+            </View>
+            <View style={styles.welcome}>
+              <Text style={styles.welcomeTitle} accessibilityRole="header">
+                {"Your TV.\nYour provider."}
+              </Text>
+              <Text style={styles.lead}>
+                {"Live TV, movies and series.\nFrom your own provider."}
+              </Text>
+            </View>
+            <View style={styles.space} />
+            <TextButton
+              label="Add provider"
+              primary
+              onPress={() => requestStatisticsChoice(() => setForm(true))}
+            />
+          </>
+        )}
+        <TextButton
+          label="Privacy policy"
+          onPress={() => openLink("https://mrstreamer.app/privacy")}
+        />
+        {downloads.items.length > 0 ? (
+          <View style={styles.downloads}>
+            <DownloadsLink onPress={() => router.push("/offline")} />
           </View>
-          <View style={styles.welcome}>
-            <Text style={styles.welcomeTitle} accessibilityRole="header">
-              {"Your TV.\nYour provider."}
-            </Text>
-            <Text style={styles.lead}>
-              {"Live TV, movies and series.\nFrom your own provider."}
-            </Text>
-          </View>
-          <View style={styles.space} />
-          <TextButton
-            label="Add provider"
-            primary
-            onPress={() => requestStatisticsChoice(() => setForm(true))}
-          />
-        </>
-      )}
-      <TextButton
-        label="Privacy policy"
-        onPress={() => openLink("https://mrstreamer.app/privacy")}
-      />
-      {downloads.items.length > 0 ? (
-        <View style={styles.downloads}>
-          <DownloadsLink onPress={() => router.push("/offline")} />
-        </View>
-      ) : null}
-      {__DEV__ ? <TextButton label="Runtime proof" onPress={() => router.push("/proof")} /> : null}
-    </ScrollView>
+        ) : null}
+        {__DEV__ ? (
+          <TextButton label="Runtime proof" onPress={() => router.push("/proof")} />
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000000" },
+  scroll: { flex: 1 },
   content: { flexGrow: 1, padding: 24, gap: 18 },
   heading: { gap: 10 },
   title: { color: colors.text, fontSize: 30, fontWeight: "700", letterSpacing: -1.05 },
