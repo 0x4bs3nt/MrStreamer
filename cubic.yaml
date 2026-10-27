@@ -1,7 +1,18 @@
 # yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
 version: 1
 reviews:
-  enabled: true
+  enabled: false
+  ignore:
+    files:
+      - "test/**/*.test.ts"
+      - "test/fake-store.ts"
+      - "apps/desktop/test/**/*.test.ts"
+      - "apps/ios/test/**"
+      - "apps/marketing/test/**"
+      - "apps/review-provider/test/**"
+      - "packages/core/test/**"
+      - "apps/ios/modules/guide/test/**"
+      - "apps/ios/modules/background-downloads/test/**"
   sensitivity: medium
   incremental_commits: true
   check_drafts: false
