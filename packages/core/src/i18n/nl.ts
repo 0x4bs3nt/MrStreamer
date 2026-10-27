@@ -3,6 +3,8 @@
 import type { Translation } from "../i18n.ts";
 
 export const nl: Translation = {
+  "Update to {version}": "Bijwerken naar {version}",
+  "You have {version}": "Je hebt {version}",
   "Find a setting": "Zoek een instelling",
   "No settings found": "Geen instellingen gevonden",
   "Settings could not be read.": "Instellingen konden niet worden gelezen.",

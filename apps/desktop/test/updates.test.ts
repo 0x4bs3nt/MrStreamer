@@ -743,19 +743,13 @@ describe("finding releases", () => {
       ...(now ? { now } : {}),
     });
 
-  const versions = async (found: Promise<Offer[]>) =>
-    (await found).map(
-      (each) =>
-        `${each.version.major}.${each.version.minor}.${each.version.patch}${each.version.nightly ? "-nightly" : ""}`,
-    );
-
   it("reads both channels from the feed with one request", async () => {
     const { fetchImpl, requests } = sources({
       feed: () =>
         json({
           schema: 1,
           generated: "2026-10-01T10:00:00Z",
-          stable: feedEntry("0.2.1"),
+          stable: { ...feedEntry("0.2.1"), previousStable: "0.2.0" },
           nightly: feedEntry("0.3.0-nightly.20261002.14"),
         }),
     });
@@ -766,6 +760,7 @@ describe("finding releases", () => {
       "Notes for 0.2.1",
       "Notes for 0.3.0-nightly.20261002.14",
     ]);
+    expect(found[0]?.previousStable).toEqual(parseVersion("0.2.0"));
     expect(found[0]?.feedUrl).toBe("https://github.com/owner/app/releases/download/v0.2.1");
     expect(requests).toEqual([FEED_URL]);
   });
@@ -819,10 +814,9 @@ describe("finding releases", () => {
       latest: () => json(githubRelease("v0.2.0")),
     });
 
-    expect(await versions(find(fetchImpl)(new AbortController().signal))).toEqual([
-      "0.2.1",
-      "0.2.0",
-    ]);
+    const found = await find(fetchImpl)(new AbortController().signal);
+    expect(found.map((offer) => offer.version.patch)).toEqual([1, 0]);
+    expect(found[0]?.previousStable).toEqual(parseVersion("0.2.0"));
   });
 
   it("asks GitHub when the feed sends downloads anywhere but the repository's releases", async () => {
@@ -944,4 +938,116 @@ it("observes one actual shared update check and bounded failures, excluding inst
   expect(channels).toEqual(["stable", "stable", "stable"]);
   await service.setChannel("nightly");
   expect(channels).toEqual(["stable", "stable", "stable", "nightly"]);
+});
+
+describe("launch update reminders", () => {
+  const overdue = () => ({ ...offer("0.1.0"), previousStable: parseVersion("0.0.24")! });
+
+  it("uses the published Stable boundary, never patch subtraction or missing history", async () => {
+    for (const [installed, channel, previousStable, eligible] of [
+      ["0.0.21", "stable", "0.0.24", true],
+      ["0.0.24", "stable", "0.0.24", false],
+      ["0.1.0", "stable", "0.0.24", false],
+      ["0.2.0", "stable", "0.0.24", false],
+      ["invalid", "stable", "0.0.24", false],
+      ["0.0.21", "stable", null, false],
+      ["0.0.21-nightly.20261027.1", "stable", "0.0.24", false],
+      ["0.0.21", "nightly", "0.0.24", false],
+    ] as const) {
+      const { service } = await updates(installed, [
+        {
+          ...offer("0.1.0"),
+          ...(previousStable && { previousStable: parseVersion(previousStable)! }),
+        },
+      ]);
+      const result = await service.setChannel(channel);
+      expect(result.reminder, `${installed} on ${channel}`).toEqual(
+        eligible ? { version: "0.1.0" } : null,
+      );
+    }
+  });
+
+  it("counts only actual display and never repeats for a recheck or a newer offer in the process", async () => {
+    let releases = [overdue()];
+    const dataDir = await tempDir();
+    const config = {
+      installed: "0.0.21",
+      dataDir,
+      discover: async () => releases,
+      installer: fakeInstaller().installer,
+    };
+    const service = await startUpdates(config);
+    await service.check();
+    expect(await service.showReminder("0.1.0")).toBe(true);
+    // Permission followed by window reopen before display has not used the launch.
+    expect(await service.showReminder("0.1.0")).toBe(true);
+    expect(await service.showReminder("0.0.99")).toBe(false);
+    await service.reminderShown("0.0.99");
+    expect(await service.showReminder("0.1.0")).toBe(true);
+    await service.reminderShown("0.1.0");
+    expect((await service.check()).reminder).toBeNull();
+    expect((await service.status()).reminded).toBe("0.1.0");
+    expect((await service.dismiss("0.1.0")).reminded).toBeNull();
+    expect((await service.check()).reminder).toBeNull();
+    releases = [{ ...offer("0.2.0"), previousStable: parseVersion("0.1.0")! }];
+    expect((await service.check()).reminder).toBeNull();
+    expect(await service.showReminder("0.2.0")).toBe(false);
+    const relaunched = await startUpdates(config);
+    expect((await relaunched.check()).reminder).toEqual({ version: "0.2.0" });
+  });
+
+  it("keeps stale offers downloadable without presenting them as a fresh reminder", async () => {
+    let fail = false;
+    const service = await startUpdates({
+      installed: "0.0.21",
+      dataDir: await tempDir(),
+      installer: fakeInstaller().installer,
+      discover: async () => {
+        if (fail) throw new Error("offline");
+        return [overdue()];
+      },
+    });
+    await service.check();
+    fail = true;
+    expect((await service.check()).reminder).toBeNull();
+    expect(await service.showReminder("0.1.0")).toBe(false);
+    expect((await service.download()).update.kind).toBe("ready");
+  });
+
+  it("leaves Store and AUR update ownership inert", async () => {
+    for (const managed of [{ openStore: async () => {} }, { managed: "pacman" as const }]) {
+      const service = await startUpdates({
+        installed: "0.0.21",
+        dataDir: await tempDir(),
+        ...managed,
+      });
+      expect(await service.showReminder("0.1.0")).toBe(false);
+      await service.reminderShown("0.1.0");
+      expect((await service.check()).reminder ?? null).toBeNull();
+    }
+  });
+});
+
+it("never downloads a changed target from the reminder's stale Download button", async () => {
+  let releases = [offer("0.0.24")];
+  const installer = fakeInstaller();
+  const service = await startUpdates({
+    installed: "0.0.21",
+    dataDir: await tempDir(),
+    discover: async () => releases,
+    installer: installer.installer,
+  });
+  await service.check();
+  releases = [offer("0.0.25")];
+  await service.check();
+  expect((await service.downloadVersion("0.0.24")).update).toEqual({
+    kind: "available",
+    version: "0.0.25",
+  });
+  expect(installer.downloads).toEqual([]);
+  expect((await service.downloadVersion("0.0.25")).update).toEqual({
+    kind: "ready",
+    version: "0.0.25",
+  });
+  expect(installer.downloads.map((each) => each.version)).toEqual(["0.0.25"]);
 });

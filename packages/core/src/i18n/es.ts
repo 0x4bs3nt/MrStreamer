@@ -3,6 +3,8 @@
 import type { Translation } from "../i18n.ts";
 
 export const es: Translation = {
+  "Update to {version}": "Actualizar a {version}",
+  "You have {version}": "Tienes {version}",
   "Find a setting": "Buscar un ajuste",
   "No settings found": "No se encontraron ajustes",
   "Settings could not be read.": "No se pudieron leer los ajustes.",

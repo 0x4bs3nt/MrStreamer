@@ -4,6 +4,8 @@
 import type { Plural } from "../i18n.ts";
 
 export const en = {
+  "Update to {version}": "Update to {version}",
+  "You have {version}": "You have {version}",
   "Find a setting": "Find a setting",
   "No settings found": "No settings found",
   "Settings could not be read.": "Settings could not be read.",

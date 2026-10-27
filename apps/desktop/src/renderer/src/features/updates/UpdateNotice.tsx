@@ -1,43 +1,58 @@
 // The quiet notice in the top bar: an update waiting, downloading or ready. It fades with the
 // other controls while watching. Clicking it opens a panel with the next step: Download, then
 // Restart once it's ready. "Not now" hides the notice for that version; Settings still offers it.
+// The launch's reminder (UpdateReminder.tsx) keeps the notice for its version until this "Not now".
 import { RotateCw } from "lucide-react";
 import { Tooltip } from "../../components/ui/tooltip.tsx";
 import { Popover } from "@base-ui/react/popover";
 import { updatesInApp, type UpdateStatus } from "@mrstreamer/contracts/updates";
 import { formatPercent, t } from "@mrstreamer/core/i18n";
-import { useUi } from "../../app/ui-store.ts";
+import { useUi, type UpdateReminder } from "../../app/ui-store.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { menuSurface } from "../../components/ui/menu.ts";
 import { cn } from "../../lib/utils.ts";
 import { noteItems } from "./notes.ts";
 import { useUpdates } from "./use-updates.ts";
 
-/** How many lines of the notes the panel shows before pointing to Settings. */
-const NOTE_LINES = 4;
+/** How many lines of the notes the panel and the reminder show before pointing to Settings. */
+export const NOTE_LINES = 4;
 
-/** Whether the top bar shows the notice at all. */
-function noticed(status: UpdateStatus): boolean {
+/** Whether the top bar shows the notice at all. A version the reminder showed (`kept`) stays. */
+function noticed(status: UpdateStatus, kept: string | null): boolean {
   const { update, dismissed } = status;
   switch (update.kind) {
     case "downloading":
     case "ready":
       return true;
     case "available":
-      return dismissed !== update.version;
+      return dismissed !== update.version || kept === update.version;
     case "failed":
-      return update.step !== "check" && dismissed !== update.version;
+      return update.step !== "check" && (dismissed !== update.version || kept === update.version);
     default:
       return false;
   }
+}
+
+/** The version the launch's reminder showed, whose notice stays in the top bar. */
+export function useKeptUpdate(): string | null {
+  return useUi((state) => (shownReminder(state.updateReminder) ? state.updateReminder.kept : null));
+}
+
+function shownReminder(reminder: UpdateReminder | null): reminder is { readonly kept: string } {
+  return typeof reminder === "object" && reminder !== null && "kept" in reminder;
 }
 
 /** The visible notice's words, also used by the window bar when retrying its full labels. */
 export function updateNoticeLabel(
   status: UpdateStatus | undefined,
   open: boolean,
+  kept: string | null,
 ): string | undefined {
-  if (!status || !updatesInApp(status.distribution) || (!noticed(status) && !open))
+  if (
+    !status ||
+    !updatesInApp(status.distribution) ||
+    (!noticed(status, kept ?? status.reminded ?? null) && !open)
+  )
     return undefined;
   const { update } = status;
   return update.kind === "downloading"
@@ -53,7 +68,7 @@ export function updateNoticeLabel(
 export function UpdateNotice({ compact = false }: { compact?: boolean }) {
   const { status } = useUpdates();
   const open = useUi((state) => state.updateDialog === "panel");
-  const label = updateNoticeLabel(status, open);
+  const label = updateNoticeLabel(status, open, useKeptUpdate());
   if (!status || !label) return null;
   const { update } = status;
   return (
@@ -111,7 +126,10 @@ function UpdatePanel({ status }: { status: UpdateStatus }) {
   const close = () => useUi.setState({ updateDialog: null });
   const later = () => {
     if (version) dismiss(version);
-    close();
+    useUi.setState((state) => ({
+      updateDialog: null,
+      updateReminder: shownReminder(state.updateReminder) ? "done" : state.updateReminder,
+    }));
   };
   return (
     <>

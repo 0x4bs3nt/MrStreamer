@@ -66,8 +66,19 @@ interface DetailsStep {
  */
 export const DETAILS_TRAIL = 8;
 
-/** The update dialog on screen: the panel under the top bar's Update, or the restart question. */
-type UpdateDialog = "panel" | "restart";
+/**
+ * The update dialog on screen: the panel under the top bar's Update, the restart question, or the
+ * launch's reminder (features/updates/UpdateReminder.tsx).
+ */
+type UpdateDialog = "panel" | "restart" | "reminder";
+
+/**
+ * The launch's update reminder: asked of the main process once the viewer browses, then allowed
+ * or done. Once shown it keeps the top bar's Update for its version, even past an earlier Not now,
+ * until the panel's own Not now or the next launch.
+ */
+export type UpdateReminder =
+  "asking" | "done" | { readonly allowed: string } | { readonly kept: string };
 
 interface UiState {
   /**
@@ -112,6 +123,7 @@ interface UiState {
   /** The list the guide and Watch's channel list show. */
   readonly list: ChannelList;
   readonly updateDialog: UpdateDialog | null;
+  readonly updateReminder: UpdateReminder | null;
 }
 
 /** Navigation and overlay state for the window. */
@@ -134,6 +146,7 @@ export const useUi = create<UiState>(() => ({
   onlineSubtitles: false,
   list: { kind: "all" },
   updateDialog: null,
+  updateReminder: null,
 }));
 
 // Settings over a title holds the countdown to its next episode, so nothing starts behind it.

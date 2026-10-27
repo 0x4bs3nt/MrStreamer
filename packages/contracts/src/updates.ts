@@ -65,6 +65,10 @@ export interface UpdateOffer {
 }
 
 export interface UpdateStatus {
+  /** A fresh overdue Stable offer, until its reminder is shown in this app process. */
+  readonly reminder?: { readonly version: string } | null;
+  /** The reminder already displayed in this process; its quiet entry survives window reopen. */
+  readonly reminded?: string | null;
   /** The installed version. */
   readonly version: string;
   readonly distribution: Distribution;

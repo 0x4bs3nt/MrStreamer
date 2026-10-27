@@ -714,6 +714,24 @@ describe("update feed", () => {
     expect(named(feedOf([]))).toEqual([undefined, undefined]);
   });
 
+  it("records the actual previous Stable across skipped versions and preserves it with a retained release", () => {
+    const feed = feedOf([
+      published("v0.0.16", 60, false),
+      published("v0.0.20", 30, false),
+      published("v0.1.0", 10, false),
+    ]);
+    expect(feed.stable?.previousStable).toBe("0.0.20");
+    expect(readFeed(JSON.parse(JSON.stringify(feed))).stable?.previousStable).toBe("0.0.20");
+    expect(mergeFeeds(feed, feedOf([published("v0.0.16", 60, false)])).stable?.previousStable).toBe(
+      "0.0.20",
+    );
+    for (const previousStable of ["bad", "0.2.0", "0.1.0", "0.0.21-nightly.20261027.1"]) {
+      expect(
+        readFeed({ ...feed, stable: { ...feed.stable, previousStable } }).stable?.previousStable,
+      ).toBeUndefined();
+    }
+  });
+
   it("points at each release's page, download folder and notes", () => {
     expect(feedOf([published("v0.0.2", 20, false)])).toEqual({
       schema: 1,

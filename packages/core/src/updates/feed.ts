@@ -23,6 +23,8 @@ import { lazy, type Infer } from "@mrstreamer/contracts/lazy";
 
 /** A release this platform can update to. */
 export interface Offer {
+  /** The Stable release just below this one, when known. Missing history never implies overdue. */
+  readonly previousStable?: Version;
   readonly version: Version;
   /** The folder holding the release's files, for electron-updater's generic provider. */
   readonly feedUrl: string;
@@ -116,7 +118,15 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
         if (!new URL(entry.files).href.startsWith(filesFrom)) {
           throw new Error(`Files from ${entry.files}.`);
         }
-        return [{ version, feedUrl: entry.files, notes: entry.notes || null, page: entry.page }];
+        return [
+          {
+            version,
+            feedUrl: entry.files,
+            notes: entry.notes || null,
+            page: entry.page,
+            ...(entry.previousStable && { previousStable: parseVersion(entry.previousStable)! }),
+          },
+        ];
       });
     });
     if (fromFeed.ok) return fromFeed.offers;
@@ -202,9 +212,18 @@ export function discovery(options: DiscoveryOptions): (signal: AbortSignal) => P
     if (!latest.ok && !none) return latest;
     const stable = latest.ok ? latest.offers : [];
     const known = new Set(page.offers.map((offer) => offer.feedUrl));
+    const offers = [...page.offers, ...stable.filter((each) => !known.has(each.feedUrl))];
     return {
       ok: true as const,
-      offers: [...page.offers, ...stable.filter((each) => !known.has(each.feedUrl))],
+      offers: offers.map((offer) => {
+        const previous = newestOn(
+          "stable",
+          offers.filter((each) => compareVersions(each.version, offer.version) < 0),
+        );
+        return !offer.version.nightly && previous
+          ? { ...offer, previousStable: previous.version }
+          : offer;
+      }),
     };
   }
 

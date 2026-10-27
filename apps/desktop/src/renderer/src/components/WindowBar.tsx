@@ -20,7 +20,11 @@ import {
   type View,
 } from "../app/ui-store.ts";
 import { DownloadsNotice, useDownloadsStatus } from "../features/downloads/DownloadsNotice.tsx";
-import { UpdateNotice, updateNoticeLabel } from "../features/updates/UpdateNotice.tsx";
+import {
+  UpdateNotice,
+  updateNoticeLabel,
+  useKeptUpdate,
+} from "../features/updates/UpdateNotice.tsx";
 import { useQuery } from "@tanstack/react-query";
 import { type PlainKey, t } from "@mrstreamer/core/i18n";
 import { queries, useSubscriptions } from "../lib/queries.ts";
@@ -69,7 +73,7 @@ export function WindowBar({ className, onBack }: { className?: string; onBack?: 
   const locale = useLocale();
   const update = useQuery(queries.updates()).data;
   const updateOpen = useUi((state) => state.updateDialog === "panel");
-  const updateWords = updateNoticeLabel(update, updateOpen);
+  const updateWords = updateNoticeLabel(update, updateOpen, useKeptUpdate());
   const [pages, fold] = useFolds(status?.text, updateWords, locale);
   const [backRoom, backFold] = useFolds(status?.text, updateWords, locale);
   const folded = fold !== "none";

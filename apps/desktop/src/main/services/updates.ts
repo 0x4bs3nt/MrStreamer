@@ -138,12 +138,18 @@ export class Updates extends Context.Service<
      * Playback carries on meanwhile.
      */
     readonly download: Effect.Effect<UpdateStatus>;
+    /** Downloads only the version the reminder actually displayed; stale buttons do nothing. */
+    downloadVersion(version: string): Effect.Effect<UpdateStatus>;
     /** Stops a download in progress; the update goes back to available. */
     readonly cancel: Effect.Effect<void>;
     /** Installs the downloaded update. The user has confirmed the restart. */
     readonly restart: Effect.Effect<void>;
     /** Closes the notice for `version`. Settings keeps offering it; a newer version notifies. */
     dismiss(version: string): Effect.Effect<UpdateStatus>;
+    /** Whether the window may show the launch's reminder for `version`; asking doesn't use it. */
+    showReminder(version: string): Effect.Effect<boolean>;
+    /** Records that the allowed reminder for `version` is on screen: none again this process. */
+    reminderShown(version: string): Effect.Effect<void>;
     /** Opens the app's page in the Microsoft Store, for a Store copy. Does nothing for other copies. */
     readonly openStore: Effect.Effect<void, Failed>;
     /** The status after every change, such as a download's progress. */
@@ -191,6 +197,9 @@ function make(deps: UpdatesDeps & DirectUpdates) {
     /** The release the last check found for the channel, whether or not it is newer. */
     let target: Offer | null = null;
     let checked: UpdateStatus["checked"] = null;
+    let reminded: string | null = null;
+    let reminderWasShown = false;
+    let allowedReminder: string | null = null;
     let nextCheckAt: number | null = null;
     /** The check whose result still counts; a newer check or a channel change voids it. */
     let checking: { readonly channel: Channel; readonly fiber: Fiber.Fiber<CheckResult> } | null =
@@ -221,7 +230,28 @@ function make(deps: UpdatesDeps & DirectUpdates) {
     /** Whether the chosen channel still receives `version`, checked before downloading or installing it. */
     const wanted = (version: string) => receives(channel, version);
 
+    /**
+     * The fresh Stable offer to remind of: the installed release is older than the one before it.
+     * None once this process showed a reminder, or for a development build or unknown history.
+     */
+    const reminder = () => {
+      const previous = target?.previousStable;
+      return !reminderWasShown &&
+        checking === null &&
+        channel === "stable" &&
+        !installed.nightly &&
+        parseVersion(deps.installed) &&
+        update.kind === "available" &&
+        checked?.failure === null &&
+        previous &&
+        compareVersions(installed, previous) < 0
+        ? { version: update.version }
+        : null;
+    };
+
     const snapshot = (): UpdateStatus => ({
+      reminder: reminder(),
+      reminded,
       version: deps.installed,
       distribution: "direct",
       channel,
@@ -367,28 +397,13 @@ function make(deps: UpdatesDeps & DirectUpdates) {
       });
     if (deps.schedule) yield* Effect.forkIn(automatic(deps.schedule), scope);
 
-    return {
-      status,
-      check: Effect.as(runCheck(true), undefined).pipe(Effect.andThen(status)),
-
-      setChannel: (next: Channel) =>
-        Effect.gen(function* () {
-          channel = next;
-          checking = null;
-          const staged = update.kind === "downloading" || update.kind === "ready" ? update : null;
-          if (!staged || !receives(next, staged.version)) {
-            attempt = null;
-            target = null;
-            update = { kind: "idle" };
-            if (downloading) yield* Fiber.interrupt(downloading);
-          }
-          yield* save;
-          yield* changed;
-          yield* runCheck(true);
+    const download = (expectedVersion?: string) =>
+      Effect.gen(function* () {
+        if (
+          expectedVersion !== undefined &&
+          (!target || formatVersion(target.version) !== expectedVersion)
+        )
           return snapshot();
-        }),
-
-      download: Effect.gen(function* () {
         const retry = update.kind === "failed" && update.step !== "check";
         if ((update.kind !== "available" && !retry) || !target || downloading) return snapshot();
         const release = target;
@@ -439,7 +454,31 @@ function make(deps: UpdatesDeps & DirectUpdates) {
         }
         yield* changed;
         return snapshot();
-      }),
+      });
+
+    return {
+      status,
+      check: Effect.as(runCheck(true), undefined).pipe(Effect.andThen(status)),
+
+      setChannel: (next: Channel) =>
+        Effect.gen(function* () {
+          channel = next;
+          checking = null;
+          const staged = update.kind === "downloading" || update.kind === "ready" ? update : null;
+          if (!staged || !receives(next, staged.version)) {
+            attempt = null;
+            target = null;
+            update = { kind: "idle" };
+            if (downloading) yield* Fiber.interrupt(downloading);
+          }
+          yield* save;
+          yield* changed;
+          yield* runCheck(true);
+          return snapshot();
+        }),
+
+      download: download(),
+      downloadVersion: download,
 
       cancel: Effect.suspend(() => (downloading ? Fiber.interrupt(downloading) : Effect.void)),
 
@@ -463,9 +502,24 @@ function make(deps: UpdatesDeps & DirectUpdates) {
       dismiss: (version: string) =>
         Effect.gen(function* () {
           dismissed = version;
+          if (reminded === version) reminded = null;
           yield* save;
           yield* changed;
           return snapshot();
+        }),
+
+      showReminder: (version: string) =>
+        Effect.sync(() => {
+          if (reminder()?.version !== version) return false;
+          allowedReminder = version;
+          return true;
+        }),
+      reminderShown: (version: string) =>
+        Effect.gen(function* () {
+          if (reminderWasShown || allowedReminder !== version) return;
+          reminderWasShown = true;
+          reminded = version;
+          yield* changed;
         }),
 
       openStore: Effect.void,
@@ -496,9 +550,12 @@ function managed(deps: UpdatesDeps & (StoreUpdates | PacmanUpdates)) {
     check: unchanged,
     setChannel: () => unchanged,
     download: unchanged,
+    downloadVersion: () => unchanged,
     cancel: Effect.void,
     restart: Effect.void,
     dismiss: () => unchanged,
+    showReminder: () => Effect.succeed(false),
+    reminderShown: () => Effect.void,
     openStore:
       "managed" in deps
         ? Effect.void

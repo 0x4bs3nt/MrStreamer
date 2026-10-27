@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
-import type { IpcMethod } from "@mrstreamer/contracts/ipc";
 import type { UpdateStatus } from "@mrstreamer/contracts/updates";
 import type { Channel } from "@mrstreamer/contracts/version";
 import { useUi } from "../../app/ui-store.ts";
 import { call } from "../../lib/ipc.ts";
 import { queries } from "../../lib/queries.ts";
 
-type StatusMethod = Extract<IpcMethod, "updates.check" | "updates.download">;
+type StatusAction =
+  | { method: "updates.check" | "updates.download" }
+  | { method: "updates.downloadVersion"; version: string };
 
 /**
  * The update status and the actions on it, shared by the top bar's notice and Settings: one
@@ -18,7 +19,10 @@ export function useUpdates() {
   const status = useQuery(queries.updates());
   const store = (next: UpdateStatus) => client.setQueryData(queries.updates().queryKey, next);
   const action = useMutation({
-    mutationFn: (method: StatusMethod) => call(method),
+    mutationFn: (action: StatusAction) =>
+      action.method === "updates.downloadVersion"
+        ? call(action.method, { version: action.version })
+        : call(action.method),
     onSuccess: store,
   });
   const changingChannel = useRef(false);
@@ -34,8 +38,10 @@ export function useUpdates() {
     statusRead: status,
     channelChange: setChannel,
     actionState: action,
-    check: () => action.mutate("updates.check"),
-    download: () => action.mutate("updates.download"),
+    check: () => action.mutate({ method: "updates.check" }),
+    download: () => action.mutate({ method: "updates.download" }),
+    downloadVersion: (version: string) =>
+      action.mutate({ method: "updates.downloadVersion", version }),
     setChannel: (channel: Channel) => {
       if (changingChannel.current || setChannel.isPending) return;
       changingChannel.current = true;

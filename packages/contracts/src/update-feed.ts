@@ -37,6 +37,8 @@ export interface UpdateFeed {
 }
 
 export interface FeedRelease {
+  /** Stable immediately before this one, when known. Optional for schema-1 compatibility. */
+  readonly previousStable?: string;
   /** Such as 0.0.2 or 0.0.3-nightly.20261002.14, without the tag's "v". */
   readonly version: string;
   /** When the release was published, as an ISO time. */
@@ -109,10 +111,17 @@ export function buildFeed(
       return [{ version, entry }];
     })
     .sort((a, b) => compareVersions(b.version, a.version));
+  const stable = listed.filter(({ version }) => !version.nightly);
+  const latest = stable[0];
+  const previous = stable.find(
+    ({ version }) => latest && compareVersions(version, latest.version) < 0,
+  );
   return {
     schema: 1,
     generated,
-    stable: listed.find(({ version }) => !version.nightly)?.entry ?? null,
+    stable: latest
+      ? { ...latest.entry, ...(previous && { previousStable: previous.entry.version }) }
+      : null,
     nightly: listed.find(({ version }) => version.nightly)?.entry ?? null,
   };
 }
@@ -181,6 +190,8 @@ function readRelease(json: unknown, channel: Channel): FeedRelease | null {
   if (!version || (channel === "stable" && version.nightly)) {
     throw new Error(`The feed's ${channel} release has version "${text("version")}".`);
   }
+  const previous =
+    typeof json["previousStable"] === "string" ? parseVersion(json["previousStable"]) : null;
   return {
     version: formatVersion(version),
     published: text("published"),
@@ -189,6 +200,10 @@ function readRelease(json: unknown, channel: Channel): FeedRelease | null {
     notes: text("notes"),
     platforms,
     ...(isNames(installers) && { installers }),
+    ...(channel === "stable" &&
+      previous &&
+      !previous.nightly &&
+      compareVersions(previous, version) < 0 && { previousStable: formatVersion(previous) }),
   };
 }
 
