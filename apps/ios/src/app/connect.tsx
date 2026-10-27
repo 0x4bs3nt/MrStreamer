@@ -1,6 +1,6 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { Image, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { DownloadsLink } from "../downloads-screen.tsx";
 import { useDownloads } from "../downloads.ts";
 import { openLink } from "../open-link.ts";
@@ -10,6 +10,7 @@ import { colors, TextButton } from "../ui.tsx";
 
 /** Welcome, an optional statistics choice, then the ordinary cancellable provider form. */
 export default function Connect() {
+  const { fontScale } = useWindowDimensions();
   const downloads = useDownloads();
   const [form, setForm] = useState(false);
   return (
@@ -35,7 +36,7 @@ export default function Connect() {
         </>
       ) : (
         <>
-          <View style={styles.brand}>
+          <View style={[styles.brand, fontScale > 1.2 && styles.brandTop]}>
             <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               <Image source={require("../../assets/mark.png") as number} style={styles.mark} />
             </View>
@@ -78,8 +79,9 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 30, fontWeight: "700", letterSpacing: -1.05 },
   lead: { color: colors.dim, fontSize: 17, lineHeight: 25 },
   brand: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandTop: { alignItems: "flex-start" },
   mark: { width: 36, height: 36 },
-  brandName: { color: colors.text, fontSize: 17, fontWeight: "600" },
+  brandName: { flex: 1, minWidth: 0, color: colors.text, fontSize: 17, fontWeight: "600" },
   welcome: { paddingTop: 78, gap: 18 },
   welcomeTitle: {
     color: colors.text,
