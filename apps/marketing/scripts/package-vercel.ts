@@ -50,6 +50,11 @@ const missing = { status: 404, dest: "/404.html" };
 const routes = [
   INGEST_ROUTE,
   {
+    src: "^/llms\\.txt$",
+    dest: "/llms.txt",
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  },
+  {
     src: `^/${INDEXNOW_KEY}\\.txt$`,
     dest: `/${INDEXNOW_KEY}.txt`,
     headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
@@ -189,6 +194,12 @@ for (const page of PAGES) {
 }
 
 // Public links and fragments must lead to a real page, rather than maintainer-only 404s.
+for (const [, href = ""] of read("llms.txt").matchAll(/\]\((https:[^)]+)\)/g)) {
+  const url = new URL(href);
+  if (url.origin === SITE && !(url.pathname in LISTED)) {
+    problems.push(`llms.txt links missing ${url.pathname}.`);
+  }
+}
 for (const page of PAGES) {
   for (const [, href = ""] of read(page.file).matchAll(/\shref="([^"<>]+)"/g)) {
     if (!href.startsWith("/") && !href.startsWith("#")) continue;

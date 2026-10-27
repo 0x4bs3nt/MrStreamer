@@ -154,6 +154,7 @@ const config = (analytics: SiteCapture | null): UserConfig => ({
         );
         server.middlewares.use((req, res, next) => {
           const path = req.url?.split("?")[0] ?? "/";
+          if (path === "/llms.txt") res.setHeader("Content-Type", "text/plain; charset=utf-8");
           return addresses.has(path) || path.endsWith(".html") ? answer(req, res, next) : next();
         });
         return () => server.middlewares.use(answer);
@@ -163,6 +164,7 @@ const config = (analytics: SiteCapture | null): UserConfig => ({
         // Ahead of filesystem handling: directory URLs and HTML aliases must agree with dev/Vercel.
         server.middlewares.use((req, res, next) => {
           const path = req.url?.split("?")[0] ?? "/";
+          if (path === "/llms.txt") res.setHeader("Content-Type", "text/plain; charset=utf-8");
           return addresses.has(path) || path.endsWith(".html") ? answer(req, res, next) : next();
         });
         return () => server.middlewares.use(answer);

@@ -1,0 +1,24 @@
+# Mr. Streamer
+
+> A free, open-source desktop IPTV player for macOS, Windows and Linux. Bring your own Xtream Codes subscription or M3U playlist. No channels or subscriptions are included.
+
+## Downloads and guides
+
+- [Downloads](https://mrstreamer.app/download): Current stable installers, system requirements, checksums and source archives.
+- [Guides](https://mrstreamer.app/docs): Using subscriptions, live TV, movies and series, downloads, updates and playback.
+- [Subscriptions](https://mrstreamer.app/docs/subscriptions): Connect Xtream Codes or an M3U playlist and manage your sources.
+- [FAQ](https://mrstreamer.app/faq): Answers about setup, supported systems and playback.
+- [Release notes](https://mrstreamer.app/releases): Published stable releases and their changes.
+
+## Project and policies
+
+- [About](https://mrstreamer.app/about): Product capabilities and supported desktop systems.
+- [Source repository](https://github.com/Mr-Streamer-OSS/MrStreamer): Public source code and contribution guidance.
+- [License](https://github.com/Mr-Streamer-OSS/MrStreamer/blob/main/LICENSE): GPL-3.0 license terms.
+- [Privacy](https://mrstreamer.app/privacy): Data storage, connections, analytics and privacy choices.
+- [Security](https://mrstreamer.app/security): Login storage, installer verification and reporting vulnerabilities.
+
+## Community and support
+
+- [Discord](https://discord.gg/sR4tjEw6bQ): Public community and help.
+- [Report a bug](https://github.com/Mr-Streamer-OSS/MrStreamer/issues/new/choose): Bug-report templates and required details.

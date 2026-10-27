@@ -22,6 +22,10 @@ The baseline alone does not exercise Windows/Mac user-agent variants, all seven 
 
 Source: `apps/marketing/README.md`, `apps/marketing/scripts/pages.ts`, `apps/marketing/src/downloads.ts`, `apps/marketing/src/system.ts`, `apps/marketing/vite.config.ts` and `apps/marketing/test/`.
 
+## Agent overview
+
+`/llms.txt` serves the static Markdown overview in `apps/marketing/public/llms.txt`. After `pnpm build:marketing`, request it from the owned Vite preview and check HTTP 200, `text/plain` with UTF-8, an H1, blockquote summary and Markdown links, without page JavaScript. Check internal destinations against the built canonical pages and product claims against the public guides. Inspect `.vercel/output/config.json` and `.vercel/output/static/llms.txt` under `apps/marketing` for the same plain-text response and content. HTTP and package proof suffice for this text route; screenshots add nothing. Production availability needs a separate readback after authorized publication.
+
 ## Website analytics
 
 Every page's footer reads **Site analytics: on.** with **Turn off** and **What's counted**; `/privacy#website-analytics` has the same switch. Events use PostHog's cookieless protocol and Web analytics names (`$pageview`, `$pageleave`, `$web_vitals`, `download_clicked` and the rest). `$pageleave` carries posthog-js's scroll-depth shares and `$web_vitals` one numeric LCP, INP or CLS from the pinned web-vitals, the properties PostHog's scroll-depth and web vitals health checks look for. `$pageview` and `download_clicked` also carry `entry_source`, `entry_medium` and `entry_campaign`, fixed codes from `apps/marketing/src/referrals.ts` for where the tab's visit entered, kept in session storage under `mrstreamer.site-entry`. Global Privacy Control or Do Not Track shows the off reason with no button, blocked storage shows off with no button, and a build without capture shows static "Site analytics: off." The events, properties and build variables are in `apps/marketing/README.md#website-analytics`; `docs/privacy.md` must match them.

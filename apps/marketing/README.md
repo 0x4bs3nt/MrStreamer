@@ -61,6 +61,8 @@ Both local servers and Vercel answer the same addresses, with or without a query
 
 Every document address also accepts a trailing slash. `scripts/pages.ts` is the address registry used by both local servers and Vercel packaging. Update `public/sitemap.xml` when adding a page; the build checks it against that registry.
 
+`/llms.txt` answers `public/llms.txt`, a short Markdown overview for agents, as UTF-8 plain text. Keep its claims true to the public guides and link stable pages rather than versioned installers; the build checks its site links. It informs agents; it is not a robots policy or an indexing promise.
+
 ## Change it
 
 - Keep the words true and few. Every claim on the page comes from the README or the docs. The app's limits are in [what plays](../../docs/user/playback.md).
