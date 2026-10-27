@@ -1,10 +1,10 @@
 # Privacy policy
 
-Last updated 25 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
+Last updated 27 October 2026. Earlier versions are in the [history on GitHub](https://github.com/Mr-Streamer-OSS/MrStreamer/commits/main/docs/privacy.md).
 
 Custom channel lists and programme reminders below are new in desktop 0.0.20, including its Nightly previews.
 
-Mr. Streamer is a free, open-source IPTV player for your computer. It has no account, shows no ads and doesn't sell data. Nothing you watch passes through us.
+Mr. Streamer is a free, open-source IPTV player for your computer and iPhone. It has no Mr. Streamer account or in-app purchases, shows no ads and doesn't sell data. When you connect your own provider, its streams and requests go directly between your device and the services you connect. We also operate a restricted sample provider for app review, described below.
 
 Wout Stiens in Belgium, publishing as Mr Streamer OSS, is responsible for the data we receive. Contact [privacy@mrstreamer.app](mailto:privacy@mrstreamer.app).
 
@@ -12,7 +12,7 @@ Wout Stiens in Belgium, publishing as Mr Streamer OSS, is responsible for the da
 
 ### On your computer
 
-Most of what the app handles never reaches us. It stays in its data folder ([where it is](user/troubleshooting.md#where-your-data-is)):
+Most of what the desktop app handles never reaches us. It stays in its data folder ([where it is](user/troubleshooting.md#where-your-data-is)):
 
 - your subscriptions: server address, username, and password or playlist link
 - preferences, including your own TMDB key if you entered one
@@ -30,7 +30,7 @@ Reminders stay locally until the app checks after the end of the day their progr
 
 ### Usage statistics
 
-**Share basic usage statistics** is on by default, in new and existing profiles, without a prompt. While it's on, desktop 0.0.15 sends a short event each time one of these happens. From 0.0.16, the same usage is counted in five-minute groups and playback is reported once at its end:
+In the desktop app, **Share basic usage statistics** is on by default, in new and existing profiles, without a prompt. While it's on, desktop 0.0.15 sends a short event each time one of these happens. From 0.0.16, the same usage is counted in five-minute groups and playback is reported once at its end:
 
 - you open a part of the app, from a fixed list: Home, Live TV, Movies, Series, Watchlist, Downloads, Search, Settings, the player and title details
 - a live channel, or a movie or episode, starts playing, and when it stops, for how many seconds it played. Only time it was actually playing counts: not paused, loading, seeking or the muted preview on Home
@@ -57,11 +57,19 @@ Statistics never include what you watch, title or channel names, your provider o
 
 ### Usage statistics on iPhone
 
-The iPhone app, in test builds through TestFlight, has its own **Share basic usage statistics** switch in Settings > Privacy. It is on by default, without a prompt. If you turned it off, it stays off, and while it's off the app records and sends nothing. Builds without a configured PostHog project send nothing.
+The iPhone app asks whether you want to share basic usage statistics. Statistics stay off until you choose to share them, except when an upgrade retains your earlier deliberate choice. Refusing does not stop you connecting a provider. You can change the choice in Settings > Privacy. Builds without a configured PostHog project send nothing.
 
-While it's on, the app sends the same kinds of events as above, for what the iPhone app has: the first and daily observations, opening Home, Live, Movies, Series, title details, Search, Settings, Downloads or the player, starting a search, switching to another channel, adding, removing or refreshing a subscription, a live channel or a movie or episode starting and stopping and for how many seconds it played, and playback failing with one of the fixed reasons. Only time you could see or hear it counts: in the player, Picture in Picture or AirPlay, or a preview on Home you unmuted. Not paused, loading or the silent preview.
+When an upgrade finds no deliberate choice, it discards the previous installation identity, unsent pre-consent events and unfinished playback statistics. Choosing to share later does not send that backlog. Turning sharing off stops new capture and delivery. When the changed choice is saved successfully, unsent statistics are cleared. If saving fails, the previous choice and queued statistics can remain on the device; a later launch can restore that choice and send those statistics. Turning sharing off cannot recall a request already received or delete statistics already held by PostHog.
 
-Each event carries a random installation identifier, an event identifier, the time it happened, the app version and build, that it came from iOS and iOS's major version. Not the device model, language or location. The exclusions above apply: never what you watch, your searches, your provider, its address or your login.
+While sharing is on, the app sends the same kinds of events as above, for what the iPhone app has: the first and daily observations, opening Home, Live, Movies, Series, title details, Search, Settings, Downloads or the player, starting a search, switching to another channel, adding, removing or refreshing a subscription, a live channel or a movie or episode starting and stopping and for how many seconds it played, and playback failing with one of the fixed reasons. Only time you could see or hear it counts: in the player, Picture in Picture or AirPlay, or a preview on Home you unmuted. Not paused, loading or the silent preview.
+
+Each event body carries a random installation identifier, an event identifier, the time it happened, the app version and build, that it came from iOS and iOS's major version. The event body leaves out the device model, language, location, provider logins and addresses, stream addresses, title and channel names, what you search for, and raw logs or errors. Separately, each connection exposes your IP address to the servers that receive it, and iOS can add network details such as your language and an app and system user agent.
+
+### Local data on iPhone
+
+The iPhone app keeps provider details, preferences, catalogue and guide caches, title details and pictures, favourites, watchlist, history, progress, downloads, and its statistics choice, installation identifier and unsent statistics on the device. Passwords use the iOS Keychain. Local app files can still contain provider addresses and usernames.
+
+Removing a provider clears its own catalogue, guide and title-detail caches. Shared TMDB details and pictures can remain. Keeping its history can retain its server address and username. Remove downloads separately to delete their saved copies. Turning statistics off retains the local installation identifier and clears unsent statistics when the changed choice is saved successfully. These actions do not promise erasure from the Keychain, backups or services that already received data.
 
 ### The website
 
@@ -89,17 +97,28 @@ Email to privacy@, hello@ or security@mrstreamer.app, and issues you open on Git
 
 ## How we use it
 
-- **Usage statistics**, to count which versions, builds, systems and features are in use, how much live TV and how many movies and series play, and how often playback, downloads, update checks and the app's window fail, so we know what to fix and support.
-- **Website analytics**, to count visits, see which kinds of site they come from, which pages, guides and questions people read and which downloads they pick, and see how far pages are read and how quickly they load and respond.
+- **App statistics**, to understand which supported versions, systems and features are used, how much live TV and video plays, and which playback, download or update operations fail, so we know what to fix and support. Each app sends only the events described above for that app.
+- **Website analytics**, to understand visits, referral categories, pages and guides read, download choices, reading depth and page speed.
 - **Messages**, to answer you and fix what you report.
+- **The restricted review provider**, to authenticate authorised reviewers and deliver the sample catalogue, guide, pictures and media needed to review the app.
 
-Our legal basis for all three is legitimate interest (GDPR Article 6(1)(f)). You can object at any time by email, or for statistics and website analytics by turning them off. We don't use any of it for advertising. App statistics and website analytics share a PostHog project but use separate events and identifiers, and we don't link them.
+For **optional iPhone statistics**, our basis is your consent (GDPR Article 6(1)(a)). You can refuse without losing access to provider setup, or withdraw through Settings > Privacy. The iPhone statistics section explains what Off does and the limits when saving fails. Withdrawal does not undo processing that was lawful before it, and does not itself erase records already received.
+
+For **desktop statistics, website analytics and messages**, our basis is legitimate interest (GDPR Article 6(1)(f)): understanding reliability and use, improving the app and website, and answering requests. You can object by email, and stop new statistics or website analytics through the controls below. For operating and securing the restricted review provider, our basis is also legitimate interest: making the app available for review through authentication and sample delivery.
+
+We do not use app statistics or website analytics for advertising. They share a PostHog project but use separate events and identifiers, and we do not link them.
 
 ## Who receives what
 
 ### Services you use through the app
 
-The app contacts these straight from your computer, not through us. Their own policies apply.
+Third-party requests go directly from your device to the services you use. Their own privacy policies also apply. Our restricted review provider is an exception: we operate that service ourselves.
+
+Downloaded copies can play without requesting their media from your provider. Other enabled network features, such as app statistics or requests for information and pictures, can still run. Desktop update checks remain desktop-only.
+
+Your network operator and DNS provider can see which servers your device contacts.
+
+#### On desktop
 
 - **Your provider** gets its login, your IP address and app version, and sees what you open, watch and download.
 - **Servers a playlist or guide address names** get your IP address, the app version and the stream or guide requested. A playlist can supply its own browser identification and referrer for a stream. A guide address can carry its own key. The app refreshes a guide from another address about every six hours.
@@ -109,26 +128,39 @@ The app contacts these straight from your computer, not through us. Their own po
 - **[GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement)** gets your IP address and app version with each update check, about 20 seconds after start and every four hours, sooner after a failed check. Microsoft Store copies update through the Store instead.
 - **A TV you pick** on your network gets an HTTP stream address on your computer with a token for the active playback session. The app serves the stream without sending the TV your provider's login or stream address. A Google Cast device also gets the title and its TMDB picture address. Casting relies on a trusted local network; see [Security](security.md#playing-on-a-tv).
 
-Downloaded copies play without a request to your provider. Statistics and update checks still run as set.
+#### On iPhone
 
-Your network operator and DNS provider can see which servers the app contacts.
+- **Your provider** receives the login and requests needed to fetch its catalogue and guide, play streams and download copies. It receives your connecting IP address and network metadata and can see the provider resources requested.
+- **[TMDB's metadata API](https://www.themoviedb.org/privacy-policy)** receives the movie, series or season identifiers requested, language and region where used, our application's API key or read token, and your connecting IP address and network metadata. The iPhone client does not add your provider login or address, typed searches or statistics installation identifier to these calls. Metadata can be fetched while building the library, not only when you play something.
+- **Image servers** named by your provider and TMDB's separate image service receive the requested picture address, your connecting IP address and network metadata that iOS supplies. The app builds TMDB image addresses separately, without adding its TMDB API key or statistics installation identifier.
+- **An AirPlay receiver you choose** is used through iOS's system playback controls. This is separate from the desktop Google Cast and local-stream route described above.
+
+The iPhone app uses the TMDB key supplied with the app. It does not offer the desktop custom-key, subtitle-service, Google Cast or desktop update-check controls.
+
+#### Restricted review provider and earlier private-beta samples
+
+For app review we operate a restricted sample provider on **[Cloudflare](https://www.cloudflare.com/privacypolicy/)**. When that provider is connected, it receives the review login, connecting IP address and requested catalogue, guide, picture and media resources needed for authentication and delivery. These requests reach a service we operate; they are not requests to an unrelated provider. Cloudflare also processes hosting and network information under its applicable service terms and privacy policy. We do not promise that requests leave no hosting or security records.
+
+An earlier private-beta installation can still retain a demo subscription or downloaded samples. Fetching those sample pictures or media contacts **GitHub's raw-content hosting**, which receives the requested paths, connecting IP address and network metadata. The current new-user flow does not offer Try demo.
 
 ### Services that work for us
 
-- **[PostHog](https://posthog.com/privacy)** stores app statistics and website analytics in its EU Cloud.
-- **[Vercel](https://vercel.com/legal/privacy-notice)** hosts the website.
-- **[Cloudflare](https://www.cloudflare.com/privacypolicy/)** handles delivery of messages sent to hello@, privacy@ and security@mrstreamer.app through [Email Routing](https://developers.cloudflare.com/email-service/get-started/route-emails/), to the mailbox provider where we read them.
+- **[PostHog](https://posthog.com/privacy)** processes app statistics and website analytics in our configured EU Cloud project, hosted in Frankfurt. This regional setting is not a promise that all related processing or access stays in the EU.
+- **[Vercel](https://vercel.com/legal/privacy-notice)** hosts the website and its analytics forwarding route. It receives website connection information, including IP addresses and browser identification.
+- **[Cloudflare](https://www.cloudflare.com/privacypolicy/)** hosts our restricted review provider and handles delivery of messages sent to hello@, privacy@ and security@mrstreamer.app through [Email Routing](https://developers.cloudflare.com/email-service/get-started/route-emails/), to the mailbox provider where we read them.
 
 ## Your choices
 
-- **Statistics.** Turn off **Share basic usage statistics** in Settings > Privacy. Sending stops at once, events waiting to be sent are cleared, and it stays off after a restart. Turning it back on keeps the same identifier and sends nothing about the time it was off, including playback that continued meanwhile.
-- **Statistics on iPhone.** Turn off **Share basic usage statistics** in Settings > Privacy. Turning it off stops sending at once, clears events waiting to be sent, and stays off after the app restarts.
+- **Statistics on desktop.** Turn off **Share basic usage statistics** in Settings > Privacy. Sending stops at once, events waiting to be sent are cleared, and it stays off after a restart. Turning it back on keeps the same identifier and sends nothing about the time it was off, including playback that continued meanwhile.
+- **Statistics on iPhone.** Statistics stay off until you choose to share them, except when an upgrade retains an earlier deliberate choice. Change **Share basic usage statistics** in Settings > Privacy. Turning it off stops sending at once. When the changed choice is saved successfully, waiting events are cleared and it stays off after the app restarts. If saving fails, a later launch can restore the earlier choice and queued statistics.
 - **Website analytics.** Turn off **Site analytics** at the foot of any page of mrstreamer.app. The choice applies to that browser only, and clearing the site's data from your browser turns them back on.
-- **Subtitle search** is off until you turn it on.
-- **Casting** happens only after you open the receiver list and pick a device.
-- **TMDB and update checks** have no off switch. Settings only lets you choose whose TMDB key the app uses.
+- **Subtitle search on desktop** is off until you turn it on.
+- **Casting on desktop** happens only after you open the receiver list and pick a device. On iPhone, AirPlay uses the system controls for the receiver you choose.
+- **TMDB** requests have no separate off switch in either app. Only desktop Settings lets you choose whose TMDB key the app uses. **Update checks** described here are desktop-only; iPhone app updates use Apple's distribution services.
 
 ### Deleting your data
+
+In the desktop app:
 
 - **Remove** on a subscription in Settings > Subscriptions deletes its login, provider lists, guide, mapped channels and reminders, and cancels its unfinished downloads. Favourites, watchlist, history, progress and membership of your custom lists stay for when you add the same account again. Tick **Also delete…** to delete those and its saved subtitles too. Your custom lists themselves and finished downloads stay until you delete them.
 - **Delete list** in a list's menu in Live TV deletes the list with its name and the channels it held. Your other lists, and lists a subscription's removal emptied, stay until you delete them.
@@ -137,32 +169,42 @@ Your network operator and DNS provider can see which servers the app contacts.
 - **Delete** on a download deletes the copy with its details, pictures, progress and subtitles.
 - **The cross** on a reminder in Live TV's reminders list deletes it.
 - **Deleting the data folder** deletes everything else, including the statistics setting, so a new folder starts with statistics on. To also remove the password key, delete "Mr. Streamer Safe Storage" in Keychain Access on macOS or the matching entry in your Linux keyring. A downloaded update stays in `~/Library/Caches/mrstreamer-updater` on macOS, `%LOCALAPPDATA%\mrstreamer-updater` on Windows or `~/.cache/mrstreamer-updater` on Linux until you delete that folder.
-- **Statistics already sent** stay with PostHog when you turn the setting off. Email privacy@mrstreamer.app with the `installationId` from `analytics.json` in your data folder, so we can find them.
+- **Statistics already sent** are not erased by local removal or turning the setting off. If you still have the desktop `installationId` in `analytics.json`, you can supply it privately with a request through the contact below. It may help identify the records; it does not itself perform deletion.
 
 Removing a subscription or turning statistics off keeps an installation identifier already stored in `analytics.json`. A fresh profile can have no identifier until its first foreground observation. Deleting the data folder removes the local identifier; a new profile gets a new one when observed. This does not delete statistics already sent.
 
 ## Retention
 
 - **On your computer:** until you delete it. Uninstalling keeps it, except for the Microsoft Store copy, which Windows deletes with the app.
-- **App statistics:** our PostHog project is on the free plan, which PostHog lists with one year of data retention, and says older data may be deleted. We haven't set up any deletion of our own, and we can't promise the exact day PostHog deletes.
-- **Website analytics:** the same PostHog project, plan and terms as app statistics.
-- **Messages:** as long as we need to answer and fix what you reported. GitHub issues stay public until deleted.
+- **On iPhone:** local data remains until the app, you or iOS removes it, depending on the kind of data. Provider removal, shared caches and separate download removal are described above. The iPhone statistics queue has no fixed age-based expiry; waiting work can remain until delivered, discarded under its queue or attempt limits, or cleared after Off is saved successfully. If saving Off fails, earlier work and the previous choice can return after relaunch. Removing the app is not a guarantee of erasure from Keychain, backups or services that already received data.
+- **App statistics:** our PostHog project is on the Free plan. PostHog describes a one-year event query window: older events are excluded from queries. That is not a guaranteed physical deletion date. We have no additional automatic statistics-deletion schedule configured and cannot promise a fixed erasure date for records or backups. Turning sharing off does not delete records already received; the request route is below.
+- **Website analytics:** the same PostHog project and query-window limits as app statistics. Turning website analytics off stops new counting; it is not a request to erase records already received.
+- **Review-provider requests and hosting records:** authentication and resource requests are used to deliver the restricted review service. Hosting and security records may be kept under the host's applicable terms and service settings. We do not claim zero logging or a fixed deletion period for those records. Disconnecting a provider or closing the app does not erase a host's records.
+- **Messages:** as long as needed to answer and deal with the request, including any necessary legal record. GitHub issues stay public until deleted.
 
 ## Security
 
-Passwords, playlist links, guide addresses and subtitle-service logins use Electron's system storage encryption: macOS Keychain, your Windows account, or GNOME Keyring or KWallet when selected on Linux. Linux can instead use `basic_text`, a fixed-key fallback that does not protect secrets from other programs running as you. Server addresses, subscription usernames and your own TMDB key aren't encrypted.
+In the desktop app, passwords, playlist links, guide addresses and subtitle-service logins use Electron's system storage encryption: macOS Keychain, your Windows account, or GNOME Keyring or KWallet when selected on Linux. Linux can instead use `basic_text`, a fixed-key fallback that does not protect secrets from other programs running as you. Server addresses, subscription usernames and your own TMDB key aren't encrypted.
 
-The app refuses HTTP redirects that it recognizes as carrying the known login of an HTTPS source. Desktop 0.0.20, including its Nightly previews, also checks playlist addresses and removes recognized login-bearing headers when a request leaves that source's origin. HTTP addresses without a recognized login can still be used. This cannot identify every unknown token or encoding. An explicit `http://` address sends its login unencrypted. If HTTPS fails for an address entered without a scheme, the app asks before trying HTTP. Settings marks those logins "not encrypted". Statistics and website analytics go to PostHog over HTTPS.
+The desktop app refuses HTTP redirects that it recognizes as carrying the known login of an HTTPS source. Desktop 0.0.20, including its Nightly previews, also checks playlist addresses and removes recognized login-bearing headers when a request leaves that source's origin. HTTP addresses without a recognized login can still be used. This cannot identify every unknown token or encoding. An explicit `http://` address sends its login unencrypted. If HTTPS fails for an address entered without a scheme, the app asks before trying HTTP. Settings marks those logins "not encrypted". Statistics and website analytics go to PostHog over HTTPS.
 
 ## International transfers
 
-PostHog stores our statistics and website analytics in Frankfurt. Its published data processing agreement says PostHog Inc. may also process them outside the EU, including in the US, under the EU-US Data Privacy Framework and Standard Contractual Clauses. Vercel and GitHub are US companies and rely on the same two mechanisms. Cloudflare is also a US company. Its privacy policy describes transfers under the EU-US Data Privacy Framework, with Standard Contractual Clauses for other transfers or if that certification lapses. Services you use through the app, such as TMDB, get data straight from your computer wherever they are.
+Our PostHog project stores statistics in its EU Cloud region in Frankfurt. EU hosting does not mean all associated processing or access remains in the EU. PostHog's [published data-processing terms](https://posthog.com/dpa) describe international processing, including in the United States, and transfer safeguards such as the EU-US Data Privacy Framework and European Commission Standard Contractual Clauses.
+
+[Vercel](https://vercel.com/legal/privacy-notice), [Cloudflare](https://www.cloudflare.com/privacypolicy/) and [GitHub](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement) also describe processing in the United States and other countries, and safeguards in their privacy and applicable service terms. The terms depend on the service and agreement; a hosting location is not a guarantee against international access. You can contact privacy@mrstreamer.app for information about the safeguards applicable to our processing.
+
+Your device also contacts your provider, TMDB and image hosts directly. Their locations and terms govern those requests; our EU analytics setting does not apply to them.
 
 ## Your rights
 
-For data we hold, mainly statistics and messages, you can ask for a copy, correction or deletion, ask us to restrict its use, and object to it (GDPR Articles 15 to 21). Email privacy@mrstreamer.app and we'll answer within one month. For data held by your provider or another service above, contact them.
+For personal data we hold, you can request access, correction, restriction or deletion, object where the basis is legitimate interest, and withdraw consent for iPhone statistics. Other rights, including portability, apply where the law provides them. Email [privacy@mrstreamer.app](mailto:privacy@mrstreamer.app). We will respond within one month; if a lawful extension is needed, we will explain it within that first month.
 
-You can complain to the Belgian [Data Protection Authority](https://www.dataprotectionauthority.be/citizen/actions/lodge-a-complaint) or the authority where you live.
+Statistics use a random installation identifier, not your name or email address. An email alone may not identify your installation's records. Desktop users who still have it can provide the `installationId` from `analytics.json` privately. The iPhone app does not display that identifier. Do not send your provider password, stream addresses or other people's data.
+
+If we cannot identify the records concerned, we will explain that limitation and consider additional information you choose to provide. We do not promise that a request automatically identifies or erases records, and the app does not collect your name or email to identify statistics. If the records can be identified, we will handle the request under the applicable rights and explain any limit on the action available. Turning sharing off and deleting local files are separate from this request process.
+
+For data held by your provider or another service acting under its own policy, contact that service. You can complain to the Belgian [Data Protection Authority](https://www.dataprotectionauthority.be/citizen/actions/lodge-a-complaint) or the authority where you live.
 
 ## Changes
 
