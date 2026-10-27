@@ -558,7 +558,8 @@ function retainedCopies(before: Copies, now: Copies, what: string) {
     if (
       prior.status.kind !== "complete" ||
       current.status.kind !== "complete" ||
-      series !== priorSeries ||
+      // Per-run series aliases may change; title retains the persistent series identity.
+      (series === null) !== (priorSeries === null) ||
       !isDeepStrictEqual(details, priorDetails) ||
       !keptProgress
     )
