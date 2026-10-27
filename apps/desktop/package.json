@@ -44,7 +44,7 @@
     "effect": "4.0.0-rc.118",
     "electron": "44.9.3",
     "electron-builder": "26.15.7",
-    "electron-updater": "6.8.11",
+    "electron-updater": "6.8.12",
     "electron-vite": "5.0.0",
     "fflate": "0.8.3",
     "hls.js": "1.7.3",
