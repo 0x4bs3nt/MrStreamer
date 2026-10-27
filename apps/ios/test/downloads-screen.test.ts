@@ -139,7 +139,7 @@ const movie = (id: string, name: string, rest: Partial<Download>): Download => (
   ...rest,
 });
 
-const transferring: Download = {
+const transferring = {
   ...base,
   id: "t",
   name: "Paper Harbor",
@@ -153,7 +153,7 @@ const transferring: Download = {
     rate: 810_000_000 / 360,
     restarted: false,
   },
-};
+} satisfies Download;
 const waiting = movie("w", "Lowland", { status: { kind: "waiting" }, size: 1_900_000_000 });
 const queued = movie("q", "Glass Orchard", {});
 const failed = movie("f", "Kettle Run", {
@@ -205,6 +205,14 @@ async function pick(label: string) {
 const settled = () => React.act(async () => undefined);
 
 describe("Downloads", () => {
+  it("reports a restarted transfer without claiming why it restarted", () => {
+    const shown = show([
+      { ...transferring, status: { ...transferring.status, restarted: true } },
+    ]).textContent;
+    expect(shown).toContain("started again");
+    expect(shown).not.toContain("the file changed");
+  });
+
   it("lists the queue in the order added, then the copies, with the storage line", () => {
     const shown = show(
       [transferring, waiting, queued, failed, complete, kept],

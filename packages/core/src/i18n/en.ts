@@ -1175,6 +1175,7 @@ export const en = {
   "Waiting while {subscription} plays": "Waiting while {subscription} plays",
   Starting: "Starting",
   "{received} of {size}": "{received} of {size}",
+  "started again": "started again",
   "started again, the file changed": "started again, the file changed",
   "The file is no longer on this computer.": "The file is no longer on this computer.",
   "Download missing": "Download missing",

@@ -551,8 +551,10 @@ function moved(progress: Progress) {
     measured: { at: now, received: progress.received },
     savedAt: now,
   };
-  // A request that didn't go on from what this one had starts from zero, and says so.
-  seen.restarted ||= progress.restarted || (!progress.resumed && record.received > 0);
+  // Only first progress behind the saved bytes establishes a fresh start here; a process
+  // relaunch can hear the same native transfer again. Native restart evidence always stands.
+  seen.restarted ||=
+    progress.restarted || (first && !progress.resumed && progress.received < record.received);
   if (now - seen.measured.at >= 1000) {
     const rate = ((progress.received - seen.measured.received) * 1000) / (now - seen.measured.at);
     seen.rate = rate >= 0 ? rate : null;

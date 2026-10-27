@@ -107,7 +107,7 @@ export function statusLine(download: Download): string {
           size: formatBytes(status.size),
         }),
         left !== null ? minutesLeft(Math.max(1, Math.round(left / 60))) : null,
-        status.restarted ? t("started again, the file changed") : null,
+        status.restarted ? t("started again") : null,
       ]
         .filter(Boolean)
         .join(" · ");

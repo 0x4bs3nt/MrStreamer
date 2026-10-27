@@ -1201,6 +1201,7 @@ export const nl: Translation = {
   "Waiting while {subscription} plays": "Wacht terwijl {subscription} speelt",
   Starting: "Starten",
   "{received} of {size}": "{received} van {size}",
+  "started again": "opnieuw begonnen",
   "started again, the file changed": "opnieuw begonnen, het bestand is gewijzigd",
   "The file is no longer on this computer.": "Het bestand staat niet meer op deze computer.",
   "Download missing": "Download ontbreekt",

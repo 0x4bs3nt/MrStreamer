@@ -1271,6 +1271,7 @@ export const es: Translation = {
   "Waiting while {subscription} plays": "Esperando mientras {subscription} reproduce",
   Starting: "Empezando",
   "{received} of {size}": "{received} de {size}",
+  "started again": "empezada de nuevo",
   "started again, the file changed": "empezada de nuevo, el archivo cambió",
   "The file is no longer on this computer.": "El archivo ya no está en este equipo.",
   "Download missing": "Falta la descarga",
