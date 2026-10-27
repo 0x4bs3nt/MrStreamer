@@ -15,9 +15,6 @@ minimumReleaseAgeExclude:
   - "@tanstack/react-virtual@3.14.22"
   - "@tanstack/virtual-core@3.19.7"
   - "@cloudflare/workers-types@5.20261025.1"
-  # Reviewed updater fixes; remove these age exceptions after 27 October 2026 12:35 UTC.
-  - "electron-updater@6.8.12"
-  - "builder-util-runtime@9.7.1"
 # Local provider tests only; remove each override when Miniflare carries the fixed version.
 overrides:
   "miniflare@4.20260730.0>undici": "7.30.1"

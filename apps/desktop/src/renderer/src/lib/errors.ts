@@ -47,7 +47,7 @@ export function describeError(error: AppError): string {
     case "keychain-refused":
       return isMac
         ? t(
-            'The macOS Keychain would not store your password. Open Keychain Access, delete "Mr. Streamer Safe Storage", then quit and reopen Mr. Streamer.',
+            "The macOS Keychain would not store your password. Quit and reopen Mr. Streamer, then try again. See Troubleshooting before resetting Safe Storage.",
           )
         : t("Your system's keychain would not store your password.");
     case "channel-not-found":

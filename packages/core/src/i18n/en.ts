@@ -321,8 +321,8 @@ export const en = {
   "No subscription is connected.": "No subscription is connected.",
   "This subscription needs its password or link again, in Settings.":
     "This subscription needs its password or link again, in Settings.",
-  'The macOS Keychain would not store your password. Open Keychain Access, delete "Mr. Streamer Safe Storage", then quit and reopen Mr. Streamer.':
-    'The macOS Keychain would not store your password. Open Keychain Access, delete "Mr. Streamer Safe Storage", then quit and reopen Mr. Streamer.',
+  "The macOS Keychain would not store your password. Quit and reopen Mr. Streamer, then try again. See Troubleshooting before resetting Safe Storage.":
+    "The macOS Keychain would not store your password. Quit and reopen Mr. Streamer, then try again. See Troubleshooting before resetting Safe Storage.",
   "Your system's keychain would not store your password.":
     "Your system's keychain would not store your password.",
   "This channel is no longer in the provider's list.":

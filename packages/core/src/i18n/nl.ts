@@ -327,8 +327,8 @@ export const nl: Translation = {
   "No subscription is connected.": "Er is geen abonnement verbonden.",
   "This subscription needs its password or link again, in Settings.":
     "Dit abonnement heeft opnieuw zijn wachtwoord of link nodig, in Instellingen.",
-  'The macOS Keychain would not store your password. Open Keychain Access, delete "Mr. Streamer Safe Storage", then quit and reopen Mr. Streamer.':
-    'De macOS-sleutelhanger wilde je wachtwoord niet bewaren. Open Sleutelhangertoegang, verwijder "Mr. Streamer Safe Storage" en stop en open Mr. Streamer opnieuw.',
+  "The macOS Keychain would not store your password. Quit and reopen Mr. Streamer, then try again. See Troubleshooting before resetting Safe Storage.":
+    "De macOS-sleutelhanger kon je wachtwoord niet bewaren. Stop en open Mr. Streamer opnieuw en probeer het nog eens. Lees de probleemoplossing voordat je Safe Storage opnieuw instelt.",
   "Your system's keychain would not store your password.":
     "De sleutelhanger van je systeem wilde je wachtwoord niet bewaren.",
   "This channel is no longer in the provider's list.":

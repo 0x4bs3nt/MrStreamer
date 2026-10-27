@@ -23,7 +23,9 @@ Your system no longer gives Mr. Streamer the key to your saved password. That ha
 
 For a playlist, the whole link was encrypted, because a link can hold a token. Mr. Streamer can only say which host it came from, so paste the link again with **Enter link**. It stays the same subscription, with its favourites and watch history.
 
-On macOS, if it keeps asking: open Keychain Access, delete the item named **Mr. Streamer Safe Storage**, then quit and reopen Mr. Streamer.
+On macOS, quit and reopen Mr. Streamer, then try again. If Keychain still refuses to save, resetting Safe Storage is a last resort. **Deleting its Keychain item makes all saved encrypted passwords and addresses unreadable.** You will need to re-enter subscription passwords, playlist and guide links, and subtitle-service credentials. Your subscriptions, favourites, watchlist and watch history stay in place.
+
+To reset it, quit Mr. Streamer, open Keychain Access, delete the item named **Mr. Streamer Safe Storage**, then reopen Mr. Streamer.
 
 ## Windows warns about the installer
 

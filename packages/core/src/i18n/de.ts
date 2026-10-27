@@ -329,8 +329,8 @@ export const de: Translation = {
   "No subscription is connected.": "Kein Abonnement ist verbunden.",
   "This subscription needs its password or link again, in Settings.":
     "Dieses Abonnement braucht sein Passwort oder seinen Link erneut, in den Einstellungen.",
-  'The macOS Keychain would not store your password. Open Keychain Access, delete "Mr. Streamer Safe Storage", then quit and reopen Mr. Streamer.':
-    "Der macOS-Schlüsselbund wollte dein Passwort nicht speichern. Öffne die Schlüsselbundverwaltung, lösche „Mr. Streamer Safe Storage“ und beende und öffne Mr. Streamer erneut.",
+  "The macOS Keychain would not store your password. Quit and reopen Mr. Streamer, then try again. See Troubleshooting before resetting Safe Storage.":
+    "Der macOS-Schlüsselbund konnte dein Passwort nicht speichern. Beende und öffne Mr. Streamer erneut und versuche es noch einmal. Lies vor dem Zurücksetzen von Safe Storage die Fehlerbehebung.",
   "Your system's keychain would not store your password.":
     "Der Schlüsselbund deines Systems wollte dein Passwort nicht speichern.",
   "This channel is no longer in the provider's list.":
